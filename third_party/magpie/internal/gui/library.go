@@ -279,6 +279,16 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 		}
 		writeJSON(rw, p)
 	})
+	// the slash commands the agents here have of their own
+	// (command_import.go); nothing is written
+	mux.HandleFunc("POST /api/library/commands/probe", func(rw http.ResponseWriter, r *http.Request) {
+		p, err := library.ProbeCommands()
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, p)
+	})
 	// which skills GitHub has changed: the page as it is, each skill from
 	// there carrying what the check found of it
 	mux.HandleFunc("POST /api/library/skills/check", func(rw http.ResponseWriter, r *http.Request) {
@@ -709,6 +719,7 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			ID       string            // a market server's, or a market skill's in its repository
 			Values   map[string]string // what a market server needs
 			Dir      string            // a project's folder
+			Instr    *string           `json:"instr"` // a project's own instructions (projects/instructions)
 			Copy     bool              // a project gets copies, not links
 			Keep     bool              // a project removed keeps what magpie put in it
 			On       bool              // every skill or server given to the agents, or taken from them
@@ -817,6 +828,8 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			res, err = library.CommandAgentsSet(in.Name, in.Agents)
 		case "commands/remove":
 			res, err = library.RemoveCommands([]string{in.Name})
+		case "commands/import":
+			res, err = library.ImportCommands(in.Paths)
 		case "subagents/import":
 			res, err = library.ImportSubagents(in.Source, in.Paths, in.Agents)
 		case "skills/install":
@@ -914,6 +927,13 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			res, err = library.ProjectSkillsOff(in.Dir, oneOrMore(in.Name, in.Names), in.Agents)
 		case "projects/copy":
 			res, err = library.ProjectCopy(in.Dir, in.Copy)
+		case "projects/instructions":
+			// the text, the agents (sent as [] for none), or both
+			c := library.ProjectInstr{Text: in.Instr}
+			if in.Agents != nil {
+				c.Agents = &in.Agents
+			}
+			res, err = library.ProjectInstructions(in.Dir, c)
 		case "all/sync":
 			res, err = library.Sync()
 		default:

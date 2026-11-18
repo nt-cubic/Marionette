@@ -1,32 +1,33 @@
 /* Library: instructions, MCP servers and skills for every agent. */
 #view-library { gap: 0; }
 /* The tabs stay at the top while the page scrolls under them, on a frosted
-   strip as wide as the view; a hairline shows once something is beneath.
-   The strip's own box keeps to the view's content box and its ::before
-   reaches out over the view's padding (--bleed-l/-r): a box that ran past
-   the content's end edge, by a negative margin, was 16px of sideways
+   strip that shows, with a hairline, once something is beneath. At the
+   page's top nothing is: the strip is not drawn, so over a background
+   picture there is no square box around the rounded tabs (CHENGJIAHEGOXIS
+   on X). Under the tabs it is 4px out from them at the sides and the foot,
+   with the tabs' radius plus those 4px. The strip's own box keeps to the
+   view's content box and only its ::before reaches past it: a box that ran
+   past the content's end edge, by a negative margin, was 16px of sideways
    scroll in macOS 15's WebKit, which leaves a negative margin-end out of
    a flex scroller's scrollable width (#1236). */
 .lib-head {
   position: sticky; top: 0; z-index: 5;
   display: flex; align-items: center; gap: 8px; flex: none;
   margin: 0; padding: 6px 0 4px;
-  --bleed-l: 12px; --bleed-r: 12px;
 }
 .lib-head::before {
   content: ""; position: absolute; z-index: -1; pointer-events: none;
-  top: 0; bottom: 0; left: calc(-1 * var(--bleed-l)); right: calc(var(--bar, 0px) - var(--bleed-r)); /* the bar's room is out of the padding */
+  top: 0; bottom: 0; left: -4px; right: -4px; border-radius: 0 0 11px 11px;
   background: color-mix(in srgb, var(--bg) 92%, transparent);
   -webkit-backdrop-filter: saturate(1.6) blur(16px); backdrop-filter: saturate(1.6) blur(16px);
-  box-shadow: 0 1px 0 transparent; transition: box-shadow .18s var(--ease);
+  box-shadow: 0 1px 0 transparent; opacity: 0; transition: opacity .18s var(--ease-out), box-shadow .18s var(--ease);
 }
 /* the window's view is padded 2px at the top: the strip reaches over it */
-body.window .lib-head { top: -2px; margin: -2px 0 0; padding: 8px 0 4px; --bleed-l: 16px; --bleed-r: 16px; }
+body.window .lib-head { top: -2px; margin: -2px 0 0; padding: 8px 0 4px; }
 @media (max-width: 760px), (pointer: coarse) and (max-width: 1024px) {
   body.web .lib-head {
     flex-wrap: wrap;
     margin: -2px 0 0; padding: 8px 0 4px;
-    --bleed-l: var(--view-left); --bleed-r: var(--view-right);
   }
   body.web .lib-tabs { max-width: 100%; flex-wrap: wrap; }
   body.web .lib-more, body.web .lib-discover, body.web .lib-backups { flex: none; }
@@ -43,7 +44,7 @@ body.window .lib-head { top: -2px; margin: -2px 0 0; padding: 8px 0 4px; --bleed
    tabs wrap onto a second line rather than scroll the view sideways */
 .lib-tabs { max-width: 100%; flex-wrap: wrap; }
 .lib-headacts { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
-.lib-head.stuck::before { box-shadow: 0 1px 0 var(--line-2); }
+.lib-head.stuck::before { opacity: 1; box-shadow: 0 1px 0 var(--line-2); }
 .lib-tabs .opt { height: 24px; padding: 0 12px; font-size: 12.5px; }
 .lib-more, .lib-discover, .lib-backups { display: inline-flex; align-items: center; gap: 5px; }
 .lib-mini { display: inline-grid; place-items: center; color: var(--muted); }
@@ -257,6 +258,9 @@ button.row.lib-hubfolded:hover { background: var(--pill); }
 
 /* the switch */
 .lib-switch { flex: none; position: relative; width: 32px; height: 19px; border-radius: 10px; background: var(--line); transition: background .2s var(--ease); }
+/* an empty line of text at the switch's middle: its baseline is a text
+   line's, so a form row's name sits level with it (form-align.test.cjs) */
+.lib-switch::before { content: "\200b"; font-size: 12px; line-height: 19px; }
 .lib-switch i { position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .25); transition: transform .22s var(--ease); }
 .lib-switch.on { background: var(--mark); }
 .lib-switch.on i { transform: translateX(13px); background: var(--card); }
@@ -422,6 +426,8 @@ input.lib-setname:focus { border-color: var(--accent); box-shadow: 0 0 0 3px col
 .lib-find input { flex: 1; min-width: 0; height: 28px; border: 0; outline: none; background: none; font-size: 13px; color: var(--fg); }
 .lib-find input::placeholder { color: var(--faint); }
 .lib-find .text.busy { color: var(--muted); }
+.lib-find .lib-findnote { flex: 1; min-width: 0; font-size: 13px; color: var(--muted); }
+.lib-pick .lib-cmdfrom { -webkit-line-clamp: 1; }
 .lib-err { padding: 0 14px 10px 36px; font-size: 12px; color: var(--red); line-height: 1.45; overflow-wrap: anywhere; }
 .lib-probe { border-top: 1px solid var(--line-2); padding: 8px 8px 8px; display: flex; flex-direction: column; gap: 6px; animation: content-in .22s var(--ease); }
 .lib-probehead { display: flex; align-items: center; gap: 6px; padding: 0 4px; }
@@ -665,6 +671,7 @@ input.lib-setname:focus { border-color: var(--accent); box-shadow: 0 0 0 3px col
 .lib-tooltxt { flex: 1; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .lib-tool .lib-switch { width: 28px; height: 16px; padding: 0; border: 0; cursor: pointer; }
 .lib-tool .lib-switch i { width: 12px; height: 12px; }
+.lib-tool .lib-switch::before { line-height: 16px; }
 .lib-tool .lib-switch.on i { transform: translateX(12px); }
 .lib-tool.off .lib-tooltxt { opacity: .5; }
 .lib-tool.off .lib-toolname { text-decoration: line-through; }
@@ -961,3 +968,5 @@ input.lib-memq:focus, input.lib-memtags:focus, input.lib-memwhy:focus { border-c
 .lib-bili-phil { display: grid; gap: 6px; padding: 8px 0 0 15px; }
 .lib-bili-phil > .name { font-size: 12.5px; color: var(--fg-2); }
 .lib-bili-phil .lib-acts { justify-content: flex-end; }
+/* the servers turned off, folded below the ones on, as Providers' */
+#view-library .lib-offhead .fold:disabled { cursor: default; opacity: 1; }

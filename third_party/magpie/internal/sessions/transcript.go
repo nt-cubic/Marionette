@@ -15,8 +15,11 @@ import (
 
 // Transcript is what was said in a session, in the order it was said.
 type Transcript struct {
-	Parts    []Part `json:"parts"`
-	Cut      bool   `json:"cut,omitempty"` // there was more than is kept here
+	Parts []Part `json:"parts"`
+	Cut   bool   `json:"cut,omitempty"` // there was more than is kept here
+	// From is the parts before the first one kept, left out so that the
+	// part a search found is shown (TranscriptAt)
+	From     int    `json:"from,omitempty"`
 	Source   string `json:"source,omitempty"`
 	Captured int    `json:"captured,omitempty"`
 }
@@ -32,7 +35,7 @@ var ErrNoTranscript = errors.New("this agent's conversations can't be shown")
 // transcript.
 func HasTranscript(agent string) bool {
 	switch agent {
-	case "claude", "qoder", "qoder-cn", "codex", "pi", "raft", "cindy", "omp", "cursor", "opencode", "kimi", "agy", "openmausbot":
+	case "claude", "qoder", "qoder-cn", "codex", "pi", "raft", "cindy", "omp", "cursor", "opencode", "kimi", "agy", "openmausbot", "liveagent":
 		return true
 	}
 	return false
@@ -72,6 +75,69 @@ func TranscriptOf(s Session) (Transcript, error) {
 	return out, readTranscript(s, out.add)
 }
 
+// transcriptLead is the parts kept before the one TranscriptAt finds,
+// when the ones before it are left out.
+const transcriptLead = 6
+
+// TranscriptAt is TranscriptOf for a reader brought to the part that
+// holds needle (NeedleOf), the first said one, else the first anywhere,
+// as SearchSession's hit: when TranscriptOf would be cut before that
+// part, the parts before it are left out (but a few) and From says how
+// many were.
+func TranscriptAt(s Session, needle string) (Transcript, error) {
+	if needle == "" {
+		return TranscriptOf(s)
+	}
+	if !Reads(s.Agent) {
+		return Transcript{Parts: []Part{}}, ErrNotRead
+	}
+	if !HasTranscript(s.Agent) || s.Path == "" {
+		return Transcript{Parts: []Part{}}, ErrNoTranscript
+	}
+	// the parts TranscriptOf keeps are counted as it keeps them, and the
+	// found one's place among them noted, and the characters before it
+	at, saidAt, n, size, sizeAt, saidSize := -1, -1, 0, 0, 0, 0
+	if err := readTranscript(s, func(_ bool, p Part) bool {
+		p, ok := keep(p)
+		if !ok {
+			return true
+		}
+		if searched(p) {
+			if _, hit := hitIn(p, needle); hit {
+				if at < 0 {
+					at, sizeAt = n, size
+				}
+				if said(p) && saidAt < 0 {
+					saidAt, saidSize = n, size
+				}
+			}
+		}
+		n++
+		size += len(p.Text)
+		return saidAt < 0
+	}); err != nil {
+		return Transcript{Parts: []Part{}}, err
+	}
+	if saidAt >= 0 {
+		at, sizeAt = saidAt, saidSize
+	}
+	if at < 0 || sizeAt < transcriptMax {
+		return TranscriptOf(s)
+	}
+	out := Transcript{Parts: []Part{}, From: max(0, at-transcriptLead)}
+	i := 0
+	return out, readTranscript(s, func(in bool, p Part) bool {
+		if _, ok := keep(p); !ok {
+			return true
+		}
+		i++
+		if i <= out.From {
+			return true
+		}
+		return out.add(in, p)
+	})
+}
+
 // readTranscript tells add each part of a session's conversation, in order,
 // as its agent's file has it.
 func readTranscript(s Session, add func(bool, Part) bool) error {
@@ -98,6 +164,8 @@ func readTranscriptOf(s Session, keep func([]byte) bool, add func(bool, Part) bo
 		return agyTranscript(s.Path, keep, add)
 	case "openmausbot":
 		return ombTranscript(s, add)
+	case "liveagent":
+		return liveagentTranscript(s.Path, add)
 	default:
 		if s.BranchOf != "" && keep == nil {
 			return branchTranscript(s, add)

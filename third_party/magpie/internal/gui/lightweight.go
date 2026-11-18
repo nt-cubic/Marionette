@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -41,6 +42,8 @@ func (h *host) makeMain(url string) *application.WebviewWindow {
 	// Windows' title bar in the page's colour from the first frame; the
 	// page keeps it so as its theme changes (TintTitleBar)
 	winOpts, winBg := windowChrome(cmp.Or(os.Getenv("MAGPIE_THEME"), settings.Shared().Theme))
+	// pinned above other windows, as the title bar's pin left it (ontop.go)
+	onTop := settings.Load().OnTop && canOnTop(runtime.GOOS, os.Getenv)
 	w := h.app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "main",
 		Title:            "magpie",
@@ -52,6 +55,8 @@ func (h *host) makeMain(url string) *application.WebviewWindow {
 		Zoom:             z,
 		Hidden:           true,
 		StartState:       state,
+		AlwaysOnTop:      onTop,
+		Frameless:        mainFrameless(runtime.GOOS),
 		Mac:              mainMacWindow(),
 		Windows:          winOpts,
 		BackgroundColour: winBg,
@@ -59,8 +64,22 @@ func (h *host) makeMain(url string) *application.WebviewWindow {
 	h.zoomWhenLoaded(w)
 	lowWhileHidden(w)
 	h.mendWebView(w)
-	if runtime.GOOS == "windows" {
-		w.OnWindowEvent(events.Common.WindowRuntimeReady, func(*application.WindowEvent) { w.ExecJS(frameOnlyResizeJS) })
+	if mainFrameless(runtime.GOOS) {
+		// resized from Windows' own border too, not the page's edge alone
+		keepResizeFrame(w)
+		// the page's caption buttons follow the window's maximised state
+		// (captionJS); a resize that changes it says so, once
+		var maxed atomic.Bool
+		w.OnWindowEvent(events.Common.WindowRuntimeReady, func(*application.WindowEvent) {
+			m := w.IsMaximised()
+			maxed.Store(m)
+			w.ExecJS(captionJS(m))
+		})
+		w.OnWindowEvent(events.Common.WindowDidResize, func(*application.WindowEvent) {
+			if m := w.IsMaximised(); maxed.Swap(m) != m {
+				w.ExecJS(captionJS(m))
+			}
+		})
 	}
 	// A resize is kept once it settles (settle): the size, or that the
 	// window is maximised. Nothing is kept of a window not placed and shown
@@ -136,7 +155,6 @@ func (h *host) makePanel() *application.WebviewWindow {
 		h.tray.AttachWindow(w).WindowOffset(6)
 	}
 	// the icon stays lit while the panel is open (the Mac's)
-	trayOwnClicks()
 	w.OnWindowEvent(events.Mac.WindowShow, func(*application.WindowEvent) { trayHighlight(true) })
 	w.OnWindowEvent(events.Mac.WindowHide, func(*application.WindowEvent) { trayHighlight(false) })
 	sayWailsHides(w)

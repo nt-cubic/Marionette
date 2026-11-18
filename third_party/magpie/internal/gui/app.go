@@ -148,16 +148,6 @@ func (h *host) ShowMain(view string) {
 // MainShown says whether the window is up.
 func (h *host) MainShown() bool { return application.InvokeSyncWithResult(h.mainShown) }
 
-// mainUp says whether the window is up and whether it is minimised, read
-// together on the main thread.
-func (h *host) mainUp() (up, minimised bool) {
-	application.InvokeSync(func() {
-		up = h.mainShown()
-		minimised = up && h.main.IsMinimised()
-	})
-	return up, minimised
-}
-
 // Import opens the window on an import link, for the user to confirm.
 func (h *host) Import(link string) {
 	id := stash(link)
@@ -454,6 +444,7 @@ func Run(version string, showMain bool, link string) error {
 		// leaves both to it: the failover goes on through the new one, and
 		// so do the threads.
 		OnShutdown: func() {
+			unhookNoActivate()
 			proc.EndProbes()
 			if handedOver.Load() {
 				return
@@ -599,11 +590,10 @@ func Run(version string, showMain bool, link string) error {
 		})
 	}
 	updates.onWait = func() { application.InvokeSync(relabel) }
-	// Settings' AutoRestart: the window comes back only if it was up
-	// (#2096), and minimised if it was (#3495)
+	// Settings' AutoRestart, and the other restarts nobody clicked:
+	// back in the tray alone (restartBySelf)
 	updates.autoRestart = func() bool {
-		up, minimised := h.mainUp()
-		if restartInto(false, up, "", true, minimised) {
+		if restartBySelf() {
 			leave(h.app.Quit)
 			return true
 		}
@@ -634,6 +624,13 @@ func Run(version string, showMain bool, link string) error {
 	// before the item is made, which starts as hidden as AppKit kept it
 	hiddenAtStart := bringTrayBack()
 	h.tray = h.app.SystemTray.New()
+	// the Mac's clicks on the item go to its action from the first one
+	// (mpOwnClicks). Installed with the panel, which is made the first
+	// time it is opened (panelOnFirstOpen), the first click after each
+	// start went through the button's own mouse-down tracking: the panel
+	// came up and went again at once (Refeccd on Discord: "每次更新后，
+	// 第一次在菜单栏点击唤起主界面会出现闪退现象").
+	trayOwnClicks()
 	if runtime.GOOS == "linux" {
 		// set before the tray starts, it is the item's id too, which
 		// Omarchy's bar pins it by (Wails calls it "Wails" otherwise)
@@ -784,6 +781,7 @@ func Run(version string, showMain bool, link string) error {
 	if ownPage {
 		startAppPage(h, gw)
 	}
+	defer unhookNoActivate()
 	return h.app.Run()
 }
 

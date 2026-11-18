@@ -226,7 +226,12 @@ var others = []*Agent{
 // Clients is everyone whose requests the gateway knows by name: every
 // agent, detected or not, and the others. It is what the Usage and
 // Routing views draw a request's client with.
-func Clients() []*Agent { return ClientsIn(All()) }
+//
+// It leaves WSL's distros unasked: their agents are never clients, and a
+// wsl.exe that hangs held the Sessions and Usage pages' first open (Looks)
+// and the gateway's naming of a request's agent for its timeouts, ~10s
+// to 20s (shangyuan0818 on X).
+func Clients() []*Agent { return ClientsIn(local()) }
 
 // ClientsIn is Clients among all, a list of All() the caller has built
 // already.
@@ -246,6 +251,19 @@ func ClientsIn(all []*Agent) []*Agent {
 func All() []*Agent {
 	home, cfg := homes()
 	own := builtins(home, cfg)
+	return append(own, pluggedAgents(home, own, nil)...)
+}
+
+// AllKnown is All() with the agents in WSL's distros as they were last
+// listed: it starts a listing but never waits on wsl.exe, for a page's
+// path (whether the Sessions page reads this machine's sessions), where a
+// hung wsl.exe held the first open for its timeouts (shangyuan0818 on X).
+func AllKnown() []*Agent {
+	home, cfg := homes()
+	own := onMachine(home, cfg)
+	if wslLooks() {
+		own = append(own, wslAgentsOf(wslDistrosWithin(0))...)
+	}
 	return append(own, pluggedAgents(home, own, nil)...)
 }
 
@@ -301,6 +319,7 @@ func onMachineAll(home, cfg string) []*Agent {
 		codex(home),
 		gemini(home),
 		agy(home),
+		dim(home),
 		antigravity(home),
 		opencode(home, cfg),
 		openChamber(home, cfg),
@@ -377,6 +396,7 @@ func onMachineAll(home, cfg string) []*Agent {
 		kun(home),
 		hanako(home),
 		atomcode(home),
+		ocr(home),
 		snow(home),
 		alma(),
 		shelley(home),
@@ -916,14 +936,16 @@ func piModelOn(m catalog.Model, gw string, native bool, on string) map[string]an
 	// Messages API alone to the gateway's /v1/messages (Anthropic's
 	// SDK adds the /v1). A Claude that thinks only adaptively is
 	// told so: Pi would otherwise ask it for a thinking budget,
-	// which it turns away.
+	// which it turns away. So are GLM-5.2/5.3 and Gemini 3 and
+	// later, whose xhigh and max pi-ai's budget clamps to high
+	// (gateway.AsksAdaptively, as dsh's; #6778).
 	switch {
 	case on == "openai-completions":
 	case on == "openai-responses":
 		e["compat"] = map[string]any{"supportsStrictMode": true}
 	case on == "anthropic-messages":
 		e["api"], e["baseUrl"] = on, gw
-		if gateway.AdaptiveThinking(m.ID) {
+		if gateway.AsksAdaptively(m.ID) {
 			e["compat"] = map[string]any{"forceAdaptiveThinking": true}
 		}
 	case !native:
@@ -936,7 +958,7 @@ func piModelOn(m catalog.Model, gw string, native bool, on string) map[string]an
 		e["compat"] = map[string]any{"supportsStrictMode": true}
 	case slices.Contains(m.APIs, string(provider.Anthropic)):
 		e["api"], e["baseUrl"] = "anthropic-messages", gw
-		if gateway.AdaptiveThinking(m.ID) {
+		if gateway.AsksAdaptively(m.ID) {
 			e["compat"] = map[string]any{"forceAdaptiveThinking": true}
 		}
 	case slices.Contains(m.APIs, string(provider.Gemini)):

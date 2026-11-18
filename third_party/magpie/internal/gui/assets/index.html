@@ -99,6 +99,10 @@
     <button class="icon" id="sync" title="Look for agents on this computer again: one just installed or removed, or its settings changed" data-tt>
       <svg viewBox="0 0 16 16" width="14" height="14"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
+    <!-- the window kept above other apps' (app.js renderOnTop), where it can be -->
+    <button type="button" class="icon pin" id="pin" hidden aria-pressed="false" data-tt="Keep on top">
+      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path class="pin-body" d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></g></svg>
+    </button>
     <button class="icon" id="open" title="Open the main window" data-tt>
       <svg viewBox="0 0 16 16" width="14" height="14"><path d="M6 3H3.5A1.5 1.5 0 0 0 2 4.5v8A1.5 1.5 0 0 0 3.5 14h8a1.5 1.5 0 0 0 1.5-1.5V10M9 2h5v5M14 2 8 8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
@@ -110,6 +114,14 @@
     </button>
   </div>
 </header>
+<!-- Windows: the header is the window's title bar (app.css .wincap), and
+     these are its minimise, maximise and close, drawn as Windows draws
+     them (app.js magpieCaption) -->
+<div class="wincap" id="wincap" style="--wails-draggable:no-drag">
+  <button type="button" data-cap="min" data-tt="Minimize" tabindex="-1">&#xE921;</button>
+  <button type="button" data-cap="max" data-tt="Maximize" tabindex="-1">&#xE922;</button>
+  <button type="button" data-cap="close" data-tt="Close" tabindex="-1">&#xE8BB;</button>
+</div>
 
 <nav class="ptabs" id="ptabs" hidden>
   <button type="button" data-ptab="agents"><span data-t>Agents</span><em id="ptabN"></em></button>
@@ -307,6 +319,10 @@
         <div class="who"><div class="name" data-t>Menu bar magpie icon</div><div class="sub" data-t>magpie's icon before the allowances; off, the allowances alone, and a click on one still opens the panel</div></div>
         <div id="trayBirdSegs"></div>
       </div>
+      <div class="row pref" id="trayClaudeRow" hidden>
+        <div class="who"><div class="name" data-t>Menu bar Claude logo</div><div class="sub" data-t>Claude's logo, or Anthropic's A\ mark, before Claude's allowances</div></div>
+        <div id="trayClaudeSegs"></div>
+      </div>
       <div class="row pref" id="trayPaceRow" hidden>
         <div class="who"><div class="name" data-t>Menu bar pace</div><div class="sub" data-t>Each window's Pace number beside its figure, as on the Usage page: +12% is 12% more of the window used than an even pace would have used by now, −8% that much less</div></div>
         <div id="trayPaceSegs"></div>
@@ -396,10 +412,6 @@
         <div class="who"><div class="name" data-t>App updates</div><div class="sub" id="updateProxySub"></div></div>
         <div id="updateProxySegs" class="proxy-segs"></div>
       </div>
-      <div class="row pref" id="updateSourceRow">
-        <div class="who"><div class="name" data-t>Update source</div></div>
-        <button type="button" id="updateSourcePick" class="sess-pick pref-pick" aria-label="Update source" aria-haspopup="menu" aria-expanded="false"></button>
-      </div>
     </div>
     <div class="row-head"><span class="label" data-t>Proxies</span></div>
     <div class="list prefs" id="proxiesList"></div>
@@ -424,12 +436,20 @@
     <div class="list prefs" id="webPageList"></div>
     <div class="row-head" id="remoteHead"><span class="label" data-t>Another magpie</span></div>
     <div class="list prefs" id="remoteList"></div>
+    <details class="prefs-more" id="netMore">
+      <summary data-t>Advanced</summary>
+      <div class="list prefs" id="netMoreList"></div>
+    </details>
   </section>
   <section class="set-page" id="setPage-models" role="tabpanel" aria-labelledby="setTab-models">
     <div class="row-head"><span class="label" data-t>Images</span></div>
     <div class="list prefs" id="imagesList"></div>
     <div class="row-head"><span class="label" data-t>Web search</span></div>
     <div class="list prefs" id="searchList"></div>
+    <details class="prefs-more" id="searchMore" hidden>
+      <summary data-t>Advanced</summary>
+      <div class="list prefs" id="searchMoreList"></div>
+    </details>
     <div class="row-head"><span class="label" data-t>Quick check</span><span class="grow"></span><button type="button" class="text" id="pipeCheckAll" title="One real call each, at the provider's price" data-t data-tt>Test all</button></div>
     <div class="list prefs" id="pipeCheckList"></div>
     <div class="row-head"><span class="label" data-t>Replies</span></div>
@@ -617,6 +637,10 @@
   <div class="row pref" id="codexPredictionsRow">
     <div class="who"><div class="name" data-t>Codex composer predictions</div></div>
     <div class="val" id="codexPredictionsPick"></div>
+  </div>
+  <div class="row pref" id="codexSuggestionsRow">
+    <div class="who"><div class="name" data-t>Codex prompt suggestions</div></div>
+    <div class="val" id="codexSuggestionsPick"></div>
   </div>
   <div class="row pref" id="codexAutoReviewRow">
     <div class="who"><div class="name" data-t>Codex auto-review model</div></div>

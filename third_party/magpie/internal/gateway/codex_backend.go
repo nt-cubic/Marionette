@@ -158,6 +158,12 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 				s.codexPrediction(w, r, body, to)
 				return
 			}
+			// the app's prompt suggestions on the model set for them
+			// (codexSuggestionsTo), the model asked kept for the trace
+			if to := codexSuggestionsTo(r, agentOf(r), kind, model); to != "" {
+				r = withSuggestionsAsked(r, model)
+				body, model = withModel(body, to), to
+			}
 			// a subagent on one of Codex's own models, put on the model
 			// set for Codex's subagents, a ChatGPT account's in magpie;
 			// the request on the model asked for when it can't be, the
@@ -1342,6 +1348,13 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 				// row, to sign in again (#1793)
 				noteSignIn(ctx, on.Account, req, res)
 			}
+			if rest == "/responses" && res.StatusCode == http.StatusTooManyRequests {
+				if acct, ok := codexRelayedAccount(base, r.Header, on); ok {
+					// what the refusal says of the account's credits, for
+					// asking again on them below (heardCodexCredits)
+					heardCodexCredits(acct, res.Header)
+				}
+			}
 			if !creditsAsked && rest == "/responses" && base != codexAPIBase && res.StatusCode == http.StatusTooManyRequests && relayOnCredits(on) {
 				// the account holds credits and was refused as out of its
 				// allowance: ChatGPT may turn away the turn that uses the
@@ -1467,7 +1480,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 			res.Body = io.NopCloser(bytes.NewReader(msg))
 			// its credits and resets looked at above, a 429 that names
 			// when the account is back holds it till then (codexHolds)
-			noteCodexHold(holdKey, res.StatusCode, res.Header, msg)
+			noteCodexHold(holdKey, res.StatusCode, res.Header, msg, relayOnCredits(on))
 			if overload && codexBusy(res.StatusCode, msg) && s.codexFallsBack(r, body) {
 				// still too busy once asked again: the fallbacks answer
 				said := provider.APIError(msg, res.Status)
@@ -4159,7 +4172,9 @@ func itemNotFound(rec *recorder) bool {
 // outputs and reasoning, and answers anything else 400
 // "unsupported_input_item" with param "input" (#5181, Edward4226; #5259,
 // Mmx233, a Codex subagent's history), and Grok's backend an
-// agent_message 422 "unknown item type". It comes as that status, as
+// agent_message 422 "unknown item type", and a local Qwen server's
+// Responses API 400 "Unsupported input item: agent_message" (cyberestro
+// on X). It comes as that status, as
 // another magpie's message in front of it ("Remote magpie: Command Code:
 // {…}", a 400 or its 502), or as an error event in the summary's stream.
 // The conversation as text is messages alone, which it takes. A refusal
@@ -4175,7 +4190,7 @@ func inputKindRefused(rec *recorder, err error) bool {
 	return inputKindWords.Match(rec.body.Bytes())
 }
 
-var inputKindWords = lazyre.New(`(?i)unsupported_input_item|unknown item type`)
+var inputKindWords = lazyre.New(`(?i)unsupported[ _]input[ _]item|unknown item type`)
 
 // compactFailure names who answered a summary request with a failure — the
 // provider, the model and the provider's base URL — and what it said.

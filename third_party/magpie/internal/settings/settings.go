@@ -322,6 +322,11 @@ type Settings struct {
 	// one that runs it (gateway.hubOnDemand; ArvinCharl on X: the tools
 	// filled the context). This computer's own (KeepOwn).
 	RouterAllTools bool `json:"routerAllTools,omitempty"`
+	// Name is what this magpie is called, said in its web page's browser
+	// tab as "<name> · magpie", to tell several deployed ones apart
+	// (starballl on X). "" is MAGPIE_NAME, else none (InstanceName). This
+	// computer's own (KeepOwn): each magpie is named on its own.
+	Name string `json:"name,omitempty"`
 	// Port is the gateway's port on this computer, 0 for DefaultPort.
 	// MAGPIE_ADDR, where it is set, comes first (GatewayAddr).
 	Port int `json:"port,omitempty"`
@@ -334,6 +339,10 @@ type Settings struct {
 	// RequestArchiveMaxMB is how much of each body the archive keeps, in
 	// MiB: 0 for 32, at most 1024 (#447)
 	RequestArchiveMaxMB int `json:"requestArchiveMaxMB,omitempty"`
+	// RequestArchiveMB is how large the archive grows in the bucket before
+	// its oldest calls are removed, in MiB: 0 for 1024. Sync carries it, as
+	// every computer writes to the one bucket.
+	RequestArchiveMB int `json:"requestArchiveMB,omitempty"`
 	// RequestArchiveLocal keeps the request archive on this computer's disk,
 	// in magpie's folder (gateway/archive_local.go), while sync has no S3
 	// bucket for it (CyberCaius on Discord). Its own switch, separate from
@@ -598,7 +607,9 @@ type Settings struct {
 	// version as it comes out, the default; UpdateStable ("stable") one a
 	// week, the newest that had been out three days as the week began, or
 	// an urgent one (a security hole, a ban risk, lost data) at once, from
-	// the update feed's ?channel=stable (ssharpcc on X). Settings' Update
+	// the update feed's ?channel=stable (ssharpcc on X); UpdateDaily
+	// ("daily") one a day, the newest that passed its tests, or an urgent
+	// one at once, from ?channel=daily (fishmagic80 on X). Settings' Update
 	// channel and magpie update channel set it.
 	UpdateChannel string `json:"updateChannel,omitempty"`
 	// Vision is the model that describes an image to a model that can't see
@@ -628,7 +639,7 @@ type Settings struct {
 	ImageTimeout int `json:"imageTimeout,omitempty"`
 	// ClassifyTimeout is how long, in seconds, a routing group's classifier
 	// is given to say which intent a turn is (#2934: a Kiro subscription's
-	// haiku needed more than 8): from 1 to ClassifyTimeoutMost, 0 for
+	// haiku needed more than 8, the default then): from 1 to ClassifyTimeoutMost, 0 for
 	// ClassifyTimeoutDefault. ClassifyWait reads it.
 	ClassifyTimeout int `json:"classifyTimeout,omitempty"`
 	// GroupSink, GroupFirstToken and GroupPatience are what every routing
@@ -701,6 +712,10 @@ type Settings struct {
 	// cards are there, the cards alone (KevinXC on Discord); a click on one
 	// still opens the panel, and with no cards the bird is shown.
 	TrayNoBird bool `json:"trayNoBird,omitempty"`
+	// TrayAnthropicMark draws Claude's cards in the Mac menu bar with
+	// Anthropic's "A\" mark in place of Claude's logo (qingnianxiaozhe on
+	// X); off by default, Claude's logo as the Usage page has it.
+	TrayAnthropicMark bool `json:"trayAnthropicMark,omitempty"`
 	// TrayNoNumber keeps magpie's icon in Windows' tray while cards are
 	// picked; off by default, the icon is the first card's figure
 	// (Benjaminliang_1 on X), as Windows' tray shows no text beside it.
@@ -925,6 +940,12 @@ type Settings struct {
 	// magpie's, not a ChatGPT account's sealed one). "" leaves each on the
 	// session's model.
 	CodexCompactModel string `json:"codexCompactModel,omitempty"`
+	// CodexSuggestions is the model the Codex app's prompt suggestions
+	// (its background ambient_suggestions turn, which reads the project
+	// and connected apps, and their safety check) go on: "" as Codex
+	// sends them, else a model's id (provider/model, group/<id>). Codex's
+	// own Settings › Configuration › Homepage suggestions turns them off.
+	CodexSuggestions string `json:"codexSuggestions,omitempty"`
 	// FullContext has Codex, Claude Code and Grok Build told a model's whole context
 	// window. Off, a window above WorkingWindow is told as WorkingWindow,
 	// so they compact a long conversation there instead of sending ever
@@ -1273,6 +1294,11 @@ type Settings struct {
 	// minimised; not at all under Wayland, where a window can't place
 	// itself. gui's openAt moves it onto a screen there now.
 	WindowAt []int `json:"windowAt,omitempty"`
+	// OnTop keeps the main window above other apps' windows, pinned from
+	// its title bar's pin (NovaStudiosss on X: Usage and Routing watched
+	// while working elsewhere). This computer's own, as the window's size
+	// and place are.
+	OnTop bool `json:"onTop,omitempty"`
 }
 
 // ModelPrice is the price of one model as the user states it. Each part is a
@@ -1373,6 +1399,10 @@ const AnyProvider = "*/"
 // UpdateStable is UpdateChannel's Stable: a version a week, an urgent one
 // at once.
 const UpdateStable = "stable"
+
+// UpdateDaily is UpdateChannel's Daily: a version a day, the newest that
+// passed its tests and has all its files, an urgent one at once.
+const UpdateDaily = "daily"
 
 // The values of Settings.UpdateSource; "" is automatic.
 const (
@@ -1506,9 +1536,13 @@ const BusyLoadMost = 10000
 // ClassifyTimeoutDefault is the seconds a classifier is given when
 // ClassifyTimeout is 0, and ClassifyTimeoutMost the most it can be set to:
 // the turn waits on it before it goes anywhere, with nothing sent to its
-// agent meanwhile.
+// agent meanwhile. 15, not 8: a classifier that reasons before it answers
+// (MiniMax thinks even asked for none; Grok 4.6 and GPT-6 Luna go no lower
+// than low) took 4 to 10 seconds over a real routing prompt, so 8 cut it
+// off on most turns and the group lost its intent routing (ESern29751 on
+// X). One that doesn't reason answers in a second or two either way.
 const (
-	ClassifyTimeoutDefault = 8
+	ClassifyTimeoutDefault = 15
 	ClassifyTimeoutMost    = 60
 )
 
@@ -1575,8 +1609,9 @@ var (
 	Warmups = []string{"", "week", "all"}
 	// TrayEvery are TrayUsageEvery's values, in minutes.
 	TrayEvery = []int{1, 3, 5, 10, 30}
-	// UpdateChannels are UpdateChannel's values: every version, Stable.
-	UpdateChannels = []string{"", UpdateStable}
+	// UpdateChannels are UpdateChannel's values: every version, Daily,
+	// Stable.
+	UpdateChannels = []string{"", UpdateDaily, UpdateStable}
 	// UpdateEveries are UpdateEvery's values, in minutes.
 	UpdateEveries = []int{30, 60, 360, 1440}
 	// TextSizes are TextSize's values, in percent. None is under 100: the
@@ -1730,7 +1765,8 @@ type AgentCompact struct {
 // window into, by the key each reads: Codex's model catalog
 // (auto_compact_token_limit), Claude Code's settings.json
 // (CLAUDE_CODE_AUTO_COMPACT_WINDOW, autoCompactWindow) and Grok Build's
-// model tables (context_window). Only these take an AgentCompact.
+// model tables (auto_compact_threshold_percent of the model's window).
+// Only these take an AgentCompact.
 var CompactAgents = []string{"codex", "claude", "grok"}
 
 // ForAgent is s as the agent of that kind reads Long conversations: its
@@ -1760,7 +1796,7 @@ func (s Settings) Compact() int {
 // place and whether it was maximised, the proxy (and plugin downloads'), the gateway's port, whether it
 // is shared on the local network and the addresses let in to it, the
 // address Claude Desktop is pointed at (DesktopGateway), what
-// its MCP router says of itself, the Dock, gateway mode, whether WSL is
+// its MCP router says of itself, what this magpie is called (Name), the Dock, gateway mode, whether WSL is
 // looked in, whether agents' sign-ins are read, when allowances are read, the terminal app a session resumes
 // in, the quick panel's shortcut, whether the local masking model is on
 // (it is downloaded on this computer alone), how many Claude Code processes may run (its memory),
@@ -1779,9 +1815,9 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.UpdateProxy, s.UpdateProxyCustom = cur.UpdateProxy, cur.UpdateProxyCustom
 	s.UpdateSource = cur.UpdateSource
 	s.WindowMaximised, s.KeepAwake, s.KeepAwakeDisplay = cur.WindowMaximised, cur.KeepAwake, cur.KeepAwakeDisplay
-	s.WindowAt = cur.WindowAt
+	s.WindowAt, s.OnTop = cur.WindowAt, cur.OnTop
 	s.TrayUsages, s.TrayUsage, s.TrayUsageEvery, s.TrayNoLogos, s.TrayNoBird, s.TrayPace, s.TrayNoCost = cur.TrayUsages, cur.TrayUsage, cur.TrayUsageEvery, cur.TrayNoLogos, cur.TrayNoBird, cur.TrayPace, cur.TrayNoCost
-	s.TrayWindows, s.TrayNoNumber, s.TrayCurrency = cur.TrayWindows, cur.TrayNoNumber, cur.TrayCurrency
+	s.TrayWindows, s.TrayNoNumber, s.TrayCurrency, s.TrayAnthropicMark = cur.TrayWindows, cur.TrayNoNumber, cur.TrayCurrency, cur.TrayAnthropicMark
 	s.GatewayMode = cur.GatewayMode
 	s.NoWSLAgents = cur.NoWSLAgents
 	s.QuotaReads = cur.QuotaReads
@@ -1789,6 +1825,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.LAN, s.AllowIPs, s.MTLS, s.HTTPS = cur.LAN, cur.AllowIPs, cur.MTLS, cur.HTTPS
 	s.DesktopGateway = cur.DesktopGateway // an address of this computer
 	s.RouterNote, s.RouterAllTools = cur.RouterNote, cur.RouterAllTools
+	s.Name = cur.Name // what this magpie is called
 	s.FetchPrivate = cur.FetchPrivate
 	s.SessionTerminal = cur.SessionTerminal
 	s.CodexOpen = cur.CodexOpen
@@ -2186,6 +2223,10 @@ func CheckProxy(p string) error {
 	if !strings.Contains(raw, "://") {
 		raw = "http://" + raw
 	}
+	if IsSSHAddress(raw) {
+		// a login goes with it, which an address alone can't hold
+		return fmt.Errorf("an SSH server is added as a saved proxy: Settings › Network › Add proxy › SSH")
+	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || !slices.Contains([]string{"http", "https", "socks5", "socks5h"}, u.Scheme) {
 		return fmt.Errorf("proxy must look like http://127.0.0.1:7890 or socks5://127.0.0.1:1080")
@@ -2332,6 +2373,18 @@ func SetQuitNoAsk(on bool) error {
 		return err
 	}
 	s.QuitNoAsk = on
+	return save(s, false)
+}
+
+// SetOnTop sets OnTop alone, from what the file holds now; a file that
+// can't be read is left as it is.
+func SetOnTop(on bool) error {
+	defer lockFile()()
+	s, err := loadChecked()
+	if err != nil {
+		return err
+	}
+	s.OnTop = on
 	return save(s, false)
 }
 
@@ -2603,7 +2656,7 @@ func saveOwn(s Settings, recording, reads bool) error {
 		return fmt.Errorf("magpie checks for updates every %v minutes, not %d", UpdateEveries, s.UpdateEvery)
 	}
 	if !slices.Contains(UpdateChannels, s.UpdateChannel) {
-		return fmt.Errorf("the update channel is %q (stable) or empty (every version), not %q", UpdateStable, s.UpdateChannel)
+		return fmt.Errorf("the update channel is %q, %q or empty (every version), not %q", UpdateStable, UpdateDaily, s.UpdateChannel)
 	}
 	if m := s.UpdateMirror; m != "" {
 		if u, err := url.Parse(m); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
@@ -2745,6 +2798,10 @@ func saveOwn(s Settings, recording, reads bool) error {
 	s.CodexCompactModel = strings.TrimSpace(s.CodexCompactModel)
 	if s.CodexCompactModel != "" && !strings.Contains(s.CodexCompactModel, "/") {
 		return fmt.Errorf("the model for Codex's compaction must be a model's id such as deepseek/deepseek-v4, not %q", s.CodexCompactModel)
+	}
+	s.CodexSuggestions = strings.TrimSpace(s.CodexSuggestions)
+	if s.CodexSuggestions != "" && !strings.Contains(s.CodexSuggestions, "/") {
+		return fmt.Errorf("the model for Codex's prompt suggestions must be a model's id such as deepseek/deepseek-v4, not %q", s.CodexSuggestions)
 	}
 	s.DesktopSubagentEffort = strings.ToLower(strings.TrimSpace(s.DesktopSubagentEffort))
 	if e := s.DesktopSubagentEffort; e != "" && (!slices.Contains(catalog.EffortRank, e) || e == "ultra") {
@@ -2898,6 +2955,7 @@ func saveOwn(s Settings, recording, reads bool) error {
 }
 
 func (s Settings) normal() Settings {
+	s.Name = CleanName(s.Name)
 	if s.Theme == "" {
 		s.Theme = "system"
 	}

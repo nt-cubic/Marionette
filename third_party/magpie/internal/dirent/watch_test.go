@@ -183,3 +183,75 @@ func TestProbeLeavesNothing(t *testing.T) {
 		t.Fatalf("the probe's folder holds %d entries after its waits", len(left))
 	}
 }
+
+// A root replaced whole, a tree renamed in under its name, is heard of
+// nowhere under the root: the next Watch sees it is another folder, and
+// the next read lists the new tree, not the old one's listing.
+func TestRootReplacedWholeIsReadAgain(t *testing.T) {
+	root, day, _ := dayFolder(t)
+	if !quiet(t, root, day) {
+		t.Fatal("an unchanged watched folder was read again")
+	}
+	other := filepath.Join(t.TempDir(), "other")
+	rel, err := filepath.Rel(root, day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(other, rel), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b := filepath.Join(other, rel, "rollout-b.jsonl")
+	if err := os.WriteFile(b, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	aged(t, b)
+	if err := os.Rename(root, root+".old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(other, root); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := sizeOf(t, root, day, "rollout-b.jsonl"); !ok {
+		t.Fatal("the new tree's file wasn't seen")
+	}
+	if _, ok := sizeOf(t, root, day, "rollout-a.jsonl"); ok {
+		t.Fatal("the old tree's file was still listed")
+	}
+	if !quiet(t, root, day) {
+		t.Fatal("the new root's folder was read on every Stats after it settled")
+	}
+}
+
+// A folder under the root replaced whole, renamed in under its name, is
+// heard only in the folder that holds it: the next read lists the new
+// folder, not the old one's listing.
+func TestFolderReplacedWholeIsReadAgain(t *testing.T) {
+	root, day, _ := dayFolder(t)
+	if !quiet(t, root, day) {
+		t.Fatal("an unchanged watched folder was read again")
+	}
+	other := filepath.Join(t.TempDir(), "12")
+	if err := os.Mkdir(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b := filepath.Join(other, "rollout-b.jsonl")
+	if err := os.WriteFile(b, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	aged(t, b)
+	if err := os.Rename(day, day+".old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(other, day); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := sizeOf(t, root, day, "rollout-b.jsonl"); !ok {
+		t.Fatal("the new folder's file wasn't seen")
+	}
+	if _, ok := sizeOf(t, root, day, "rollout-a.jsonl"); ok {
+		t.Fatal("the old folder's file was still listed")
+	}
+	if !quiet(t, root, day) {
+		t.Fatal("the new folder was read on every Stats after it settled")
+	}
+}

@@ -199,8 +199,6 @@ func ompIn(at place) *Agent {
 // ompAt is omp with its agent folder at dir, magpie's entry in its
 // models.yml being entry's.
 func ompAt(at place, dir string, entry func() ompProviderEntry) *Agent {
-	// magpie's entry laid over the one in the models file at path (ompKept)
-	ompProvider := func(path string) any { return ompKept(path, entry()) }
 	// omp reads the .yml and falls back to the .yaml
 	pick := func(name string) string {
 		yml := filepath.Join(dir, name+".yml")
@@ -208,6 +206,13 @@ func ompAt(at place, dir string, entry func() ompProviderEntry) *Agent {
 			return filepath.Join(dir, name+".yaml")
 		}
 		return yml
+	}
+	// the protocol picked in its row (omp_protocol.go)
+	protocol := ompProtocolKey(at, dir)
+	// magpie's entry, on the protocol picked, laid over the one in the
+	// models file at path (ompKept), an api the user typed there kept
+	ompProvider := func(path string) any {
+		return ompKept(path, ompAPIKept(path, ompOn(entry(), ompProtocol(protocol))))
 	}
 	path := pick("config")
 	// the entries of enabledModels a sync took out (scope_gone.go)
@@ -574,7 +579,12 @@ func ompAt(at place, dir string, entry func() ompProviderEntry) *Agent {
 				return edit.SetYAML(path, edit.KV{Path: "defaultThinkingLevel", Value: v})
 			},
 			Options: func(map[string]string) []Option { return static(append([]string{"auto"}, ompEfforts...)...) },
-		}), ompAdvisorFields(path)...),
+		}), append(ompAdvisorFields(path), protocolField(at, protocol, pick("models"), func() (string, bool) {
+			models := pick("models")
+			v, _ := edit.GetYAML(models, "providers."+magpieID+".api")
+			_, has := edit.GetYAMLText(models, "providers."+magpieID)
+			return v, has
+		}, writeMagpie, func() bool { return false }))...),
 	}
 }
 
@@ -689,6 +699,12 @@ func ompProviderAt(gw, version string) ompProviderEntry {
 			e.API = "openai-responses"
 		case slices.Contains(m.APIs, string(provider.Anthropic)):
 			e.API, e.BaseURL = "anthropic-messages", gw
+			// not gateway.AsksAdaptively, as dsh and Pi: omp's budget
+			// isn't clamped (xhigh and max are 32768, which the gateway
+			// and agy-cli read as xhigh), and its anthropic-adaptive
+			// turns reasoning off by leaving thinking out at the lowest
+			// effort, which a model that can stop thinking (a GLM)
+			// takes as thinking on (#6778)
 			mode = "budget"
 			if gateway.AdaptiveThinking(m.ID) {
 				mode = "anthropic-adaptive"

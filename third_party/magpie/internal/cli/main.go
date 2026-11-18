@@ -72,8 +72,9 @@ const usage = `magpie — one place to pick every agent's model
   magpie rename <old> <new>       rename a profile
   magpie rm <name>                delete a profile
 
-  magpie backup [--no-keys] [--no-library] [file]    providers, keys, settings, profiles, agent models and the library in one file, sealed with a passphrase
-  magpie restore [--no-agents] [--no-library] <file> put a backup in on this machine
+  magpie backup [--no-keys] [--no-library] [file]    providers, keys, settings, profiles, agent models, the library and the usage history in one file, sealed with a passphrase
+  magpie restore [--no-agents] [--no-library] <file> put a backup in on this machine; its usage history is merged with the one here
+                                                     --no-usage on either: the usage history left out
                                                      --sign-ins on backup: the subscriptions' and plugins' sign-ins too, sealed (off unless given); --no-sign-ins on restore leaves them out
   magpie uninstall [--yes]                           disconnect every agent, putting back what each had, then remove magpie's service and files
                                                      --keep-data: all but deleting magpie's settings, providers and usage
@@ -173,6 +174,10 @@ const usage = `magpie — one place to pick every agent's model
   magpie sessions --days N|today|all [--model <m>] [--folder <f>] [--json]
                                   what every session spent, day by day, with the top models and folders (7 days)
   magpie sessions read [on|off all|<agent>…]   which agents' session history magpie may read (none until allowed)
+  magpie sessions search <words…> [--agent <a>] [--days N|today|all] [--limit N] [--json]
+                                  every agent's sessions that said those words, newest first, with where
+  magpie sessions show <agent:id> [--find <words>] [--from N] [--max-chars N] [--json]
+                                  one session's conversation as text, from where the words were said
   magpie quota [<provider>] [--json]  what is left of every subscription, plan and key balance
   magpie quota wait <provider|account> [--timeout <d>] [--quiet]
                                   block until that subscription (any of its accounts) or account has allowance again
@@ -191,8 +196,9 @@ const usage = `magpie — one place to pick every agent's model
                                   http(s):// or socks5:// proxy for it; --mirror: a GitHub download mirror put
                                   before the github.com URL (none unless given; still checked against usemagpie.ai's SHA-256)
   magpie update mirror [<prefix>|off]  the mirror every update, the app's own too, is downloaded through
-  magpie update channel [stable|every]  which versions updates offer: stable (one a week, an urgent one at
-                                  once) or every version as it comes out (the default)
+  magpie update channel [stable|daily|every]  which versions updates offer: stable (one a week), daily (one
+                                  a day that passed its tests), an urgent one at once on both, or every
+                                  version as it comes out (the default)
   magpie update auto [on|off] [download|notify] [30m|1h|6h|24h]
                                   whether the app looks for updates by itself, how often (6h), and whether
                                   it downloads one at once or only says it is out (notify: for metered networks)
@@ -419,6 +425,9 @@ func run(args []string) error {
 			if len(args) > 1 && args[1] == "memory" {
 				return browsermcp.RunMemory(args[2:])
 			}
+			if len(args) > 1 && args[1] == "sessions" {
+				return browsermcp.RunSessions(args[2:])
+			}
 			return imagemcp.Run(args[1:])
 		case "claude-mcp-helper": // internal: stdio MCP subprocess spawned by Claude Code
 			return claudebridge.RunMCP(args[1:])
@@ -524,6 +533,9 @@ func run(args []string) error {
 		}
 		return nil, false
 	}
+	// and kept there under its size, a bucket grown before that brought
+	// under it once the gateway starts
+	gateway.WhileServing = append(gateway.WhileServing, gateway.KeepBucketArchiveBounded)
 	if len(args) == 0 {
 		if hasGUI {
 			return runGUI(true, "")

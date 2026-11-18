@@ -89,11 +89,31 @@ func advisorTools(body []byte, p provider.Provider, upstream string, wires map[s
 	return out
 }
 
+// advisorID is the advisor model Claude Code names, taken to the id magpie
+// serves as a request's own model is (validateModel): Claude Code is given
+// a dotted Claude id with dashes (provider.ClaudeSpelled) and writes
+// settings.json's advisorModel so, and it sends that id as written, its
+// [1m] or [2m] mark dropped. Taken as it was, relay/claude-fable-5-2 was no
+// model of a provider that lists claude-fable-5.2, so it went upstream as
+// claude-fable-5-2 beside the request's claude-opus-5.5, a name the relay
+// doesn't know (Refeccd on Discord).
+func advisorID(model string) string {
+	model = strings.TrimSpace(model)
+	model = strings.TrimSuffix(strings.TrimSuffix(model, "[1m]"), "[2m]")
+	if model == "" {
+		return ""
+	}
+	if real, ok := provider.ClaudeUndashed(model); ok {
+		return real
+	}
+	return provider.CanonicalRef(unflat(model))
+}
+
 // advisorKeyModel is the model id a key's models are checked against for
 // an advisor named model: magpie's model id when it names one, else the
 // bare id as it was sent.
 func advisorKeyModel(model string) string {
-	model = strings.TrimSuffix(strings.TrimSpace(model), "[1m]")
+	model = advisorID(model)
 	if _, m, ok := provider.Resolve(model); ok && !provider.IsGroupRef(model) {
 		return m
 	}
@@ -104,7 +124,7 @@ func advisorKeyModel(model string) string {
 // whether p can run it: one of p's models, by magpie's id, or a Claude
 // model's own id that names no provider.
 func advisorModel(p provider.Provider, model string, wires map[string]string) (string, bool) {
-	model = strings.TrimSuffix(strings.TrimSpace(model), "[1m]")
+	model = advisorID(model)
 	if model == "" {
 		return "", false
 	}
@@ -146,6 +166,23 @@ func advisorGoneIn(text string) (string, bool) {
 	note := text[i:end]
 	trail := note[len(strings.TrimRight(note, " \t\r\n")):]
 	return text[:i] + advisorGone + trail + text[end:], true
+}
+
+// advisorCut is text without the advisor's instructions, up to the end of
+// the reminder they are in or of the text, and whether it held them: the
+// advisor model is asked with the executor's conversation (adviceFor), and
+// the executor's instructions to call it, or advisorGone in their place,
+// had it answer as the executor that it has no advisor (#6804).
+func advisorCut(text string) (string, bool) {
+	i := strings.Index(text, advisorNote)
+	if i < 0 {
+		return text, false
+	}
+	end := len(text)
+	if j := strings.Index(text[i:], "</system-reminder>"); j >= 0 {
+		end = i + j
+	}
+	return strings.TrimRight(text[:i], " \t\r\n") + text[end:], true
 }
 
 // withoutAdvisor is a Messages request's messages without what Claude Code

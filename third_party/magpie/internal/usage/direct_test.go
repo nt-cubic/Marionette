@@ -75,3 +75,89 @@ func TestDirectCountsOnlySessionFileCalls(t *testing.T) {
 		t.Fatalf("today two days on: %+v", d.Totals)
 	}
 }
+
+// Qoder's own calls are under Direct by Qoder (eating_dream on X), counted
+// by the credits their replies cost, as Qoder writes its own models' with
+// no tokens. Its "auto" routes inside Qoder and is no one model, so it has
+// no price, though a catalog lists an "auto" of its own.
+func TestDirectQoderCallsByCredits(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	os.MkdirAll(filepath.Dir(catalog.CachePath()), 0o755)
+	os.WriteFile(catalog.CachePath(), []byte(`{"openrouter":{"id":"openrouter","models":{"auto":{"id":"auto","cost":{"input":2,"output":10}}}}}`), 0o644)
+	catalog.Reset()
+	t.Cleanup(catalog.Reset)
+
+	now := holdClock(t, time.Date(2026, 11, 15, 12, 0, 0, 0, time.Local))
+	credit := func(v float64) *float64 { return &v }
+	old := LogCalls
+	LogCalls = func(time.Time) []sessions.Call {
+		return []sessions.Call{
+			{Time: now.Add(-time.Hour), Agent: "qoder", Session: "q1", Model: "auto", Msg: "msg_q2", Credits: credit(0.18)},
+			{Time: now.Add(-time.Hour - time.Minute), Agent: "qoder", Session: "q1", Model: "auto", Msg: "msg_q1", Credits: credit(0.42)},
+			{Time: now.Add(-2 * time.Hour), Agent: "qoder-cn", Session: "q2", Model: "auto", Msg: "msg_c1", Credits: credit(1.5)},
+			// QODER_EXPOSE_TOKEN_USAGE=1 writes the counts
+			{Time: now.Add(-3 * time.Hour), Agent: "qoder", Session: "q3", Model: "auto", Msg: "msg_q4", Credits: credit(0.3), Tokens: sessions.Tokens{Input: 1000, Output: 100}},
+		}
+	}
+	t.Cleanup(func() { LogCalls = old })
+
+	d := Direct(Month)
+	if d.Calls != 4 || d.Credited != 4 || d.Credits < 2.3999 || d.Credits > 2.4001 || d.Input != 1000 {
+		t.Fatalf("direct totals %+v", d.Totals)
+	}
+	if d.Cost != 0 || d.Unpriced != 1 {
+		t.Fatalf("Qoder's auto was priced: %+v", d.Totals)
+	}
+	agents := map[string]Group{}
+	for _, g := range d.Agents {
+		agents[g.ID] = g
+	}
+	if g := agents["qoder"]; g.Calls != 3 || g.Credited != 3 {
+		t.Fatalf("qoder: %+v of %+v", g, d.Agents)
+	}
+	if g := agents["qoder-cn"]; g.Calls != 1 || g.Credits != 1.5 {
+		t.Fatalf("qoder-cn: %+v of %+v", g, d.Agents)
+	}
+	for _, m := range d.Models {
+		if m.Model != "auto" || m.Cost != 0 {
+			t.Fatalf("models %+v", d.Models)
+		}
+	}
+}
+
+// Droid's own sessions are under Direct by Droid (_meouwu on X), a
+// session's total as one call (sessions' calls_droid.go), priced by its
+// model.
+func TestDirectDroidSessionTotals(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	os.MkdirAll(filepath.Dir(catalog.CachePath()), 0o755)
+	os.WriteFile(catalog.CachePath(), []byte(`{"anthropic":{"id":"anthropic","models":{"claude-sonnet-4-5-20250929":{"id":"claude-sonnet-4-5-20250929","cost":{"input":3,"output":15}}}}}`), 0o644)
+	catalog.Reset()
+	t.Cleanup(catalog.Reset)
+
+	now := holdClock(t, time.Date(2026, 11, 15, 12, 0, 0, 0, time.Local))
+	old := LogCalls
+	LogCalls = func(time.Time) []sessions.Call {
+		return []sessions.Call{
+			{Time: now.Add(-time.Hour), Agent: "droid", Session: "d1", Model: "claude-sonnet-4-5-20250929", Msg: "droid:d1", Tokens: sessions.Tokens{Input: 30750, Output: 113, CacheRead: 1000}},
+			{Time: now.Add(-2 * time.Hour), Agent: "droid", Session: "d1", Model: "claude-sonnet-4-5-20250929", Msg: "droid:d2", Tokens: sessions.Tokens{Input: 5, Output: 2}},
+		}
+	}
+	t.Cleanup(func() { LogCalls = old })
+
+	d := Direct(Month)
+	if d.Calls != 2 || d.Input != 30755 || d.Output != 115 || d.CacheRead != 1000 || d.Cost == 0 || d.Unpriced != 0 {
+		t.Fatalf("direct totals %+v", d.Totals)
+	}
+	if len(d.Agents) != 1 || d.Agents[0].ID != "droid" || len(d.Sessions) != 1 || d.Sessions[0].ID != "d1" {
+		t.Fatalf("agents %+v sessions %+v", d.Agents, d.Sessions)
+	}
+}

@@ -73,7 +73,9 @@ const callCacheVersion = "calls-v15"
 // pi 1, raft 1, cindy 2: a pi-subagents subagent's calls are its own
 // file's, on the model and provider it ran, not its tool result's on the
 // lead's (piSubagentsRead).
-var callParseVersions = map[string]int{"agy": 1, "antigravity": 1, "cindy": 2, "codex": 3, "pi": 1, "raft": 1, "zcode": 3}
+// agy 2, antigravity 2: a call carries its time to the first token and
+// how long it took, from its step's row (stepTimesOf).
+var callParseVersions = map[string]int{"agy": 2, "antigravity": 2, "cindy": 2, "codex": 3, "pi": 1, "raft": 1, "zcode": 3}
 
 // CallCacheVersion is callCacheVersion and callParseVersions, for a cache
 // of what is made of the calls (usage's requests-v1.bin and heatmap): a
@@ -274,6 +276,7 @@ var wholeCallReaders = map[string]func(file) (*callFile, bool){
 	"agy":          readAgyCalls,         // #2097
 	"antigravity":  readAntigravityCalls, // #2190
 	"devin":        readDevinCalls,       // aohan0905 on X
+	"droid":        readDroidCalls,       // _meouwu on X
 }
 
 // resumeCallReaders read an agent's calls from a file only appended to that
@@ -427,7 +430,7 @@ func readCalls(f file) *callFile {
 	if st.Claude != nil && (old == nil || old.Claude == nil) && !workingRevision(f.mod.UnixNano(), time.Now()) {
 		st = st.withoutRevisions()
 	}
-	if err == nil && (f.agent == "claude" || f.agent == "claude-desktop" || f.agent == "codex") {
+	if err == nil && (ccCallAgent(f.agent) || f.agent == "codex") {
 		writeCallRevisions(st)
 	}
 

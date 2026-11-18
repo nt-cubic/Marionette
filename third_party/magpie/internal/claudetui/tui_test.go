@@ -236,6 +236,24 @@ func fakeChrome(r *bufio.Reader, how string) {
 // image file before it takes them in: one that ends naming one.
 var namesImage = regexp.MustCompile(`(?im)\.(png|jpe?g|gif|webp)[ \t]*$`)
 
+// fakeImage is an image the fake took in, as its prompt holds it.
+var fakeImage = regexp.MustCompile(`\[Image #(\d+):([^\]]*)\]`)
+
+// fakeUserRow is a message's content as Claude Code's transcript records
+// it: its words, each image's mark "[Image #<n>]" and, with images, the
+// images as blocks after them (whole.go reads it so).
+func fakeUserRow(typed string) any {
+	m := fakeImage.FindAllStringSubmatch(typed, -1)
+	if len(m) == 0 {
+		return typed
+	}
+	content := []any{map[string]any{"type": "text", "text": fakeImage.ReplaceAllString(typed, "[Image #$1]")}}
+	for _, img := range m {
+		content = append(content, map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": base64.StdEncoding.EncodeToString([]byte(img[2]))}})
+	}
+	return content
+}
+
 // nameWait is how long the fake takes words that name an image file to
 // take in. Claude Code took 0.45s, asking the clipboard for the file; the
 // fake's is longer than its image's 200ms and the Enter after it, for an
@@ -249,6 +267,11 @@ func fakeClaude(args []string) {
 			fmt.Printf(`{"type":"result","subtype":"success","is_error":false,"result":"print mode"}` + "\n")
 		}
 		return
+	}
+	// FAKE_SLOW_START: nothing drawn for that long, as a loaded machine
+	// brings up the helper and Claude Code (#5079)
+	if d, err := time.ParseDuration(os.Getenv("FAKE_SLOW_START")); err == nil {
+		time.Sleep(d)
 	}
 	if os.Getenv("FAKE_FAIL") == "1" {
 		fmt.Print("something went wrong\n")
@@ -347,6 +370,11 @@ func fakeClaude(args []string) {
 	takeText := func(p string) {
 		mu.Lock()
 		defer mu.Unlock()
+		// FAKE_CUT: a paste over 1024 bytes loses its whole blocks, as
+		// Windows 10's own ConPTY lost them (#5205): the tail is left
+		if os.Getenv("FAKE_CUT") == "1" && len(p) > 1024 {
+			p = p[len(p)/1024*1024:]
+		}
 		draw := p
 		if breaks := strings.Count(p, "\n"); len(p) > 800 || breaks > 2 {
 			pasted++
@@ -433,6 +461,7 @@ func fakeClaude(args []string) {
 			continue
 		}
 		line := typed.String()
+		asTyped := line // what the transcript records, as Claude Code does (fakeUserRow)
 		typed.Reset()
 		drawn.Reset()
 		mu.Unlock()
@@ -508,7 +537,7 @@ func fakeClaude(args []string) {
 		}
 		f, _ := os.OpenFile(filepath.Join(dir, sid+".jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 		rows := []any{
-			map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": line}},
+			map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": fakeUserRow(asTyped)}},
 			map[string]any{"type": "assistant", "requestId": "req_1", "message": map[string]any{"id": "msg_1", "model": "claude-haiku", "role": "assistant",
 				"content": []any{map[string]any{"type": "text", "text": "echo: " + line}}}},
 			map[string]any{"type": "system", "subtype": "turn_duration"},
@@ -715,6 +744,29 @@ func TestShimImageNotTakenIsUnpastable(t *testing.T) {
 	out := runShim(t, []string{"FAKE_NO_IMAGE=1"}, append([]string{fakePath(t)}, pArgs...), []string{img}, 2)
 	if out[1]["type"] != "result" || out[1]["is_error"] != true || !strings.HasPrefix(fmt.Sprint(out[1]["result"]), Unpastable+ImageNotTaken) {
 		t.Fatalf("the turn ended %v, want an error beginning %q", out[1], Unpastable+ImageNotTaken)
+	}
+}
+
+// A message that reaches Claude Code cut, as Windows 10's own ConPTY cut
+// one over 1KB (#5205), ends the turn in an error that begins Unpastable
+// before any of its reply, which the bridge asks again as claude -p: it
+// was answered as sent, the model given the cut's tail. A short one on the
+// same console is answered as before.
+func TestShimCutMessageIsUnpastable(t *testing.T) {
+	long := "K-HEAD " + strings.Repeat("filler words ", 400) + " K-TAIL"
+	out := runShim(t, []string{"FAKE_CUT=1"}, append([]string{fakePath(t)}, pArgs...), []string{long}, 2)
+	if r := out[1]; r["type"] != "result" || r["is_error"] != true || !strings.HasPrefix(fmt.Sprint(r["result"]), Unpastable) ||
+		!strings.Contains(fmt.Sprint(r["result"]), "characters") {
+		t.Fatalf("a cut message ended %v, want an error beginning %q", out, Unpastable)
+	}
+	for _, m := range out {
+		if m["type"] == "assistant" || m["type"] == "stream_event" {
+			t.Fatalf("a cut message's reply got out: %v", out)
+		}
+	}
+	short := runShim(t, []string{"FAKE_CUT=1"}, append([]string{fakePath(t)}, pArgs...), []string{"hello"}, 3)
+	if r := short[2]; r["type"] != "result" || r["is_error"] != false {
+		t.Fatalf("a short message ended %v, want answered", short)
 	}
 }
 
@@ -1048,22 +1100,44 @@ func TestShimEndsAtItsCallersDeadline(t *testing.T) {
 		{"no /usage panel", `{"type":"command","command":"/usage"}`, "hadn't drawn /usage's panel in the", "", []string{"FAKE_USAGE=" + filepath.Join(t.TempDir(), "none")}},
 		// the banner drawn again and no panel after it: never told as one
 		{"banner, no /usage panel", `{"type":"command","command":"/usage"}`, "hadn't drawn /usage's panel in the", "magpie-claude-work-501", []string{"FAKE_USAGE_BANNER=never"}},
+		// Claude Code up only after the first deadline, as on a loaded
+		// machine: run again with more time, never failed for it
+		{"trust unanswered, slow to start", `{"type":"user","message":{"role":"user","content":"hello"}}`, "asked whether to trust " + wd + ", not answered in the", "trust this folder", []string{"FAKE_TRUST=deaf", TrustEnv + "=1", "FAKE_SLOW_START=3500ms"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			start := time.Now()
-			by := start.Add(3 * time.Second).UnixMilli()
-			out, stderr, err := runEndsTold(t, t.TempDir(), append(c.env, DeadlineEnv+"="+strconv.FormatInt(by, 10)), c.line)
-			d := time.Since(start)
-			if err == nil || strings.Contains(out, `"type":"result"`) {
-				t.Fatalf("ended %v, wrote %q", err, out)
-			}
-			if !strings.Contains(stderr, "claude-tui: Claude Code "+c.why) || !strings.Contains(stderr, c.screen) {
-				t.Fatalf("stderr %q", stderr)
-			}
-			// at the deadline, with room for a slow machine to start it,
-			// and well before the helper's own waits (20s, 45s)
-			if d < 2500*time.Millisecond || d > 15*time.Second {
-				t.Fatalf("ended after %s, the deadline 3s", d)
+			// The deadline counts from before the helper and Claude Code
+			// start, and a loaded machine can take longer than it to bring
+			// them up: "showed no prompt in the 2.8s" at load 13-20, and
+			// in other full runs (#5079). A run that ended at it with no
+			// prompt shown, before Claude Code drew what the case is about,
+			// says nothing of the case, and runs again with twice the time;
+			// so does one that ended after the prompt but before the case's
+			// screen was drawn (the banner case, "❯ /usage" alone).
+			// One whose screen has it is told as it is: the helper misread it.
+			for wait := 3 * time.Second; ; wait *= 2 {
+				start := time.Now()
+				by := start.Add(wait).UnixMilli()
+				out, stderr, err := runEndsTold(t, t.TempDir(), append(c.env, DeadlineEnv+"="+strconv.FormatInt(by, 10)), c.line)
+				d := time.Since(start)
+				if err == nil || strings.Contains(out, `"type":"result"`) {
+					t.Fatalf("ended %v, wrote %q", err, out)
+				}
+				notUp := c.screen == "" && strings.Contains(stderr, "claude-tui: Claude Code showed no prompt in the ") ||
+					c.screen != "" && !strings.Contains(stderr, c.screen)
+				if notUp && wait < 12*time.Second {
+					t.Logf("not up in %s, again with %s: %q", wait, 2*wait, stderr)
+					continue
+				}
+				if !strings.Contains(stderr, "claude-tui: Claude Code "+c.why) || !strings.Contains(stderr, c.screen) {
+					t.Fatalf("stderr %q", stderr)
+				}
+				// at the deadline, with room for a slow machine to end it;
+				// the helper's own waits (20s, 45s) say "in 20s", never "in
+				// the …s its caller waits for it" (c.why)
+				if d < wait-500*time.Millisecond || d > wait+12*time.Second {
+					t.Fatalf("ended after %s, the deadline %s", d, wait)
+				}
+				return
 			}
 		})
 	}

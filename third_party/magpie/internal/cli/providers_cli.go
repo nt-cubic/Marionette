@@ -188,8 +188,8 @@ const providerUsage = `usage:
                                    (Advanced › Connect to: connects to 10.0.0.5, then gw.corp.example's
                                     address, while TLS and Host still say relay.example.com)
        magpie provider set my-relay search=yes
-                                   (the relay answers Claude Code's WebSearch and Codex's web_search itself:
-                                    those go to it as sent, not through magpie's own search)
+                                   (the relay answers Claude Code's WebSearch and Codex's web search itself, web_search
+                                    and web.run's /alpha/search: those go to it as sent, not through magpie's search)
        magpie provider add lmstudio address=http://192.168.1.5:1234
        magpie provider set lmstudio address=192.168.1.5:1234
                                    (Ollama, LM Studio, oMLX or MLX-Serve on another port or computer: each of its
@@ -207,6 +207,11 @@ const providerUsage = `usage:
        magpie provider set my-relay billing=plan
                                    (marks it on a plan, or billing=payg pay as you go, on Providers and Routing;
                                     billing=auto goes back to magpie's reading of its endpoints)
+       magpie provider set 100milionseek max-images=8 max-images.gemini-3-flash=10
+                                   (the most images one request to it may carry, counted over the whole
+                                    conversation: past it the oldest are left out, each replaced by a line
+                                    of text, the latest message's images kept; max-images.<model> for one
+                                    of its models; 0 or empty clears it)
        magpie provider add "My Relay" url=https://relay.example.com/v1 key=sk-… balance=https://relay.example.com/api/usage/token balance.path='$data.total_available / 500000'
        magpie provider set my-relay balance.path='(1 - credits.monthlyCredits / 70) %'
        magpie provider set my-relay balance.method=POST
@@ -952,6 +957,9 @@ func showProviderAsking(p provider.Provider, ask bool) error {
 	if p.NoStandIn {
 		kv("fallback-for-others", "no"+muted.Render("  never takes another model's request"))
 	}
+	if len(p.MaxImages) > 0 {
+		kv("max-images", maxImagesText(p.MaxImages)+muted.Render("  a request past it has its oldest images left out"))
+	}
 	switch b := p.BillingKind(); {
 	case b == "":
 	case p.Billing != "":
@@ -1384,8 +1392,9 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			p.MagpieUserAgent = !on && p.Account == nil
 		case "search":
 			// yes: the vendor searches the web by itself, a web search a
-			// client offers going to it as it was sent (a relay in front of
-			// Anthropic's or OpenAI's API)
+			// client offers going to it as it was sent, Codex's web.run
+			// (/alpha/search) too (a relay in front of Anthropic's or
+			// OpenAI's API; YIXIE233 on X)
 			if v != "yes" && v != "no" {
 				return fmt.Errorf("search=yes|no, not %q", v)
 			}
@@ -1412,6 +1421,14 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 				return fmt.Errorf("unmasked=yes|no, not %q", v)
 			}
 			p.Unredacted = v == "yes"
+		case "max-images", "maximages":
+			// how many images one request to it may carry (#6849:
+			// 100milionseek and Coarena take 8 and refuse the ninth, and
+			// the count is over the whole conversation); past it the
+			// oldest ones are left out, the latest message's kept
+			if err := setMaxImages(p, "*", v); err != nil {
+				return err
+			}
 		case "fallback-for-others":
 			// no: never a fallback for another model, nor a routing
 			// group's next after one (sonnnnnnnnnnnna on X: a local
@@ -1532,6 +1549,12 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 				p.Resolve[host] = places
 				continue
 			}
+			if len(k) > len("max-images.") && strings.EqualFold(k[:len("max-images.")], "max-images.") {
+				if err := setMaxImages(p, k[len("max-images."):], v); err != nil {
+					return err
+				}
+				continue
+			}
 			if len(k) > len("context.") && strings.EqualFold(k[:len("context.")], "context.") {
 				if err := setContext(p, k[len("context."):], v); err != nil {
 					return err
@@ -1576,6 +1599,40 @@ func setContext(p *provider.Provider, model, v string) error {
 	}
 	p.Contexts[model] = n
 	return nil
+}
+
+// setMaxImages sets the most images one request to model may carry ("*"
+// for all the provider's models); empty or 0 clears it.
+func setMaxImages(p *provider.Provider, model, v string) error {
+	v = strings.TrimSpace(v)
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 || n > provider.MaxImagesLimit {
+		return fmt.Errorf("max-images: a whole number from 0 to %d, not %q (0 clears it)", provider.MaxImagesLimit, v)
+	}
+	if n == 0 {
+		delete(p.MaxImages, model)
+		return nil
+	}
+	if p.MaxImages == nil {
+		p.MaxImages = map[string]int{}
+	}
+	p.MaxImages[model] = n
+	return nil
+}
+
+// maxImagesText is a provider's MaxImages as `provider <id>` shows it: the
+// one for all its models first, then model=n.
+func maxImagesText(m map[string]int) string {
+	var out []string
+	if n := m["*"]; n > 0 {
+		out = append(out, strconv.Itoa(n))
+	}
+	for _, id := range slices.Sorted(maps.Keys(m)) {
+		if id != "*" {
+			out = append(out, id+"="+strconv.Itoa(m[id]))
+		}
+	}
+	return strings.Join(out, ", ")
 }
 
 func ago(t time.Time) string {
@@ -1728,6 +1785,8 @@ func serve() error {
 	// one's own Remote magpies follow it
 	gateway.SetUpdater(serveUpdateAsked(follow))
 	go provider.KeepRemotesUpdated(ctx, version)
+	// the models a Remote magpie's agents are on, as the app follows them
+	go agent.KeepFollowingRemote(ctx, 30*time.Second)
 	err := s.ListenAndServe(ctx)
 	if exe := follow.restartTo(); exe != "" {
 		// the plugin hosts end, waited for, first, as magpie web's

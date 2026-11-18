@@ -305,7 +305,7 @@ func codexInstructions(model string) string {
 // streams only, keeps nothing (so its items carry no ids), carries Codex's
 // instructions — the client's own riding first in the input — and rejects
 // the sampling knobs, explicit cache options and any service tier but
-// Fast's and Ultrafast's.
+// Fast's ("fast" sent as "priority") and Ultrafast's.
 func codexBody(body []byte) []byte {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
@@ -321,8 +321,12 @@ func codexBody(body []byte) []byte {
 	for _, k := range []string{"max_output_tokens", "max_completion_tokens", "temperature", "top_p", "previous_response_id", "user", "safety_identifier", "prompt_cache_options"} {
 		delete(m, k)
 	}
-	// Codex's Fast mode sends "priority", its Ultrafast "ultrafast"; any
-	// other tier stays out
+	// Codex's Fast mode sends "priority", its Ultrafast "ultrafast"; its
+	// older word for Fast, "fast", goes as Codex sends it (Archivemylife
+	// on X); any other tier stays out
+	if m["service_tier"] == "fast" {
+		m["service_tier"] = "priority"
+	}
 	if t := m["service_tier"]; t != "priority" && t != "ultrafast" {
 		delete(m, "service_tier")
 	}
@@ -341,8 +345,15 @@ func codexBody(body []byte) []byte {
 	}
 
 	// the client's instructions go first as a developer message, Codex's
-	// in their place — unless they are Codex's, from Codex itself
-	codex := codexInstructions(model)
+	// in their place — unless they are Codex's, from Codex itself. A
+	// Responses Lite turn (Codex 0.165 on) carries its system prompt as
+	// developer items in input and no instructions at all; Codex's added
+	// to it sent the prompt twice, ~4K more input tokens a request
+	lite := strings.TrimSpace(own) == "" && codexLite(m, input)
+	codex := ""
+	if !lite {
+		codex = codexInstructions(model)
+	}
 	if strings.TrimSpace(own) != "" {
 		if firstLine(own) == firstLine(codex) {
 			codex = own
@@ -382,7 +393,7 @@ func codexBody(body []byte) []byte {
 	if effort == "none" {
 		delete(m, "include")
 	} else {
-		if reasoning != nil {
+		if reasoning != nil && !lite {
 			if _, ok := reasoning["summary"]; !ok {
 				reasoning["summary"] = "auto"
 			}
@@ -577,6 +588,20 @@ func DeclareSearch(body []byte, lite bool) []byte {
 // is taken as Lite, too, when it carries an additional_tools item or asks
 // for reasoning context "all_turns", which Lite requires; the backend takes
 // the item on a request that isn't Lite as well.
+// codexLite says m is a Responses Lite turn: Codex's own, with its tools
+// in an additional_tools item and reasoning over all turns.
+func codexLite(m map[string]any, input []any) bool {
+	if r, _ := m["reasoning"].(map[string]any); r["context"] == "all_turns" {
+		return true
+	}
+	for _, raw := range input {
+		if it, _ := raw.(map[string]any); it["type"] == "additional_tools" {
+			return true
+		}
+	}
+	return false
+}
+
 func declareSearch(m map[string]any, lite bool) bool {
 	input, ok := m["input"].([]any)
 	if !ok {

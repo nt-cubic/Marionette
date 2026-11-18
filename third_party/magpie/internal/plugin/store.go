@@ -420,6 +420,9 @@ func Add(ctx context.Context, spec string) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
+	if err := RefuseWithdrawn(ctx, spec); err != nil {
+		return Entry{}, err
+	}
 	return add(ctx, spec, "")
 }
 
@@ -833,7 +836,9 @@ func install(ctx context.Context, spec string) error {
 	}
 	// another plugin's package Bun couldn't install, and this one in: the
 	// add is done, and that plugin's row says what is wrong with it
-	if err != nil && othersFailed(err, spec, want) {
+	// (never over a copy of its own that isn't whole: Bun said
+	// "installed" over it, and may have exited 0)
+	if err != nil && !errors.Is(err, errDistPartial) && othersFailed(err, spec, want) {
 		log.Printf("plugins: %s installed; Bun couldn't install %s: %v", spec, strings.Join(failedOf(err), ", "), err)
 		err = nil
 	}

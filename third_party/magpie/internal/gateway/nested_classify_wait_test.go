@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"github.com/yetone/magpie/internal/access"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -25,7 +26,7 @@ func TestNestedGroupsShareTheClassifierWait(t *testing.T) {
 	fresh(t)
 	resetClassified(t)
 	was := classifyUnit
-	classifyUnit = 60 * time.Millisecond // the 8 seconds unset are 480ms
+	classifyUnit = 32 * time.Millisecond // the 15 seconds unset are 480ms
 	t.Cleanup(func() { classifyUnit = was })
 	// three waits are 1.44s, held past 1.1s; one wait routes at ~0.5s
 	unroutedLimits(t, 50*time.Millisecond, 1100*time.Millisecond)
@@ -106,7 +107,7 @@ func TestDecisionKeyCutShortIsNotRested(t *testing.T) {
 	fresh(t)
 	resetClassified(t)
 	was := classifyUnit
-	classifyUnit = 25 * time.Millisecond // the 8 seconds unset are 200ms
+	classifyUnit = 20 * time.Millisecond // the 15 seconds unset are 300ms
 	t.Cleanup(func() { classifyUnit = was })
 	var mu sync.Mutex
 	var asked []string
@@ -127,7 +128,7 @@ func TestDecisionKeyCutShortIsNotRested(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := New()
-	_, err := s.askClassifierIn(50*time.Millisecond, "jw/jev-latest", []string{"feature", "bug"}, before{}, false, "fix this")
+	_, err := s.askClassifierIn(50*time.Millisecond, access.Identity{}, "jw/jev-latest", []string{"feature", "bug"}, before{}, false, "fix this")
 	if err == nil || !strings.Contains(err.Error(), "left of the request's classifier wait") {
 		t.Fatalf("cut short: %v", err)
 	}

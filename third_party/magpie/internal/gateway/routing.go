@@ -939,9 +939,40 @@ func liftRests(agent, user string, vendorTill bool) {
 	}
 }
 
+// creditsKnown lifts the rests out of its allowance of a ChatGPT account
+// found to go on past it on credits (provider.OnCredits), whatever time
+// the refusal named: a turn turned away before magpie knew of the credits
+// — bought once the plan ran out, or its reading failed or not come yet —
+// rested the account until its window renewed, days on, while Codex by
+// itself goes on on them (@123xtv03k on X). A rate limit's rest, or one
+// out of the credits themselves, stands; so does Codex's own hold of a
+// relayed turn for them.
+func creditsKnown(agent, user string) {
+	if agent != "codex" {
+		return
+	}
+	restingUntil.Lock()
+	now := time.Now()
+	for k, r := range restingUntil.note {
+		if r.agent != agent || !strings.EqualFold(r.user, user) || !(r.Why == failQuota || r.By == "window") {
+			continue
+		}
+		delete(restingUntil.m, k)
+		delete(restingUntil.note, k)
+		liftedLocked(k, now)
+	}
+	restingUntil.Unlock()
+	codexHolds.Lock()
+	if h, ok := codexHolds.m[strings.ToLower(user)]; ok && h.why == failQuota {
+		delete(codexHolds.m, strings.ToLower(user))
+	}
+	codexHolds.Unlock()
+}
+
 func init() {
 	provider.OnRenewed(renewed)
 	provider.OnStarted(restarted)
+	provider.OnCredits(creditsKnown)
 }
 
 // staleAllowance is provider.StaleAllowance, swapped in tests.
@@ -1244,8 +1275,12 @@ var resetsInWords = lazyre.New(`(?i)\bresets? in (?:(\d+)\s*d(?:ays?)?\b\s*)?(?:
 // will reset after 3h19m30s." Unread, the account rested the quarter of
 // an hour of a quota that says nothing, and the account first in order
 // was asked again, and refused, every 15 minutes for the hours or days
-// its quota was out (Dani Ariyanto on Discord, 10-24).
-var quotaResetAfter = lazyre.New(`(?i)\bquota will reset after ((?:\d+h)?(?:\d+m)?(?:\d+(?:\.\d+)?s)?)`)
+// its quota was out (Dani Ariyanto on Discord, 10-24). agy's own notice
+// for an account's quota used up says it the same way: "Individual quota
+// reached. Please upgrade your subscription to increase your limits.
+// Resets in 1h18m40s." (@Airan_FS on X, through the agy-cli plugin), which
+// resetsInWords can't read, as no word ends after its "h".
+var quotaResetAfter = lazyre.New(`(?i)\b(?:quota will reset after|individual quota reached\b[^\n]{0,160}?\bresets in) ((?:\d+h)?(?:\d+m)?(?:\d+(?:\.\d+)?s)?)`)
 
 // resetsAfter is how long the refusal says until it is back
 // (resetsInWords, quotaResetAfter, soonWords), held to longestWritten. Zero when it
@@ -1803,8 +1838,9 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	if zcodeTrialRestricted(c, why) {
 		id = c.restID()
 	}
-	// a relay's 429 that names the model whose credentials cooled down, or a
-	// vendor's that names the model it limits (modelNamed), is
+	// a relay's 429 that names the model whose credentials cooled down, a
+	// vendor's that names the model it limits (modelNamed), or
+	// Antigravity's for the model's pool (antigravityPoolSpent), is
 	// that model's: its siblings on the same key still answer upstream,
 	// and the model's own sentence rests with the model, not on every
 	// sibling's refusal (#3039)
@@ -1906,10 +1942,34 @@ func modelCooledDown(why string, body []byte) bool {
 
 // modelLimited says a refusal for want of quota, credit or rate is the
 // model's own, not the key's or account's: a relay's pooled credentials of
-// the model cooled down (modelCooledDown), or the vendor's words name the
-// model it limited (modelNamed).
+// the model cooled down (modelCooledDown), the vendor's words name the
+// model it limited (modelNamed), or Antigravity's quota of the model's
+// pool is used up (antigravityPoolSpent).
 func modelLimited(c candidate, why string, body []byte) bool {
-	return modelCooledDown(why, body) || modelNamed(c, why, body)
+	return modelCooledDown(why, body) || modelNamed(c, why, body) || antigravityPoolSpent(c, why, body)
+}
+
+// antigravityPoolQuota is Antigravity's refusal of a model whose quota pool
+// is used up, in agy's words ("Individual quota reached. Please upgrade
+// your subscription to increase your limits. Resets in 1h18m40s.", which
+// the agy-cli plugin relays) or Code Assist's ("You have exhausted your
+// capacity on this model. Your quota will reset after 3h19m30s.").
+var antigravityPoolQuota = lazyre.New(`(?i)\bindividual quota reached\b|\bexhausted your capacity on this model\b`)
+
+// antigravityPoolSpent says a quota refusal is Antigravity's for the
+// model's pool, not the account's: Google counts an Antigravity account's
+// quota per pool of models (Claude and GPT in one, Gemini's apart), and
+// has no allowance of the whole account to run out. It rests the model,
+// so the account's other pools are still asked. BruceLu73129013 on X
+// (agy-cli 0.1.87): Opus used up rested the account, and Gemini 4 Carbon,
+// its quota left, was answered the same 429 from the rest (timedHeld).
+// The retired built-in's readings told the pools apart (Pooled); agy-cli's
+// windows are display only (aside), so routing has no reading to narrow
+// the rest by, and the refusal's own words are what tell it. Only a
+// Google sign-in's (googleSignIn): another vendor's "individual quota
+// reached" says nothing of pools, and rests what it always did.
+func antigravityPoolSpent(c candidate, why string, body []byte) bool {
+	return c.model != "" && (why == failQuota || why == failRate) && googleSignIn(c.p) && antigravityPoolQuota.Match(wordsOf(body))
 }
 
 // modelLimitedBy is modelLimited, and a Claude account's plain rate limit
