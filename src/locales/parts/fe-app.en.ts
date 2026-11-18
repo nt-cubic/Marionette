@@ -39,6 +39,7 @@ export const en = {
   "app.commitFileList": "Changed files:",
   "app.tgSessionMissing": "Session not found (it may have been deleted)",
   "app.tgSendFailed": "Failed to send — see the desktop app for details",
+  "app.modelSyncFailed": "Could not switch to {model}. The message was not sent, preventing an unintended model charge.",
   "app.tgChatCreateFailed": "Couldn't create it — chat session creation failed; see the desktop app for details",
   "app.tgSessionCreateFailed": "Couldn't create it — session creation failed; see the desktop app for details",
   "app.tgCreateError": "Couldn't create it: {message}",

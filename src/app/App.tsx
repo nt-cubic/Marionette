@@ -245,6 +245,7 @@ import {
   classifyAgentError,
   formatAcpRpcError,
   formatClassifiedError,
+  formatThrownAcpError,
   isSessionNotRunningError,
   isTurnInFlightError,
 } from "../lib/errors";
@@ -8942,13 +8943,24 @@ export function App() {
         const liveCaps = mergeAcpCapabilities(agentId, live) ?? live;
         const pushConfig = async (patch: Record<string, unknown>) => {
           const attempts = expandAcpConfigAttempts(agentId, patch, liveCaps);
+          let lastError: unknown = null;
           for (const attempt of attempts) {
             try {
               await updateAcpSession(sid, attempt);
               return true;
-            } catch {
+            } catch (error) {
+              lastError = error;
               /* try next config shape */
             }
+          }
+          if (lastError) {
+            pushDebug({
+              sessionId: sid,
+              level: "warn",
+              source: "composer",
+              summary: "pre-prompt config sync failed",
+              detail: formatThrownAcpError(lastError),
+            });
           }
           return false;
         };
@@ -8970,7 +8982,15 @@ export function App() {
           }
         }
         if (modelId && modelId !== liveCaps?.currentModel) {
-          await pushConfig({ model: modelId });
+          const synced = await pushConfig({ model: modelId });
+          // A stale chip must never turn into a paid request on the agent's
+          // unrelated default model. Surface the failed switch and stop before
+          // session/prompt; the catch path renders the error on the You card.
+          if (!synced) {
+            throw new Error(
+              t("app.modelSyncFailed", { model: modelLabel || modelId }),
+            );
+          }
         }
         if (
           effortId &&

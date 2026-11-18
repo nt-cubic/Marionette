@@ -321,7 +321,7 @@ export function isAuthTransientMessage(message: string): boolean {
 /**
  * Native ids the cross-use bridge injects into an agent's own model catalog —
  * grok/opencode/pi `marionette/<id>`, DSH `marionette::<id>`, zcode
- * `marionette\<id>`. Must stay in sync with Composer.tsx::isBridgeNativeModel.
+ * `marionette\<id>`. Must stay in sync with `bridgeRouting.ts`.
  */
 export function isBridgeNativeModelId(id: string | null | undefined): boolean {
   const model = id?.trim() ?? "";

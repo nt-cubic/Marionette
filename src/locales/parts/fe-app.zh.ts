@@ -37,6 +37,7 @@ export const zh = {
   "app.commitFileList": "当前改动文件：",
   "app.tgSessionMissing": "会话不存在（可能已被删除）",
   "app.tgSendFailed": "发送失败，详情在电脑上看",
+  "app.modelSyncFailed": "模型切换失败：{model}。消息没有发送，避免误用其他模型。",
   "app.tgChatCreateFailed": "没建成——聊天会话创建失败，详情在电脑上看",
   "app.tgSessionCreateFailed": "没建成——会话创建失败，详情在电脑上看",
   "app.tgCreateError": "没建成：{message}",

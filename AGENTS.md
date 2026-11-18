@@ -602,6 +602,23 @@ magpie 120–160MB——前两个是「运行时入场费」，调不掉，能�
    任何菜单，无害。回归：`cargo test catalog_direct_hides_auto` +
    `drop_auto_bindings_clears_only_auto_rows`。
 
+## 跨用桥 ID 与发送 fail-closed（2026-11-18）
+
+- **绑定存储 / 芯片 / wire 是两种 id**：`bridge-bindings.json` 与菜单标签保存
+  引擎裸 id（`source-…/model`）；OpenCode/DSH/Pi/ZCode/Grok 的 ACP 目录只认
+  `nativeBridgeModelId(agentId, modelId)`（`marionette/…`、`marionette::…`、
+  `marionette\…`）。**`session/prompt` 前回写模型必须用原生 id**。
+  2026-11-18 实锤：OpenCode 芯片显示 Ollama DeepSeek，但提交的是裸
+  `source-…/deepseek…`；OpenCode 明确回 `model not found`，旧代码吞错后继续
+  prompt，实际走了会话默认 OpenRouter `gpt-6.2-sol` 并产生 $9 消耗。
+- **stale 判定看 live caps，不看覆盖后的 UI chip**：`currentModel` state 会被
+  session prefs 覆盖，不是运行真相；应比较 `caps.currentModel`（`capsLive`
+  才生效）。对原生广告桥 provider 的 agent，目录缺目标模型或 live id 不等于
+  `marionette…` 都算 stale，桥芯片必须退位，显示实际模型。
+- **模型回写失败必须 fail-closed**：`performSend` 在 `session/prompt` 前同步
+  模型，任何 `set_config_option` 形状都失败时抛错并停发，不能把用户消息送到
+  agent 的无关默认模型。回归：`npx tsx scripts/verify-bridge-routing.mts`。
+
 回归：`cargo test --bin marionette`（475 项）+ 真机手册（见 docs/CURRENT.md 引用的
 批次清单）：冷启动无 browser-profiles 组、空闲会话 2–3 分钟后工作集回落、挂起杀
 整树、强杀无 node/codex.exe 残留、最小化/还原白屏检查、冷会话转录 mtime 不再

@@ -75,6 +75,7 @@ Agent 在回合结束后自己续跑（它起的后台指令回来了，触发�
 
 目标：**用户无脑打开软件就能用**——任何一个来源的模型，任何一个 agent 的会话里直接选。
 
+- **跨用模型选择 fail-closed（2026-11-18）**：会话绑定保存引擎裸 id，真正写入 agent 时由 `lib/bridgeRouting.ts` 转成各 agent 原生 `marionette…` id；桥芯片的 stale 判定只看 live ACP caps，不被磁盘偏好覆盖。若 agent 落回原生默认、目录没有注入 provider，或发送前模型同步失败，界面显示实际模型并中止本轮 prompt，避免「芯片写 Ollama DeepSeek、账单走 OpenRouter GPT」的静默串源。回归：`npx tsx scripts/verify-bridge-routing.mts`。
 - **key 型直连**（OpenCode Go / DeepSeek / GLM / Kimi / OpenRouter / xAI）：claude-code 走 spawn env、grok 走 owned 配置表，不过网关；来源含凭据库手存的 key 和 opencode `auth.json` 的只读扫描引用（引用只在直连注入瞬间读钥匙，不复制）。
 - **订阅型 + codex 全场景**：经内嵌翻译引擎（[yetone/magpie](https://github.com/yetone/magpie)，MIT，Go）。引擎**懒启动（2026-11-06）**：随应用启动只做落位/清障（便携版种子照旧离线落位，不起进程）——**存在引擎模型绑定才自动拉起 serve**，纯 GPT/键 key 直连用户引擎零进程。按需唤醒入口：网关按钮、绑定共享模型（最多等 20s）、启动已接桥的 agent 会话（dsh/pi/zcode/opencode）；30 分钟无绑定且无需求自动停 serve。key-plan 与扫描引用的 api key 自动注册进引擎；Grok / ChatGPT 订阅由引擎 discovery 自己发现。codex 只接引擎源（协议约束），经 `providers/set` 改道 + 路由组把内建模型名别名到所选引擎模型；spawn 时再把目录里的真实 `context_window` 合并进 `CODEX_CONFIG.model_context_window`，避免 Codex 继续按内建窗口提前压缩。
 - **引擎模型目录与配额的离线快照（2026-11-06）**：引擎不在 Running 时模型菜单的 marionette 组回放 `~/.marionette/engine-catalog.json`（live 非空时自动回写；note 标「引擎未运行 · 离线目录」，离线选中会经绑定链自动拉起引擎）；右栏额度卡的引擎配额行保留上次快照并标注「引擎未运行 · 快照时间」（localStorage `marionette-quota`，7 天过期）——引擎睡眠/唤醒不再让菜单组与配额行整组消失/插回。纯浏览菜单**不再唤醒引擎**（仅存在绑定时才等 5s 唤醒）。引擎目录只列**具体来源**的模型：`group/` 与 `auto/` 路由组一律隐藏（2026-11-06 起 auto 与 group 同罪；存量 auto 绑定启动时清绑，受影响会话回落 agent 原生默认）。

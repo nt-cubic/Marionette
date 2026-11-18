@@ -47,6 +47,12 @@ import {
   subscribeBridgeModels,
 } from "../lib/bridge";
 import {
+  bridgeBindingIsStale,
+  bridgeSubmissionModelId,
+  nativeBridgeModelId,
+  reportsNativeBridgeModel,
+} from "../lib/bridgeRouting";
+import {
   getCachedAgentVersions,
   patchAgentVersion,
   refreshAgentVersions,
@@ -794,6 +800,8 @@ export function Composer({
   const appliedPrefillToken = useRef(0);
   /** Restore disk prefs once per (session, agent) after caps are known. */
   const prefsRestoredKey = useRef("");
+  /** One repair for legacy raw-engine ids persisted by the bridge chip. */
+  const bridgePrefRepairKey = useRef("");
   /**
    * Grok's Always-approve replay is a `session/prompt`; a live turn would reject
    * it ("already in flight"), so it waits for the session to go idle instead of
@@ -1058,6 +1066,7 @@ export function Composer({
     pinsRef.current = null;
     // Keep draft/prefill + remembered height when switching dialog/agent.
     prefsRestoredKey.current = "";
+    bridgePrefRepairKey.current = "";
     setCapsLive(false);
     // Cross-use bridge state is dialog-scoped too — the loader below repopulates.
     setBridgeCatalog(null);
@@ -1207,40 +1216,25 @@ export function Composer({
     [onSessionPrefsChange, sessionId],
   );
 
-  /**
-   * The cross-use chip wins over the native model until the agent re-exposes
-   * the binding as a native option after a restart — from that point the
-   * normal model preference channel takes over. Native id shape per agent:
-   * grok/opencode/pi advertise `marionette/<modelId>`, DSH advertises
-   * `marionette::<modelId>` (pi-ai `provider::model`, split on first `::`),
-   * zcode advertises `marionette\<modelId>` (adapter configOptions compose
-   * `provider\model`).
-   */
-  const nativeBridgeModelId = (modelId: string) => {
-    if (agent.id === "deepseek") return `marionette::${modelId}`;
-    if (agent.id === "zcode") return `marionette\\${modelId}`;
-    return `marionette/${modelId}`;
-  };
   const bridgeActive =
-    bridgeSelection != null && currentModel !== nativeBridgeModelId(bridgeSelection.modelId);
+    bridgeSelection != null &&
+    currentModel !== nativeBridgeModelId(agent.id, bridgeSelection.modelId);
   /**
    * Truth check for adapters that surface shared models natively (zcode
    * `marionette\…`, opencode/pi `marionette/…`, dsh `marionette::…`): they
-   * report the live id as currentModel, so currentModel is ground truth. When
-   * it names a different shared model than the pick, the binding never took
-   * effect — e.g. a fresh zcode session silently fell back to its
-   * modelOrder[0] default. Showing the pick anyway is how the 2026-10-24
-   * incident hid pay-per-use DeepSeek behind a chip that said GLM 5.3.
+   * report the live id in the raw capability snapshot. The displayed
+   * `currentModel` is overlaid with disk prefs, so it is not ground truth.
+   * A live native fallback also counts as stale: the binding did not take
+   * effect at all, and showing the bridge pick anyway hid an OpenRouter GPT
+   * burn behind an Ollama DeepSeek chip (2026-11-18).
    */
-  const reportedSharedModelId =
-    currentModel != null && /^(?:marionette\\|marionette::|marionette\/)/.test(currentModel)
-      ? currentModel
-      : null;
-  const bridgeStale =
-    bridgeActive &&
-    bridgeSelection != null &&
-    reportedSharedModelId != null &&
-    reportedSharedModelId !== nativeBridgeModelId(bridgeSelection.modelId);
+  const bridgeStale = bridgeBindingIsStale({
+    agentId: agent.id,
+    binding: bridgeSelection,
+    capsLive,
+    currentModel: caps?.currentModel,
+    models: caps?.models ?? [],
+  });
 
   /**
    * Cross-use pick (§4.8): never sends session/set_model from here — the
@@ -1275,7 +1269,7 @@ export function Composer({
             agent.id === "pi" ||
             agent.id === "zcode"
           ) {
-            persistPrefs({ preferredModel: nativeBridgeModelId(model.modelId) });
+            persistPrefs({ preferredModel: nativeBridgeModelId(agent.id, model.modelId) });
           }
           // 注入是 spawn 级的（env / 配置表）：活进程当场换血，历史保留，
           // 下一条消息即以新模型继续 —— 不等「下次打开会话」。
@@ -1495,6 +1489,39 @@ export function Composer({
     },
     [sessionId, flash, loadCapabilities, agent.id, caps, onEnsureAgentReady, onSilentPrompt, persistPrefs],
   );
+
+  // Early builds persisted the bridge chip's engine-side id as the dialog
+  // preference. Normalize it back to the agent-native wire id when the binding
+  // loads. If the provider is live, also repair the running session; if spawn
+  // injection failed, the stale rule above shows the model that is truly active
+  // instead of retrying forever or masking a paid fallback.
+  useEffect(() => {
+    if (!capsLive || !caps || !bridgeSelection) return;
+    if (!reportsNativeBridgeModel(agent.id)) return;
+    const stored = sessionPrefs?.preferredModel?.trim() || null;
+    if (stored !== bridgeSelection.modelId) return;
+
+    const repairKey = `${sessionId}:${agent.id}:${bridgeSelection.modelId}:${stored}`;
+    if (bridgePrefRepairKey.current === repairKey) return;
+    bridgePrefRepairKey.current = repairKey;
+
+    const wire = nativeBridgeModelId(agent.id, bridgeSelection.modelId);
+    persistPrefs({ preferredModel: wire });
+    const advertised =
+      caps.models.length === 0 || caps.models.some((model) => model.id === wire);
+    if (advertised && caps.currentModel !== wire) {
+      void commitUpdate({ model: wire }, () => undefined);
+    }
+  }, [
+    agent.id,
+    bridgeSelection,
+    caps,
+    capsLive,
+    commitUpdate,
+    persistPrefs,
+    sessionId,
+    sessionPrefs?.preferredModel,
+  ]);
 
   // Restore preferred model/mode/effort once caps are available for this dialog.
   // Cached caps only paint the chips — pushing set_config at an agent that is
@@ -1827,7 +1854,9 @@ export function Composer({
       // took effect and the snapshot must tell the truth (2026-10-24 incident:
       // chip said GLM 5.3 while the session ran pay-per-use deepseek-v4-pro).
       const modelId =
-        bridgeActive && bridgeSelection && !bridgeStale ? bridgeSelection.modelId : sentWith;
+        bridgeActive && bridgeSelection && !bridgeStale
+          ? bridgeSubmissionModelId(agent.id, bridgeSelection.modelId)
+          : sentWith;
       const modelLabel =
         bridgeActive && bridgeSelection && !bridgeStale
           ? bridgeSelection.label
@@ -1882,6 +1911,7 @@ export function Composer({
       bridgeActive,
       bridgeSelection,
       bridgeStale,
+      agent.id,
     ],
   );
 
@@ -2432,7 +2462,7 @@ export function Composer({
   const effectiveModelPreferences = useMemo(() => expandHiddenProviders(modelPreferences, allLibraryGroups), [modelPreferences, allLibraryGroups]);
   const displayLibraryModel = allLibraryGroups.flatMap(group => group.rows.map(row => ({ group, row }))).find(({ row }) =>
     bridgeActive && bridgeSelection && !bridgeStale ? row.bridge?.entryId === bridgeSelection.entryId && row.bridge.modelId === bridgeSelection.modelId
-      : row.native?.id === displayModel || (row.bridge != null && displayModel === nativeBridgeModelId(row.bridge.modelId)));
+      : row.native?.id === displayModel || (row.bridge != null && displayModel === nativeBridgeModelId(agent.id, row.bridge.modelId)));
   const displayModelDef =
     displayModel && caps?.models
       ? caps.models.find((m) => m.id === displayModel)
@@ -3591,7 +3621,7 @@ export function Composer({
                                   {group.rows.map(row => {
                                     const m = row.native;
                                     const shared = row.bridge;
-                                    const selected = m ? !bridgeActive && displayModel === m.id : shared != null && ((bridgeSelection?.entryId === shared.entryId && bridgeSelection.modelId === shared.modelId) || currentModel === nativeBridgeModelId(shared.modelId));
+                                    const selected = m ? !bridgeActive && displayModel === m.id : shared != null && !bridgeStale && ((bridgeSelection?.entryId === shared.entryId && bridgeSelection.modelId === shared.modelId) || currentModel === nativeBridgeModelId(agent.id, shared.modelId));
                                     return <button key={row.key} className={selected ? "is-selected" : ""} type="button" role="option" aria-selected={selected}
                                       title={[row.label, row.modelId, row.origin].filter(Boolean).join("\n")}
                                       onClick={() => {
