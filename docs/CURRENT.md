@@ -151,7 +151,8 @@ app 内置浏览器，agent 通过工具通道读写它。普通窗口里 Browse
   `workspace` 才进入双栏，且只用于用户明确要求查看/操作页面的情况。开发服务器发现默认**只通知**；
   自动打开必须在 Ctrl K 显式 opt in。Agent 自己启动 localhost 不会因此获得 workspace 权限。
   地址栏接受无 scheme 的 `localhost:5173` / `127.0.0.1:3000`（走 http），`http://localhost`
-  导航改写为 `127.0.0.1` 避开 WebView2 先连 `::1`。
+  导航改写为 `127.0.0.1` 避开 WebView2 先连 `::1`；`file:///D:/…/index.html` 和绝对
+  Windows 路径直接作为本地文件打开，不会再被补成 `https://file…`。
 - **共同 surface（2026-11-17 P3/P4）**：顶部的 Browser / Document / Memo 标签条在
   child WebView2 host 之外；Browser、文档、收纳盒都复用同一套 SessionView + Composer。
   对话栏标题旁的下拉框可换绑另一会话而不关闭内容。surface 标签支持关闭、

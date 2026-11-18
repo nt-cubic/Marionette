@@ -18,6 +18,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::mpsc;
 
@@ -680,6 +681,16 @@ fn apply_title_change(surface: &Surface, title: String) {
 }
 
 fn url_origin(url: &str) -> String {
+    if let Ok(mut parsed) = Url::parse(url) {
+        if parsed.scheme() == "file" {
+            // File URLs have opaque origins. Keep each file path as its own
+            // grant scope so following a local link cannot inherit the
+            // previous file's read permission.
+            parsed.set_query(None);
+            parsed.set_fragment(None);
+            return parsed.to_string();
+        }
+    }
     // Good enough for http(s) origins; anything odd stays as-is and simply
     // never matches a grant.
     let rest = url
@@ -1651,6 +1662,20 @@ pub fn normalize_url(raw: &str) -> Result<String, String> {
     if trimmed.is_empty() {
         return Err("empty url".to_string());
     }
+    if trimmed
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file:"))
+    {
+        let url = Url::parse(trimmed).map_err(|e| format!("invalid file url: {e}"))?;
+        url.to_file_path()
+            .map_err(|_| "file urls must point to an absolute local path".to_string())?;
+        return Ok(url.to_string());
+    }
+    if Path::new(trimmed).is_absolute() {
+        return Url::from_file_path(trimmed)
+            .map(|url| url.to_string())
+            .map_err(|_| "local file path is not absolute".to_string());
+    }
     let with_scheme = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
         trimmed.to_string()
     } else if looks_like_loopback_authority(trimmed) {
@@ -1778,6 +1803,14 @@ mod tests {
         assert_eq!(url_origin("https://example.com/a/b?x=1"), "https://example.com");
         assert_eq!(url_origin("http://localhost:5173/"), "http://localhost:5173");
         assert_eq!(url_origin("about:blank"), "about:blank");
+        assert_eq!(
+            url_origin("file:///D:/Projects/One/index.html?x=1#start"),
+            "file:///D:/Projects/One/index.html"
+        );
+        assert_ne!(
+            url_origin("file:///D:/Projects/One/index.html"),
+            url_origin("file:///D:/Projects/Two/index.html")
+        );
     }
 
     #[test]
@@ -1789,6 +1822,23 @@ mod tests {
         assert!(normalize_url("how to fly").is_err());
         assert!(normalize_url("ftp://x").is_err());
         assert!(normalize_url("").is_err());
+    }
+
+    #[test]
+    fn local_file_urls_and_absolute_windows_paths_are_preserved() {
+        assert_eq!(
+            normalize_url("file:///D:/Projects/XXX/index.html").unwrap(),
+            "file:///D:/Projects/XXX/index.html"
+        );
+        assert_eq!(
+            normalize_url(r"D:\Projects\XXX\index.html").unwrap(),
+            "file:///D:/Projects/XXX/index.html"
+        );
+        assert_eq!(
+            normalize_url(r"C:\Projects\My Game\index.html").unwrap(),
+            "file:///C:/Projects/My%20Game/index.html"
+        );
+        assert!(normalize_url("file:relative/index.html").is_err());
     }
 
     #[test]

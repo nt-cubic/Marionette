@@ -843,7 +843,9 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
   Dev server 只扫运行中 ACP terminal 的 bounded tail（64KB），去 ANSI、限 loopback、
   TCP probe 后按 `open/off/notify` 偏好处理（**默认 notify，必须显式 opt in**）；
   禁止仅按 localhost 字符串切界面。地址栏 `localhost:port` 无 scheme 走 http，
-  `http://localhost` 导航改写 `127.0.0.1`（WebView2 先连 `::1`）。
+  `http://localhost` 导航改写 `127.0.0.1`（WebView2 先连 `::1`）；`file:///…` 与可粘贴的
+  绝对 Windows 文件路径直接按本地文件打开，绝不补 `https://`。本地文件 grant 按规范化 file URL
+  （去掉 query/hash）隔离，切换到另一个本地文件不能沿用上一文件的分享权限。
 - **状态与清理**：Agent tab 带 `ownerSessionId`、并发 `busy` 计数、
   `idle/running/waiting_user/failed` 和 `lastUsedAtMs`。删除会话/项目关闭其 owned tabs；
   用户自开 tab 不按 owner 清理。状态文字遵守极简 HUD，不用状态圆点。

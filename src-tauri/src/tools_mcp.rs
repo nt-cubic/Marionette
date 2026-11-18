@@ -282,10 +282,10 @@ fn tool_schemas() -> Value {
         ),
         tool(
             "browser_open_tab",
-            "Open a new browser tab and navigate to an http(s) URL. Bare localhost / 127.0.0.1 (with optional port) is accepted and opened over http. Tabs you open are readable by you immediately (snapshot/console/screenshot); actions still need the user's approval. display=workspace shows the page beside the current Agent conversation; use it only when the user explicitly asks to see or work on a rendered web page. A local dev server you started remains background unless the user asks for it to be visible. Returns the new tab id.",
+            "Open a new browser tab and navigate to an http(s) URL or explicit local file path/URL. Bare localhost / 127.0.0.1 (with optional port) is accepted and opened over http; file:///… and absolute local paths open as local files. Tabs you open are readable by you immediately (snapshot/console/screenshot); actions still need the user's approval. display=workspace shows the page beside the current Agent conversation; use it only when the user explicitly asks to see or work on a rendered web page. A local dev server you started remains background unless the user asks for it to be visible. Returns the new tab id.",
             &["url"],
             json!({
-                "url": { "type": "string", "description": "http(s) URL. localhost:5173 and 127.0.0.1:3000 (no scheme) open as http; a public bare domain gets https://." },
+                "url": { "type": "string", "description": "HTTP(S) URL, explicit file:/// URL, or absolute local file path. localhost:5173 and 127.0.0.1:3000 (no scheme) open as http; a public bare domain gets https://." },
                 "display": {
                     "type": "string",
                     "enum": ["background", "workspace"],
@@ -1568,6 +1568,10 @@ mod tests {
             json!(["background", "workspace"])
         );
         assert!(open["inputSchema"]["properties"]["id"].is_object());
+        assert!(open["inputSchema"]["properties"]["url"]["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("file:///"));
     }
 
     // browser_help is generated from the schema table, so the two can never
