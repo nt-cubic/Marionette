@@ -1501,12 +1501,20 @@ N1–N14 缺口 + §8 执行进度）；方言层 27 项审计：`rust-engine-di
 - **整数化两处**：integral.rs（翻译路径，whole_args）+ chattidy.rs（直通
   跨行状态机）。改 tool_calls 应答形状时两层都要过合同 D9/D10。
 - **affinity/usage/prev/textcalls/claude 桥**各有独立模块，差距清单在
-  各模块头注（最重的是 claude 桥 14 条——常驻进程、MCP helper、持久化）。
+  各模块头注（claude 桥 gap 2 常驻进程 / gap 3 MCP helper 已于 2026-11-18
+  收尾2 批落地——helper 是**进程内环回 HTTP MCP**，不是 Go 的隐藏子命令；
+  最重残留是 gap 1 savedSession 持久化家族与 4–14 细项）。
   **Claude 桥只挂 anthropic 入站**；绝不写凭据、绝不直连 api.anthropic.com。
 - codex 出站压缩是 **gzip 不是 zstd**（无压缩器的有意偏差，注释在
-  codex_account.rs）；401 永不换账号（Codex 自己续登录）。
+  codex_account.rs）；401 永不换账号（Codex 自己续登录）。WS keep 复用/
+  shun/1009 记忆已落地（2026-11-18），仍全圈在 `MARIONETTE_CODEX_WS=1`
+  后面（默认关）；**改 item_digest/turn_shape 前先看 sorted_value 的键序
+  排序——serde_json preserve_order + swap_remove 会让摘要不稳定**。
 - 引擎测试跑法：`cargo test --features engine-rust --bin marionette`
-  （1028 项基线）；`marionette-engine` bin 已带 recursion_limit。
+  （1139 项基线，2026-11-18 收尾2 批后）；`marionette-engine` bin 已带
+  recursion_limit。**council 的 same_model_two_members_distinct_calls 是
+  高失败率 flake（HEAD 也 4/5 败，等待条件 30s 超时）——与本仓引擎改动
+  无关，独跑复跑不绿属正常，别为它回滚引擎批**。
 
 ## 引擎 Rust 化：进程内引擎网关（2026-11-17，engine-rust 分支）
 

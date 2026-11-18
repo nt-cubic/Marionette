@@ -84,7 +84,42 @@ ureq 出站），ring-less TLS 约束不变。
 - [x] **T12 发布切换**（`1965c34a`）：门控 + `MARIONETTE_ENGINE=rust` SKU
   + 实测 **5.36MB**（见上）；magpie SKU 默认路径不变。
 
-## 剩余（需要人参与的收尾）
+## 已完成（2026-11-18 收尾2 批——销 25cb0d80 挂起单）
+
+四子代理并行 + 主会话接线，四提交（`4e0ae6d5`/`48caefa4`/`a3e1d420`/
+`4013e7f9`），+5,384/−531，测试 1089→1139：
+
+- [x] **redact 收口 + 接线**：4 个 WIP ignore 转绿；phone 判定全族
+  （phoneAt/fieldName/nameWords）按 phone.go+ids.go 移植；bodyprep 链末位
+  scrub_cow（零拷贝关态）+ routes 四臂 try_prepared_request Err→503
+  （maskStatus 非拦截分支）。**HEIC 挂起记档**：Go 用 gen2brain/h265 纯
+  Go 解码器，Rust 无等价物且红线禁新依赖——不做，形状记在 bodyprep 头注。
+- [x] **zcode trial rest 分级**：trial_refused_for 四道门 + chat.rs 模型级
+  rest 条目（`provider::model` 键）；trial 拒答只 rest 该 `-Trial` 条目，
+  账号其它模型照常候选；判不中回落原行为。
+- [x] **usage token 捕获层**：TapReader 包 relay 链、流尾收口、三方言桶
+  口径 1:1、millis 从请求入口起算；responses/messages 翻译路径补记账。
+  顺手修：note_turn 在应答体取 session（恒 None）→ 改请求体；翻译轮
+  cache_write 被丢 → 补 input_tokens_details.cache_write_tokens（#589）。
+- [x] **Codex WS keep 复用 + shun + 1009**（仍圈在 MARIONETTE_CODEX_WS=1）：
+  keep 池（idle 10min/age 55min/max 32）+ previous_response_id 增量续跑；
+  shun host:port 10min；1009 按实发字节记最小拒收尺寸。实锤修复：serde_json
+  preserve_order+swap_remove 键序漂移 → sorted_value 递归键排序。
+- [x] **Claude 桥 gap 2（跨回合驻留）+ gap 3（MCP helper）**：turn_key 会话
+  键（消息归一 1:1）、idle 1h 池（按 Go 源，简报 2h 有误）、泵线程+看门狗；
+  helper 改**进程内环回 HTTP MCP**（main.rs 不在模块手里，协议与 Go 逐字段
+  同形）；阻塞-回填先登记后放帧（免 Go 的 20×25ms 竞态重试）；真机级修复：
+  `_meta` 的 `claudecode/toolUseId` 整键带斜杠不能走 JSON pointer。
+- 验证：全量 1138 绿/1 败（council `same_model_two_members_distinct_calls`
+  ——HEAD 对照实验 4/5 也败，**既有高失败率 flake，与本批无关**，已记
+  AGENTS）；默认构建零变化；合同 C1–C6 全绿。
+
+收尾2 后仍剩（各模块头注为准）：continuation 断流续答（chat.rs 尾清单）、
+Claude 桥 gap 1（savedSession 家族）与 4–14 细项、WS 的 deflate/分片帧/
+SOCKS、redact 的 crypto.go/more.go 附加规则与用户词表。T13 真 key 对账、
+T14 退役决策仍待用户。
+
+
 
 - [x] **T13 真机对账——自动化部分**（`2b5c70d7`，2026-11-17 深夜）：
   隔离 profile 起 rust SKU 实例（demo-instance 机制，与用户实例共存）+
