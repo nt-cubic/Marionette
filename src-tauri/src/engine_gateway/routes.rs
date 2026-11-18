@@ -122,6 +122,14 @@ pub fn route(request: &Request, gateway: &super::Gateway) -> Reply {
             )
         }
         ("POST", "/v1/chat/completions") | ("POST", "/chat/completions") => {
+            // 入站体预处理（bodyprep.rs，Go base64_input.go + body_text.go）：
+            // Go 里 textBody 在读体出口（request_bounds.go:284）、stdBase64Body
+            // 在 serve() 最前（gateway.go:2544），都在任何路由/翻译/bodycap
+            // 之前。Rust 的读体在 httpd.rs `handle`、路由入口在这里——所以
+            // 接在 route() 拿到体之后、进任何处理器（含 codex/grok 拦截：
+            // 它们也要解析并转发这个体）之前。体没变时零拷贝借回原请求。
+            let req = super::bodyprep::prepared_request(request, super::effort::Proto::Chat);
+            let request = &*req;
             if let Some(reply) = super::codex_account::intercept(gateway, request, super::effort::Proto::Chat) {
                 return reply;
             }
@@ -134,6 +142,8 @@ pub fn route(request: &Request, gateway: &super::Gateway) -> Reply {
         ("POST", "/v1/responses") | ("POST", "/responses") => {
             // codex 的母语端点（T4）：直通优先，翻译路径复用 chat 全链。
             // Codex 订阅账号（合成来源 codex）接不住真实来源的请求先在这里处理。
+            let req = super::bodyprep::prepared_request(request, super::effort::Proto::Responses);
+            let request = &*req;
             if let Some(reply) = super::codex_account::intercept(gateway, request, super::effort::Proto::Responses) {
                 return reply;
             }
@@ -145,10 +155,16 @@ pub fn route(request: &Request, gateway: &super::Gateway) -> Reply {
         }
         ("POST", "/v1/messages/count_tokens") | ("POST", "/messages/count_tokens") => {
             // Go countTokens：厂商有 anthropic 基址就转它的计数，不支持/没有就本地粗估。
+            // 计数前同样跑 bodyprep（Go 在这里显式调 stdBase64Body，gateway.go:2112，
+            // 注释：按将要发送的形态计数）——转发给厂商计数的体必须与真发的同形态。
+            let req = super::bodyprep::prepared_request(request, super::effort::Proto::Anthropic);
+            let request = &*req;
             super::messages::count_tokens(gateway, &request.body)
         }
         ("POST", "/v1/messages") | ("POST", "/messages") => {
             // anthropic Messages 端点（T3）：直通优先 + chat 翻译路径。
+            let req = super::bodyprep::prepared_request(request, super::effort::Proto::Anthropic);
+            let request = &*req;
             if let Some(reply) = super::codex_account::intercept(gateway, request, super::effort::Proto::Anthropic) {
                 return reply;
             }

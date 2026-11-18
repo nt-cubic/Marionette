@@ -34,6 +34,9 @@ const MAX_CONNECTIONS: usize = 64;
 /// chunked 尺寸行/尾随头的单行长度护栏（尺寸行按 RFC 只需几位 hex）。
 const MAX_CHUNK_LINE_BYTES: usize = 8 * 1024;
 
+/// 入站请求（读体 + Content-Encoding 解码之后的形态）。Clone 是给
+/// bodyprep::prepared_request 用的：体被预处理改写时按需重建请求。
+#[derive(Clone)]
 pub struct Request {
     pub method: String,
     pub path: String,
@@ -1083,6 +1086,48 @@ mod tests {
             let reply = raw_exchange(addr, req.as_bytes());
             assert!(reply.starts_with("HTTP/1.1 413"), "{reply}");
             assert!(reply.contains("request_too_large"), "{reply}");
+        });
+    }
+
+    // ----- bodyprep 接线（routes.rs 对话臂；Go base64_input.go + body_text.go）-----
+
+    /// GBK 字节混进 JSON 串：没有 bodyprep 时 messages::handle 的 serde_json
+    /// 解析直接失败（400 invalid request body）；修过之后体能解析，走到组
+    /// 路由的 404——模型名透出来 = 体确实在进任何处理器**之前**被修好了。
+    #[test]
+    fn live_bodyprep_mends_bad_bytes_before_routing() {
+        with_live_gateway(|addr| {
+            let mut body = br#"{"model":"zz-none/gbk-x","messages":[{"role":"user","content":""#.to_vec();
+            body.extend_from_slice(&[0xc4, 0xe3, 0xba, 0xc3]); // GBK「你好」
+            body.extend_from_slice(b"\"}]}");
+            let mut req = format!(
+                "POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            )
+            .into_bytes();
+            req.extend_from_slice(&body);
+            let reply = raw_exchange(addr, &req);
+            assert!(reply.starts_with("HTTP/1.1 404"), "{reply}");
+            assert!(reply.contains("zz-none/gbk-x"), "{reply}");
+        });
+    }
+
+    /// 孤代理转义（`\ud800`，ASCII 合法 UTF-8 但 serde_json 拒绝）：chat 臂
+    /// 解析失败时模型名为空（404 里没有名字）；修成 `\ufffd` 后 404 带模型
+    /// 名——同一接线对另一类缺陷、另一个端点也成立。
+    #[test]
+    fn live_bodyprep_mends_lone_surrogate_escape() {
+        with_live_gateway(|addr| {
+            let body = br#"{"model":"zz-none/surro-x","messages":[{"role":"user","content":"before \ud800 after"}]}"#;
+            let mut req = format!(
+                "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            )
+            .into_bytes();
+            req.extend_from_slice(body);
+            let reply = raw_exchange(addr, &req);
+            assert!(reply.starts_with("HTTP/1.1 404"), "{reply}");
+            assert!(reply.contains("zz-none/surro-x"), "{reply}");
         });
     }
 }

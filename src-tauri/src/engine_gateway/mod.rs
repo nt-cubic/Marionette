@@ -13,6 +13,7 @@
 #![allow(dead_code)]
 
 pub mod bodycap;
+pub mod bodyprep;
 pub mod catalog;
 pub mod chat;
 pub mod cli;
