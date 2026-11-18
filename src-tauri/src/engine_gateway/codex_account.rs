@@ -26,9 +26,23 @@
 //! 指定账号（钉了却找不到 = 明确报错，**不**落到别的账号）；额度每账号一行。
 //! 凭据每个请求现读（Codex CLI 在跑时自己保鲜 auth.json）。
 //!
-//! 未移植（见交付报告）：失败轮转/超额回退、resets/credits 明细、账号热备。
+//! 出站压缩（Go codex_zstd.go CodexCompressed 的 Rust 侧）：>64KB 的请求体
+//! gzip 后 `Content-Encoding: gzip` 发送。**与 Go 的有意偏差**：Go 用 zstd
+//! （codex CLI 自己的形态，1.1MB 明文被 ChatGPT 回 503）；Rust 侧 ruzstd 只有
+//! 解压器、加 C 绑定的压缩器是被禁的依赖，而 gzip 是 HTTP 通用编码，ChatGPT
+//! 按 HTTP 语义应当解。若真机验证 ChatGPT 拒收 gzip，此路回退明文（压缩失败
+//! 时已如此）并在错误信息里说明。
+//!
+//! 订阅耗尽回退（Go codex_backend.go codexFallBack :1818 / codexFallsBack
+//! :1749 / codexAccountOut :1734 的最小版）：上游 402/403(usage_not_included)
+//! /429/带额度词表的错误时按账号序换下一份重试；单账号/全耗尽 → 429 +
+//! 「订阅耗尽」文案（`groups::retryable` 对 429 恒真，上层组路由的候选循环
+//! 可以据此换成员）。
+//!
+//! 未移植（见交付报告）：Go 的组级 fallback（FallbackModels/GroupsAfter——
+//! Rust 侧交上层候选循环）、resets/credits 明细、账号热备。
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -53,6 +67,12 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// access token 离到期不足这个秒数就当过期（不刷新，只报错）。
 const EXPIRY_MARGIN_SECS: i64 = 30;
 const EXPIRED_MESSAGE: &str = "Codex sign-in expired — run Codex once to refresh";
+/// 出站压缩阈值：超过这个字节数的请求体 gzip 发送（Go codex_zstd.go 的注释：
+/// 1.1MB 明文 503、压缩后 200——我们没等真机撞墙，直接按同一动机做）。
+const COMPRESS_MIN: usize = 64 * 1024;
+/// 单账号/全部账号都耗尽时的兜底文案。状态恒 429：`groups::retryable` 对 429
+/// 恒真（chat.rs 的候选循环按它换成员），词表判定见 [`codex_account_out`]。
+const EXHAUSTED_MESSAGE: &str = "Codex subscription usage limit exhausted (no signed-in account can take this turn)";
 /// Go codexInstructions 的最后兜底之前没有任何来源时用的极简指令
 /// （后端要求 instructions 非空）。
 const FALLBACK_INSTRUCTIONS: &str = "You are Codex, a coding agent. Be concise and accurate.";
@@ -272,6 +292,24 @@ fn pick_best(list: Vec<Account>) -> Option<Account> {
 
 pub(crate) fn discover() -> Option<Account> {
     pick_best(discover_all())
+}
+
+/// 轮换账号序（Go codexFallBack 的账号轮换半边）：未过期的账号、最优的
+/// 提到队首（默认请求与旧行为一致），其余按发现序跟在后面——上一个
+/// 账号被额度类错误拒了就换下一个。
+fn ordered_live(all: Vec<Account>) -> Vec<Account> {
+    let mut all: Vec<Account> = all.into_iter().filter(|a| !a.expired()).collect();
+    if all.len() > 1 {
+        // pick_best 在「全未过期」集合上的选择 = 到期最晚、平局先出现的赢。
+        let mut best = 0;
+        for i in 1..all.len() {
+            if all[i].exp.unwrap_or(0) > all[best].exp.unwrap_or(0) {
+                best = i;
+            }
+        }
+        all.rotate_left(best);
+    }
+    all
 }
 
 /// 账号引用（`#` 后的串）命中哪些账号：logins 条目 id（精确）/ 邮箱（不分
@@ -680,6 +718,293 @@ fn quota_row_of(account: &Account) -> Option<Value> {
         }
     }
     Some(row)
+}
+
+// =====================================================================
+// 订阅耗尽判定（Go codex_backend.go codexAccountOut :1734 + routing.go
+// failure :570 的词表，纯字符串移植——Rust 侧无 regex crate）
+// =====================================================================
+
+/// 词表匹配面：Go `wordsOf`（routing.go :542）+ 小写化 + 去 URL（urlWords）。
+struct Words {
+    /// 原文（JSON 字符串解出后拼接）小写化——CJK 与大小写不敏感词共用。
+    plain: Vec<u8>,
+    /// 去 URL 后的小写面（Go urlWords：链接里的词不算厂商说的）。
+    stripped: Vec<u8>,
+    /// stripped 再去掉非 [a-z0-9]——`usage.?limit` 这类可分离缀的紧凑面。
+    squeezed: Vec<u8>,
+}
+
+impl Words {
+    fn of(body: &[u8]) -> Words {
+        let mut plain = body.to_vec();
+        // Go wordsOf：带 \u 转义时把 JSON 里的字符串解出来拼在后面再匹配。
+        if plain.windows(2).any(|w| w == b"\\u") {
+            if let Ok(v) = serde_json::from_slice::<Value>(body) {
+                fn walk(v: &Value, out: &mut Vec<u8>) {
+                    match v {
+                        Value::String(s) => {
+                            out.push(b'\n');
+                            out.extend_from_slice(s.as_bytes());
+                        }
+                        Value::Object(m) => {
+                            for x in m.values() {
+                                walk(x, out);
+                            }
+                        }
+                        Value::Array(a) => {
+                            for x in a {
+                                walk(x, out);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                walk(&v, &mut plain);
+            }
+        }
+        plain.make_ascii_lowercase();
+        // Go urlWords = `https?://\S+`：抹掉链接（到下一个空白）。
+        let mut stripped = Vec::with_capacity(plain.len());
+        let mut i = 0;
+        while i < plain.len() {
+            let scheme = if plain[i..].starts_with(b"https://") {
+                Some(8)
+            } else if plain[i..].starts_with(b"http://") {
+                Some(7)
+            } else {
+                None
+            };
+            match scheme {
+                Some(skip) => {
+                    i += skip;
+                    while i < plain.len() && !(plain[i] as char).is_ascii_whitespace() {
+                        i += 1;
+                    }
+                }
+                None => {
+                    stripped.push(plain[i]);
+                    i += 1;
+                }
+            }
+        }
+        let squeezed: Vec<u8> = stripped.iter().copied().filter(|b| b.is_ascii_alphanumeric()).collect();
+        Words { plain, stripped, squeezed }
+    }
+}
+
+fn has(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len().max(1)).any(|w| w == needle)
+}
+
+/// `\b词\b` 的近似：出现处两侧都不是字母数字（Go 词表里的 \b 包围短词）。
+fn has_word(hay: &[u8], word: &[u8]) -> bool {
+    let mut from = 0;
+    while let Some(rel) = hay[from..].windows(word.len()).position(|w| w == word) {
+        let at = from + rel;
+        let before_ok = at == 0 || !hay[at - 1].is_ascii_alphanumeric();
+        let after = at + word.len();
+        let after_ok = after >= hay.len() || !hay[after].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+        from = at + 1;
+    }
+    false
+}
+
+/// `a` 之后 `span` 字节内出现 `b`（Go `a.{0,N}b` / `a.*b`——后者 span 给足）。
+fn has_after(hay: &[u8], a: &[u8], b: &[u8], span: usize) -> bool {
+    let mut from = 0;
+    while let Some(rel) = hay[from..].windows(a.len().max(1)).position(|w| w == a) {
+        let at = from + rel + a.len();
+        if has(&hay[at.min(hay.len())..(at + span).min(hay.len())], b) {
+            return true;
+        }
+        from = from + rel + 1;
+    }
+    false
+}
+
+const MAXSPAN: usize = usize::MAX / 4;
+
+// ---- Go routing.go :339-439 的词表（词面 1:1；`.?` 可分离缀用 squeezed 面）----
+
+/// creditWords：账户/钥匙没钱了。
+fn credit_words(w: &Words) -> bool {
+    let sq = &w.squeezed;
+    has(sq, b"insufficientbalance")
+        || has(sq, b"insufficientcredit")
+        || has(sq, b"insufficientfund")
+        || ["balance", "credit", "billing", "payment", "arrear", "overdue", "suspended"]
+            .iter()
+            .any(|x| has(&w.stripped, x.as_bytes()))
+        || has(&w.stripped, "余额".as_bytes())
+        || has(&w.stripped, "欠费".as_bytes())
+        || has(&w.stripped, "充值".as_bytes())
+        || (has(&w.stripped, "账户".as_bytes())
+            && (has_after(&w.stripped, "账户".as_bytes(), "不足".as_bytes(), MAXSPAN)
+                || has_after(&w.stripped, "账户".as_bytes(), "停".as_bytes(), MAXSPAN)))
+}
+
+/// brokeWords：429 里说余额本身花光的（`credits? (are )?exhausted` 等）。
+fn broke_words(w: &Words) -> bool {
+    let sq = &w.squeezed;
+    has(sq, b"insufficientbalance")
+        || has(sq, b"insufficientcredit")
+        || has(sq, b"insufficientfund")
+        || has(sq, b"creditsexhausted")
+        || has(sq, b"creditexhausted")
+        || has(sq, b"creditsareexhausted")
+        || has(sq, b"creditareexhausted")
+        || has(sq, b"creditbalanceexhausted")
+        || has(&w.stripped, "余额不足".as_bytes())
+        || has(&w.stripped, "欠费".as_bytes())
+        || has(&w.stripped, "请充值".as_bytes())
+}
+
+/// usedUpWords：套餐额度用尽（quota / usage limit / budget…）。
+fn used_up_words(w: &Words) -> bool {
+    let st = &w.stripped;
+    let sq = &w.squeezed;
+    has(st, b"quota")
+        || has(sq, b"usagelimit")
+        || has(st, b"out of budget")
+        || has_after(st, b"budget", b"exceeded", 32 + 9)
+        || has_after(st, b"budget", b"exhausted", 32 + 9)
+        || has(sq, b"limitreached")
+        || has_after(st, b"hit your", b"limit", MAXSPAN)
+        || has_after(st, b"reached your", b"limit", MAXSPAN)
+        || has_after(st, b"limit", b"resets", 24 + 6)
+        || has_after(st, b"exceeded", b"plan", MAXSPAN)
+        || has_after(st, b"exceeded", b"limit", MAXSPAN)
+        || ["额度", "用量", "套餐", "上限"].iter().any(|x| has(st, x.as_bytes()))
+}
+
+/// rateWords：按分钟/秒的短限速。
+fn rate_words(w: &Words) -> bool {
+    let sq = &w.squeezed;
+    has(sq, b"ratelimit")
+        || has(sq, b"frequencylimit")
+        || ["persecond", "persec", "perminute", "permin"].iter().any(|x| has(sq, x.as_bytes()))
+        || has(&w.stripped, b"too many requests")
+        || has_word(&w.stripped, b"rpm")
+        || has_word(&w.stripped, b"tpm")
+        || ["频率", "太频繁", "过于频繁", "速率"].iter().any(|x| has(&w.stripped, x.as_bytes()))
+}
+
+/// plannedWords：429 里说套餐自身额度用尽的（与 rateWords 互斥判）。
+fn planned_words(w: &Words) -> bool {
+    let st = &w.stripped;
+    let sq = &w.squeezed;
+    has(st, b"quota")
+        || has(sq, b"usagelimit")
+        || has_after(st, b"hit your", b"limit", MAXSPAN)
+        || has_after(st, b"reached your", b"limit", MAXSPAN)
+        || has_after(st, b"limit", b"resets", 24 + 6)
+        || ["perday", "perweek", "permonth"].iter().any(|x| has(sq, x.as_bytes()))
+        || ["daily", "weekly", "monthly", "额度", "用量", "套餐", "限额已用完"]
+            .iter()
+            .any(|x| has(st, x.as_bytes()))
+}
+
+/// minuteWords：窗口是一分钟或更短（TPM/RPM）。
+fn minute_words(w: &Words) -> bool {
+    let sq = &w.squeezed;
+    ["persecond", "perminute", "persec", "permin"].iter().any(|x| has(sq, x.as_bytes()))
+        || ["rpm", "tpm", "rps", "tps"].iter().any(|x| has_word(&w.stripped, x.as_bytes()))
+        || ["tokenratelimit", "callratelimit", "requestratelimit"].iter().any(|x| has(sq, x.as_bytes()))
+        || ["每分钟", "每秒"].iter().any(|x| has(&w.stripped, x.as_bytes()))
+}
+
+/// longWords：比一分钟长的窗口或套餐限额（minuteWords 的反面）。
+fn long_words(w: &Words) -> bool {
+    let st = &w.stripped;
+    let sq = &w.squeezed;
+    has(sq, b"usagelimit")
+        || has_after(st, b"hit your", b"limit", MAXSPAN)
+        || has_after(st, b"reached your", b"limit", MAXSPAN)
+        || has_after(st, b"limit", b"resets", 24 + 6)
+        || ["perhour", "perday", "perweek", "permonth"].iter().any(|x| has(sq, x.as_bytes()))
+        || has_word(st, b"hour")
+        || has_word(st, b"hours")
+        || ["rpd", "rph", "tpd", "tph"].iter().any(|x| has_word(st, x.as_bytes()))
+        || ["hourly", "daily", "weekly", "monthly", "额度已用", "用量", "套餐", "限额已用完", "小时", "每天", "每日", "每周", "每月"]
+            .iter()
+            .any(|x| has(st, x.as_bytes()))
+}
+
+/// quotaCodes：厂商自己的额度用尽代码（5xx 里光词不算，代码才算）。
+fn quota_codes(w: &Words) -> bool {
+    if has(&w.stripped, b"usage_limit_reached") || has(&w.stripped, b"resource_exhausted") {
+        return true;
+    }
+    // Go `limit reached\|\d{10}\b`（Claude Code 的 resets 行）。
+    let hay = &w.stripped;
+    let needle = b"limit reached|";
+    let mut from = 0;
+    while let Some(rel) = hay[from.min(hay.len())..].windows(needle.len()).position(|x| x == needle) {
+        let at = from + rel + needle.len();
+        if at + 10 <= hay.len()
+            && hay[at..at + 10].iter().all(|b| b.is_ascii_digit())
+            && (at + 10 >= hay.len() || !hay[at + 10].is_ascii_alphanumeric())
+        {
+            return true;
+        }
+        from += rel + 1;
+    }
+    false
+}
+
+/// Go minuteRate（routing.go :645）：分钟级限速且没提更长窗口/余额花光。
+fn minute_rate(w: &Words) -> bool {
+    minute_words(w) && !long_words(w) && !broke_words(w)
+}
+
+/// Go failure（routing.go :570）的 Codex 相关子集。跳过的两支：resetsWhen
+/// （带时区偏移的整日期正则——WorkBuddy/Ark 的措辞，ChatGPT 的额度拒答走
+/// plannedWords/usedUpWords 已覆盖）与 backSoon（要解析等待时长）。
+fn failure_class(status: u16, body: &[u8]) -> &'static str {
+    let w = Words::of(body);
+    let insufficient_quota = has(body, b"insufficient_quota"); // Go bodyHas：大小写敏感原文
+    if status == 402 && used_up_words(&w) && !credit_words(&w) && !insufficient_quota {
+        return "quota";
+    }
+    if status == 402 || (credit_words(&w) && (status != 429 || broke_words(&w))) || (insufficient_quota && !minute_rate(&w)) {
+        return "credit";
+    }
+    if status == 429 {
+        if minute_rate(&w) {
+            return "rate";
+        }
+        if rate_words(&w) && !planned_words(&w) {
+            return "rate";
+        }
+        if planned_words(&w) {
+            return "quota";
+        }
+        return "rate";
+    }
+    if status >= 500 && quota_codes(&w) {
+        return "quota";
+    }
+    if status < 500 && used_up_words(&w) {
+        return "quota";
+    }
+    "other"
+}
+
+/// Go codexAccountOut（codex_backend.go :1734）：ChatGPT 后端以「账户不行」
+/// （不是请求不行）拒了这一轮——额度用尽 / 没credits / 限速。**401 永远不算**
+/// （Go：Codex 在 401 上自己续登录）。命中 = 该换下一账号。
+fn codex_account_out(status: u16, body: &[u8]) -> bool {
+    if status == 401 {
+        return false;
+    }
+    if status == 403 && has(body, b"usage_not_included") {
+        return true;
+    }
+    failure_class(status, body) != "other"
 }
 
 // =====================================================================
@@ -1154,13 +1479,9 @@ fn proto_error(proto: Proto, status: u16, message: &str) -> Reply {
     }
 }
 
-/// 上游非 200 的应答体 → 入站协议的错误：Responses 入站原样（合同面）；
-/// chat / anthropic 入站抠出人话重包成各自的错误形状，状态码透传。
-fn upstream_error_reply(proto: Proto, status: u16, body: Vec<u8>) -> Reply {
-    if proto == Proto::Responses {
-        return Reply::Json { status, body };
-    }
-    let message = serde_json::from_slice::<Value>(&body)
+/// 上游错误体里的人话（upstream_error_reply 与耗尽兜底共用）。
+fn vendor_message(status: u16, body: &[u8]) -> String {
+    serde_json::from_slice::<Value>(body)
         .ok()
         .and_then(|v| {
             ["/error/message", "/error", "/message", "/detail"]
@@ -1168,15 +1489,36 @@ fn upstream_error_reply(proto: Proto, status: u16, body: Vec<u8>) -> Reply {
                 .find_map(|p| v.pointer(p).and_then(|x| x.as_str()).filter(|s| !s.trim().is_empty()).map(String::from))
         })
         .unwrap_or_else(|| {
-            let t = String::from_utf8_lossy(&body);
+            let t = String::from_utf8_lossy(body);
             let t = t.trim();
             if t.is_empty() {
                 format!("Codex answered {status} with an empty body")
             } else {
                 t.chars().take(400).collect()
             }
-        });
-    proto_error(proto, status, &message)
+        })
+}
+
+/// 上游非 200 的应答体 → 入站协议的错误：Responses 入站原样（合同面）；
+/// chat / anthropic 入站抠出人话重包成各自的错误形状，状态码透传。
+fn upstream_error_reply(proto: Proto, status: u16, body: Vec<u8>) -> Reply {
+    if proto == Proto::Responses {
+        return Reply::Json { status, body };
+    }
+    proto_error(proto, status, &vendor_message(status, &body))
+}
+
+/// 订阅耗尽兜底应答（Go codexFallBack 的「无下一跳」半边）：429 + 明确文案。
+/// `groups::retryable` 对 429 恒真——上层组路由的候选循环据此换成员。
+fn exhausted_reply(proto: Proto, upstream_status: u16, body: &[u8]) -> Reply {
+    let msg = format!("{}: {}", EXHAUSTED_MESSAGE, vendor_message(upstream_status, body));
+    match proto {
+        Proto::Anthropic => proto_error(proto, 429, &msg),
+        _ => Reply::json(
+            429,
+            &json!({ "error": { "message": msg, "type": "rate_limit_error", "code": "usage_limit_reached" } }),
+        ),
+    }
 }
 
 /// SSE 聚合成最终 response 对象（客户端要非流式时）。失败 → (状态, 消息)。
@@ -1237,14 +1579,38 @@ fn aggregate_sse(reader: impl Read) -> Reply {
     }
 }
 
+/// 出站体 gzip（Go codex_zstd.go CodexCompressed :70 的 gzip 偏差版）：超过
+/// [`COMPRESS_MIN`] 的明文 gzip 后 `Content-Encoding: gzip` 发送（flate2 已在
+/// 依赖，chat 端 bodyprep 同源）。压缩失败 → 回明文（宁可 503 也不能不发）。
+/// Go 用 zstd（codex CLI 同款）；ruzstd 只有解压器，加 C 绑定被红线禁止。
+fn gzip_payload(payload: &[u8]) -> Option<Vec<u8>> {
+    use flate2::write::GzEncoder;
+    if payload.len() <= COMPRESS_MIN {
+        return None;
+    }
+    let mut enc = GzEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(payload).ok()?;
+    enc.finish().ok().filter(|z| !z.is_empty())
+}
+
 /// 打开上游流：200 → Response（SSE 待读）；其它 → Err(Reply 由调用方按入站
-/// 协议整形)。
+/// 协议整形)。大请求体 gzip 出站。
 fn open_upstream(account: &Account, ver: &str, body: &Value) -> Result<ureq::Response, (u16, Vec<u8>)> {
     let url = format!("{}/responses", base_url().trim_end_matches('/'));
     let payload = serde_json::to_vec(body).unwrap_or_default();
-    let request = sign(super::outbound_agent().post(&url), account, ver, Some(body))
+    let mut request = sign(super::outbound_agent().post(&url), account, ver, Some(body))
         .set("Content-Type", "application/json");
-    let response = match request.send_bytes(&payload) {
+    // Go CodexCompressed：已带非 identity 编码的绝不二压（sign 从不设它，
+    // 这里照抄守卫语义）。
+    let already = request
+        .header("content-encoding")
+        .is_some_and(|v| !v.eq_ignore_ascii_case("identity"));
+    let wire = if !already { gzip_payload(&payload) } else { None };
+    if wire.is_some() {
+        request = request.set("Content-Encoding", "gzip");
+    }
+    let bytes = wire.unwrap_or_else(|| payload.clone());
+    let response = match request.send_bytes(&bytes) {
         Ok(r) => r,
         // 厂商的 4xx/5xx 是合同面的一部分，原样取回（chat.rs 同款）。
         Err(ureq::Error::Status(_, r)) => r,
@@ -1262,10 +1628,51 @@ fn open_upstream(account: &Account, ver: &str, body: &Value) -> Result<ureq::Res
     Ok(response)
 }
 
-fn forward_responses(account: &Account, ver: &str, body: &Value, client_wants_stream: bool) -> Reply {
-    let response = match open_upstream(account, ver, body) {
+/// 一次轮换里的失败：原样错误（现有路径）或「全部账号都耗尽」。
+enum UpstreamFailure {
+    Raw(u16, Vec<u8>),
+    Exhausted { upstream: u16, body: Vec<u8> },
+}
+
+/// 按账号序试到成功（Go codexFallBack 的账号轮换半边）：额度类错误
+/// （[`codex_account_out`]）换下一账号重发**同一个**整形请求；其它错误
+/// （401/400/5xx 过载……）原样返回——那些不是「这个账号不行」。全部账号
+/// 都耗尽 → [`UpstreamFailure::Exhausted`]。
+fn open_upstream_rotating(accounts: &[Account], ver: &str, body: &Value) -> Result<ureq::Response, UpstreamFailure> {
+    let mut last: Option<(u16, Vec<u8>)> = None;
+    for (i, account) in accounts.iter().enumerate() {
+        match open_upstream(account, ver, body) {
+            Ok(r) => return Ok(r),
+            Err((status, err_body)) => {
+                let out = codex_account_out(status, &err_body);
+                if out && i + 1 < accounts.len() {
+                    last = Some((status, err_body));
+                    continue;
+                }
+                if out {
+                    return Err(UpstreamFailure::Exhausted { upstream: status, body: err_body });
+                }
+                return Err(UpstreamFailure::Raw(status, err_body));
+            }
+        }
+    }
+    // 到这里只有一个可能：accounts 为空（调用方保证非空，防御一下）。
+    match last {
+        Some((status, body)) => Err(UpstreamFailure::Raw(status, body)),
+        None => Err(UpstreamFailure::Raw(
+            502,
+            br#"{"error":{"message":"codex: no account to try","type":"engine_error"}}"#.to_vec(),
+        )),
+    }
+}
+
+fn forward_responses(accounts: &[Account], ver: &str, body: &Value, client_wants_stream: bool) -> Reply {
+    let response = match open_upstream_rotating(accounts, ver, body) {
         Ok(r) => r,
-        Err((status, body)) => return Reply::Json { status, body },
+        Err(UpstreamFailure::Raw(status, body)) => return Reply::Json { status, body },
+        Err(UpstreamFailure::Exhausted { upstream, body }) => {
+            return exhausted_reply(Proto::Responses, upstream, &body)
+        }
     };
     if client_wants_stream {
         return Reply::Stream {
@@ -1280,7 +1687,7 @@ fn forward_responses(account: &Account, ver: &str, body: &Value, client_wants_st
 /// chat / anthropic 入站：已翻成 Responses 并整形的请求 → 上游 → 翻回去。
 fn forward_translated(
     proto: Proto,
-    account: &Account,
+    accounts: &[Account],
     ver: &str,
     shaped: &Value,
     names_back: super::translate::NamesBack,
@@ -1288,9 +1695,10 @@ fn forward_translated(
     client_wants_stream: bool,
     include_usage: bool,
 ) -> Reply {
-    let response = match open_upstream(account, ver, shaped) {
+    let response = match open_upstream_rotating(accounts, ver, shaped) {
         Ok(r) => r,
-        Err((status, body)) => return upstream_error_reply(proto, status, body),
+        Err(UpstreamFailure::Raw(status, body)) => return upstream_error_reply(proto, status, body),
+        Err(UpstreamFailure::Exhausted { upstream, body }) => return exhausted_reply(proto, upstream, &body),
     };
     if client_wants_stream {
         // anthropic 出站复用 messages.rs 的 chat→anthropic 翻译器（它要
@@ -1369,22 +1777,39 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
     let (bare, levels, member_pin, fast) = (cand.model, cand.levels, cand.account, cand.fast);
     let (bare, direct_pin) = split_direct_pin(&bare);
     let pin = member_pin.or(direct_pin);
-    // 账号：钉了就只用它（找不到 = 明确报错，不落到别的账号）；没钉取最优。
-    // 凭据每个请求现读，从不写、从不刷新。
-    let account = match select_account(pin.as_deref()) {
-        Selected::Ok(a) => a,
-        Selected::NoAccount => return None,
-        Selected::UnknownPin(p) => {
-            return Some(proto_error(
-                proto,
-                404,
-                &format!("no Codex account matches \"{p}\" (use the account's email, id or account id)"),
-            ))
+    // 账号序（Go codexFallBack 的账号轮换半边）：钉了就只有它（找不到 =
+    // 明确报错，不落到别的账号）；没钉取「最优打头 + 发现序」的未过期
+    // 队列——上一个被额度类错误拒了就换下一个。凭据每个请求现读，
+    // 从不写、从不刷新。
+    let accounts: Vec<Account> = match pin.as_deref() {
+        Some(_) => match select_account(pin.as_deref()) {
+            Selected::Ok(a) => {
+                if a.expired() {
+                    return Some(proto_error(proto, 401, EXPIRED_MESSAGE));
+                }
+                vec![a]
+            }
+            Selected::NoAccount => return None,
+            Selected::UnknownPin(p) => {
+                return Some(proto_error(
+                    proto,
+                    404,
+                    &format!("no Codex account matches \"{p}\" (use the account's email, id or account id)"),
+                ))
+            }
+        },
+        None => {
+            let live = ordered_live(discover_all());
+            if live.is_empty() {
+                // 没有账号（原路径 404）或全过期（最优那份报「登录过期」）。
+                return match discover() {
+                    None => None,
+                    Some(_) => Some(proto_error(proto, 401, EXPIRED_MESSAGE)),
+                };
+            }
+            live
         }
     };
-    if account.expired() {
-        return Some(proto_error(proto, 401, EXPIRED_MESSAGE));
-    }
     // 成员强度后缀（`codex/gpt-6-luna:xhigh`）：与其它来源同一套语义，按入站协议的字段改。
     let body = if levels.is_empty() {
         request.body.clone()
@@ -1414,7 +1839,7 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
         shaped["service_tier"] = Value::String("priority".into());
     }
     if proto == Proto::Responses {
-        return Some(forward_responses(&account, &ver, &shaped, client_wants_stream));
+        return Some(forward_responses(&accounts, &ver, &shaped, client_wants_stream));
     }
     let include_usage = inbound
         .pointer("/stream_options/include_usage")
@@ -1422,7 +1847,7 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
         .unwrap_or(false);
     Some(forward_translated(
         proto,
-        &account,
+        &accounts,
         &ver,
         &shaped,
         names_back,
@@ -1484,6 +1909,9 @@ mod tests {
         hits: Arc<AtomicUsize>,
         seen: Arc<Mutex<Vec<Recorded>>>,
         routes: Arc<Mutex<Vec<(String, u16, String, String)>>>,
+        /// 序列路由：同前缀第 N 次请求回第 N 条（用尽重复最后一条）——
+        /// 账号轮换测试用（第一次 429、第二次 200）。
+        seqs: Arc<Mutex<Vec<(String, Vec<(u16, String, String)>)>>>,
     }
 
     impl Mock {
@@ -1493,12 +1921,13 @@ mod tests {
             let hits = Arc::new(AtomicUsize::new(0));
             let seen: Arc<Mutex<Vec<Recorded>>> = Arc::new(Mutex::new(Vec::new()));
             let routes: Arc<Mutex<Vec<(String, u16, String, String)>>> = Arc::new(Mutex::new(Vec::new()));
-            let (h, s, r) = (hits.clone(), seen.clone(), routes.clone());
+            let seqs: Arc<Mutex<Vec<(String, Vec<(u16, String, String)>)>>> = Arc::new(Mutex::new(Vec::new()));
+            let (h, s, r, q) = (hits.clone(), seen.clone(), routes.clone(), seqs.clone());
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
                     let Ok(stream) = stream else { continue };
                     h.fetch_add(1, Ordering::SeqCst);
-                    let (s, r) = (s.clone(), r.clone());
+                    let (s, r, q) = (s.clone(), r.clone(), q.clone());
                     std::thread::spawn(move || {
                         let mut reader = BufReader::new(stream.try_clone().unwrap());
                         let mut request_line = String::new();
@@ -1523,13 +1952,33 @@ mod tests {
                         let len: usize = headers.get("content-length").and_then(|l| l.parse().ok()).unwrap_or(0);
                         let mut body = vec![0u8; len];
                         reader.read_exact(&mut body).ok();
-                        let reply = r
-                            .lock()
-                            .unwrap()
-                            .iter()
-                            .find(|(prefix, ..)| path.starts_with(prefix.as_str()))
-                            .map(|(_, status, ct, b)| (*status, ct.clone(), b.clone()))
-                            .unwrap_or((404, "text/plain".into(), "no route".into()));
+                        let seq_reply = {
+                            let hit = q
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .find(|(prefix, _)| path.starts_with(prefix.as_str()))
+                                .map(|(prefix, reps)| {
+                                    let nth = s
+                                        .lock()
+                                        .unwrap()
+                                        .iter()
+                                        .filter(|r| r.path.starts_with(prefix.as_str()))
+                                        .count();
+                                    reps[nth.min(reps.len() - 1)].clone()
+                                });
+                            hit
+                        };
+                        let reply = match seq_reply {
+                            Some(r) => r,
+                            None => r
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .find(|(prefix, ..)| path.starts_with(prefix.as_str()))
+                                .map(|(_, status, ct, b)| (*status, ct.clone(), b.clone()))
+                                .unwrap_or((404, "text/plain".into(), "no route".into())),
+                        };
                         s.lock().unwrap().push(Recorded { method, path, headers, body });
                         let mut stream = stream;
                         let out = format!(
@@ -1543,13 +1992,22 @@ mod tests {
                     });
                 }
             });
-            Mock { base: format!("http://127.0.0.1:{port}/backend-api/codex"), hits, seen, routes }
+            Mock { base: format!("http://127.0.0.1:{port}/backend-api/codex"), hits, seen, routes, seqs }
         }
 
         fn route(&self, prefix: &str, status: u16, content_type: &str, body: &str) {
             let mut routes = self.routes.lock().unwrap();
             routes.retain(|(p, ..)| p != prefix);
             routes.push((prefix.to_string(), status, content_type.to_string(), body.to_string()));
+        }
+
+        /// 同前缀按次序回（用尽重复最后一条）。
+        fn route_seq(&self, prefix: &str, reps: &[(u16, &str, &str)]) {
+            let mut seqs = self.seqs.lock().unwrap();
+            seqs.retain(|(p, _)| p != prefix);
+            let reps: Vec<(u16, String, String)> =
+                reps.iter().map(|(s, c, b)| (*s, c.to_string(), b.to_string())).collect();
+            seqs.push((prefix.to_string(), reps));
         }
 
         fn hits(&self) -> usize {
@@ -2768,5 +3226,214 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         );
         assert!(v.get("tools").is_none());
         assert_eq!(v["input"][0]["tools"][1]["type"], "web_search");
+    }
+
+    // ---- 出站压缩（gzip 偏差版）+ 订阅耗尽回退（codexFallBack 最小版） ----
+
+    #[test]
+    fn oversized_body_is_gzipped_and_equivalent() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", SSE_OK);
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let big = "x".repeat(COMPRESS_MIN + 10);
+        let (status, _) = reply_json(super::super::routes::route(
+            &post(
+                "/v1/responses",
+                &json!({"model":"codex/gpt-6-luna","stream":true,"input":big}),
+            ),
+            &gateway,
+        ));
+        assert_eq!(status, 200);
+        let (headers, body) = mock.last("/backend-api/codex/responses");
+        assert_eq!(headers["content-encoding"], "gzip");
+        use flate2::read::GzDecoder;
+        let mut plain = Vec::new();
+        GzDecoder::new(&body[..]).read_to_end(&mut plain).expect("gunzip");
+        let sent: Value = serde_json::from_slice(&plain).expect("json");
+        assert_eq!(sent["model"], "gpt-6-luna");
+        // 解压后等价：整段正文原样在（shape 过的形态）
+        let text = sent["input"][0]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(text.len(), COMPRESS_MIN + 10);
+    }
+
+    #[test]
+    fn small_body_stays_plain() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/responses", 200, "text/event-stream", SSE_OK);
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let _ = super::super::routes::route(
+            &post("/v1/responses", &json!({"model":"codex/gpt-6-luna","stream":true,"input":"small"})),
+            &gateway,
+        );
+        let (headers, _) = mock.last("/backend-api/codex/responses");
+        assert!(!headers.contains_key("content-encoding"));
+    }
+
+    #[test]
+    fn account_out_word_table_matches_go() {
+        // 429：ChatGPT 的标准额度拒绝（代码 / 措辞）
+        assert!(codex_account_out(429, br#"{"error":{"code":"usage_limit_reached","message":"You've reached your usage limit"}}"#));
+        assert!(codex_account_out(429, br#"{"error":{"message":"Too many requests"}}"#));
+        assert!(codex_account_out(429, b"Rate limit exceeded"));
+        assert!(codex_account_out(429, br#"rate limit per minute exceeded"#)); // 分钟级 → rate
+        // 403 + usage_not_included（没有 Codex 的套餐）
+        assert!(codex_account_out(403, br#"{"detail":"usage_not_included"}"#));
+        // 402：credit
+        assert!(codex_account_out(402, br#"{"error":{"message":"insufficient credits"}}"#));
+        // 401 永远不算（Go codexAccountOut：Codex 在 401 上自己续登录）
+        assert!(!codex_account_out(401, br#"{"detail":"Token expired"}"#));
+        // 400/404 普通措辞不算
+        assert!(!codex_account_out(400, br#"{"detail":"invalid request"}"#));
+        assert!(!codex_account_out(404, br#"{"detail":"Model not found"}"#));
+        assert!(!codex_account_out(400, b"This model's maximum context length is 8192 tokens"));
+        // 5xx 过载不算；5xx + 额度代码算（quotaCodes）
+        assert!(!codex_account_out(500, br#"{"error":{"message":"internal error"}}"#));
+        assert!(codex_account_out(500, br#"{"error":{"code":"usage_limit_reached"}}"#));
+        // <500 + 额度词算（usedUpWords）
+        assert!(codex_account_out(400, br#"{"error":{"message":"You exceeded your current quota"}}"#));
+        // 中文词表（额度/余额）
+        assert!(codex_account_out(429, "额度已用完，请明天再来".as_bytes()));
+        assert!(codex_account_out(402, "余额不足，请充值".as_bytes()));
+    }
+
+    #[test]
+    fn account_out_rotates_to_the_next_account() {
+        let mock = Mock::start();
+        mock.route_seq(
+            "/backend-api/codex/responses",
+            &[
+                (429, "application/json", r#"{"error":{"code":"usage_limit_reached","message":"usage limit reached"}}"#),
+                (200, "text/event-stream", SSE_OK),
+            ],
+        );
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        // a 到期更晚 → 默认先试 a；a 被额度拒 → 换 b
+        let a = fake_jwt(json!({ "exp": now_secs() + 9000 }));
+        let b = fake_jwt(json!({ "exp": now_secs() + 1000 }));
+        write_logins_multi(
+            &w,
+            &[("acc-a", "a@example.test", &a, "acct-a"), ("acc-b", "b@example.test", &b, "acct-b")],
+        );
+        let (status, resp) = reply_json(super::super::routes::route(
+            &post(
+                "/v1/chat/completions",
+                &json!({"model":"codex/gpt-6-luna","messages":[{"role":"user","content":"x"}]}),
+            ),
+            &gateway,
+        ));
+        assert_eq!(status, 200);
+        assert_eq!(resp["choices"][0]["message"]["content"], "hi");
+        assert_eq!(mock.hits(), 2);
+        let seen = mock.seen.lock().unwrap();
+        assert_eq!(seen[0].headers["authorization"], format!("Bearer {a}"));
+        assert_eq!(seen[1].headers["authorization"], format!("Bearer {b}"));
+        assert_eq!(seen[1].headers["chatgpt-account-id"], "acct-b");
+    }
+
+    #[test]
+    fn all_accounts_exhausted_is_a_determinable_429() {
+        let mock = Mock::start();
+        mock.route(
+            "/backend-api/codex/responses",
+            429,
+            "application/json",
+            r#"{"error":{"code":"usage_limit_reached","message":"You've reached your usage limit"}}"#,
+        );
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        let a = fake_jwt(json!({ "exp": now_secs() + 9000 }));
+        let b = fake_jwt(json!({ "exp": now_secs() + 1000 }));
+        write_logins_multi(
+            &w,
+            &[("acc-a", "a@example.test", &a, "acct-a"), ("acc-b", "b@example.test", &b, "acct-b")],
+        );
+        // chat 入站：429 + 「订阅耗尽」文案 + 代码（groups::retryable 对 429 恒真）
+        let (status, body) = reply_json(super::super::routes::route(
+            &post(
+                "/v1/chat/completions",
+                &json!({"model":"codex/gpt-6-luna","messages":[{"role":"user","content":"x"}]}),
+            ),
+            &gateway,
+        ));
+        assert_eq!(status, 429);
+        let msg = body["error"]["message"].as_str().unwrap();
+        assert!(msg.contains("exhausted"), "{msg}");
+        assert!(msg.contains("usage limit"), "{msg}");
+        assert_eq!(body["error"]["code"], "usage_limit_reached");
+        assert_eq!(mock.hits(), 2); // 两个账号都试过了
+        // anthropic 入站：rate_limit_error 信封
+        let (status, body) = reply_json(super::super::routes::route(
+            &post(
+                "/v1/messages",
+                &json!({"model":"codex/gpt-6-luna","max_tokens":9,"messages":[{"role":"user","content":"x"}]}),
+            ),
+            &gateway,
+        ));
+        assert_eq!(status, 429);
+        assert_eq!(body["error"]["type"], "rate_limit_error");
+        assert!(body["error"]["message"].as_str().unwrap().contains("exhausted"));
+        // Responses 入站（流式/非流式同错）
+        let (status, body) = reply_json(super::super::routes::route(
+            &post("/v1/responses", &json!({"model":"codex/gpt-6-luna","stream":true,"input":"x"})),
+            &gateway,
+        ));
+        assert_eq!(status, 429);
+        assert_eq!(body["error"]["code"], "usage_limit_reached");
+    }
+
+    #[test]
+    fn pinned_account_exhausted_does_not_leak_to_other_accounts() {
+        let mock = Mock::start();
+        mock.route(
+            "/backend-api/codex/responses",
+            429,
+            "application/json",
+            r#"{"error":{"code":"usage_limit_reached","message":"usage limit reached"}}"#,
+        );
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        let a = fake_jwt(json!({ "exp": now_secs() + 9000 }));
+        let b = fake_jwt(json!({ "exp": now_secs() + 1000 }));
+        write_logins_multi(
+            &w,
+            &[("acc-a", "a@example.test", &a, "acct-a"), ("acc-b", "b@example.test", &b, "acct-b")],
+        );
+        // 钉死 = 只有它：耗尽就是耗尽，不落到别的账号（Go memberAccountKept 同款）
+        let (status, body) = reply_json(super::super::routes::route(
+            &post(
+                "/v1/chat/completions",
+                &json!({"model":"codex/gpt-6-luna#acc-a","messages":[{"role":"user","content":"x"}]}),
+            ),
+            &gateway,
+        ));
+        assert_eq!(status, 429);
+        assert!(body["error"]["message"].as_str().unwrap().contains("exhausted"));
+        assert_eq!(mock.hits(), 1);
+        assert_eq!(mock.last("/backend-api/codex/responses").0["authorization"], format!("Bearer {a}"));
+    }
+
+    #[test]
+    fn non_account_errors_do_not_rotate() {
+        let mock = Mock::start();
+        mock.route("/backend-api/codex/responses", 500, "text/plain", "busy");
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        let a = fake_jwt(json!({ "exp": now_secs() + 9000 }));
+        let b = fake_jwt(json!({ "exp": now_secs() + 1000 }));
+        write_logins_multi(
+            &w,
+            &[("acc-a", "a@example.test", &a, "acct-a"), ("acc-b", "b@example.test", &b, "acct-b")],
+        );
+        let (status, body) = reply_json(super::super::routes::route(
+            &post(
+                "/v1/chat/completions",
+                &json!({"model":"codex/gpt-6-luna","messages":[{"role":"user","content":"x"}]}),
+            ),
+            &gateway,
+        ));
+        // 5xx 过载不是「这个账号不行」：原样取回（Go codexBusy 另有重试，这里
+        // 交给上层），不换账号
+        assert_eq!(status, 500);
+        assert_eq!(mock.hits(), 1);
+        assert_eq!(body["error"]["message"], "busy");
     }
 }

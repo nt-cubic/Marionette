@@ -162,6 +162,7 @@ const fixture = createServer((req, res) => {
       if (marker === "script:cut") {
         res.statusCode = 200;
         res.setHeader("Content-Type", "text/event-stream");
+        res.flushHeaders(); // headers on the wire before the cut — both engines must see the stream open, then die
         res.write(`data: ${chatChunk({ role: "assistant" })}\n\n`);
         res.write(`data: ${chatChunk({ content: "partial-" })}\n\n`);
         res.destroy(); // upstream dies mid-stream
@@ -598,14 +599,15 @@ try {
   await pending("D7", async () => {
     const res = await post("/v1/chat/completions", { model: `${id}/alpha-model`, stream: true, messages: [{ role: "user", content: "script:cut" }] });
     const { events, done } = await readSse(res);
+    // Floor contract: the agent must be able to TELL the turn went bad. A
+    // non-200 error reply is as decidable as an in-stream error event; a
+    // bare 200 EOF with neither terminator nor error is the violation.
+    if (res.status >= 400) return;
     if (!done) {
-      // Not all engines continue a cut stream; the floor contract is that the
-      // agent can tell the turn ended badly instead of hanging on EOF. Accept
-      // a terminal error event OR [DONE]; a bare EOF with neither is a fail.
       const tail = parseEvents<{ type?: string; error?: unknown }>(events).slice(-2);
       assert.ok(
         tail.some((e) => e.error || (e.type ?? "").includes("error") || (e.type ?? "") === "response.failed"),
-        `cut stream ended with bare EOF, agent cannot distinguish failure: tail=${JSON.stringify(tail)}`,
+        `cut stream ended with bare EOF at 200, agent cannot distinguish failure: tail=${JSON.stringify(tail)}`,
       );
     }
   });

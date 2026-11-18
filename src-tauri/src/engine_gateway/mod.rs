@@ -13,9 +13,15 @@
 #![allow(dead_code)]
 
 pub mod bodycap;
+pub mod prev_response;
+pub mod usage_ledger;
+pub mod textcalls;
+pub mod affinity;
 pub mod bodyprep;
 pub mod catalog;
+pub mod chattidy;
 pub mod chat;
+pub mod claude_account;
 pub mod cli;
 pub mod codex_account;
 pub mod codex_catalog;

@@ -4,8 +4,22 @@
 //!
 //! 组路由与失败转移（groups.rs）：asked 解析成有序候选表，[`attempt`] 打一个
 //! 成员——连接失败 / `groups::retryable` 口径的状态时返回 `Attempt::Retry`
-//! 让 `groups::drive` 换下一个；**只在应答头阶段换**，流式 2xx 一旦交出
+//! 换下一个；**只在应答头阶段换**，流式 2xx 一旦交出
 //! `Stream` 就是终局。responses/messages 的翻译路径复用同一个 [`attempt`]。
+//!
+//! 批 3「流可靠性」（D7/D10，Go fallback.go holdWriter + routing.go rest +
+//! chattidy.go/grok_integral.go 的最小组合）：
+//! - **扣流首**（D7）：2xx 流式应答先扣住流首——上游吐出第一条完整 SSE 行
+//!   之前一个字节都不给客户端；死在流首之前的候选静默换下一个重发整轮。
+//!   流首一旦放行，流就是终局。
+//! - **可判定收尾**（D7）：上游流 EOF 时若从未见过 `data: [DONE]`
+//!   （非流式 = 整块 JSON 解析失败），且没有候选可换，由 [`ClosingReader`]
+//!   补一段显式 error 帧 + `[DONE]`——裸 EOF 违约，agent 必须能判定这轮
+//!   坏掉了。
+//! - **直通改写**（D10）：流输出包 `chattidy::ChattidyReader`，非流式整块
+//!   过 `chattidy::mend_whole_reply`——工具参数零分数（2500.0→2500）、
+//!   usage 口径、空名工具剔除、同帧同 index 合并（详见 chattidy.rs）。
+//! - **休息记忆**：5xx/429/断流的候选 60s 内跳过（全在休息则无视）。
 //!
 //! 出站前的 chat 体「合身」（Go gateway.go `case provider.Chat` 那一段的
 //! 子集，[`fit_for_vendor`]）：`developer`→`system`、纯文本 parts 折成字符串、
@@ -13,11 +27,15 @@
 //! 400 点名另一个字段时改名重发一次并记住）、DeepSeek 系回放 `reasoning_content`
 //! （translate.rs 的 responses→chat 把 reasoning item 暂存在 [`THINK_KEY`]，
 //! 这里按厂商决定是回放还是丢弃）。
+use std::collections::HashMap;
 use std::io::Read;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 use super::bodycap;
+use super::chattidy;
 use super::groups::{self, Attempt, Candidate};
 use super::httpd::Reply;
 
@@ -372,7 +390,264 @@ pub(crate) fn attempt(gw: &super::Gateway, cand: &Candidate, body: &[u8]) -> Att
     }
 }
 
-/// POST /v1/chat/completions 入口。
+// ---------------------------------------------------------------------------
+// D7：断流可判定收尾 + 扣流首换人 + 休息记忆
+//（Go fallback.go:2786 holdWriter + routing.go:69 served/rest 的最小组合；
+//  continuation 断流续答（continuation.go:364）不做——见文件尾差距清单）
+// ---------------------------------------------------------------------------
+
+/// 流首扣留的体量上限：单行超长的厂商流（百 KB 的 arguments 分片）不再
+/// 等换行，按活流放行。
+const HEAD_HOLD_MAX: usize = 256 * 1024;
+
+/// 休息时长：5xx/429/断流的候选 60s 内被候选循环跳过。
+/// 与 Go 的差距（routing.go:69 `served` / restingUntil 家族）：不落盘、不分
+/// 错误等级（Go 按额度耗尽/限流 Retry-After/挂了分窗口长度且逐次失败退避
+/// 递增）、无 per-account/per-model 细分——这里按 provider id 一把抓。
+const REST_FOR: Duration = Duration::from_secs(60);
+
+fn rests() -> &'static Mutex<HashMap<String, Instant>> {
+    static RESTS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    RESTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 标记一个来源休息（5xx / 429 / 断流）。
+fn rest_provider(provider_id: &str) {
+    if let Ok(mut map) = rests().lock() {
+        map.retain(|_, until| *until > Instant::now());
+        map.insert(provider_id.to_string(), Instant::now() + REST_FOR);
+    }
+}
+
+/// 来源答上来了（流首放行 / 整块 JSON 解析成功）：清掉它的休息。
+fn wake(provider_id: &str) {
+    if let Ok(mut map) = rests().lock() {
+        map.remove(provider_id);
+    }
+}
+
+/// 该来源还剩多久休息（None = 不在休息）。pub(crate)：后续批次（订阅线/
+/// 额度联动）复用这张表。
+pub(crate) fn rest_left(provider_id: &str) -> Option<Duration> {
+    let map = rests().lock().ok()?;
+    map.get(provider_id).map(|until| until.saturating_duration_since(Instant::now()))
+}
+
+/// 测试隔离：routing_tests 的沙箱起手清表（并行测试互不串休息）。
+#[cfg(test)]
+fn clear_rests_for_tests() {
+    let _ = rests().lock().map(|mut m| m.clear());
+}
+
+/// 扣流首的结果。
+enum HeadHold {
+    /// 上游吐出了第一条完整 SSE 行（流活着）：扣住的字节 + 余下 reader。
+    Live { head: Vec<u8>, rest: Box<dyn Read + Send> },
+    /// 上游在第一条完整行之前就 EOF/读错误（一条完整行都没给）——可以静默
+    /// 换下一个候选重发整轮（客户端一个字节都还没收到）。
+    Dead,
+}
+
+/// 缓冲上游输出直到第一条完整行（`\n`）——Go holdWriter 扣流首的最小版：
+/// 应答头已写出（状态/Content-Type 描述的是形状不是内容），但内容字节一
+/// 个都没上路，此时换人客户端无感。单行超过 [`HEAD_HOLD_MAX`] 不再等。
+fn hold_head(mut reader: Box<dyn Read + Send>) -> HeadHold {
+    let mut head = Vec::new();
+    let mut chunk = [0u8; 8 * 1024];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => return HeadHold::Dead,
+            Ok(n) => {
+                head.extend_from_slice(&chunk[..n]);
+                if head.contains(&b'\n') || head.len() >= HEAD_HOLD_MAX {
+                    return HeadHold::Live { head, rest: reader };
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return HeadHold::Dead,
+        }
+    }
+}
+
+/// 流首字节 + 余下 reader 的拼接（扣流首放行后把扣住的字节还给流）。
+struct HeadThen {
+    head: Vec<u8>,
+    at: usize,
+    rest: Box<dyn Read + Send>,
+}
+
+impl Read for HeadThen {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.at < self.head.len() {
+            let n = buf.len().min(self.head.len() - self.at);
+            buf[..n].copy_from_slice(&self.head[self.at..self.at + n]);
+            self.at += n;
+            return Ok(n);
+        }
+        self.rest.read(buf)
+    }
+}
+
+/// `data: [DONE]` 行的 O(1) 匹配器：逐字节喂入，**行首锚定**（只容忍行首
+/// 空白），`data:` 后容忍 0..n 个空格，行尾容忍 `\r`/空白；出现任何别的
+/// 字节即判本行不可能（直到下一个换行重新开始）。大小写敏感（OpenAI 固定
+/// 大写）。
+#[derive(Default)]
+struct DoneMatcher {
+    state: DoneState,
+}
+
+#[derive(Default, PartialEq, Clone, Copy)]
+enum DoneState {
+    /// 行首（到目前为止只有空白）。
+    #[default]
+    Start,
+    /// `data:` 前缀匹配到第几字节（1..=4）。
+    Prefix(usize),
+    /// 冒号已过，跳空白。
+    Gap,
+    /// `[DONE]` 匹配到第几字节（1..=6）。
+    Done(usize),
+    /// `[DONE]` 已完整，只等行尾空白。
+    Trailing,
+    /// 本行已不可能。
+    Dead,
+}
+
+impl DoneMatcher {
+    const PREFIX: &'static [u8] = b"data:";
+    const DONE: &'static [u8] = b"[DONE]";
+
+    fn byte(&mut self, b: u8) {
+        self.state = match self.state {
+            DoneState::Start => match b {
+                b' ' | b'\t' => DoneState::Start,
+                b'd' => DoneState::Prefix(1),
+                _ => DoneState::Dead,
+            },
+            DoneState::Prefix(at) => {
+                if at < Self::PREFIX.len() && b == Self::PREFIX[at] {
+                    if at + 1 == Self::PREFIX.len() {
+                        DoneState::Gap
+                    } else {
+                        DoneState::Prefix(at + 1)
+                    }
+                } else {
+                    DoneState::Dead
+                }
+            }
+            DoneState::Gap => match b {
+                b' ' | b'\t' => DoneState::Gap,
+                b'[' => DoneState::Done(1),
+                _ => DoneState::Dead,
+            },
+            DoneState::Done(at) => {
+                if at < Self::DONE.len() && b == Self::DONE[at] {
+                    if at + 1 == Self::DONE.len() {
+                        DoneState::Trailing
+                    } else {
+                        DoneState::Done(at + 1)
+                    }
+                } else {
+                    DoneState::Dead
+                }
+            }
+            DoneState::Trailing => match b {
+                b' ' | b'\t' | b'\r' => DoneState::Trailing,
+                _ => DoneState::Dead,
+            },
+            DoneState::Dead => DoneState::Dead,
+        };
+    }
+
+    /// 行结束（\n 到达）。返回这一行是不是合法的 `[DONE]` 终止行，并复位。
+    fn end_of_line(&mut self) -> bool {
+        let hit = self.state == DoneState::Trailing;
+        self.state = DoneState::Start;
+        hit
+    }
+}
+
+/// 收尾守卫（D7）：上游 EOF/读错误时若从未见过 `data: [DONE]`，向客户端
+/// 补一段显式 error 帧 + `[DONE]`——裸 EOF 违约（agent 挂在 EOF 上分不清
+/// 这轮是完了还是坏了）。已见 [DONE] 的流按原样收尾；读错误视同断流。
+struct ClosingReader {
+    provider: String,
+    inner: Box<dyn Read + Send>,
+    matcher: DoneMatcher,
+    seen_done: bool,
+    finished: bool,
+    pending: Vec<u8>,
+    at: usize,
+}
+
+impl ClosingReader {
+    fn new(provider: String, inner: Box<dyn Read + Send>) -> ClosingReader {
+        ClosingReader {
+            provider,
+            inner,
+            matcher: DoneMatcher::default(),
+            seen_done: false,
+            finished: false,
+            pending: Vec::new(),
+            at: 0,
+        }
+    }
+
+    /// 终局：没见过 [DONE] 就补显式收尾（对话流形态：error 帧 + [DONE]）。
+    fn finish(&mut self) {
+        self.finished = true;
+        if !self.seen_done {
+            let frame = format!(
+                "data: {{\"error\":{{\"message\":\"{} stream ended without its terminator\",\"type\":\"engine_error\",\"code\":null}}}}\n\ndata: [DONE]\n\n",
+                self.provider
+            );
+            self.pending = frame.into_bytes();
+            self.at = 0;
+        }
+    }
+}
+
+impl Read for ClosingReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            if self.at < self.pending.len() {
+                let n = buf.len().min(self.pending.len() - self.at);
+                buf[..n].copy_from_slice(&self.pending[self.at..self.at + n]);
+                self.at += n;
+                return Ok(n);
+            }
+            if self.finished {
+                return Ok(0);
+            }
+            let mut chunk = [0u8; 16 * 1024];
+            match self.inner.read(&mut chunk) {
+                Ok(0) => self.finish(),
+                Ok(n) => {
+                    for &b in &chunk[..n] {
+                        if b == b'\n' {
+                            if self.matcher.end_of_line() {
+                                self.seen_done = true;
+                            }
+                        } else {
+                            self.matcher.byte(b);
+                        }
+                    }
+                    self.pending = chunk[..n].to_vec();
+                    self.at = 0;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => self.finish(), // 断流：补收尾（不把错误裸抛给写层）
+            }
+        }
+    }
+}
+
+/// POST /v1/chat/completions 入口（D7 后的候选循环，替代纯头阶段换人的
+/// `groups::drive`）：头阶段失败换成员（原语义保留）→ 2xx 流式扣流首 →
+/// 死在流首之前换下一个重发整轮 → 流首放行即终局（断流由 [`ClosingReader`]
+/// 补可判定收尾）→ 2xx 非流式以「整块 JSON 解析成功」为合法收尾。休息中
+/// 的候选跳过（全在休息则无视）。
 pub fn forward(gw: &super::Gateway, body: &[u8]) -> Reply {
     let model = serde_json::from_slice::<Value>(body)
         .ok()
@@ -382,11 +657,82 @@ pub fn forward(gw: &super::Gateway, body: &[u8]) -> Reply {
     if cands.is_empty() {
         return Reply::error(404, &format!("no provider for model: {model}"));
     }
-    groups::drive(&cands, |cand| {
+    let live: Vec<&Candidate> = {
+        let awake: Vec<&Candidate> = cands.iter().filter(|c| rest_left(&c.provider).is_none()).collect();
+        if awake.is_empty() { cands.iter().collect() } else { awake }
+    };
+    let mut last: Option<Reply> = None;
+    for cand in live {
         let body = groups::body_for(gw, super::effort::Proto::Chat, cand, body);
-        attempt(gw, cand, &body)
-    })
+        match attempt(gw, cand, &body) {
+            Attempt::Done(reply) => match reply {
+                Reply::Stream { status, content_type, reader } => match hold_head(reader) {
+                    HeadHold::Live { head, rest } => {
+                        wake(&cand.provider);
+                        let relay = ClosingReader::new(
+                            cand.provider.clone(),
+                            Box::new(chattidy::ChattidyReader::new(HeadThen { head, at: 0, rest })),
+                        );
+                        return Reply::Stream { status, content_type, reader: Box::new(relay) };
+                    }
+                    HeadHold::Dead => {
+                        rest_provider(&cand.provider);
+                        last = Some(Reply::error(
+                            502,
+                            &format!("{}: stream ended before its first line", cand.provider),
+                        ));
+                        continue;
+                    }
+                },
+                Reply::Json { status, body } if status < 400 => {
+                    // 非流式的合法收尾 = 整块 JSON 解析成功（D7）；顺手过
+                    // chattidy 的整块修补（D10 非流式半边）。
+                    if serde_json::from_slice::<Value>(&body).is_ok() {
+                        wake(&cand.provider);
+                        return Reply::Json { status, body: chattidy::mend_whole_reply(&body) };
+                    }
+                    rest_provider(&cand.provider);
+                    last = Some(Reply::error(
+                        502,
+                        &format!("{}: reply ended without whole JSON", cand.provider),
+                    ));
+                    continue;
+                }
+                other => return other,
+            },
+            Attempt::Retry(reply) => {
+                if let Reply::Json { status, .. } = &reply {
+                    if *status == 429 || *status >= 500 {
+                        rest_provider(&cand.provider);
+                    }
+                }
+                last = Some(reply);
+                continue;
+            }
+        }
+    }
+    last.unwrap_or_else(|| Reply::error(502, "no candidate answered"))
 }
+
+// ---------------------------------------------------------------------------
+// 与 Go 的已知差距（批 3 收口清单；survey N1/N3/N4 的 Rust 侧残留）
+// ---------------------------------------------------------------------------
+
+// - **continuation 断流续答不做**（Go continuation.go:364 again / :378
+//   prefillText / :455 streamTranslated）：上游在流中途死亡且字节已发给
+//   客户端时，Go 会用 prefill 续写拼回完整回复；这里只保证可判定收尾
+//   （ClosingReader 的显式 error 帧 + [DONE]），不续答。
+// - **扣流首只护第一条完整行**：Go holdWriter 有 firstToken/patience 计时
+//   （组里等多久放弃首字节）与 refusalHandover（读流首开头识别整流拒答
+//   后换人）；这里流首一旦放行即终局，慢上游会让 agent 一直挂着（与现状
+//   一致），流首之后的 200 拒答体原样透传。
+// - **休息记忆极简**（见 [`REST_FOR`] 注释）：不落盘、不分错误等级、无
+//   Retry-After 解析、成功只清本来源（Go served 还记 token 用量做 usage
+//   路由）；且只挂在 chat 直通候选循环上——responses/messages 翻译路径
+//   的 `groups::drive` 不查休息表（后续批次接线）。
+// - **chattidy 只做合同面子集**（见 chattidy.rs 文件头）：withReasoning
+//   OnToolTurns、空 reasoning_content 剔除、finish_reason 规整、流式
+//   id/index 补齐、无名调用整链丢弃等未搬。
 
 #[cfg(test)]
 mod fit_tests {
@@ -519,6 +865,8 @@ mod routing_tests {
 
     fn sandbox(providers_json: &str) -> (Gateway, Sandbox) {
         let lock = super::super::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // 休息表是进程级的：沙箱起手清掉，串行测试之间不串休息。
+        clear_rests_for_tests();
         let dir = std::env::temp_dir().join(format!(
             "marionette-engine-routing-{}-{}",
             std::process::id(),
@@ -935,5 +1283,251 @@ mod routing_tests {
         assert_eq!(a.bodies()[0]["reasoning_effort"], "low");
         assert_eq!(b.bodies()[0]["reasoning_effort"], "max");
         assert_eq!(b.bodies()[0]["model"], "mb");
+    }
+
+    // ----- D7/D10（批 3：流可靠性）-------------------------------------------
+
+    /// 掐流的时点。
+    enum CutAt {
+        /// 一条完整行都没给（`data: {"partial` 没有换行就断）。
+        Before,
+        /// 给了两条完整事件后断（没有 [DONE]）。
+        After,
+    }
+
+    /// 掐流假厂商：应答 200 text/event-stream 后在指定点毁掉连接（上游
+    /// 中途死亡的最小模拟；`fake()` 只会写 Content-Length 的完整应答，表达
+    /// 不了「半截流」）。
+    fn cut_fake(at: CutAt) -> Fake {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (h, s) = (hits.clone(), seen.clone());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { continue };
+                let mut reader = BufReader::new(match stream.try_clone() {
+                    Ok(x) => x,
+                    Err(_) => continue,
+                });
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    continue;
+                }
+                let mut length = 0usize;
+                loop {
+                    let mut l = String::new();
+                    if reader.read_line(&mut l).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    let t = l.trim_end().to_ascii_lowercase();
+                    if t.is_empty() {
+                        break;
+                    }
+                    if let Some(v) = t.strip_prefix("content-length:") {
+                        length = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; length];
+                if length > 0 {
+                    let _ = reader.read_exact(&mut body);
+                }
+                h.fetch_add(1, Ordering::SeqCst);
+                s.lock().unwrap().push(Seen { body });
+                let mut stream = stream;
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 X\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                );
+                match at {
+                    CutAt::Before => {
+                        // 半截 data 行，连换行都没有。
+                        let _ = stream.write_all(b"data: {\"partial");
+                    }
+                    CutAt::After => {
+                        let _ = stream.write_all(
+                            b"data: {\"id\":\"c\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+                        );
+                        let _ = stream.write_all(
+                            b"data: {\"id\":\"c\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial-\"}}]}\n\n",
+                        );
+                    }
+                }
+                let _ = stream.flush();
+                drop(stream); // 掐
+            }
+        });
+        Fake { base: format!("http://127.0.0.1:{port}"), hits, seen }
+    }
+
+    /// 流被掐在第一条完整行之前：扣流首生效——客户端一个字节都没收到，
+    /// 静默换下一个候选重发整轮，拿到完整流。
+    #[test]
+    fn stream_cut_before_first_line_fails_over_to_next_member() {
+        let a = cut_fake(CutAt::Before);
+        let b = fake(Box::new(|_| (200, "text/event-stream", SSE.as_bytes().to_vec())));
+        let (gw, _sb) = sandbox(&two_member_world(&a, &b, "order"));
+        let reply = forward(&gw, &chat_request("g", true));
+        assert!(matches!(reply, Reply::Stream { status: 200, .. }), "cut head must fail over to a stream");
+        let text = text_of(reply);
+        assert!(text.contains("hi"), "failover stream lost content: {text}");
+        assert!(text.contains("[DONE]"), "failover stream must end properly: {text}");
+        assert_eq!(a.hits.load(Ordering::SeqCst), 1);
+        assert_eq!(b.hits.load(Ordering::SeqCst), 1);
+    }
+
+    /// 流首放行后断流且没有候选可换：ClosingReader 补显式 error 帧 +
+    /// [DONE]——不许裸 EOF（合同 D7 的可判定收尾）。
+    #[test]
+    fn stream_cut_after_start_ends_with_explicit_error_and_done() {
+        let a = cut_fake(CutAt::After);
+        let (gw, _sb) = sandbox(
+            &json!({"providers": [{"id": "pa", "name": "A", "chat": format!("{}/v1", a.base)}]}).to_string(),
+        );
+        let reply = forward(&gw, &chat_request("pa/ma", true));
+        assert!(matches!(reply, Reply::Stream { status: 200, .. }));
+        let text = text_of(reply);
+        assert!(text.contains("partial-"), "forwarded events lost: {text}");
+        assert!(text.contains("\"error\""), "cut stream must end with an error frame: {text}");
+        assert!(text.ends_with("data: [DONE]\n\n"), "error ending must close with [DONE]: {text}");
+    }
+
+    /// 死在流首之前且没有候选：502 可判定错误（不是把客户端挂着等 EOF）。
+    #[test]
+    fn stream_dead_before_first_line_with_no_candidate_is_a_502() {
+        let a = cut_fake(CutAt::Before);
+        let (gw, _sb) = sandbox(
+            &json!({"providers": [{"id": "pa", "name": "A", "chat": format!("{}/v1", a.base)}]}).to_string(),
+        );
+        let reply = forward(&gw, &chat_request("pa/ma", true));
+        assert_eq!(status_of(&reply), 502);
+        assert!(text_of(reply).contains("before its first line"));
+    }
+
+    /// 非流式 200 但体是半截 JSON：换下一个候选；全断时 502。
+    #[test]
+    fn non_stream_truncated_json_fails_over_then_errors() {
+        let truncated = b"{\"id\":\"x\",\"choices\":[{\"index\":0,".to_vec();
+        let a = fake(Box::new(move |_| (200, "application/json", truncated.clone())));
+        let b = fake(Box::new(|_| (200, "application/json", ok_chat("from b"))));
+        let (gw, sb) = sandbox(&two_member_world(&a, &b, "order"));
+        let reply = forward(&gw, &chat_request("g", false));
+        assert_eq!(status_of(&reply), 200);
+        assert!(text_of(reply).contains("from b"));
+        assert_eq!(a.hits.load(Ordering::SeqCst), 1);
+        assert_eq!(b.hits.load(Ordering::SeqCst), 1);
+        drop(sb);
+        let a = fake(Box::new(|_| (200, "application/json", b"{\"partial".to_vec())));
+        let (gw, _sb) = sandbox(
+            &json!({"providers": [{"id": "pa", "name": "A", "chat": format!("{}/v1", a.base)}]}).to_string(),
+        );
+        let reply = forward(&gw, &chat_request("pa/ma", false));
+        assert_eq!(status_of(&reply), 502);
+        assert!(text_of(reply).contains("whole JSON"));
+    }
+
+    /// D10：直通 tool_calls 的零分数丢弃——流式分片（数字在分片中间被切）
+    /// 与非流式整块都要。
+    #[test]
+    fn relay_sheds_zero_fractions_on_direct_tool_calls() {
+        let tool_sse = concat!(
+            "data: {\"id\":\"c\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Pa\"}}]}}]}\n\n",
+            "data: {\"id\":\"c\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"ris\\\",\\\"yield_ms\\\":2500.0}\"}}]}}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let v = fake(Box::new(|_| (200, "text/event-stream", tool_sse.as_bytes().to_vec())));
+        let (gw, _sb) = sandbox(
+            &json!({"providers": [{"id": "pv", "name": "V", "chat": format!("{}/v1", v.base)}]}).to_string(),
+        );
+        let reply = forward(&gw, &chat_request("pv/m", true));
+        let text = text_of(reply);
+        assert!(text.contains("\\\"yield_ms\\\":2500}"), "streamed fraction must be shed: {text}");
+        assert!(!text.contains("2500.0"), "streamed fraction must not survive: {text}");
+        assert!(text.ends_with("data: [DONE]\n\n"), "clean stream keeps its own ending: {text}");
+    }
+
+    /// D10 非流式半边：整块 JSON 应答的零分数丢弃。
+    #[test]
+    fn whole_reply_fraction_is_shed_on_non_stream() {
+        let whole = serde_json::to_vec(&json!({
+            "id": "c", "object": "chat.completion", "model": "m",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": null,
+                "tool_calls": [{"id": "c1", "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{\"city\":\"Paris\",\"yield_ms\":2500.0}"}}]},
+                "finish_reason": "tool_calls"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        }))
+        .unwrap();
+        let v = fake(Box::new(move |_| (200, "application/json", whole.clone())));
+        let (gw, _sb) = sandbox(
+            &json!({"providers": [{"id": "pv", "name": "V", "chat": format!("{}/v1", v.base)}]}).to_string(),
+        );
+        let reply = forward(&gw, &chat_request("pv/m", false));
+        let text = text_of(reply);
+        assert!(text.contains("\\\"yield_ms\\\":2500"), "whole-reply fraction must be shed: {text}");
+        assert!(!text.contains("2500.0"), "whole-reply fraction must not survive: {text}");
+    }
+
+    /// 休息记忆：5xx 的成员 60s 内被跳过；全在休息则无视（照发）。
+    #[test]
+    fn resting_member_is_skipped_until_all_rest() {
+        let a = fake(Box::new(|_| (503, "application/json", b"{\"error\":\"down\"}".to_vec())));
+        let b = fake(Box::new(|_| (200, "application/json", ok_chat("from b"))));
+        let world = json!({
+            "providers": [
+                {"id": "pa", "name": "A", "chat": format!("{}/v1", a.base)},
+                {"id": "pb", "name": "B", "chat": format!("{}/v1", b.base)},
+            ],
+            "groups": [
+                {"id": "g", "name": "g", "members": ["pa/ma", "pb/mb"], "routing": "order"},
+                {"id": "solo", "name": "solo", "members": ["pa/ma"], "routing": "order"},
+            ],
+        })
+        .to_string();
+        let (gw, _sb) = sandbox(&world);
+        // 第 1 发：a 503 → 转 b；a 进休息。
+        assert_eq!(status_of(&forward(&gw, &chat_request("g", false))), 200);
+        assert_eq!(a.hits.load(Ordering::SeqCst), 1);
+        // 第 2 发：a 在休息 → 直接打 b，a 不再挨打。
+        assert_eq!(status_of(&forward(&gw, &chat_request("g", false))), 200);
+        assert_eq!(a.hits.load(Ordering::SeqCst), 1, "resting member must be skipped");
+        assert!(rest_left("pa").is_some());
+        assert_eq!(rest_left("pb"), None, "the member that answered is awake");
+        // 第 3 发：单成员组只剩休息中的 a → 全在休息，无视照发。
+        assert_eq!(status_of(&forward(&gw, &chat_request("solo", false))), 503);
+        assert_eq!(a.hits.load(Ordering::SeqCst), 2, "all-resting must ignore the rest");
+    }
+
+    /// [DONE] 匹配器：行首锚定、容忍空格与 \r、行中/后缀垃圾不算。
+    #[test]
+    fn done_matcher_is_line_anchored() {
+        let mut m = DoneMatcher::default();
+        for b in b"data: [DONE]\n" {
+            if *b == b'\n' {
+                assert!(m.end_of_line());
+            } else {
+                m.byte(*b);
+            }
+        }
+        for line in ["data:[DONE]\r\n", "data: [DONE] \n", "  data: [DONE]\n"] {
+            let mut m = DoneMatcher::default();
+            for b in line.as_bytes() {
+                if *b == b'\n' {
+                    assert!(m.end_of_line(), "{line} must hit");
+                } else {
+                    m.byte(*b);
+                }
+            }
+        }
+        for line in ["data: {\"x\":1}\n", "data: [DONE]x\n", "xxdata: [DONE]\n", "my data: [DONE]\n", "\n"] {
+            let mut m = DoneMatcher::default();
+            for b in line.as_bytes() {
+                if *b == b'\n' {
+                    assert!(!m.end_of_line(), "{line} must not hit");
+                } else {
+                    m.byte(*b);
+                }
+            }
+        }
     }
 }

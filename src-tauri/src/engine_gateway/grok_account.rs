@@ -22,10 +22,17 @@
 //! 绝不碰 auth.x.ai——token 过期就如实报「请先运行一次 Grok CLI 刷新登录」，
 //! 刷新留给 Grok 自己。令牌值永不进日志/错误文本/测试输出。
 //!
+//! namespace 还原（Go grok_namespace.go）：出站把 Codex 的 namespace 工具压平
+//! 成 `namespace__name` 发给 Grok；**应答侧把模型回的调用翻回原名 + namespace**
+//! （nsTidy :85 / namespacedIn :31 / sealedArgs :232 的移植）——Codex 读不到
+//! namespace 字段就把调用当普通函数，读不到 `encrypted_function_args` 清单就
+//! 把参数当密文（#404 / #3183）。schema pattern 转写（Go grok_schema.go
+//! grokToolPatterns :25 / ecmaClassForRust :41）：JSON Schema `pattern` 里的
+//! ECMA 正则字符类转写成 Grok（Rust regex 语法）认的形式。
+//!
 //! 已知缺口（见交付报告）：不做设备码登录（`grok login` 是 CLI 的事）；没有
 //! 「401 → 拉起 Grok Build 续期再重试」；没有 Responses 流首字节前被切断的
-//! 自动重试；Responses 入站里 Codex 的 namespace 工具调用回传时不补回
-//! namespace；不做多账号（grok_accounts.go 的 logins.json 侧账号）；
+//! 自动重试；不做多账号（grok_accounts.go 的 logins.json 侧账号）；
 //! 画图/视频/语音端点不走。
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
@@ -787,6 +794,10 @@ fn shape_body(mut v: Value) -> Value {
                     }
                 }
             }
+            // Go grokToolPatterns（grok_schema.go :25，在整形后的最终体上跑）：
+            // schema 里的 ECMA pattern 转写成 Rust regex 认的形式。这条路径
+            // 全是 Grok 的模型（grokModel 恒真），不用再按模型判。
+            fix_tool_patterns(t);
         }
         if let Some(Value::Object(tc)) = m.get_mut("tool_choice") {
             flat_call(tc);
@@ -823,6 +834,359 @@ fn shape_body(mut v: Value) -> Value {
         }
     }
     v
+}
+
+// =====================================================================
+// namespace 还原（Go grok_namespace.go 的移植）
+// =====================================================================
+
+/// Go ir.go nsTool 的最小面（Search/Custom 是 Codex 侧的，Grok 路径用不到）。
+#[derive(Clone)]
+struct NsTool {
+    namespace: String,
+    name: String,
+}
+
+/// Go `namespacedIn`（grok_namespace.go :31）：Responses 请求里声明/调用过的
+/// namespace 工具，按 Grok 收到的扁平名索引。tools 的 namespace 条目（内层
+/// function）+ input 里带 `namespace` 字段的调用项；空 namespace 与
+/// `functions`（Codex Lite 自己的，Codex 当它不存在）不算。
+fn namespaced_in(body: &Value) -> HashMap<String, NsTool> {
+    let mut named: HashMap<String, NsTool> = HashMap::new();
+    let mut add = |space: &str, name: &str| {
+        if !space.is_empty() && space != LITE_NAMESPACE && !name.is_empty() {
+            named.insert(flat_name(space, name), NsTool { namespace: space.to_string(), name: name.to_string() });
+        }
+    };
+    for t in body.get("tools").and_then(|t| t.as_array()).into_iter().flatten() {
+        if t.get("type").and_then(|x| x.as_str()) != Some("namespace") {
+            continue;
+        }
+        let space = t.get("name").and_then(|n| n.as_str()).unwrap_or("");
+        for nt in t.get("tools").and_then(|x| x.as_array()).into_iter().flatten() {
+            if nt.get("type").and_then(|x| x.as_str()) == Some("function") {
+                add(space, nt.get("name").and_then(|n| n.as_str()).unwrap_or(""));
+            }
+        }
+    }
+    // input 是字符串（正文单独来）时不解析——Go json.Unmarshal 到列表失败同款。
+    for it in body.get("input").and_then(|i| i.as_array()).into_iter().flatten() {
+        add(
+            it.get("namespace").and_then(|n| n.as_str()).unwrap_or(""),
+            it.get("name").and_then(|n| n.as_str()).unwrap_or(""),
+        );
+    }
+    named
+}
+
+/// Go `nativeSealedAgentPayload`（codex_backend.go :53：
+/// `^gAAAAA[A-Za-z0-9_-]+={0,2}$`）的纯字符串版。
+fn native_sealed_payload(v: &str) -> bool {
+    let Some(rest) = v.strip_prefix("gAAAAA") else { return false };
+    let core = rest.trim_end_matches('=');
+    if rest.len() - core.len() > 2 || core.is_empty() {
+        return false;
+    }
+    core.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// Go `sealedArgs`（grok_namespace.go :232）：参数对象里哪些键的值是 ChatGPT
+/// 后端封印的 `gAAAAA…` 令牌（键名排序）；参数还不是 JSON 对象 / 还没来全
+/// （流式 output_item.added）= None，调用原样走。
+fn sealed_args(args: &str) -> Option<Vec<String>> {
+    let parsed: Value = serde_json::from_str(args.trim()).ok()?;
+    let obj = parsed.as_object()?;
+    let mut keys: Vec<&String> = obj.keys().collect();
+    keys.sort();
+    let sealed: Vec<String> = keys
+        .into_iter()
+        .filter(|k| obj[*k].as_str().is_some_and(native_sealed_payload))
+        .cloned()
+        .collect();
+    Some(sealed)
+}
+
+/// Go `nsTidy.call`（:187）+ `callTo` 的普通 function 分支（responses.go :2163）：
+/// 把应答里的 function_call 翻回 Codex 认的形状。返回是否改过。
+fn restore_call(it: &mut Value, named: &HashMap<String, NsTool>) -> bool {
+    let Some(im) = it.as_object_mut() else { return false };
+    let ty = im.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
+    if ty != "function_call" && ty != "custom_tool_call" {
+        return false;
+    }
+    let name = im.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+    let ns = im.get("namespace").and_then(|n| n.as_str()).unwrap_or("").to_string();
+    if !ns.is_empty() {
+        // 上游自己带了 namespace（被当 Codex 问的厂商，#3183）：名字已经是对的，
+        // 只在缺 `encrypted_function_args` 清单时补——没有清单 Codex 会把参数
+        // 整个当密文，明文任务就到不了子代理。
+        if im.contains_key("encrypted_function_args") {
+            return false;
+        }
+        let known = named.values().any(|q| q.namespace == ns && q.name == name);
+        if !known {
+            return false;
+        }
+        let args = im.get("arguments").and_then(|a| a.as_str()).unwrap_or("");
+        if let Some(sealed) = sealed_args(args) {
+            im.insert("encrypted_function_args".into(), json!(sealed));
+            return true;
+        }
+        return false;
+    }
+    // custom_tool_call 只有改过名的才能翻（back 表）；Grok 路径没有改名。
+    if ty != "function_call" {
+        return false;
+    }
+    let Some(q) = named.get(&name) else { return false };
+    let name = q.name.clone();
+    let namespace = q.namespace.clone();
+    let im = it.as_object_mut().unwrap();
+    im.insert("name".into(), Value::String(name));
+    im.insert("namespace".into(), Value::String(namespace));
+    // Go callTo：空清单 = 「没有参数被封印」——magpie 侧不封参数，但 Codex 读
+    // 不到这个字段就按封印解读（#3183）。
+    im.insert("encrypted_function_args".into(), json!([]));
+    true
+}
+
+/// Go `nsTidy.restore`（:141）：一个事件（或整个应答对象）里的调用翻回。
+/// 返回改过后的新 JSON；没改过 = None（原字节原样走）。
+fn restore_event(data: &[u8], named: &HashMap<String, NsTool>) -> Option<Vec<u8>> {
+    let mut ev: Value = serde_json::from_slice(data).ok()?;
+    let mut changed = false;
+    if let Some(item) = ev.get_mut("item") {
+        changed |= restore_call(item, named);
+    }
+    let whole = ev.get("object").and_then(|o| o.as_str()) == Some("response");
+    if ev.get("response").is_some() || whole {
+        let res = if whole { &mut ev } else { ev.get_mut("response").unwrap() };
+        if let Some(out) = res.get_mut("output").and_then(|o| o.as_array_mut()) {
+            for item in out.iter_mut() {
+                changed |= restore_call(item, named);
+            }
+        }
+    }
+    if !changed {
+        return None;
+    }
+    serde_json::to_vec(&ev).ok()
+}
+
+/// Go `nsTidy.carries`（:176）：字节里可能出现一个 function_call 项
+/// （`"function_call"` 带引号的 JSON 字符串——`function_call_arguments` 这类
+/// 不带尾引号的不算）。back 表为空（Grok 路径），custom_tool_call 不认。
+fn carries(b: &[u8]) -> bool {
+    b.windows(15).any(|w| w == b"\"function_call\"")
+}
+
+/// Go `nsTidy`（grok_namespace.go :76）的 Reader 形态：SSE 按行过，带
+/// function_call 的 `data:` 行翻回命名空间形状，其余原样。非 SSE 的整体
+/// 应答（聚合对象）也走同一条行逻辑——Grok 路径恒流式，这里只需要 SSE 面。
+struct NsTidyReader<R: Read> {
+    inner: R,
+    named: HashMap<String, NsTool>,
+    /// 还没到行尾的半行。
+    pending: Vec<u8>,
+    /// 已还原、待读出的字节。
+    ready: Vec<u8>,
+    ready_at: usize,
+    eof: bool,
+}
+
+impl<R: Read> NsTidyReader<R> {
+    fn new(inner: R, named: HashMap<String, NsTool>) -> NsTidyReader<R> {
+        NsTidyReader { inner, named, pending: Vec::new(), ready: Vec::new(), ready_at: 0, eof: false }
+    }
+
+    /// Go `lines`（:111）：一段**以行为单位**的字节逐行翻回。
+    fn tidy_lines(&self, b: &[u8]) -> Vec<u8> {
+        if !carries(b) {
+            return b.to_vec();
+        }
+        let mut out = Vec::with_capacity(b.len());
+        let mut rest = b;
+        while !rest.is_empty() {
+            let line = match rest.iter().position(|&c| c == b'\n') {
+                Some(i) => {
+                    let l = &rest[..i + 1];
+                    rest = &rest[i + 1..];
+                    l
+                }
+                None => {
+                    let l = rest;
+                    rest = &[];
+                    l
+                }
+            };
+            // Go bytes.TrimRight(line, "\r\n")
+            let body_end = line.len() - line.iter().rev().take_while(|&&c| c == b'\r' || c == b'\n').count();
+            let body = &line[..body_end];
+            let Some(data) = body.strip_prefix(b"data:") else {
+                out.extend_from_slice(line);
+                continue;
+            };
+            if !carries(data) {
+                out.extend_from_slice(line);
+                continue;
+            }
+            match restore_event(data, &self.named) {
+                Some(nb) => {
+                    out.extend_from_slice(b"data: ");
+                    out.extend_from_slice(&nb);
+                    out.extend_from_slice(&line[body_end..]);
+                }
+                None => out.extend_from_slice(line),
+            }
+        }
+        out
+    }
+}
+
+impl<R: Read> Read for NsTidyReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if self.ready_at < self.ready.len() {
+                let n = buf.len().min(self.ready.len() - self.ready_at);
+                buf[..n].copy_from_slice(&self.ready[self.ready_at..self.ready_at + n]);
+                self.ready_at += n;
+                return Ok(n);
+            }
+            self.ready.clear();
+            self.ready_at = 0;
+            if self.eof {
+                if self.pending.is_empty() {
+                    return Ok(0);
+                }
+                // Go flush：尾部没换行的最后一段也过一遍。
+                let rest = std::mem::take(&mut self.pending);
+                self.ready = self.tidy_lines(&rest);
+                continue;
+            }
+            let mut chunk = [0u8; 16384];
+            let n = self.inner.read(&mut chunk)?;
+            if n == 0 {
+                self.eof = true;
+                continue;
+            }
+            self.pending.extend_from_slice(&chunk[..n]);
+            // 只处理到最后一行行尾（Go write 的 LastIndexByte('\n')），半行留着。
+            let cut = self.pending.iter().rposition(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+            if cut > 0 {
+                let head: Vec<u8> = self.pending.drain(..cut).collect();
+                self.ready = self.tidy_lines(&head);
+            }
+        }
+    }
+}
+
+/// named 为空 = 没有可翻的调用，裸管直通（零开销）。
+fn tidy(reader: impl Read + Send + 'static, named: &HashMap<String, NsTool>) -> Box<dyn Read + Send> {
+    if named.is_empty() {
+        Box::new(reader)
+    } else {
+        Box::new(NsTidyReader::new(reader, named.clone()))
+    }
+}
+
+// =====================================================================
+// schema pattern 转写（Go grok_schema.go + deepseek_schema.go toolPatterns）
+// =====================================================================
+
+/// Go `ecmaClassForRust`（grok_schema.go :41）——1:1 字符串改写：ECMA 正则
+/// 字符类里的 `[`（Rust regex 当嵌套类）和 `&&`/`--`/`~~` 的第二个字符（Rust
+/// regex 当集合运算）转义；转义对原样放行，类外的字符不动。xAI 的校验器用
+/// Rust regex 语法读 pattern，ECMA 语义里这些就是普通字符，转义后对 ECMA
+/// 也是同一个字符（#2317：Claude Code 的 `^[^\s[\]]+$` 让 Grok 整单被拒）。
+fn ecma_class_for_rust(pat: &str) -> String {
+    let src = pat.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(src.len() + 8);
+    let mut class = false;
+    let mut i = 0;
+    while i < src.len() {
+        let c = src[i];
+        if c == b'\\' && i + 1 < src.len() {
+            out.push(c);
+            out.push(src[i + 1]);
+            i += 2;
+            continue;
+        }
+        if !class && c == b'[' {
+            class = true;
+        } else if class && c == b']' {
+            class = false;
+        } else if class && c == b'[' {
+            out.extend_from_slice(b"\\[");
+            i += 1;
+            continue;
+        } else if class && (c == b'&' || c == b'-' || c == b'~') && i + 1 < src.len() && src[i + 1] == c {
+            out.push(c);
+            out.push(b'\\');
+            out.push(c);
+            i += 2;
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
+/// Go `collectPatterns`（deepseek_schema.go :83）的遍历形状：只在 schema 语境
+/// 里改 `"pattern"` 字符串；`properties`/`$defs`/… 的每个值、`items`/`anyOf`/…
+/// 整值递归；非 schema 语境里 `parameters`/`input_schema` 进 schema、`function`
+/// 保持非 schema（chat 形状的嵌套）。Go 为保字节做了原位拼接，这里本来就要
+/// 重新序列化 Value，改值即可。
+fn fix_tool_patterns(node: &mut Value) {
+    fn walk(node: &mut Value, in_schema: bool) {
+        match node {
+            Value::Object(m) => {
+                for (k, val) in m.iter_mut() {
+                    if in_schema {
+                        if k == "pattern" {
+                            if let Value::String(s) = val {
+                                let fixed = ecma_class_for_rust(s);
+                                if fixed != *s {
+                                    *val = Value::String(fixed);
+                                }
+                            }
+                        }
+                        match k.as_str() {
+                            "properties" | "$defs" | "definitions" | "dependentSchemas" | "patternProperties" => {
+                                if let Value::Object(pm) = val {
+                                    for (_, sv) in pm.iter_mut() {
+                                        walk(sv, true);
+                                    }
+                                }
+                            }
+                            "items" | "additionalProperties" | "contains" | "propertyNames" | "not"
+                            | "if" | "then" | "else" | "allOf" | "anyOf" | "oneOf" | "prefixItems"
+                            | "unevaluatedProperties" | "unevaluatedItems" | "contentSchema" => {
+                                walk(val, true);
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        match k.as_str() {
+                            "input_schema" | "parameters" => walk(val, true),
+                            "function" => walk(val, false),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Value::Array(a) => {
+                for it in a.iter_mut() {
+                    walk(it, in_schema);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(node, false);
 }
 
 /// 强度夹进模型自报的档位（Grok 的表外值整单 400）：`max`→`xhigh`，其余取最近
@@ -1045,6 +1409,10 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
             Err(e) => return Some(anthropic_error(400, &e)),
         },
     };
+    // namespace 索引要在压平（finalize_body→shape_body）之前建：出站压平、
+    // 应答翻回（Go namespacedIn → nsTidy）。chat/anthropic 入站没有 namespace
+    // 工具，named 为空 = 裸管直通。
+    let named = namespaced_in(&responses_body);
     let shaped = finalize_body(responses_body, &bare);
 
     let response = match forward(&account, &shaped, window) {
@@ -1070,10 +1438,10 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
                 Reply::Stream {
                     status: 200,
                     content_type: "text/event-stream".into(),
-                    reader: Box::new(response.into_reader()),
+                    reader: tidy(response.into_reader(), &named),
                 }
             } else {
-                match aggregate_sse(response.into_reader()) {
+                match aggregate_sse(tidy(response.into_reader(), &named)) {
                     Ok(v) => Reply::json(200, &v),
                     Err(e) => error_reply(502, &e),
                 }
@@ -1085,12 +1453,12 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
                     status: 200,
                     content_type: "text/event-stream".into(),
                     reader: Box::new(super::translate::ResponsesToChatReader::new(
-                        Box::new(response.into_reader()),
+                        tidy(response.into_reader(), &named),
                         super::translate::ResponsesToChat::new(&asked, include_usage, back),
                     )),
                 }
             } else {
-                match aggregate_sse(response.into_reader()) {
+                match aggregate_sse(tidy(response.into_reader(), &named)) {
                     Ok(v) => Reply::json(200, &super::translate::responses_object_to_chat(&v, &asked, &back)),
                     Err(e) => error_reply(502, &e),
                 }
@@ -1100,7 +1468,7 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
             if client_wants_stream {
                 // anthropic 的 message_delta 要 usage：中间的 chat 流恒带 usage 帧。
                 let chat = super::translate::ResponsesToChatReader::new(
-                    Box::new(response.into_reader()),
+                    tidy(response.into_reader(), &named),
                     super::translate::ResponsesToChat::new(&asked, true, back),
                 );
                 Reply::Stream {
@@ -1109,7 +1477,7 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
                     reader: Box::new(super::messages::AnthropicSseTranslator::new(Box::new(chat), &asked)),
                 }
             } else {
-                match aggregate_sse(response.into_reader()) {
+                match aggregate_sse(tidy(response.into_reader(), &named)) {
                     Ok(v) => {
                         let chat = super::translate::responses_object_to_chat(&v, &asked, &back);
                         let bytes = serde_json::to_vec(&chat).unwrap_or_default();
@@ -1747,5 +2115,242 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert_eq!(clamp_effort("medium", &menu).as_deref(), Some("low"));
         assert_eq!(clamp_effort("high", &menu), None);
         assert_eq!(clamp_effort("max", &[]), None);
+    }
+
+    // ---- namespace 还原（Go grok_namespace.go nsTidy/namespacedIn/sealedArgs）----
+
+    fn namespace_request(stream: bool) -> Value {
+        json!({
+            "model": "grok/grok-4.7", "stream": stream,
+            "tools": [{"type":"namespace","name":"collab","tools":[
+                {"type":"function","name":"spawn","parameters":{"type":"object"}}]}],
+            "input": [
+                {"type":"function_call","call_id":"c0","namespace":"collab","name":"spawn","arguments":"{}"},
+                {"type":"function_call_output","call_id":"c0","output":"ok"},
+                {"type":"message","role":"user","content":"go"}
+            ]
+        })
+    }
+
+    /// 上游应答：模型把调用写在**扁平名**下（Grok 只见过压平的工具）。
+    fn ns_sse(item: Value) -> String {
+        format!(
+            "event: response.created\ndata: {{\"type\":\"response.created\",\"response\":{{\"id\":\"r9\"}}}}\n\n\
+             event: response.output_item.done\n\
+             data: {{\"type\":\"response.output_item.done\",\"item\":{item}}}\n\n\
+             event: response.completed\n\
+             data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"r9\",\"status\":\"completed\",\
+                    \"output\":[{item}],\"usage\":{{\"input_tokens\":3,\"output_tokens\":1}}}}}}\n\n"
+        )
+    }
+
+    #[test]
+    fn namespace_round_trip_nonstream() {
+        let mock = Mock::start();
+        mock.route(
+            "/v1/responses",
+            200,
+            "text/event-stream",
+            &ns_sse(json!({"type":"function_call","call_id":"c1","name":"collab__spawn","arguments":"{\"msg\":\"hi\"}"})),
+        );
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_auth(&w, "tok", "me@example.test", 3600);
+        let (status, resp) = reply_json(super::super::routes::route(
+            &post("/v1/responses", &namespace_request(false)),
+            &gateway,
+        ));
+        assert_eq!(status, 200);
+        // 应答侧翻回：原名 + namespace + 空 sealed 清单（Go callTo）
+        let call = &resp["output"][0];
+        assert_eq!(call["type"], "function_call");
+        assert_eq!(call["name"], "spawn");
+        assert_eq!(call["namespace"], "collab");
+        assert_eq!(call["encrypted_function_args"], json!([]));
+        // 出站侧压平（既有行为不变）
+        let (_, body) = mock.last("/v1/responses");
+        let sent: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(sent["tools"][0]["name"], "collab__spawn");
+        assert!(sent["tools"][0].get("type").is_none() || sent["tools"][0]["type"] != "namespace");
+        let fc = sent["input"].as_array().unwrap().iter().find(|i| i["type"] == "function_call").unwrap();
+        assert_eq!(fc["name"], "collab__spawn");
+        assert!(fc.get("namespace").is_none());
+    }
+
+    #[test]
+    fn namespace_round_trip_stream() {
+        let mock = Mock::start();
+        mock.route(
+            "/v1/responses",
+            200,
+            "text/event-stream",
+            &ns_sse(json!({"type":"function_call","call_id":"c1","name":"collab__spawn","arguments":"{\"msg\":\"hi\"}"})),
+        );
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_auth(&w, "tok", "me@example.test", 3600);
+        let (status, text) = reply_json(super::super::routes::route(
+            &post("/v1/responses", &namespace_request(true)),
+            &gateway,
+        ));
+        assert_eq!(status, 200);
+        let text = text.as_str().unwrap();
+        // 事件帧里的调用也翻回（output_item.done 与 response.completed 各一）
+        let frames: Vec<Value> = text
+            .split("\n\n")
+            .filter_map(|b| b.lines().find_map(|l| l.strip_prefix("data: ")).and_then(|d| serde_json::from_str(d).ok()))
+            .collect();
+        let done = frames.iter().find(|f| f["type"] == "response.output_item.done").unwrap();
+        assert_eq!(done["item"]["name"], "spawn");
+        assert_eq!(done["item"]["namespace"], "collab");
+        assert_eq!(done["item"]["encrypted_function_args"], json!([]));
+        let completed = frames.iter().find(|f| f["type"] == "response.completed").unwrap();
+        assert_eq!(completed["response"]["output"][0]["name"], "spawn");
+        assert_eq!(completed["response"]["output"][0]["namespace"], "collab");
+        // 别的行原样过
+        assert!(text.contains("\"response.created\""));
+    }
+
+    #[test]
+    fn sealed_args_names_the_tokens_when_namespace_came_back() {
+        let mock = Mock::start();
+        // 上游自己带了 namespace（被当 Codex 问的厂商，#3183）：名字不动，
+        // 只补 encrypted_function_args 清单（键名排序）。
+        mock.route(
+            "/v1/responses",
+            200,
+            "text/event-stream",
+            &ns_sse(json!({"type":"function_call","call_id":"c2","namespace":"collab","name":"spawn",
+                           "arguments":"{\"ztask\":\"plain\",\"atask\":\"gAAAAABCdef123-_\"}"})),
+        );
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_auth(&w, "tok", "me@example.test", 3600);
+        let (status, resp) = reply_json(super::super::routes::route(
+            &post("/v1/responses", &namespace_request(false)),
+            &gateway,
+        ));
+        assert_eq!(status, 200);
+        let call = &resp["output"][0];
+        assert_eq!(call["name"], "spawn"); // 没翻名
+        assert_eq!(call["namespace"], "collab");
+        assert_eq!(call["encrypted_function_args"], json!(["atask"]));
+    }
+
+    #[test]
+    fn namespace_restore_ignores_unknown_flat_names() {
+        let mock = Mock::start();
+        mock.route(
+            "/v1/responses",
+            200,
+            "text/event-stream",
+            &ns_sse(json!({"type":"function_call","call_id":"c9","name":"other__tool","arguments":"{}"})),
+        );
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_auth(&w, "tok", "me@example.test", 3600);
+        let (status, resp) = reply_json(super::super::routes::route(
+            &post("/v1/responses", &namespace_request(false)),
+            &gateway,
+        ));
+        assert_eq!(status, 200);
+        assert_eq!(resp["output"][0]["name"], "other__tool"); // 不认识的扁平名原样
+        assert!(resp["output"][0].get("namespace").is_none());
+    }
+
+    #[test]
+    fn no_namespace_tools_means_plain_passthrough() {
+        let req = json!({
+            "model": "grok/grok-4.7",
+            "tools": [{"type":"function","name":"plain","parameters":{"type":"object"}}],
+            "input": [{"type":"message","role":"user","content":"go"}]
+        });
+        let named = namespaced_in(&req);
+        assert!(named.is_empty());
+        // Lite 自己的 namespace（functions）不算
+        let req = json!({
+            "tools": [{"type":"namespace","name":"functions","tools":[
+                {"type":"function","name":"f"}]}],
+            "input": [{"type":"function_call","namespace":"functions","name":"f","arguments":"{}"}]
+        });
+        assert!(namespaced_in(&req).is_empty());
+        // input 是字符串（正文单独来）：不解析
+        assert!(namespaced_in(&json!({"input":"just text"})).is_empty());
+    }
+
+    // ---- schema pattern 转写（Go grok_schema.go ecmaClassForRust）----
+
+    #[test]
+    fn ecma_class_for_rust_escapes_class_syntax() {
+        // Go 注释里的实弹例子（#2317，Claude Code 的 breakpoint class_name）
+        assert_eq!(ecma_class_for_rust("^[^\\s[\\]]+$"), "^[^\\s\\[\\]]+$");
+        // 集合运算对：第二个字符转义
+        assert_eq!(ecma_class_for_rust("[a&&b]"), "[a&\\&b]");
+        assert_eq!(ecma_class_for_rust("[a--b]"), "[a-\\-b]");
+        assert_eq!(ecma_class_for_rust("[a~~b]"), "[a~\\~b]");
+        // 类外的 [ 不动；转义对原样放行（且不关类）
+        assert_eq!(ecma_class_for_rust("ab[c]"), "ab[c]");
+        assert_eq!(ecma_class_for_rust("[a\\[b]"), "[a\\[b]");
+        assert_eq!(ecma_class_for_rust("[a\\]b]"), "[a\\]b]");
+        // 已经转义过的不再动
+        assert_eq!(ecma_class_for_rust("[\\&&]"), "[\\&&]");
+        // 多字节字符按字节搬运（UTF-8 保真）
+        assert_eq!(ecma_class_for_rust("[中文[x]"), "[中文\\[x]");
+    }
+
+    #[test]
+    fn shape_body_transcribes_patterns_in_schema_contexts() {
+        let v = shape_body(json!({
+            "tools": [{
+                "type": "function", "name": "brk",
+                "parameters": {"type":"object","properties":{
+                    "cls":   {"type":"string","pattern":"^[^\\s[\\]]+$"},
+                    "amp":   {"type":"string","pattern":"[a&&b]"},
+                    "dash":  {"type":"string","pattern":"[a--b]"},
+                    "tilde": {"type":"string","pattern":"[a~~b]"},
+                    "nested":{"type":"object","properties":{"deep":{"type":"string","pattern":"[[]"}}},
+                    "anyof": {"anyOf":[{"type":"string","pattern":"[x[]"}]},
+                    "items": {"type":"array","items":{"type":"string","pattern":"[y[]"}},
+                    "defs":  {"$defs":{"d":{"type":"string","pattern":"[z[]"}},"$ref":"#/$defs/d"},
+                    "plain": {"type":"string"}
+                }}
+            }]
+        }));
+        let p = &v["tools"][0]["parameters"]["properties"];
+        assert_eq!(p["cls"]["pattern"], "^[^\\s\\[\\]]+$");
+        assert_eq!(p["amp"]["pattern"], "[a&\\&b]");
+        assert_eq!(p["dash"]["pattern"], "[a-\\-b]");
+        assert_eq!(p["tilde"]["pattern"], "[a~\\~b]");
+        assert_eq!(p["nested"]["properties"]["deep"]["pattern"], "[\\[]");
+        assert_eq!(p["anyof"]["anyOf"][0]["pattern"], "[x\\[]");
+        assert_eq!(p["items"]["items"]["pattern"], "[y\\[]");
+        assert_eq!(p["defs"]["$defs"]["d"]["pattern"], "[z\\[]");
+        // pattern 之外的字段、没有 pattern 的 schema 不动
+        assert_eq!(p["cls"]["type"], "string");
+        assert!(p["plain"].get("pattern").is_none());
+    }
+
+    #[test]
+    fn pattern_transcription_survives_the_wire() {
+        let mock = Mock::start();
+        mock.route("/v1/responses", 200, "text/event-stream", SSE_TEXT);
+        let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
+        write_auth(&w, "tok", "me@example.test", 3600);
+        let chat = json!({
+            "model": "grok/grok-4.7",
+            "messages": [{"role":"user","content":"x"}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "brk",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "cls": {"type":"string","pattern":"^[^\\s[\\]]+$"}
+                        }
+                    }
+                }
+            }]
+        });
+        let _ = super::super::routes::route(&post("/v1/chat/completions", &chat), &gateway);
+        let (_, body) = mock.last("/v1/responses");
+        let sent: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(sent["tools"][0]["parameters"]["properties"]["cls"]["pattern"], "^[^\\s\\[\\]]+$");
     }
 }
