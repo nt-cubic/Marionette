@@ -1,5 +1,8 @@
 export type DevServerPreference = "off" | "notify" | "open";
 
+/** Fresh installs and missing keys auto-open a probed loopback beside chat. */
+export const DEFAULT_DEV_SERVER_PREFERENCE: DevServerPreference = "open";
+
 export type DevServerCandidate = {
   url: string;
   origin: string;
@@ -84,9 +87,11 @@ export function scanDevServerUrls(
 export function readDevServerPreference(): DevServerPreference {
   try {
     const value = localStorage.getItem(PREF_KEY);
-    return value === "off" || value === "open" || value === "notify" ? value : "notify";
+    return value === "off" || value === "open" || value === "notify"
+      ? value
+      : DEFAULT_DEV_SERVER_PREFERENCE;
   } catch {
-    return "notify";
+    return DEFAULT_DEV_SERVER_PREFERENCE;
   }
 }
 

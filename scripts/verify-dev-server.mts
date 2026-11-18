@@ -1,5 +1,7 @@
 import {
+  DEFAULT_DEV_SERVER_PREFERENCE,
   normalizeLoopbackService,
+  readDevServerPreference,
   scanDevServerUrls,
   stripTerminalAnsi,
 } from "../src/lib/devServer";
@@ -46,5 +48,7 @@ ok(
   ).length === 2,
   "two local services are distinct",
 );
+ok(DEFAULT_DEV_SERVER_PREFERENCE === "open", "fresh installs auto-open a probed preview");
+ok(readDevServerPreference() === "open", "missing preference key opens automatically");
 
 console.log("\nall checks passed");

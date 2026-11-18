@@ -30,7 +30,7 @@ export const zh = {
   "browser.serviceDetected": "发现本地开发服务：{url}",
   "browser.serviceOpen": "在对话旁打开",
   "browser.devServerPreference": "开发服务预览：{mode}",
-  "browser.devServerPreferenceHint": "点击切换：通知 → 自动打开 → 忽略",
+  "browser.devServerPreferenceHint": "点击切换：自动打开 → 忽略 → 通知",
   "browser.devServerChanged": "开发服务预览已设为：{mode}",
   "browser.devServerMode.off": "忽略",
   "browser.devServerMode.notify": "通知",

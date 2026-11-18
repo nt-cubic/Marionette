@@ -32,7 +32,7 @@
 | `verify-rich-markdown.mts` | `npx tsx scripts/verify-rich-markdown.mts` | 富文本管线：纯字符串扫描决定 katex/shiki/mermaid/spec 是否加载（bash `$$` 不当公式、单 `$` 永远字面、首 token 路由、```` 围栏状态机）、LaTeX `\[..\]`→`$$..$$` 改写不动围栏内、```spec 卡片 schema 三道防护（JSON 容错/原型污染/深度+尺寸上限）与各 type 形状校验 |
 | `verify-browser-pick.mts` | `npx tsx scripts/verify-browser-pick.mts` | 浏览器元素批注的数据层：不可信页面声明、URL/query/hash/path 脱敏、多页面分组、元素/框选块、ref 与截图顺序、页面文本单行净化、标签拼装、页面输入屏障/可信事件/24 条上限的静态契约、双语词典对齐 |
 | `verify-workspace-surface.mts` | `npx tsx scripts/verify-workspace-surface.mts` | 浏览器 Workspace Surface：浏览器/对话宽度上下限、左右指针换算、<760px 上下堆叠、fresh tab 只有 `display:"workspace"` 才抢工作区 |
-| `verify-dev-server.mts` | `npx tsx scripts/verify-dev-server.mts` | 开发服务器发现：ANSI 去除、loopback/通配地址归一化、公网与 LAN 拒绝、尾标点清理、同 origin 去重、多服务识别 |
+| `verify-dev-server.mts` | `npx tsx scripts/verify-dev-server.mts` | 开发服务器发现：ANSI 去除、loopback/通配地址归一化、公网与 LAN 拒绝、尾标点清理、同 origin 去重、多服务识别、默认自动打开 |
 | `verify-browser-prefs.mts` | `npx tsx scripts/verify-browser-prefs.mts` | Agent tab 空闲清理偏好：默认 10 分钟、允许值、非法值回落，以及 10 → 30 → 60 → never 循环 |
 | `verify-activity-cluster.mts` | `npx tsx scripts/verify-activity-cluster.mts` | 活动折叠：thought+tool 同一集群、同类连续分组、结束后摘要为 `1 think, 2 read, 3 edit`、live 时跟当前工具 |
 | `verify-transcript-export.mts` | `npx tsx scripts/verify-transcript-export.mts` | 对话 Markdown 导出：主干发言、thought/tool 进 `<details>`、连续 `file_change` 合成交付表、Windows 文件名净化、空 thought 不产出空折叠块 |
@@ -40,7 +40,7 @@
 | `verify-usage-ledger.mts` | `npx tsx scripts/verify-usage-ledger.mts` | 跨会话 Token 台账 + 牌价折算：按本地日落账（input/output/cached/cacheCreation/reasoning/turns/流式时长）、agent 与 model 拆分、小时桶、全 null turnStats 不记、180 天修剪边界、今天/近 7 天/近 30 天 + 上一周期聚合、按助手/模型排名（>limit 折叠其它）、逐日序列与小时×星期折叠、models.dev 目录解析/厂商优先/命名空间剥离匹配（`marionette\`、`marionette::`、`vendor/`）/按桶计价与未计价覆盖率、en 词典直查（占位符 `{count}`）、**CSV 导出**（long format 表头/日合计行含 ms/模型行按四桶降序且 reasoning·ms 留空/无记录日不出行/逗号引号转义/文件名后缀） |
 
 | `verify-turn-delivery.mts` | `npx tsx scripts/verify-turn-delivery.mts` | 交付卡折叠文案「N 个文件已更改」、git truth 与 tool edit 并集、git numstat 覆盖工具统计、**本轮归属规则**（起点就脏的文件需本轮工具碰过、无 HEAD 不丢文件、路径归一） |
-| `verify-transcript-scroll.mts` | `npx tsx scripts/verify-transcript-scroll.mts` | 对话 tab 滚动：贴底/历史位置快照、切回时恢复、虚拟列表行高缓存跨 tab 还在 |
+| `verify-transcript-scroll.mts` | `npx tsx scripts/verify-transcript-scroll.mts` | 对话 tab 滚动：贴底/历史位置快照、切回时恢复、滚轮朝上 hold-off 不被 80px 回贴、虚拟列表上方行高补偿、行高缓存跨 tab 还在 |
 | `verify-session-order.mts` | `npx tsx scripts/verify-session-order.mts` | 侧栏折叠预览：置顶行和「刚完成、还没点进去」的对话不会掉进 Show more |
 | `verify-agent-errors.mts` | `npx tsx scripts/verify-agent-errors.mts` | 错误分类：Grok `auth_transient` 不当成需要登录、OpenCode 按当前模型渠道给提示、426 仍走更新 |
 | `verify-background-tasks.mts` | `npx tsx scripts/verify-background-tasks.mts` | 后台任务面板聚合：需要你置顶、跑动中次之、已结束沉底；完成/失败委托不进列表、结束终端保留退出码；key 跨重建稳定；空输入不渲染 |

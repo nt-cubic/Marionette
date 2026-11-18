@@ -10391,7 +10391,7 @@ export function App() {
                 hint: t("browser.devServerPreferenceHint"),
                 run: () => {
                   const current = readDevServerPreference();
-                  const next = current === "notify" ? "open" : current === "open" ? "off" : "notify";
+                  const next = current === "open" ? "off" : current === "off" ? "notify" : "open";
                   saveDevServerPreference(next);
                   showToast({
                     text: t("browser.devServerChanged", {

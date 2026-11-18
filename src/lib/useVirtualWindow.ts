@@ -5,6 +5,22 @@ const DEFAULT_ESTIMATE = 128;
 const DEFAULT_OVERSCAN = 8;
 
 /**
+ * When a row above the viewport grows (estimate → real height), keep the
+ * visible cards where they are by shifting scrollTop the same amount.
+ */
+export function compensateScrollForSizeChange(
+  scrollTop: number,
+  itemTop: number,
+  oldSize: number,
+  newSize: number,
+): number {
+  const delta = newSize - oldSize;
+  if (delta === 0) return scrollTop;
+  if (itemTop + oldSize <= scrollTop + 0.5) return Math.max(0, scrollTop + delta);
+  return scrollTop;
+}
+
+/**
  * Variable-height virtual window over a vertical scroll container.
  * Data stays full-length; only the mount range changes.
  */
@@ -130,7 +146,16 @@ export function useVirtualWindow(
     const prev = sizeMapRef.current.get(index);
     // Ignore sub-pixel noise
     if (prev != null && Math.abs(prev - h) < 2) return;
+    const oldSize = prev ?? estimate;
     sizeMapRef.current.set(index, h);
+    const el = scrollRef.current;
+    const cached = offsetsCacheRef.current;
+    const itemTop =
+      cached && index < cached.offsets.length - 1 ? cached.offsets[index] : undefined;
+    if (el && itemTop != null) {
+      const nextTop = compensateScrollForSizeChange(el.scrollTop, itemTop, oldSize, h);
+      if (nextTop !== el.scrollTop) el.scrollTop = nextTop;
+    }
     measureMinChangedRef.current = Math.min(measureMinChangedRef.current, index);
     measureDirtyRef.current = true;
     if (measureRafRef.current) return;
@@ -142,7 +167,7 @@ export function useVirtualWindow(
       measureMinChangedRef.current = Number.MAX_SAFE_INTEGER;
       setRebuildFrom((current) => Math.min(current, from));
     });
-  }, []);
+  }, [estimate, scrollRef]);
 
   // Cancel a pending measure frame on unmount — a fired callback on a
   // detached list would call setState on an unmounted hook.

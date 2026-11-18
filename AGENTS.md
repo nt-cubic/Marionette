@@ -813,9 +813,11 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
   BrowserPage 的 child WebView2 host 在它下方；不要把标签塞进 host 或让 native webview
   覆盖标签。Browser 内部标签仍按后台 Rust 创建顺序稳定排序。
 - **打开不是抢工作区授权**：`browser_open_tab` 默认 `background`，fresh tab 只有
-  `display:"workspace"` 才激活 surface。Dev server 只能扫运行中 ACP terminal 的
-  bounded tail（64KB），去 ANSI、限 loopback、TCP probe 后按 `off/notify/open` 偏好处理；
-  禁止仅按 localhost 字符串切界面。
+  `display:"workspace"` 才激活 surface。Agent 自己起的本地预览应显式传
+  `display:"workspace"`。Dev server 只扫运行中 ACP terminal 的 bounded tail（64KB），
+  去 ANSI、限 loopback、TCP probe 后按 `open/off/notify` 偏好处理（**默认 open**）；
+  禁止仅按 localhost 字符串切界面。地址栏 `localhost:port` 无 scheme 走 http，
+  `http://localhost` 导航改写 `127.0.0.1`（WebView2 先连 `::1`）。
 - **状态与清理**：Agent tab 带 `ownerSessionId`、并发 `busy` 计数、
   `idle/running/waiting_user/failed` 和 `lastUsedAtMs`。删除会话/项目关闭其 owned tabs；
   用户自开 tab 不按 owner 清理。状态文字遵守极简 HUD，不用状态圆点。

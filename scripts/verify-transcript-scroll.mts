@@ -6,10 +6,14 @@
 import assert from "node:assert/strict";
 import {
   applyScrollSnap,
+  applyTranscriptStickOnScroll,
+  applyTranscriptStickOnWheelUp,
   captureScrollSnap,
   isNearTranscriptBottom,
   TRANSCRIPT_NEAR_BOTTOM_PX,
+  TRANSCRIPT_RESTICK_PX,
 } from "../src/lib/transcriptScroll.ts";
+import { compensateScrollForSizeChange } from "../src/lib/useVirtualWindow.ts";
 import {
   resetVirtualSizeCache,
   sizeMapForKey,
@@ -70,6 +74,67 @@ check("history snap restores the pixel offset", () => {
   const mode = applyScrollSnap(el, { stickToBottom: false, scrollTop: 1200 });
   assert.equal(mode, "offset");
   assert.equal(el.scrollTop, 1200);
+});
+
+check("wheel-up unsticks even inside the slack zone", () => {
+  const stuck = { stickToBottom: true, released: false };
+  const afterWheel = applyTranscriptStickOnWheelUp(stuck, -50);
+  assert.equal(afterWheel.stickToBottom, false);
+  assert.equal(afterWheel.released, true);
+  // One mouse notch (~50px) is still inside 80px slack.
+  const afterScroll = applyTranscriptStickOnScroll(afterWheel, 50, false);
+  assert.equal(afterScroll.stickToBottom, false);
+  assert.equal(afterScroll.released, true);
+});
+
+check("trackpad 1px up does not restick", () => {
+  const afterWheel = applyTranscriptStickOnWheelUp(
+    { stickToBottom: true, released: false },
+    -1,
+  );
+  const afterScroll = applyTranscriptStickOnScroll(afterWheel, 1, false);
+  assert.equal(afterScroll.stickToBottom, false);
+  assert.equal(afterScroll.released, true);
+  assert.ok(1 < TRANSCRIPT_RESTICK_PX);
+});
+
+check("leaving the slack zone re-arms stick for the next visit", () => {
+  const released = { stickToBottom: false, released: true };
+  const left = applyTranscriptStickOnScroll(released, TRANSCRIPT_NEAR_BOTTOM_PX, false);
+  assert.equal(left.released, false);
+  assert.equal(left.stickToBottom, false);
+  const back = applyTranscriptStickOnScroll(left, 10, true);
+  assert.equal(back.stickToBottom, true);
+});
+
+check("scroll down to the true end resticks without leaving the zone", () => {
+  const released = { stickToBottom: false, released: true };
+  const stillInZone = applyTranscriptStickOnScroll(released, 40, false);
+  assert.equal(stillInZone.released, true);
+  const atEnd = applyTranscriptStickOnScroll(stillInZone, 0, true);
+  assert.equal(atEnd.stickToBottom, true);
+  assert.equal(atEnd.released, false);
+});
+
+check("already stuck stays stuck through 40px layout jitter", () => {
+  const stuck = { stickToBottom: true, released: false };
+  const jitter = applyTranscriptStickOnScroll(stuck, 40, false);
+  assert.equal(jitter.stickToBottom, true);
+  assert.equal(jitter.released, false);
+});
+
+check("snap persists the live stick flag, not the 80px guess", () => {
+  const el = { scrollTop: 870, scrollHeight: 1000, clientHeight: 100 };
+  assert.equal(isNearTranscriptBottom(el), true);
+  const snap = captureScrollSnap(el, false);
+  assert.equal(snap.stickToBottom, false);
+  assert.equal(snap.scrollTop, 870);
+});
+
+check("rows above the viewport compensate scrollTop when they grow", () => {
+  assert.equal(compensateScrollForSizeChange(800, 100, 48, 300), 1052);
+  assert.equal(compensateScrollForSizeChange(800, 780, 48, 300), 800);
+  assert.equal(compensateScrollForSizeChange(0, 0, 48, 300), 0);
 });
 
 check("size maps survive a tab-key swap", () => {

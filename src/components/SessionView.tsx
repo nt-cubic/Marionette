@@ -58,8 +58,10 @@ import {
 } from "../lib/turnActivity";
 import {
   applyScrollSnap,
+  applyTranscriptStickOnScroll,
+  applyTranscriptStickOnWheelUp,
   captureScrollSnap,
-  isNearTranscriptBottom,
+  distanceFromTranscriptBottom,
   type TranscriptScrollSnap,
 } from "../lib/transcriptScroll";
 import { useVirtualWindow } from "../lib/useVirtualWindow";
@@ -1789,8 +1791,20 @@ function CleanPlaceholder({
   }, [onLoadOlder]);
   /** When true, new content may stick the viewport to the bottom. */
   const stickToBottomRef = useRef(true);
+  /**
+   * Wheel-up hold-off: stay unstuck inside the 80px slack until the user
+   * leaves it or scrolls back to the true end. Stops onListScroll from
+   * immediately re-sticking and letting layout pin eat the first notches.
+   */
+  const releasedStickRef = useRef(false);
+  const lastScrollTopRef = useRef(0);
   /** State mirror of stickToBottom so the jump-to-bottom chip can re-render. */
   const [atBottom, setAtBottom] = useState(true);
+  const writeStick = useCallback((stick: boolean, released = false) => {
+    stickToBottomRef.current = stick;
+    releasedStickRef.current = released;
+    setAtBottom(stick);
+  }, []);
   /** Per-dialog list camera — survives tab switches in this shell. */
   const scrollSnapsRef = useRef<Map<string, TranscriptScrollSnap>>(new Map());
   const sessionIdRef = useRef(session.id);
@@ -2119,11 +2133,10 @@ function CleanPlaceholder({
   // Own send → jump back to live tail (even if you were reading history).
   useEffect(() => {
     if (awaitingFirstChunk && !prevAwaitingRef.current) {
-      stickToBottomRef.current = true;
-      setAtBottom(true);
+      writeStick(true);
     }
     prevAwaitingRef.current = awaitingFirstChunk;
-  }, [awaitingFirstChunk]);
+  }, [awaitingFirstChunk, writeStick]);
 
   // A live Ask/Plan card lands at the tail and the composer hides for it, so
   // the card is the only surface left to answer on. Pin the rail down when a
@@ -2134,19 +2147,21 @@ function CleanPlaceholder({
     const became = Boolean(liveId) && liveId !== prevLivePromptRef.current;
     prevLivePromptRef.current = liveId;
     if (!became) return;
-    stickToBottomRef.current = true;
-    setAtBottom(true);
+    writeStick(true);
     const frame = window.requestAnimationFrame(() => {
       const el = listRef.current;
       if (el) el.scrollTop = el.scrollHeight;
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [liveAskPromptId, livePlanPromptId]);
+  }, [liveAskPromptId, livePlanPromptId, writeStick]);
 
   const rememberScrollSnap = useCallback(() => {
     const el = listRef.current;
     if (!el) return;
-    scrollSnapsRef.current.set(sessionIdRef.current, captureScrollSnap(el));
+    scrollSnapsRef.current.set(
+      sessionIdRef.current,
+      captureScrollSnap(el, stickToBottomRef.current),
+    );
   }, []);
 
   // Switching dialog → restore that tab's camera. First visit / last-seen-at-tail
@@ -2158,8 +2173,8 @@ function CleanPlaceholder({
     const el = listRef.current;
     const snap = scrollSnapsRef.current.get(session.id);
     const mode = el ? applyScrollSnap(el, snap) : !snap || snap.stickToBottom ? "bottom" : "offset";
-    stickToBottomRef.current = mode === "bottom";
-    setAtBottom(mode === "bottom");
+    writeStick(mode === "bottom");
+    if (el) lastScrollTopRef.current = el.scrollTop;
     virtual.syncFromDom();
     selectingRef.current = false;
     frozenEventsRef.current = null;
@@ -2170,7 +2185,7 @@ function CleanPlaceholder({
     setExpandedKindKeys(new Set());
     prevAwaitingRef.current = awaitingRef.current;
     window.getSelection()?.removeAllRanges();
-  }, [session.id, virtual.syncFromDom]);
+  }, [session.id, virtual.syncFromDom, writeStick]);
 
   // Freeze transcript DOM while selecting so stream ticks cannot clear the highlight.
   useEffect(() => {
@@ -2250,33 +2265,48 @@ function CleanPlaceholder({
   const onListScroll = useCallback(() => {
     const el = listRef.current;
     if (!el) return;
-    // User scrolled up to read history → stop auto-jumping to bottom.
-    const nearBottom = isNearTranscriptBottom(el);
-    stickToBottomRef.current = nearBottom;
-    setAtBottom(nearBottom);
+    const dist = distanceFromTranscriptBottom(el);
+    const scrolledDown = el.scrollTop >= lastScrollTopRef.current - 0.5;
+    lastScrollTopRef.current = el.scrollTop;
+    const next = applyTranscriptStickOnScroll(
+      { stickToBottom: stickToBottomRef.current, released: releasedStickRef.current },
+      dist,
+      scrolledDown,
+    );
+    stickToBottomRef.current = next.stickToBottom;
+    releasedStickRef.current = next.released;
+    setAtBottom(next.stickToBottom);
     rememberScrollSnap();
   }, [rememberScrollSnap]);
 
-  // 滚轮朝上的第一格就脱离贴底（2026-11-13 用户反馈「往上滚总卡两下」）：
-  // 滚轮每格常只挪 ~50px,仍在 80px 贴底区内 → scroll 处理器判定 nearBottom
-  // → stick 保持 true;而滚动引发的虚拟列表重渲染让 totalSize 变化,贴底
-  // 布局效应把 scrollTop 拽回底部,这一格被吃掉。像素阈值承担「滚回来重
-  // 新贴底」,「想往上」的意图由 wheel 方向即刻断开。
+  // 滚轮朝上立刻进入 released 持守：后续 scroll 在离开 80px 区之前不得回贴。
+  // 2026-11-13 只把 stick 置 false，onListScroll 仍按 80px 写回 true，
+  // 布局效应再把这一格吃掉。触控板每帧几像素，永远出不了区。
   const onListWheelUp = useCallback((e: ReactWheelEvent) => {
-    if (e.deltaY < 0 && stickToBottomRef.current) {
-      stickToBottomRef.current = false;
-      setAtBottom(false);
+    const next = applyTranscriptStickOnWheelUp(
+      { stickToBottom: stickToBottomRef.current, released: releasedStickRef.current },
+      e.deltaY,
+    );
+    if (
+      next.stickToBottom === stickToBottomRef.current &&
+      next.released === releasedStickRef.current
+    ) {
+      return;
     }
-  }, []);
+    stickToBottomRef.current = next.stickToBottom;
+    releasedStickRef.current = next.released;
+    setAtBottom(next.stickToBottom);
+    rememberScrollSnap();
+  }, [rememberScrollSnap]);
 
   const jumpToBottom = useCallback(() => {
     const el = listRef.current;
     if (!el) return;
-    stickToBottomRef.current = true;
-    setAtBottom(true);
+    writeStick(true);
     el.scrollTop = el.scrollHeight;
+    lastScrollTopRef.current = el.scrollTop;
     rememberScrollSnap();
-  }, [rememberScrollSnap]);
+  }, [rememberScrollSnap, writeStick]);
 
   // Stick to bottom only while the user is already near the end (chat apps pattern).
   // Never key this off the activity clock / health — that caused jump/flicker bugs.
@@ -2329,8 +2359,7 @@ function CleanPlaceholder({
           userMessageAnchorId(u.event) === id
       );
       if (idx < 0) return;
-      stickToBottomRef.current = false;
-      setAtBottom(false);
+      writeStick(false);
       const top = useVirtual ? virtual.offsetOf(idx) - 24 : 0;
       if (useVirtual) {
         listRef.current.scrollTop = Math.max(0, top);
@@ -2348,7 +2377,7 @@ function CleanPlaceholder({
     };
     window.addEventListener("marionette-outline-jump", onJump);
     return () => window.removeEventListener("marionette-outline-jump", onJump);
-  }, [renderUnits, useVirtual, virtual.offsetOf]);
+  }, [renderUnits, useVirtual, virtual.offsetOf, writeStick]);
 
   // 图片查看器的「在对话中定位」：滚到该图最近一次出现的那张卡（或它所在的过程卡）并闪一下。
   useEffect(() => {
@@ -2378,8 +2407,7 @@ function CleanPlaceholder({
       }
       const el = listRef.current;
       if (unitIdx < 0 || !unitKey || !el) return;
-      stickToBottomRef.current = false;
-      setAtBottom(false);
+      writeStick(false);
       setLocateKey(unitKey);
       if (useVirtual) {
         el.scrollTop = Math.max(0, virtual.offsetOf(unitIdx) - el.clientHeight / 4);
@@ -2391,7 +2419,7 @@ function CleanPlaceholder({
     };
     window.addEventListener("marionette-locate-seen", onLocate);
     return () => window.removeEventListener("marionette-locate-seen", onLocate);
-  }, [visibleEvents, renderUnits, session.id, t, useVirtual, virtual.offsetOf]);
+  }, [visibleEvents, renderUnits, session.id, t, useVirtual, virtual.offsetOf, writeStick]);
 
   return (
     // Relative paths in agent text resolve against this dialog's project root.

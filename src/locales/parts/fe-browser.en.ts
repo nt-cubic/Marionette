@@ -30,7 +30,7 @@ export const en = {
   "browser.serviceDetected": "Local development service found: {url}",
   "browser.serviceOpen": "Open beside chat",
   "browser.devServerPreference": "Dev server preview: {mode}",
-  "browser.devServerPreferenceHint": "Click to cycle: Notify → Open automatically → Ignore",
+  "browser.devServerPreferenceHint": "Click to cycle: Open automatically → Ignore → Notify",
   "browser.devServerChanged": "Dev server preview set to: {mode}",
   "browser.devServerMode.off": "Ignore",
   "browser.devServerMode.notify": "Notify",

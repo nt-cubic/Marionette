@@ -599,6 +599,7 @@
   margin-top: 8px;
   overflow-x: hidden;
   overflow-y: auto;
+  overflow-anchor: none;
   user-select: text;
 }
 
@@ -1964,7 +1965,10 @@
 .clipped-body--hard .clipped-body__content {
   overflow-x: hidden;
   overflow-y: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior-x: contain;
+  /* Chain to the transcript at the inner edge so wheel-up at the live tail
+     is not trapped inside a 72/260px thought box. */
+  overscroll-behavior-y: auto;
 }
 
 /* Thinking stream: don't let the browser's overflow-anchor fight pin-to-bottom. */

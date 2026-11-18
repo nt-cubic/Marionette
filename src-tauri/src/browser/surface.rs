@@ -22,7 +22,7 @@ use std::rc::Rc;
 use std::sync::mpsc;
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, Url, WebviewWindow};
 use wry::{NewWindowResponse, Rect, WebView, WebViewBuilder, WebContext, WebViewExtWindows};
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
 use webview2_com::{
@@ -1651,13 +1651,55 @@ pub fn normalize_url(raw: &str) -> Result<String, String> {
     if trimmed.is_empty() {
         return Err("empty url".to_string());
     }
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        Ok(trimmed.to_string())
+    let with_scheme = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
+    } else if looks_like_loopback_authority(trimmed) {
+        format!("http://{trimmed}")
     } else if trimmed.contains(' ') || !trimmed.contains('.') {
-        Err("only http(s) urls can be opened".to_string())
+        return Err("only http(s) urls can be opened".to_string());
     } else {
-        Ok(format!("https://{trimmed}"))
+        format!("https://{trimmed}")
+    };
+    Ok(rewrite_http_loopback_to_ipv4(&with_scheme))
+}
+
+/// Address-bar / agent shorthand: `localhost:5173`, `127.0.0.1:3000`, `[::1]`.
+fn looks_like_loopback_authority(raw: &str) -> bool {
+    let authority = raw.split(['/', '?', '#']).next().unwrap_or(raw);
+    let lower = authority.to_ascii_lowercase();
+    lower == "localhost"
+        || lower.starts_with("localhost:")
+        || lower == "127.0.0.1"
+        || lower.starts_with("127.0.0.1:")
+        || lower == "0.0.0.0"
+        || lower.starts_with("0.0.0.0:")
+        || lower == "[::1]"
+        || lower.starts_with("[::1]:")
+        || lower == "::1"
+}
+
+/// WebView2 on Windows often resolves `localhost` to `::1` first; servers bound
+/// only to IPv4 then fail. http://localhost and http://[::1] become 127.0.0.1.
+/// https stays as typed so a localhost certificate still matches.
+fn rewrite_http_loopback_to_ipv4(raw: &str) -> String {
+    // Bracketed IPv6 literals: some URL parsers leave `http://[::1]:port` as-is.
+    if let Some(rest) = raw.strip_prefix("http://[::1]") {
+        return format!("http://127.0.0.1{rest}");
     }
+    let Ok(mut url) = Url::parse(raw) else {
+        return raw.to_string();
+    };
+    if url.scheme() != "http" {
+        return raw.to_string();
+    }
+    let host = url.host_str().unwrap_or("").to_ascii_lowercase();
+    if host != "localhost" && host != "::1" && host != "0.0.0.0" {
+        return raw.to_string();
+    }
+    if url.set_host(Some("127.0.0.1")).is_err() {
+        return raw.to_string();
+    }
+    url.to_string()
 }
 
 // (No prewarm machinery since 2026-11-06: startup prewarm kept a second
@@ -1747,6 +1789,30 @@ mod tests {
         assert!(normalize_url("how to fly").is_err());
         assert!(normalize_url("ftp://x").is_err());
         assert!(normalize_url("").is_err());
+    }
+
+    #[test]
+    fn loopback_without_scheme_opens_over_http() {
+        assert_eq!(
+            normalize_url("localhost:5173").unwrap(),
+            "http://127.0.0.1:5173/"
+        );
+        assert_eq!(
+            normalize_url("127.0.0.1:3000").unwrap(),
+            "http://127.0.0.1:3000"
+        );
+        assert_eq!(
+            normalize_url("http://localhost:5173/app").unwrap(),
+            "http://127.0.0.1:5173/app"
+        );
+        assert_eq!(
+            normalize_url("https://localhost/secure").unwrap(),
+            "https://localhost/secure"
+        );
+        assert_eq!(
+            normalize_url("[::1]:8080").unwrap(),
+            "http://127.0.0.1:8080"
+        );
     }
 
     #[test]

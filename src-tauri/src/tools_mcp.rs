@@ -205,7 +205,7 @@ fn route(method: &str, params: &Value, session_id: &str) -> Result<Value, Value>
             "protocolVersion": params.get("protocolVersion").and_then(Value::as_str).unwrap_or("2024-11-05"),
             "capabilities": { "tools": {} },
             "serverInfo": { "name": "marionette-tools", "version": "1.0.0" },
-            "instructions": "Use browser_open_tab with display=\"workspace\" only when the user asked you to build or revise a web app and wants its rendered preview visible beside this conversation. Keep ordinary research, reference pages, sign-in, and one-off reads in the background. Never infer workspace display from a localhost URL alone. For a page you will revisit, pass a short stable id such as work-mail; opening an existing id returns that tab without navigating it.",
+            "instructions": "Use browser_open_tab with display=\"workspace\" when the user should see a web app preview beside this conversation — a local dev server you just started (http://127.0.0.1 / localhost) counts. Keep ordinary research, reference pages, sign-in, API ports, and one-off reads in the background. A localhost URL is not itself a reason to steal the workspace. For a page you will revisit, pass a short stable id such as work-mail; opening an existing id returns that tab without navigating it.",
         })),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({
@@ -282,15 +282,15 @@ fn tool_schemas() -> Value {
         ),
         tool(
             "browser_open_tab",
-            "Open a new browser tab and navigate to an http(s) URL. Tabs you open are readable by you immediately (snapshot/console/screenshot); actions still need the user's approval. display=workspace shows the page beside the current Agent conversation for a web app the user asked you to build or revise; the default background never steals the workspace. Use background for research, reference pages, sign-in, and one-off reads. Returns the new tab id.",
+            "Open a new browser tab and navigate to an http(s) URL. Bare localhost / 127.0.0.1 (with optional port) is accepted and opened over http. Tabs you open are readable by you immediately (snapshot/console/screenshot); actions still need the user's approval. display=workspace shows the page beside the current Agent conversation — use it for a web app the user asked you to build or revise, including a local preview you started; the default background never steals the workspace. Use background for research, reference pages, sign-in, and one-off reads. Returns the new tab id.",
             &["url"],
             json!({
-                "url": { "type": "string", "description": "Full http(s) URL (a bare domain gets https:// prepended)." },
+                "url": { "type": "string", "description": "http(s) URL. localhost:5173 and 127.0.0.1:3000 (no scheme) open as http; a public bare domain gets https://." },
                 "display": {
                     "type": "string",
                     "enum": ["background", "workspace"],
                     "default": "background",
-                    "description": "workspace only for a web app preview the user asked to build or revise; otherwise background."
+                    "description": "workspace for a web app or local preview the user should see beside chat; otherwise background."
                 },
                 "id": {
                     "type": "string",
@@ -584,7 +584,7 @@ pub const HELP_TOPICS: &[&str] = &[
     "overview", "refs", "snapshot", "actions", "tabs", "handoff", "waits", "batch",
 ];
 
-const HELP_OVERVIEW: &str = "Marionette's browser tools in one breath. Open tabs with browser_open_tab (background by default; display \"workspace\" only for a web app preview the user asked you to build or revise). Observe cheaply first: browser_page_state's `seq` counter answers \"did anything change\" for a few hundred bytes, and browser_page_ready answers \"is it settled\"; browser_snapshot only when you need to find elements to act on; browser_screenshot only for visual or layout questions. Reach the goal and stop — do not re-observe a result a tool already reported. When an action fails, read the page state before retrying, and never open a new tab to escape a stuck one. Reads need the tab shared at read level; actions ask the user unless already allowed. browser_handoff pauses for steps only the human can do (sign-in, 2FA, CAPTCHA, payment confirmation).";
+const HELP_OVERVIEW: &str = "Marionette's browser tools in one breath. Open tabs with browser_open_tab (background by default; display \"workspace\" for a web app preview the user asked you to build or revise, including a local dev server you just started). Observe cheaply first: browser_page_state's `seq` counter answers \"did anything change\" for a few hundred bytes, and browser_page_ready answers \"is it settled\"; browser_snapshot only when you need to find elements to act on; browser_screenshot only for visual or layout questions. Reach the goal and stop — do not re-observe a result a tool already reported. When an action fails, read the page state before retrying, and never open a new tab to escape a stuck one. Reads need the tab shared at read level; actions ask the user unless already allowed. browser_handoff pauses for steps only the human can do (sign-in, 2FA, CAPTCHA, payment confirmation).";
 
 const HELP_REFS: &str = "Refs and generations. A snapshot returns a `generation` string and a tree of refs (e12-style). One generation covers any number of consecutive actions — click, type, select, press in any order, reusing the same generation; successful actions echo it with generationStillValid: true. Every action re-validates the page and answers {\"ok\":false,\"error\":\"stale\"} the moment the document, the route or the target element moved; take a new snapshot only then, or after a navigation you caused. A stale answer may carry a `reason`: document_navigation, route_navigation, user_annotation (the user's annotate flow re-snapshotted the tab — expected, just re-snapshot), stale_answer, superseded_by_snapshot. Truncation cuts refs too: a tree trimmed by maxChars does not name elements beyond the cut — re-snapshot with a larger maxChars when the element you need was cut.";
 
@@ -592,7 +592,7 @@ const HELP_SNAPSHOT: &str = "When and how to snapshot. Snapshot to find elements
 
 const HELP_ACTIONS: &str = "Acting on the page. Actions are Control level: the user approves per tab (a permission card) unless they shared control or put your session in always-approve; a refusal is a value, not an error — say what you wanted and wait. Act by ref from a snapshot, never by pixel. browser_type replaces a field's text (submit: true presses Enter after); browser_set_value writes a control's value directly — a boolean for a checkbox or radio, a string or array for a select — and fires the events the page's framework expects; browser_press_key works on whatever has focus when no ref is given. ok: true is a receipt that the input was delivered, not that the business goal succeeded — confirm outcomes with browser_page_state, the URL, or a fresh look at the page.";
 
-const HELP_TABS: &str = "Tabs and ownership. browser_open_tab returns a tab id; passing a stable `id` (a lowercase slug) makes reopening return the same tab without navigating, and named tabs are never closed by idle cleanup. Tabs you opened can be closed with browser_close_tab; user-owned, claimed or pinned tabs are left open and reported back. Plain agent tabs idle long enough are cleaned up automatically — name or pin a tab that must survive. List everything (owner, busy, status, sharing level) with browser_list_tabs. Don't open a new tab to work around a stuck page — diagnose the tab you have.";
+const HELP_TABS: &str = "Tabs and ownership. browser_open_tab returns a tab id; passing a stable `id` (a lowercase slug) makes reopening return the same tab without navigating, and named tabs are never closed by idle cleanup. After you start a local preview, open it with display=workspace so the user can see it beside the conversation — do not leave that tab in the background. Tabs you opened can be closed with browser_close_tab; user-owned, claimed or pinned tabs are left open and reported back. Plain agent tabs idle long enough are cleaned up automatically — name or pin a tab that must survive. List everything (owner, busy, status, sharing level) with browser_list_tabs. Don't open a new tab to work around a stuck page — diagnose the tab you have.";
 
 const HELP_HANDOFF: &str = "Handing a step to the human. browser_handoff pauses your turn and shows the user one concrete instruction in the page — signing in, completing 2FA or a CAPTCHA, confirming a payment, or checking something only they can see. It blocks until they click Continue, decline, or the timeout (default 120s). Use it only when the human must act; for your own actions go through the normal approval flow. After a Continue the page may have changed completely — take a fresh snapshot before acting further.";
 
@@ -1485,10 +1485,9 @@ mod tests {
         let params = json!({"protocolVersion": "2025-03-26"});
         let result = route("initialize", &params, "s1").unwrap();
         assert_eq!(result["protocolVersion"], "2025-03-26");
-        assert!(result["instructions"]
-            .as_str()
-            .unwrap_or("")
-            .contains("Never infer workspace display from a localhost URL alone"));
+        let instructions = result["instructions"].as_str().unwrap_or("");
+        assert!(instructions.contains("local dev server you just started"));
+        assert!(instructions.contains("not itself a reason to steal the workspace"));
         let result = route("initialize", &json!({}), "s1").unwrap();
         assert_eq!(result["protocolVersion"], "2024-11-05");
     }

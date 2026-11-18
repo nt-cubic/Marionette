@@ -147,7 +147,7 @@ app 内置浏览器，agent 通过工具通道读写它。普通窗口里 Browse
 
 - **入口**：标签条「浏览器」chip、Ctrl K「新建浏览器标签」、贴边态整页。agent 的
   `browser_open_tab(display:"background"|"workspace")` 默认把 tab 留在后台；只有
-  `workspace` 才进入双栏。开发服务器发现默认只通知，用户可切「通知 / 自动打开 / 忽略」。
+  `workspace` 才进入双栏。开发服务器发现默认**自动打开** workspace 预览，用户可切「自动打开 / 忽略 / 通知」。地址栏接受无 scheme 的 `localhost:5173` / `127.0.0.1:3000`（走 http），`http://localhost` 导航改写为 `127.0.0.1` 避开 WebView2 先连 `::1`。
 - **共同 surface（2026-11-17 P3/P4）**：顶部的 Browser / Document / Memo 标签条在
   child WebView2 host 之外；Browser、文档、收纳盒都复用同一套 SessionView + Composer。
   对话栏标题旁的下拉框可换绑另一会话而不关闭内容。surface 标签支持关闭、
@@ -158,9 +158,9 @@ app 内置浏览器，agent 通过工具通道读写它。普通窗口里 Browse
   调用结束时把仍在工作的 tab 误报为空闲。删除会话/项目会关闭该会话拥有的 tabs，
   用户自开的 tabs 不受影响。
 - **dev server 发现（P2）**：4 秒轮询运行中 ACP terminal 的 64KB 输出尾，去除 ANSI，
-  只接受 loopback/通配地址，并先做 TCP probe。通过后才按偏好通知或创建 workspace tab；
-  同一 origin 十分钟内不重复打扰。实现见 `src/lib/devServer.ts` 与
-  `src-tauri/src/browser/service.rs`。
+  只接受 loopback/通配地址，并先做 TCP probe。通过后按偏好创建 workspace tab（默认）
+  或通知；同一 origin 十分钟内不重复打扰。实现见 `src/lib/devServer.ts` 与
+  `src-tauri/src/browser/service.rs`。禁止仅按 URL 里的 localhost 字符串切界面。
 - **handoff（P4）**：`browser_handoff` 让 Agent 暂停在登录、2FA、CAPTCHA、支付确认等
   必须由人完成的步骤。tab 进入 WAIT，应用切到来源会话并打开 Browser surface，页面与
   对话之间显示标题、指令、origin、Continue / Deny；后台窗口同时发通知。Continue 放行，
