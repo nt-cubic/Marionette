@@ -20,12 +20,11 @@ export type UiRestoreSnapshot = {
   updatedAt: number;
   /** Optional pane tree. Missing = pre-split snapshot; restore via migrateFromFlat. */
   splitLayout?: SplitLayoutV1;
-  /** Browser / document / memo tabs in the conversation-adjacent surface. */
+  /** Document / memo tabs in the conversation-adjacent surface. */
   surface?: WorkspaceSurfaceSnapshot;
 };
 
 export type WorkspaceSurfaceActive =
-  | { kind: "browser" }
   | { kind: "document"; path: string }
   | { kind: "memo" };
 
@@ -33,42 +32,7 @@ export type WorkspaceSurfaceSnapshot = {
   documents: { path: string; title: string }[];
   memoOpen: boolean;
   active: WorkspaceSurfaceActive | null;
-  browserTabs: { url: string; title: string; pinned?: boolean }[];
-  activeBrowserIndex: number | null;
 };
-
-function safeHttpUrl(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-    // Do not persist embedded credentials or token-shaped query keys in the
-    // UI snapshot. The browser profile keeps the live session; restore only
-    // needs a safe navigable address.
-    if (url.username || url.password) return null;
-    const sensitive =
-      /(?:auth|credential|csrf|otp|pass(?:code|word|wd)?|secret|session|sig(?:nature)?|token|xsrf|api[-_.]?key|access[-_.]?key|(?:^|[-_.])code(?:$|[-_.]))/i;
-    for (const key of [...url.searchParams.keys()]) {
-      const values = url.searchParams.getAll(key);
-      if (
-        sensitive.test(key) ||
-        values.some(
-          (item) =>
-            item.length >= 24 &&
-            /^[A-Za-z0-9_-]+$/.test(item) &&
-            /[A-Za-z]/.test(item) &&
-            /\d/.test(item),
-        )
-      ) {
-        url.searchParams.delete(key);
-      }
-    }
-    url.hash = "";
-    return url.toString();
-  } catch {
-    return null;
-  }
-}
 
 function safeDocumentPath(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -96,38 +60,17 @@ function sanitizeSurface(value: unknown): WorkspaceSurfaceSnapshot | undefined {
     documents.push({ path, title });
   }
 
-  const rawBrowserTabs = Array.isArray(rec.browserTabs) ? rec.browserTabs : [];
-  const browserTabs: WorkspaceSurfaceSnapshot["browserTabs"] = [];
-  // Saved index -> index in the sanitized list: tabs dropped before the
-  // active one (bad URL, duplicate) must not shift which tab restores active.
-  const keptIndexBySaved = new Map<number, number>();
-  for (const [savedIndex, raw] of rawBrowserTabs.slice(0, 20).entries()) {
-    if (!raw || typeof raw !== "object") continue;
-    const row = raw as Record<string, unknown>;
-    const url = safeHttpUrl(row.url);
-    if (!url) continue;
-    const duplicate = browserTabs.findIndex((tab) => tab.url === url);
-    if (duplicate >= 0) {
-      keptIndexBySaved.set(savedIndex, duplicate);
-      continue;
-    }
-    keptIndexBySaved.set(savedIndex, browserTabs.length);
-    const title =
-      typeof row.title === "string" && row.title.trim()
-        ? row.title.trim().slice(0, 240)
-        : url;
-    browserTabs.push({
-      url,
-      title,
-      ...(row.pinned === true ? { pinned: true } : {}),
-    });
-  }
-
   const rawActive = rec.active;
   let active: WorkspaceSurfaceActive | null = null;
-  if (rawActive && typeof rawActive === "object") {
+  // Legacy snapshots may contain Browser URLs and active:{kind:"browser"}.
+  // They stay inert: recreating a child WebView2 during startup can wedge the
+  // window, and a crash would then restore the same page again next launch.
+  if (
+    rawActive &&
+    typeof rawActive === "object" &&
+    (rawActive as Record<string, unknown>).kind !== "browser"
+  ) {
     const row = rawActive as Record<string, unknown>;
-    if (row.kind === "browser") active = { kind: "browser" };
     if (row.kind === "memo") active = { kind: "memo" };
     if (row.kind === "document") {
       const path = safeDocumentPath(row.path);
@@ -135,26 +78,10 @@ function sanitizeSurface(value: unknown): WorkspaceSurfaceSnapshot | undefined {
     }
   }
 
-  const requestedBrowserIndex =
-    typeof rec.activeBrowserIndex === "number" &&
-    Number.isInteger(rec.activeBrowserIndex)
-      ? rec.activeBrowserIndex
-      : null;
-  const mappedBrowserIndex =
-    requestedBrowserIndex != null
-      ? keptIndexBySaved.get(requestedBrowserIndex)
-      : undefined;
-  const activeBrowserIndex =
-    mappedBrowserIndex != null && mappedBrowserIndex < browserTabs.length
-      ? mappedBrowserIndex
-      : null;
-
   return {
     documents,
     memoOpen: rec.memoOpen === true,
     active,
-    browserTabs,
-    activeBrowserIndex,
   };
 }
 

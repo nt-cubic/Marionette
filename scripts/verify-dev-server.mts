@@ -2,9 +2,19 @@ import {
   DEFAULT_DEV_SERVER_PREFERENCE,
   normalizeLoopbackService,
   readDevServerPreference,
+  saveDevServerPreference,
   scanDevServerUrls,
   stripTerminalAnsi,
 } from "../src/lib/devServer";
+
+const preferenceStore = new Map<string, string>();
+Object.defineProperty(globalThis, "localStorage", {
+  configurable: true,
+  value: {
+    getItem: (key: string) => preferenceStore.get(key) ?? null,
+    setItem: (key: string, value: string) => preferenceStore.set(key, value),
+  },
+});
 
 function ok(condition: unknown, label: string) {
   if (!condition) throw new Error(label);
@@ -48,7 +58,13 @@ ok(
   ).length === 2,
   "two local services are distinct",
 );
-ok(DEFAULT_DEV_SERVER_PREFERENCE === "open", "fresh installs auto-open a probed preview");
-ok(readDevServerPreference() === "open", "missing preference key opens automatically");
+ok(DEFAULT_DEV_SERVER_PREFERENCE === "notify", "fresh installs notify instead of opening automatically");
+ok(readDevServerPreference() === "notify", "missing preference key stays passive");
+saveDevServerPreference("open");
+ok(readDevServerPreference() === "open", "explicit auto-open opt-in survives");
+saveDevServerPreference("off");
+ok(readDevServerPreference() === "off", "explicit ignore preference survives");
+preferenceStore.set("marionette-dev-server-preview", "invalid");
+ok(readDevServerPreference() === "notify", "invalid preference falls back to passive notify");
 
 console.log("\nall checks passed");

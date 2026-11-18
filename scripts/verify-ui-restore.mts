@@ -76,7 +76,7 @@ check("parseUiRestore drops non-v1 splitLayout", () => {
   assert.equal(parsed?.splitLayout, undefined);
 });
 
-check("parseUiRestore keeps validated browser/document/memo surface tabs", () => {
+check("parseUiRestore keeps validated document/memo state and drops legacy browser data", () => {
   const parsed = parseUiRestore({
     sessionId: "A",
     projectId: "p",
@@ -100,18 +100,30 @@ check("parseUiRestore keeps validated browser/document/memo surface tabs", () =>
   assert.ok(parsed?.surface);
   assert.equal(parsed?.surface.documents.length, 1);
   assert.equal(parsed?.surface.memoOpen, true);
-  assert.equal(parsed?.surface.browserTabs.length, 2);
-  assert.equal(parsed?.surface.browserTabs[0]?.url, "http://localhost:5173/app");
-  assert.equal(parsed?.surface.browserTabs[0]?.pinned, true);
-  assert.equal(
-    parsed?.surface.browserTabs[1]?.url,
-    "https://example.com/app?tab=1",
-  );
-  assert.equal(parsed?.surface.activeBrowserIndex, 0);
+  assert.equal("browserTabs" in parsed.surface, false);
+  assert.equal("activeBrowserIndex" in parsed.surface, false);
   assert.deepEqual(parsed?.surface.active, {
     kind: "document",
     path: "D:\\work\\README.md",
   });
+});
+
+check("parseUiRestore leaves a legacy active Browser snapshot inert", () => {
+  const parsed = parseUiRestore({
+    sessionId: "A",
+    projectId: "p",
+    openSessionIds: ["A"],
+    surface: {
+      documents: [],
+      memoOpen: false,
+      active: { kind: "browser" },
+      browserTabs: [{ url: "http://localhost:5173/demo", title: "demo" }],
+      activeBrowserIndex: 0,
+    },
+  });
+  assert.equal(parsed?.surface?.active, null);
+  assert.equal("browserTabs" in (parsed?.surface ?? {}), false);
+  assert.equal("activeBrowserIndex" in (parsed?.surface ?? {}), false);
 });
 
 check("parseUiRestore drops an active document absent from the tab list", () => {
@@ -123,12 +135,9 @@ check("parseUiRestore drops an active document absent from the tab list", () => 
       documents: [],
       memoOpen: false,
       active: { kind: "document", path: "D:\\missing.md" },
-      browserTabs: [],
-      activeBrowserIndex: 3,
     },
   });
   assert.equal(parsed?.surface?.active, null);
-  assert.equal(parsed?.surface?.activeBrowserIndex, null);
 });
 
 check("old snapshot without splitLayout migrates to a single leaf", () => {

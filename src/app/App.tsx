@@ -147,7 +147,6 @@ import {
   browserProbeLoopbackUrl,
   browserPermissionRespond,
   browserShareTab,
-  browserSetTabPinned,
   browserTouchTab,
   browserListTabs,
   onBrowserHandoff,
@@ -2365,31 +2364,17 @@ export function App() {
       surface: {
         documents: docTabs,
         memoOpen,
-        active: browserActive
-          ? { kind: "browser" }
-          : activeDocPath
-            ? { kind: "document", path: activeDocPath }
-            : memoActive
-              ? { kind: "memo" }
-              : null,
-        browserTabs: browserTabs.map((tab) => ({
-          url: tab.url,
-          title: tab.title,
-          pinned: tab.pinned,
-        })),
-        activeBrowserIndex: (() => {
-          const index = browserTabs.findIndex(
-            (tab) => tab.id === activeBrowserTabId,
-          );
-          return index >= 0 ? index : null;
-        })(),
+        active: activeDocPath
+          ? { kind: "document", path: activeDocPath }
+          : memoActive
+            ? { kind: "memo" }
+            : null,
+        // Browser URLs are intentionally omitted. Child WebViews are never
+        // recreated during cold start; old browser fields are ignored on read.
       },
     });
   }, [
-    activeBrowserTabId,
     activeDocPath,
-    browserActive,
-    browserTabs,
     currentProjectId,
     currentSessionId,
     docTabs,
@@ -5796,9 +5781,10 @@ export function App() {
     };
   }, [activateBrowserSurface]);
 
-  // Restore the content tabs only after the focused chat has been restored.
-  // Browser tabs are reopened in the background; only an active Browser tab
-  // may reopen the split surface. A failed URL simply leaves that tab out.
+  // Restore content surfaces only after the focused chat is back. Browser tabs
+  // are deliberately not recreated here: doing so built a WebView2 child during
+  // startup and could restart-loop on a wedged dev-server page. The user opens
+  // Browser explicitly; saved URLs from older snapshots remain inert.
   useEffect(() => {
     if (
       IS_DETACHED_WINDOW ||
@@ -5822,32 +5808,7 @@ export function App() {
       setBrowserActive(false);
     }
 
-    void (async () => {
-      let tabs = await browserListTabs();
-      if (tabs.length === 0 && startupSurface.browserTabs.length > 0) {
-        for (const saved of startupSurface.browserTabs) {
-          const restored = await browserOpenTab(saved.url, "background").catch(
-            () => null,
-          );
-          if (restored && saved.pinned) {
-            await browserSetTabPinned(restored.tabId, true).catch(
-              () => undefined,
-            );
-          }
-        }
-        tabs = await browserListTabs();
-      }
-      if (tabs.length === 0) {
-        if (active?.kind === "browser") activateBrowserSurface();
-        return;
-      }
-      const requested = startupSurface.activeBrowserIndex ?? 0;
-      const activeTab =
-        tabs[Math.min(Math.max(requested, 0), tabs.length - 1)] ?? tabs[0]!;
-      setActiveBrowserTabId(activeTab.id);
-      if (active?.kind === "browser") activateBrowserSurface();
-    })();
-  }, [activateBrowserSurface, currentSessionId, startupSurface]);
+  }, [currentSessionId, startupSurface]);
 
   useEffect(() => {
     if (IS_DETACHED_WINDOW) return;
@@ -5908,10 +5869,20 @@ export function App() {
         activateBrowserSurface();
         return;
       }
-      activateBrowserSurface();
-      void browserOpenTab(service.url, "workspace").then((result) => {
-        if (result) setActiveBrowserTabId(result.tabId);
-      });
+      // Let the backend tab event activate a fresh display=workspace tab. Never
+      // paint an empty BrowserPage before WebView2 creation has succeeded.
+      void browserOpenTab(service.url, "workspace")
+        .then((result) => {
+          if (result) setActiveBrowserTabId(result.tabId);
+        })
+        .catch((error) => {
+          pushDebugRef.current({
+            level: "warn",
+            source: "browser",
+            summary: "dev-server preview open failed",
+            detail: error instanceof Error ? error.message : String(error),
+          });
+        });
     };
 
     const tick = async () => {

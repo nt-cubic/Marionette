@@ -148,19 +148,23 @@ app 内置浏览器，agent 通过工具通道读写它。普通窗口里 Browse
 
 - **入口**：标签条「浏览器」chip、Ctrl K「新建浏览器标签」、贴边态整页。agent 的
   `browser_open_tab(display:"background"|"workspace")` 默认把 tab 留在后台；只有
-  `workspace` 才进入双栏。开发服务器发现默认**自动打开** workspace 预览，用户可切「自动打开 / 忽略 / 通知」。地址栏接受无 scheme 的 `localhost:5173` / `127.0.0.1:3000`（走 http），`http://localhost` 导航改写为 `127.0.0.1` 避开 WebView2 先连 `::1`。
+  `workspace` 才进入双栏，且只用于用户明确要求查看/操作页面的情况。开发服务器发现默认**只通知**；
+  自动打开必须在 Ctrl K 显式 opt in。Agent 自己启动 localhost 不会因此获得 workspace 权限。
+  地址栏接受无 scheme 的 `localhost:5173` / `127.0.0.1:3000`（走 http），`http://localhost`
+  导航改写为 `127.0.0.1` 避开 WebView2 先连 `::1`。
 - **共同 surface（2026-11-17 P3/P4）**：顶部的 Browser / Document / Memo 标签条在
   child WebView2 host 之外；Browser、文档、收纳盒都复用同一套 SessionView + Composer。
   对话栏标题旁的下拉框可换绑另一会话而不关闭内容。surface 标签支持关闭、
-  Ctrl+W、Ctrl+Tab、Ctrl+1..9；`marionette-ui-restore` 保存打开的文档、Memo 标签、
-  Browser URL 和当前绑定，冷启动按原顺序后台恢复 Browser tab（URL 只存 http(s)，凭据、敏感 query 和 hash 不落恢复快照）。
+  Ctrl+W、Ctrl+Tab、Ctrl+1..9；`marionette-ui-restore` 只保存打开的文档、Memo 标签和当前绑定。
+  Browser URL / 活动 tab 从快照 schema 移除，旧快照里的浏览器字段一律忽略，冷启动绝不自动创建
+  child WebView2。否则一个卡死的 demo 页会形成「启动自动恢复 → UI 卡住 → 强杀 → 再恢复」循环。
 - **运行状态（P2）**：Agent 打开的 tab 记录 `ownerSessionId`、`busy`、
   `status: idle|running|waiting_user|failed` 与最近使用时间；并发调用用计数，避免一个
   调用结束时把仍在工作的 tab 误报为空闲。删除会话/项目会关闭该会话拥有的 tabs，
   用户自开的 tabs 不受影响。
 - **dev server 发现（P2）**：4 秒轮询运行中 ACP terminal 的 64KB 输出尾，去除 ANSI，
-  只接受 loopback/通配地址，并先做 TCP probe。通过后按偏好创建 workspace tab（默认）
-  或通知；同一 origin 十分钟内不重复打扰。实现见 `src/lib/devServer.ts` 与
+  只接受 loopback/通配地址，并先做 TCP probe。通过后默认只发通知；只有用户显式选择
+  「自动打开」才创建 workspace tab，同一 origin 十分钟内不重复打扰。实现见 `src/lib/devServer.ts` 与
   `src-tauri/src/browser/service.rs`。禁止仅按 URL 里的 localhost 字符串切界面。
 - **handoff（P4）**：`browser_handoff` 让 Agent 暂停在登录、2FA、CAPTCHA、支付确认等
   必须由人完成的步骤。tab 进入 WAIT，应用切到来源会话并打开 Browser surface，页面与

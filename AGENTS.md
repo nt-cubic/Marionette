@@ -830,9 +830,10 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
   BrowserPage 的 child WebView2 host 在它下方；不要把标签塞进 host 或让 native webview
   覆盖标签。Browser 内部标签仍按后台 Rust 创建顺序稳定排序。
 - **打开不是抢工作区授权**：`browser_open_tab` 默认 `background`，fresh tab 只有
-  `display:"workspace"` 才激活 surface。Agent 自己起的本地预览应显式传
-  `display:"workspace"`。Dev server 只扫运行中 ACP terminal 的 bounded tail（64KB），
-  去 ANSI、限 loopback、TCP probe 后按 `open/off/notify` 偏好处理（**默认 open**）；
+  `display:"workspace"` 才激活 surface，而且只有用户明确要求查看/操作页面时才能传。
+  Agent 自己起 localhost / dev server 不等于获得 workspace 权限，预览默认留后台。
+  Dev server 只扫运行中 ACP terminal 的 bounded tail（64KB），去 ANSI、限 loopback、
+  TCP probe 后按 `open/off/notify` 偏好处理（**默认 notify，必须显式 opt in**）；
   禁止仅按 localhost 字符串切界面。地址栏 `localhost:port` 无 scheme 走 http，
   `http://localhost` 导航改写 `127.0.0.1`（WebView2 先连 `::1`）。
 - **状态与清理**：Agent tab 带 `ownerSessionId`、并发 `busy` 计数、
@@ -841,9 +842,11 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
 - **handoff**：`browser_handoff` 在 Rust 阻塞等待 Continue / Deny / timeout；事件必须
   切到来源会话和来源 tab、打开 Browser surface、发通知，并在页面与 host 之间显示提示。
   Continue 才放行；Deny/timeout 是工具返回值，不伪造成功。
-- **恢复与快捷键**：`uiRestore` 保存文档列表、Memo 标签、Browser URL 顺序、活动 tab 和
-  绑定会话；Browser URL 只接受 http(s)，保存前去掉凭据/敏感 query/hash，按原顺序后台重开。Ctrl+W / Ctrl+Tab /
-  Ctrl+1..9 在 surface 内先操作 content tabs，surface 关闭后才是 session tab 语义。
+- **恢复与快捷键**：`uiRestore` 只保存文档列表、Memo 标签和绑定会话。Browser URL / 活动 tab
+  不再入快照；旧 `surface.browserTabs`、`activeBrowserIndex`、`active.kind="browser"` 只兼容读取为
+  inert，冷启动绝不创建或激活 child WebView2。开发预览自动打开只能在用户显式 opt in 后发生，
+  且必须等 backend tab event 确认创建成功再切 surface。Ctrl+W / Ctrl+Tab / Ctrl+1..9 在 surface
+  内先操作 content tabs，surface 关闭后才是 session tab 语义。
 - **ContextPanel 与焦点**：surface 进入时自动收起 ContextPanel，退出恢复；BrowserPage
   embedded Esc 只在 target 属于浏览器根节点时生效。Composer / 权限 / 文档 / Memo 的 Esc
   不得被抢。

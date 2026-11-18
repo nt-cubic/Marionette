@@ -1,7 +1,7 @@
 export type DevServerPreference = "off" | "notify" | "open";
 
-/** Fresh installs and missing keys auto-open a probed loopback beside chat. */
-export const DEFAULT_DEV_SERVER_PREFERENCE: DevServerPreference = "open";
+/** Missing preference keys stay passive; auto-open is an explicit opt-in. */
+export const DEFAULT_DEV_SERVER_PREFERENCE: DevServerPreference = "notify";
 
 export type DevServerCandidate = {
   url: string;
