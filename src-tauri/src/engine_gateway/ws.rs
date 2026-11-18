@@ -21,15 +21,19 @@
 //!
 //! ## 与 Go（coder/websocket + codex_socket_keep.go）的差距，如实列出
 //!
-//! - **keep 连接复用 / 连接池没有**（codex_socket_keep.go 整文件）：Go 把
-//!   会话的 socket 留着，后续回合以 `previous_response_id` 只发增量输入
-//!   （消息保持小、躲后端 1009 message too big，Lamrfu 实测）。我们每轮一条
-//!   新连接、整段消息、读完即关——长会话大消息可能被 1009 拒，拒了由
-//!   codex_account 的「WS 失败当轮回退 HTTP」兜住（Go 还会按主机记住
-//!   `codexTooBig` 尺寸 10 分钟内直接走 HTTP，:83 `refusedTooBig`，我们
-//!   没有这个记忆）。
-//! - **主机拒绝的 shun 名单没有**（Go :63 `codexSocketShun` 10 分钟）：握手
-//!   被拒的轮次我们当轮回退 HTTP，下一轮仍会先试 WS。
+//! - **keep 连接复用 / shun 名单 / 1009 尺寸记忆：已移植**（2026-11-18，
+//!   状态机与池在 codex_account.rs，对照 codex_socket_keep.go 整文件 +
+//!   codex_socket.go :63 `codexSocketShun` / :83 `refusedTooBig`）：会话的
+//!   socket 回合结束不关、留在池里，后续回合以 `previous_response_id` 只发
+//!   增量输入（消息保持小、躲后端 1009 message too big，Lamrfu 实测）；握手
+//!   被拒的主机 10 分钟 shun、期内直接 HTTP；1009 拒收按主机记最小尺寸，
+//!   期内同等大小直接 HTTP。本模块只负责把「读到底但不断连」的连接形态
+//!   做出来（`read_message` 不关流、close 帧/对端断开/读错才由持有方回收），
+//!   池/名单/增量的语义见 codex_account.rs。
+//! - **keep 池的 idle 收割没有定时器线程**：Go 用 `time.AfterFunc` 在
+//!   `codexKeepIdle`（10 分钟）时主动关；我们惰性判定（取用/归还时发现超时
+//!   才弃用，语义等价——过期连接绝不会被复用——只是空连接在池里多躺到
+//!   下一次取用/put 清扫）。std-only 无后台线程，如实不搬定时器。
 //! - **permessage-deflate 不协商**：Go Dial 带
 //!   `CompressionMode: CompressionNoContextTakeover`（:366）；我们不发
 //!   `Sec-WebSocket-Extensions`，服务端按 RFC 6455 §5.1 不得启用未协商的
@@ -876,5 +880,156 @@ mod tests {
         assert!(parse_ws_url("https://chatgpt.com").is_err());
         assert!(parse_ws_url("wss://chatgpt.com:notaport/x").is_err());
         assert!(parse_ws_url("wss:///x").is_err());
+    }
+
+    // ---- keep 形态：本地 TcpListener 假服务端（真握手、真帧、真 TCP）----
+
+    /// 读一段 HTTP 请求头（到 \r\n\r\n）。
+    fn read_http_head<S: Read>(stream: &mut S) -> String {
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            match stream.read(&mut byte) {
+                Ok(0) => break,
+                Ok(_) => head.push(byte[0]),
+                Err(_) => break,
+            }
+        }
+        String::from_utf8_lossy(&head).into_owned()
+    }
+
+    /// 读一条客户端帧（恒掩码）并解掩码；EOF/断线 → None。
+    fn read_client_frame<S: Read>(stream: &mut S) -> Option<(u8, Vec<u8>)> {
+        let mut h = [0u8; 2];
+        stream.read_exact(&mut h).ok()?;
+        let opcode = h[0] & 0x0F;
+        let masked = h[1] & 0x80 != 0;
+        let len = match h[1] & 0x7F {
+            126 => {
+                let mut b = [0u8; 2];
+                stream.read_exact(&mut b).ok()?;
+                u16::from_be_bytes(b) as usize
+            }
+            127 => {
+                let mut b = [0u8; 8];
+                stream.read_exact(&mut b).ok()?;
+                u64::from_be_bytes(b) as usize
+            }
+            n => n as usize,
+        };
+        let mut mask = [0u8; 4];
+        if masked {
+            stream.read_exact(&mut mask).ok()?;
+        }
+        let mut payload = vec![0u8; len];
+        stream.read_exact(&mut payload).ok()?;
+        if masked {
+            for (i, b) in payload.iter_mut().enumerate() {
+                *b ^= mask[i & 3];
+            }
+        }
+        Some((opcode, payload))
+    }
+
+    /// 假服务端：回 101 完成握手，返回 (客户端 Key 之外的应答已写毕, 流)。
+    fn serve_upgrade<S: Read + Write>(stream: &mut S) {
+        let head = read_http_head(stream);
+        let key = head
+            .lines()
+            .find(|l| l.to_ascii_lowercase().starts_with("sec-websocket-key:"))
+            .and_then(|l| l.split_once(':'))
+            .map(|(_, v)| v.trim().to_string())
+            .unwrap_or_default();
+        let res = format!(
+            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n",
+            accept_for(&key)
+        );
+        stream.write_all(res.as_bytes()).unwrap();
+        stream.flush().unwrap();
+    }
+
+    /// keep 形态的主体：同一条连接上先后跑两个回合（握手一次）。读到底
+    /// **不**断连是 keep 池的前提——`read_message` 只消费帧、从不关流，
+    /// 第二回合在同一 `WsConn` 上继续 send/read（Go codexKept 的复用路径，
+    /// codex_socket_keep_test.go TestCodexKeptSocketSendsTheDelta 的传输层
+    /// 前提）。
+    #[test]
+    fn keep_form_two_turns_on_one_connection() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (seen_c, acc_c) = (seen.clone(), accepted.clone());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                acc_c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                serve_upgrade(&mut stream);
+                // 每条 text 帧按内容回一条；close/断线即收工。
+                while let Some((op, payload)) = read_client_frame(&mut stream) {
+                    if op == OP_CLOSE {
+                        break;
+                    }
+                    if op == OP_TEXT {
+                        seen_c.lock().unwrap().push(payload.clone());
+                        let reply = if payload == b"turn-1" { b"reply-1" } else { b"reply-2" };
+                        let _ = stream.write_all(&encode_server_frame(OP_TEXT, reply));
+                        let _ = stream.flush();
+                    }
+                }
+            }
+        });
+
+        let url = format!("ws://127.0.0.1:{port}/keep");
+        let mut conn = dial(&url, &[], Duration::from_secs(5), Duration::from_secs(5)).expect("dial");
+        // 第一回合。
+        conn.send_text(b"turn-1").expect("send 1");
+        assert!(matches!(conn.read_message(), Ok(Incoming::Text(ref t)) if t == b"reply-1"));
+        // 第二回合：同一连接、不重新握手（keep 复用的形态）。
+        conn.send_text(b"turn-2").expect("send 2");
+        assert!(matches!(conn.read_message(), Ok(Incoming::Text(ref t)) if t == b"reply-2"));
+        conn.close_normally();
+
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 1, "one connection, one handshake");
+        assert_eq!(*seen.lock().unwrap(), vec![b"turn-1".to_vec(), b"turn-2".to_vec()]);
+    }
+
+    /// 对端 close 后连接必须「可判死」：读到 close 帧（含 1009），再读写都
+    /// 失败——keep 池据此回收（复用回合的 Again 路径，codex_account.rs）。
+    #[test]
+    fn peer_close_ends_the_connection_for_recycling() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                serve_upgrade(&mut stream);
+                // 一个回合后以 1009 关闭并断开（后端 message too big 的形状）。
+                while let Some((op, payload)) = read_client_frame(&mut stream) {
+                    if op == OP_CLOSE {
+                        break;
+                    }
+                    if op == OP_TEXT {
+                        let _ = stream.write_all(&encode_server_frame(OP_TEXT, b"reply"));
+                        let _ = stream.flush();
+                        break;
+                    }
+                }
+                let _ = stream.write_all(&encode_server_frame(OP_CLOSE, &1009u16.to_be_bytes()));
+                let _ = stream.flush();
+            }
+        });
+
+        let url = format!("ws://127.0.0.1:{port}/keep");
+        let mut conn = dial(&url, &[], Duration::from_secs(5), Duration::from_secs(5)).expect("dial");
+        conn.send_text(b"turn-1").expect("send");
+        assert!(matches!(conn.read_message(), Ok(Incoming::Text(ref t)) if t == b"reply"));
+        // close 帧带 1009 上来。
+        assert!(matches!(conn.read_message(), Ok(Incoming::Close(Some(1009)))));
+        // 此后连接已死：写可能进 OS 缓冲（也可能直接失败），读必然失败——
+        // 池的复用方以此判定回收，绝不能把死连接当可用。
+        let _ = conn.send_text(b"again");
+        assert!(conn.read_message().is_err(), "read on a peer-closed connection must fail");
     }
 }

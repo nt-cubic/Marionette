@@ -41,7 +41,7 @@
 //!
 //! 未移植（见交付报告）：Go 的组级 fallback（FallbackModels/GroupsAfter——
 //! Rust 侧交上层候选循环）、resets/credits 明细、账号热备。
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -457,6 +457,14 @@ pub(crate) fn reset_for_tests() {
     let mut s = lock_state();
     s.cache = None;
     s.backoff_until = None;
+    drop(s);
+    // WS 侧的进程级状态（keep 池 / shun 名单 / 1009 尺寸记忆）一并清零——
+    // world() 每个测试开头都调这里，等价 Go socketOn 的收尾
+    // （codex_socket_test.go :142-146：codexKeepDrain + clear(shun/tooBig)）。
+    lock_keep_pool().clear();
+    let mut g = lock_ws_guard();
+    g.shun.clear();
+    g.too_big.clear();
 }
 
 /// 让缓存立刻过期但保留旧行（测 stale-on-error 用）。
@@ -1594,7 +1602,8 @@ fn gzip_payload(payload: &[u8]) -> Option<Vec<u8>> {
 }
 
 // =====================================================================
-// 出站 WebSocket（Go codex_socket.go 的最小版；默认关，失败当轮回退 HTTP）
+// 出站 WebSocket（Go codex_socket.go + codex_socket_keep.go 的移植；默认
+// 关，失败当轮回退 HTTP）
 // =====================================================================
 
 /// WS 出站开关：`MARIONETTE_CODEX_WS=1` 时对话出站改走 ChatGPT 后端的
@@ -1603,7 +1612,11 @@ fn gzip_payload(payload: &[u8]) -> Option<Vec<u8>> {
 /// 任何影响；真机验证 WS 路径后可翻默认（把这里的判空改掉即可）。WS 的
 /// 任何「应答未交付」失败（握手被拒/连接失败/写失败/应答前断线）当轮回退
 /// HTTPS POST（Go errCodexSocketFallBack :213 同款语义），所以开关开着的最
-/// 坏情况也只是多一次白连。
+/// 坏情况也只是多一次白连。开着时另有三件 Go 同款记忆：**keep 连接复用**
+/// （会话的 socket 留在池里，后续回合以 previous_response_id 只发增量输入，
+/// codex_socket_keep.go）、**shun 名单**（握手被拒的主机 10 分钟内直接 HTTP，
+/// codex_socket.go :63）、**1009 尺寸记忆**（message too big 后按主机记最小
+/// 拒收尺寸，期内同等大小直接 HTTP，:83 refusedTooBig）。
 fn ws_enabled() -> bool {
     std::env::var("MARIONETTE_CODEX_WS").is_ok_and(|v| v.trim() == "1")
 }
@@ -1623,6 +1636,358 @@ const WS_CONNECT: Duration = Duration::from_secs(10);
 /// 对本回合而言结束，读到它们流收口到 EOF）。
 const WS_TERMINAL: [&str; 5] =
     ["response.completed", "response.failed", "response.incomplete", "response.done", "error"];
+/// RFC 6455 §7.4.1 关闭码 1009 = message too big（Go 用 coder/websocket 的
+/// StatusMessageTooBig 判同一件事，codex_socket.go :530）。
+const WS_CLOSE_TOO_BIG: u16 = 1009;
+
+// ---------------------------------------------------------------------
+// shun 名单 + 1009 尺寸记忆（Go codex_socket.go :63-134）
+// ---------------------------------------------------------------------
+
+/// Go codexSocketShun（:65）：握手被拒的主机多久内不再试 WS；也是 1009
+/// 尺寸记忆的窗口（refusedTooBig :107 用同一常量）。
+const WS_SHUN: Duration = Duration::from_secs(10 * 60);
+
+/// 主机（host:port）维度的「这阵子别再试 WS」记忆。Go 把 codexShun 与
+/// codexTooBig 挂在同一把 codexShunMu 下（:76-81）；锁内只有 map 读写，
+/// **绝无网络 IO**（关连接是结构 drop，不占锁）。
+struct WsGuard {
+    shun: HashMap<String, Instant>,
+    too_big: HashMap<String, TooBig>,
+}
+
+/// Go tooBig（:83）：该主机 1009 拒收过的**最小**消息尺寸 + 有效期。
+struct TooBig {
+    size: usize,
+    until: Instant,
+}
+
+/// 进程级静态（chat.rs `rests()` 的 OnceLock<Mutex> 同款——HashMap::new 非
+/// const，进不了 static 初始化）。
+fn lock_ws_guard() -> std::sync::MutexGuard<'static, WsGuard> {
+    static G: std::sync::OnceLock<Mutex<WsGuard>> = std::sync::OnceLock::new();
+    G.get_or_init(|| Mutex::new(WsGuard { shun: HashMap::new(), too_big: HashMap::new() }))
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+}
+
+/// Go shunCodexSocket（:126）：主机拒了握手，10 分钟内整轮直接 HTTP。Go
+/// 首次记录时打一条日志；engine_gateway 没有日志面，静默（差异记在模块头）。
+fn shun_host(host: &str, _why: &str) {
+    let mut g = lock_ws_guard();
+    g.shun.insert(host.to_string(), Instant::now() + WS_SHUN);
+}
+
+/// Go codexShunned（:115）：命中且未过期才拦；过期条目顺手清掉。
+fn ws_shunned(host: &str) -> bool {
+    let mut g = lock_ws_guard();
+    match g.shun.get(host) {
+        Some(&until) if Instant::now() >= until => {
+            g.shun.remove(host);
+            false
+        }
+        Some(_) => true,
+        None => false,
+    }
+}
+
+/// Go refusedTooBig（:101）：1009 拒收后记下尺寸——比已记的更小或首次才
+/// 覆盖 size（保持「最小拒收尺寸」语义），有效期一律续 10 分钟。
+fn refused_too_big(host: &str, size: usize) {
+    let now = Instant::now();
+    let mut g = lock_ws_guard();
+    let tb = g.too_big.entry(host.to_string()).or_insert(TooBig { size, until: now });
+    if size < tb.size || now >= tb.until {
+        tb.size = size;
+    }
+    tb.until = now + WS_SHUN;
+}
+
+/// Go codexMessageTooBig（:90）：这条消息是否已到该主机 1009 拒收过的尺寸。
+fn message_too_big(host: &str, size: usize) -> bool {
+    let mut g = lock_ws_guard();
+    match g.too_big.get(host) {
+        Some(tb) if Instant::now() >= tb.until => {
+            g.too_big.remove(host);
+            false
+        }
+        Some(tb) => size >= tb.size,
+        None => false,
+    }
+}
+
+/// WS URL → host:port（Go 用 `req.URL.Host` 做 shun/too-big 的键，:379/:531）。
+fn ws_host_of(url: &str) -> String {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    match rest.find('/') {
+        Some(i) => rest[..i].to_string(),
+        None => rest.to_string(),
+    }
+}
+
+/// dial 失败要不要记 shun（Go socket :375-386 的分类）：
+/// - 非 101 的 HTTP 应答（`ws handshake refused: HTTP <code>`）：401/429/5xx
+///   是账号自身或瞬时故障，HTTP 会如实说 → **不** shun；其它（403 等）→ shun；
+/// - 连接层失败（连不上/TLS/代理/对端早断/Accept 不对——Go 的 hs==nil）→ shun。
+fn shun_worthy(err: &str) -> bool {
+    match err.strip_prefix("ws handshake refused: HTTP ") {
+        Some(rest) => {
+            let code: u16 = rest.split_whitespace().next().and_then(|c| c.parse().ok()).unwrap_or(0);
+            !(code == 401 || code == 429 || (500..=599).contains(&code))
+        }
+        None => true,
+    }
+}
+
+// ---------------------------------------------------------------------
+// keep 连接池（Go codex_socket_keep.go）
+// ---------------------------------------------------------------------
+
+/// Go codexKeepIdle（:51）：keep 连接等下一回合的上限。
+const KEEP_IDLE: Duration = Duration::from_secs(10 * 60);
+/// Go codexKeepAge（:53）：一条连接自握手起的最长使用期（后端 60 分钟断
+/// 连，提前 5 分钟弃用）。
+const KEEP_AGE: Duration = Duration::from_secs(55 * 60);
+/// Go codexKeepMax（:57）：池内最多保持多少条连接。
+const KEEP_MAX: usize = 32;
+
+/// 池里的一条 keep 连接 + 上一回合发过/收回的形状（Go codexKept :66）。
+/// `conn` drop = CloseNow（TcpStream 落盘即断），对应 Go 的 `close()`。
+struct KeptConn {
+    conn: super::ws::WsConn,
+    /// 会话键（Go codexKeepKey :102 的 sha256 摘要）；空 = 不 keep。
+    key: String,
+    /// 本连接的握手时刻（Go `opened`，跨回合保留——AGE 从这里算）。
+    opened: Instant,
+    /// 上次使用时刻（Go `used`，LRU 淘汰用）。
+    used: Instant,
+    /// 上一回合除 input/client_metadata/stream_options 外的顶层字段
+    /// （紧凑 JSON 串；Go `fields`）。
+    fields: BTreeMap<String, String>,
+    /// 上一回合发送的 input 摘要 + 应答的 output 摘要（Go `input`/`output`）。
+    input: Vec<[u8; 32]>,
+    output: Vec<[u8; 32]>,
+    /// 上一回合 response.completed 的 response.id（Go `replyID`）。
+    reply_id: String,
+}
+
+/// 进程级连接池（Go codexKeepPool :61 + codexKeepMu；OnceLock<Mutex> 同款
+/// 惰性初始化；锁内只有 map 读写，关连接（drop）一律在锁释放后由结构析构
+/// 完成，绝不在持锁时做网络 IO）。
+fn lock_keep_pool() -> std::sync::MutexGuard<'static, HashMap<String, KeptConn>> {
+    static P: std::sync::OnceLock<Mutex<HashMap<String, KeptConn>>> = std::sync::OnceLock::new();
+    P.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Go codexKeepTake（:124）：把会话的连接**取走**（并发回合各开新连接，最后
+/// 结束的那条才是留在池里的——「取走」本身就是并发语义）。超龄（55 分钟）弃
+/// 用；**与 Go 的偏差**：Go 用 time.AfterFunc 在 idle 10 分钟时主动关，这里
+/// 没有定时器线程，idle 也惰性判定（取用时发现超时就弃用）——语义等价
+/// （过期连接绝不会被复用），只是空连接在池里多躺到下一次取用/put 清扫。
+fn keep_take(key: &str) -> Option<KeptConn> {
+    if key.is_empty() {
+        return None;
+    }
+    let k = { lock_keep_pool().remove(key)? };
+    if k.opened.elapsed() >= KEEP_AGE || k.used.elapsed() >= KEEP_IDLE {
+        return None; // drop = CloseNow（Go :132-135 超龄 close 后返回 nil）
+    }
+    Some(k)
+}
+
+/// Go codexKeepPut（:139）：回合收在 response.completed 时把连接放回池。
+/// 空键/超龄不收；同键旧连接被顶替关闭；池超上限按最久未用淘汰；顺手清扫
+/// 已过 idle/age 的条目（Go 靠 AfterFunc，这里靠 put/take 时的惰性清扫）。
+fn keep_put(mut k: KeptConn) {
+    if k.key.is_empty() || k.opened.elapsed() >= KEEP_AGE {
+        return; // drop = close（Go :142-145）
+    }
+    k.used = Instant::now();
+    let mut pool = lock_keep_pool();
+    let now = Instant::now();
+    pool.retain(|_, e| now < e.used + KEEP_IDLE && e.opened.elapsed() < KEEP_AGE);
+    let old = pool.insert(k.key.clone(), k); // 顶替的旧连接在此 drop（close）
+    drop(old);
+    if pool.len() > KEEP_MAX {
+        // Go :155-162：淘汰最久未用的那一条。
+        let oldest = pool.iter().min_by_key(|(_, e)| e.used).map(|(key, _)| key.clone());
+        if let Some(key) = oldest {
+            let evicted = pool.remove(&key);
+            drop(evicted);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// 回合形状与增量（Go codexShape / codexSocketItem / codexKept.delta）
+// ---------------------------------------------------------------------
+
+/// 一个回合可被下一回合增量续跑的形状（Go codexTurnShape :209）。
+#[derive(Clone)]
+struct TurnShape {
+    /// 除 input/client_metadata/stream_options 外的顶层字段 → 紧凑 JSON 串
+    /// （Go :231-241 的 json.Compact；serde_json 序列化本就是紧凑且键序
+    /// 确定——BTreeMap——两回合间可稳定比对）。
+    fields: BTreeMap<String, String>,
+    /// input 的原始条目（拼增量时取尾部；Go `input []json.RawMessage`）。
+    items: Vec<Value>,
+    /// input 条目的摘要（Go `sums []itemSum` = sha256）。
+    sums: Vec<[u8; 32]>,
+}
+
+/// Go codexShape（:218）：body 能否参与 keep 续跑——input 必须是条目数组、
+/// body 自身不点名 previous_response_id（点名的回合已是客户端自拼的增量，
+/// 不再续）；每条 input 还要能算出摘要。
+fn turn_shape(body: &Value) -> Option<TurnShape> {
+    let top = body.as_object()?;
+    if top.contains_key("previous_response_id") {
+        return None;
+    }
+    let input = top.get("input")?.as_array()?;
+    let mut sums = Vec::with_capacity(input.len());
+    for item in input {
+        sums.push(item_digest(item)?);
+    }
+    let fields: BTreeMap<String, String> = top
+        .iter()
+        .filter(|(k, _)| k.as_str() != "input" && k.as_str() != "client_metadata" && k.as_str() != "stream_options")
+        .map(|(k, v)| (k.as_str().to_string(), serde_json::to_string(v).unwrap_or_default()))
+        .collect();
+    Some(TurnShape { fields, items: input.clone(), sums })
+}
+
+/// Go codexSocketItem（:256）：条目的「后端口径」摘要——顶层去 id/status；
+/// 任意深度去 annotations、logprobs、null 值与空列表（Codex 与后端都不保
+/// 留这些），序列化后取 sha256。非对象条目不可摘要（None）。
+fn item_digest(item: &Value) -> Option<[u8; 32]> {
+    if !item.is_object() {
+        return None;
+    }
+    let mut v = item.clone();
+    {
+        let obj = v.as_object_mut()?;
+        obj.remove("id");
+        obj.remove("status");
+    }
+    let bare = item_bare(v);
+    let bytes = serde_json::to_vec(&sorted_value(&bare)).ok()?;
+    Some(Sha256::digest(&bytes).into())
+}
+
+/// 序列化前把对象键递归排序（Go `json.Marshal` 对 map 按键排序的对应物）。
+/// 必要性实锤：serde_json 的 preserve_order 被依赖图传递点亮，Map 走
+/// IndexMap 且 `remove` 是 swap_remove——剥除 id/status 后键序随原位置漂移，
+/// 同一逻辑条目会得出不同摘要（2026-11-18 keep 复用集成测试实测定位）。
+/// Go 的摘要经 map 往返天然有序；这里显式排序对齐，键序从此与摘要无关。
+fn sorted_value(v: &Value) -> Value {
+    match v {
+        Value::Object(m) => {
+            let mut keys: Vec<&String> = m.keys().collect();
+            keys.sort();
+            let mut out = serde_json::Map::new();
+            for k in keys {
+                out.insert(k.clone(), sorted_value(&m[k]));
+            }
+            Value::Object(out)
+        }
+        Value::Array(a) => Value::Array(a.iter().map(sorted_value).collect()),
+        other => other.clone(),
+    }
+}
+
+/// Go codexSocketItemBare（:276）：递归剥「两边都不保留」的字段。
+fn item_bare(v: Value) -> Value {
+    match v {
+        Value::Object(mut m) => {
+            m.retain(|k, e| {
+                if k == "annotations" || k == "logprobs" || e.is_null() {
+                    return false;
+                }
+                if let Value::Array(a) = e {
+                    if a.is_empty() {
+                        return false;
+                    }
+                }
+                true
+            });
+            for (_, e) in m.iter_mut() {
+                *e = item_bare(e.take());
+            }
+            Value::Object(m)
+        }
+        Value::Array(a) => Value::Array(a.into_iter().map(item_bare).collect()),
+        other => other,
+    }
+}
+
+/// Go codexReplyItem（:359）：response.output_item.done 帧的 item 摘要
+/// （item 不是对象 = None → 形状作废，Go :692-696 把 shape 置 nil）。
+fn reply_item_digest(frame: &[u8]) -> Option<[u8; 32]> {
+    let v: Value = serde_json::from_slice(frame).ok()?;
+    let item = v.get("item").filter(|i| i.is_object())?;
+    item_digest(item)
+}
+
+/// response.completed 帧的 response.id（Go :700 gjson `response.id`；空 = 没有）。
+fn completed_response_id(frame: &[u8]) -> String {
+    serde_json::from_slice::<Value>(frame)
+        .ok()
+        .and_then(|v| v.pointer("/response/id").and_then(|i| i.as_str()).map(String::from))
+        .unwrap_or_default()
+}
+
+/// Go codexKept.delta（:300）：本回合能否作为池内连接的增量续跑——除
+/// input/client_metadata/stream_options 外字段全同；input 的前缀 = 上一回合
+/// 发过的 input + 上一回合应答的 output（逐条摘要相等）。可行则产出
+/// response.create 消息：input 只留新条目 + previous_response_id 指向上一
+/// 回合。Go 用字节拼贴保原序，这里改经 Value 重组（serde 键序确定，后端
+/// 只看 JSON 语义）。
+fn delta_message(kept: &KeptConn, body: &Value, shape: &TurnShape) -> Option<Vec<u8>> {
+    if kept.reply_id.is_empty() || shape.fields != kept.fields {
+        return None;
+    }
+    let n = kept.input.len() + kept.output.len();
+    if shape.sums.len() < n
+        || shape.sums[..kept.input.len()] != kept.input[..]
+        || shape.sums[kept.input.len()..n] != kept.output[..]
+    {
+        return None;
+    }
+    let mut out = body.clone();
+    let rest: Vec<Value> = shape.items.get(n..)?.to_vec();
+    if let Some(map) = out.as_object_mut() {
+        map.insert("input".into(), Value::Array(rest));
+        map.insert("previous_response_id".into(), Value::String(kept.reply_id.clone()));
+    }
+    let payload = serde_json::to_vec(&out).ok()?;
+    Some(response_create_message(&payload))
+}
+
+/// Go codexKeepKey（:102）：会话键 = 出站 URL + 鉴权（Authorization +
+/// chatgpt-account-id）+ 会话标识（session-id/thread-id 头；我们的出站头
+/// 由 body.prompt_cache_key 派生，见 [`ws_plan`]）串接后 sha256——别的
+/// 账号/别的会话绝不上同一条连接。Go 还计入 X-Api-Key/Api-Key/
+/// X-Openai-Subagent/X-Codex-Parent-Thread-Id 头，我们的出站从不设它们，
+/// 无从分叉，不搬。None = 请求不归属任何会话（不 keep）。
+fn keep_key(plan: &WsPlan) -> Option<String> {
+    let header = |name: &str| {
+        plan.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("")
+    };
+    let (sid, tid) = (header("session-id"), header("thread-id"));
+    if sid.is_empty() && tid.is_empty() {
+        return None;
+    }
+    let mut h = Sha256::new();
+    for part in [plan.url.as_str(), header("Authorization"), header("chatgpt-account-id"), sid, tid] {
+        h.update(part.as_bytes());
+        h.update(&[0]);
+    }
+    Some(hex(&h.finalize()))
+}
 
 /// 出站字节流（HTTP 应答体或 WS 帧还原的 SSE 行流；`Reply::Stream` 与翻译
 /// 层的 reader 同型）。
@@ -1757,21 +2122,43 @@ fn json_type_of(data: &[u8]) -> String {
         .unwrap_or_default()
 }
 
+/// 本回合结束后要不要把连接放回池（Go codexSocketBody 的 shape + codexKept
+/// 接续半边）：completed 且有 id 才 keep，output 摘要随帧累计。
+struct KeepTurn {
+    key: String,
+    /// 本连接的握手时刻（新连接 = 本回合开始；复用连接 = 池里带出来的原值，
+    /// Go codexKept.opened 跨回合不重置）。
+    opened: Instant,
+    fields: BTreeMap<String, String>,
+    input: Vec<[u8; 32]>,
+    output: Vec<[u8; 32]>,
+}
+
 /// WS 帧流 → SSE 行流（Go codexSocketBody :653）：每条 text 帧一条 SSE 事件
-/// 直拼；`responsesapi.websocket_timing` 丢弃（:688）；终态事件后收口
-/// （closeNormally :698）；正文中途断线/被关 = 流被掐（HTTP 半截同款，
-/// io::Error 交给下游按「流提前结束」处理——聚合层据此 502）。
+/// 直拼；`responsesapi.websocket_timing` 丢弃（:688）；终态事件后收口——
+/// keep 场景下**不关连接**：response.completed 且有 id 且形状还在时把连接
+/// 交回池（conn.take()，Go :700-705 codexKeepPut），否则正常关闭
+/// （closeNormally :707）。正文中途断线/被关 = 流被掐（HTTP 半截同款，
+/// io::Error 交给下游按「流提前结束」处理——聚合层据此 502；中途的 1009
+/// **不**记尺寸——应答已部分交付，Go TestCodexSocketTooBigMidReplyIsCut）。
+/// 调用方半途放弃（reader 被 drop）= 连接直接断（CloseNow，Go Close() :745）。
 struct WsSseReader {
-    conn: super::ws::WsConn,
+    conn: Option<super::ws::WsConn>,
     pending: Vec<u8>,
     done: bool,
     err: Option<std::io::Error>,
+    keep: Option<KeepTurn>,
 }
 
 impl Read for WsSseReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         while self.pending.is_empty() && !self.done && self.err.is_none() {
-            match self.conn.read_message() {
+            let incoming = match self.conn.as_mut() {
+                Some(c) => c.read_message(),
+                // conn 只有在置 done 的同一刻才会被 take——循环条件保证进不来。
+                None => unreachable!("ws conn kept while stream not done"),
+            };
+            match incoming {
                 Ok(super::ws::Incoming::Text(data)) => {
                     let data = data.trim_ascii().to_vec();
                     let kind = json_type_of(&data);
@@ -1779,10 +2166,7 @@ impl Read for WsSseReader {
                         continue;
                     }
                     self.pending = ws_sse_event(&kind, &data);
-                    if WS_TERMINAL.contains(&kind.as_str()) {
-                        self.done = true;
-                        self.conn.close_normally();
-                    }
+                    frame_keep_step(&kind, &data, &mut self.keep, &mut self.conn, &mut self.done);
                 }
                 Ok(super::ws::Incoming::Binary(_)) => continue, // Go :683 非 text 帧丢弃
                 Ok(super::ws::Incoming::Close(code)) => {
@@ -1816,7 +2200,56 @@ impl Read for WsSseReader {
     }
 }
 
-/// WS 回合的三种收尾（对应 Go turn :415 的路径）。
+/// 一条正文帧对 keep 侧的处置（Go codexSocketBody.frame :687-712，prelude
+/// 与 reader 共用——prelude 里读到 completed 同样当场放回池）：
+/// - `response.output_item.done`：item 摘要累计进本回合 output（item 不可
+///   摘要 = 形状作废，本回合不再 keep，Go :692-696）；
+/// - `response.completed`：有 id 且形状还在 → 连接放回池（不关）；否则正常
+///   关闭；
+/// - 终态事件：done = true（流收口到 EOF）。
+fn frame_keep_step(
+    kind: &str,
+    data: &[u8],
+    keep: &mut Option<KeepTurn>,
+    conn: &mut Option<super::ws::WsConn>,
+    done: &mut bool,
+) {
+    if kind == "response.output_item.done" {
+        match (keep.as_mut(), reply_item_digest(data)) {
+            (Some(k), Some(d)) => k.output.push(d),
+            (Some(_), None) => *keep = None, // 形状作废：不 keep（Go shape=nil）
+            _ => {}
+        }
+    }
+    if kind == "response.completed" {
+        let id = completed_response_id(data);
+        if let Some(k) = keep.take().filter(|_| !id.is_empty()) {
+            if let Some(conn) = conn.take() {
+                keep_put(KeptConn {
+                    conn,
+                    key: k.key,
+                    opened: k.opened,
+                    used: Instant::now(),
+                    fields: k.fields,
+                    input: k.input,
+                    output: k.output,
+                    reply_id: id,
+                });
+                // 连接已回池：终态置 done 后 reader 只吐 pending，不再碰连接。
+                *done = true;
+                return;
+            }
+        }
+    }
+    if WS_TERMINAL.contains(&kind) {
+        *done = true;
+        if let Some(c) = conn.as_mut() {
+            c.close_normally();
+        }
+    }
+}
+
+/// WS 回合的四种收尾（对应 Go turn :415 的路径）。
 enum WsOutcome {
     /// 200 应答已在手（SSE 行流）。
     Stream(ByteStream),
@@ -1825,25 +2258,53 @@ enum WsOutcome {
     /// 应答未交付（握手被拒/连接失败/写失败/应答前断线）→ 当轮回退 HTTP
     /// （Go errCodexSocketFallBack :213；连接上限错误也在此列，Go :541）。
     FallBack,
+    /// 复用的 keep 连接在应答交付前失败 → 关连接、换新连接整段重发
+    /// （Go errCodexSocketAgain :216；由 [`open_upstream_ws`] 消化，不外漏）。
+    Again,
 }
 
 /// 已连接的 socket 上的回合：发消息（一帧 text）→ prelude 读帧（头帧吸收
 /// + 首条正文事件缓冲 + error 帧前置判定）→ 交出 SSE 流。dial 与本函数的
 /// 拆分让 prelude/还原逻辑可以用内存双工测试（真 WS 端到端待真机）。
-fn ws_turn_over(mut conn: super::ws::WsConn, message: &[u8]) -> WsOutcome {
+/// `reused`：跑在池里取出的 keep 连接上（Go turn 的 reused 参数——应答交付
+/// 前的任何失败，含 error 帧，都是 Again 而非回退 HTTP；error 帧在复用连接
+/// 上不分类，新连接会替它自己定性，Go :462-466）。`keep`：回合收在
+/// completed 时连接的去处（None = 不 keep）。
+fn ws_turn_over(
+    mut conn: super::ws::WsConn,
+    message: &[u8],
+    host: &str,
+    reused: bool,
+    keep: Option<KeepTurn>,
+) -> WsOutcome {
+    // 应答交付前失败：1009 先记尺寸（对 delta/整段一样按实发字节数记，Go
+    // codexSocketEnded :529-533），再按是否复用连接决定 Again / 回退。
+    let again_or_fallback = |code: Option<u16>| {
+        if code == Some(WS_CLOSE_TOO_BIG) {
+            refused_too_big(host, message.len());
+        }
+        if reused {
+            WsOutcome::Again
+        } else {
+            WsOutcome::FallBack
+        }
+    };
     if conn.send_text(message).is_err() {
-        return WsOutcome::FallBack;
+        // Go turn :427-429：写失败同样按 reused 分流（写错误没有关闭码，不记）。
+        return if reused { WsOutcome::Again } else { WsOutcome::FallBack };
     }
+    let mut conn = Some(conn);
+    let mut keep = keep;
     let mut pending: Vec<u8> = Vec::new();
     for _ in 0..WS_PRELUDE {
-        let data = match conn.read_message() {
+        let data = match conn.as_mut().unwrap().read_message() {
             Ok(super::ws::Incoming::Text(d)) => d,
             // 非 text 帧照 Go（:683 frame 返回 nil,nil）丢弃；但 error 帧判定
             // 只对 text 帧——binary 帧不是回合应答的一部分。
             Ok(super::ws::Incoming::Binary(_)) => continue,
-            // 应答前断线：什么都没交付（Go codexSocketEnded :529 → 回退）。
-            Ok(super::ws::Incoming::Close(_)) => return WsOutcome::FallBack,
-            Err(_) => return WsOutcome::FallBack,
+            // 应答前断线：什么都没交付（Go codexSocketEnded :529）。
+            Ok(super::ws::Incoming::Close(code)) => return again_or_fallback(code),
+            Err(_) => return again_or_fallback(None),
         };
         let data = data.trim_ascii().to_vec();
         let kind = json_type_of(&data);
@@ -1851,6 +2312,11 @@ fn ws_turn_over(mut conn: super::ws::WsConn, message: &[u8]) -> WsOutcome {
             continue; // 与时序帧同款丢弃（Go :688；prelude 段同样不转发）
         }
         if kind == "error" {
+            if reused {
+                // Go :462-465：复用连接上的任何 error 帧（previous_response_
+                // not_found、连接上限……）→ Again，整段重发由新回合自己定性。
+                return WsOutcome::Again;
+            }
             match ws_error_reply(&data) {
                 Some(Err(())) => return WsOutcome::FallBack,
                 Some(Ok((status, body))) => return WsOutcome::Error(status, body),
@@ -1861,23 +2327,83 @@ fn ws_turn_over(mut conn: super::ws::WsConn, message: &[u8]) -> WsOutcome {
         if kind != "codex.rate_limits" && kind != "codex.response.metadata" {
             // 首条正文就是终态（如无 status 的 error 帧）：流到此收口，
             // reader 不再回头读连接（否则空连接上会报读错而非干净 EOF）。
-            let done = WS_TERMINAL.contains(&kind.as_str());
-            return WsOutcome::Stream(Box::new(WsSseReader { conn, pending, done, err: None }));
+            // completed 在 prelude 里出现时连接当场回池（Go frame 同款）。
+            let mut done = false;
+            frame_keep_step(&kind, &data, &mut keep, &mut conn, &mut done);
+            return WsOutcome::Stream(Box::new(WsSseReader { conn, pending, done, err: None, keep }));
         }
+    // 头帧（rate_limits / metadata）不参与 keep 处置（Go frame 的 switch
+    // 对它们无分支），只进 pending。
     }
-    WsOutcome::Stream(Box::new(WsSseReader { conn, pending, done: false, err: None }))
+    WsOutcome::Stream(Box::new(WsSseReader { conn, pending, done: false, err: None, keep }))
 }
 
-/// WS 出站入口：计划 → dial（直连或代理隧道 + TLS）→ 回合。Go socket :356
-/// 的形状（shun 名单/keep 连接复用没有——见 ws.rs 模块头差距清单）。
+/// WS 出站入口（Go overSocket :162 的形状）：
+/// 1. shun 名单命中 → 整轮直接 HTTP（不动 keep 池，Go RoundTrip :147）；
+/// 2. 有会话键且形状可解析 → 从池里取连接，能续跑就发增量
+///    （previous_response_id + 只新输入）；增量尺寸已到 1009 记忆线 → 弃用
+///    池内连接走新连接；复用连接应答交付前失败（Again）→ 也走新连接；
+/// 3. 整段消息已到 1009 记忆线 → 直接 HTTP；
+/// 4. dial 新连接 → 回合；握手被拒按 Go :375-386 的分类决定要不要 shun。
 fn open_upstream_ws(account: &Account, ver: &str, body: &Value) -> WsOutcome {
     let Some(plan) = ws_plan(account, ver, body) else {
         return WsOutcome::FallBack;
     };
+    let host = ws_host_of(&plan.url);
+    if ws_shunned(&host) {
+        return WsOutcome::FallBack;
+    }
+    // Go overSocket :178-186：键与形状成对——形状解析失败键作废（不取池）。
+    let key = match (keep_key(&plan), turn_shape(body)) {
+        (Some(k), Some(s)) => Some((k, s)),
+        _ => None,
+    };
+    if let Some((key, shape)) = key.clone() {
+        if let Some(kept) = keep_take(&key) {
+            // 能续跑就只发增量；不能（字段变了/前缀对不上/上轮无 id）就整段
+            // 发在同一条连接上（Go :188-190）。
+            let send =
+                delta_message(&kept, body, &shape).unwrap_or_else(|| plan.message.clone());
+            if !message_too_big(&host, send.len()) {
+                let keep = KeepTurn {
+                    key,
+                    opened: kept.opened,
+                    fields: shape.fields.clone(),
+                    input: shape.sums.clone(),
+                    output: Vec::new(),
+                };
+                // kept 的其余字段（fields/input/output/reply_id）已被增量判定
+                // 消费；conn 交给回合，失败即弃（Again/交付前断连都关连接）。
+                match ws_turn_over(kept.conn, &send, &host, true, Some(keep)) {
+                    WsOutcome::Again => {} // 换新连接整段重发（Go :196-198）
+                    other => return other,
+                }
+            }
+            // 增量太大：池内连接弃用（drop = CloseNow，Go :192-194 k.close()），
+            // 落到下面新连接路径。
+        }
+    }
+    if message_too_big(&host, plan.message.len()) {
+        return WsOutcome::FallBack; // 整段也已到记忆线 → 直接 HTTP（Go :201-203）
+    }
     match super::ws::dial(&plan.url, &plan.headers, WS_CONNECT, WS_DIAL) {
-        Ok(conn) => ws_turn_over(conn, &plan.message),
-        // 握手被拒/连不上：当轮回退 HTTP（Go :375-386）。
-        Err(_) => WsOutcome::FallBack,
+        Ok(conn) => {
+            let keep = key.map(|(key, shape)| KeepTurn {
+                key,
+                opened: Instant::now(),
+                fields: shape.fields,
+                input: shape.sums,
+                output: Vec::new(),
+            });
+            ws_turn_over(conn, &plan.message, &host, false, keep)
+        }
+        Err(e) => {
+            // 握手被拒/连不上：当轮回退 HTTP；要不要记 shun按 Go :375-386 分类。
+            if shun_worthy(&e) {
+                shun_host(&host, &e);
+            }
+            WsOutcome::FallBack
+        }
     }
 }
 
@@ -1888,7 +2414,9 @@ fn open_stream(account: &Account, ver: &str, body: &Value) -> Result<ByteStream,
         match open_upstream_ws(account, ver, body) {
             WsOutcome::Stream(reader) => return Ok(reader),
             WsOutcome::Error(status, body) => return Err((status, body)),
-            WsOutcome::FallBack => {}
+            // Again 由 open_upstream_ws 内部消化（换新连接重发）；漏到这里
+            // 属缺陷，按回退 HTTP 兜底（不该让应答丢失）。
+            WsOutcome::FallBack | WsOutcome::Again => {}
         }
     }
     open_upstream(account, ver, body).map(|r| Box::new(r.into_reader()) as ByteStream)
@@ -3754,7 +4282,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         feed.data
             .extend(text_frame(br#"{"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":1}}}"#));
         let conn = super::super::ws::WsConn::over(Box::new(feed));
-        let outcome = super::ws_turn_over(conn, br#"{"type":"response.create"}"#);
+        let outcome = super::ws_turn_over(conn, br#"{"type":"response.create"}"#, "h", false, None);
         let super::WsOutcome::Stream(mut reader) = outcome else { panic!("expected Stream") };
         let mut sse = String::new();
         reader.read_to_string(&mut sse).expect("read to end");
@@ -3777,20 +4305,20 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let mut feed = FrameFeed::default();
         feed.data.extend(text_frame(br#"{"type":"error","error":{"code":"websocket_connection_limit_reached"}}"#));
         let conn = super::super::ws::WsConn::over(Box::new(feed));
-        assert!(matches!(super::ws_turn_over(conn, b"m"), super::WsOutcome::FallBack));
+        assert!(matches!(super::ws_turn_over(conn, b"m", "h", false, None), super::WsOutcome::FallBack));
 
         // 带 status 的 error 帧 → 合成错误走现有路径（账号轮换可判）。
         let mut feed = FrameFeed::default();
         feed.data.extend(text_frame(br#"{"type":"error","status":429,"error":{"message":"usage limit"}}"#));
         let conn = super::super::ws::WsConn::over(Box::new(feed));
-        let super::WsOutcome::Error(429, body) = super::ws_turn_over(conn, b"m") else { panic!("429") };
+        let super::WsOutcome::Error(429, body) = super::ws_turn_over(conn, b"m", "h", false, None) else { panic!("429") };
         assert!(String::from_utf8_lossy(&body).contains("usage limit"));
 
         // 无 status 的 error 帧 → 当普通事件传下去（且是终态）。
         let mut feed = FrameFeed::default();
         feed.data.extend(text_frame(br#"{"type":"error","message":"odd"}"#));
         let conn = super::super::ws::WsConn::over(Box::new(feed));
-        let super::WsOutcome::Stream(mut reader) = super::ws_turn_over(conn, b"m") else { panic!("Stream") };
+        let super::WsOutcome::Stream(mut reader) = super::ws_turn_over(conn, b"m", "h", false, None) else { panic!("Stream") };
         let mut sse = String::new();
         reader.read_to_string(&mut sse).expect("eof after terminal");
         assert_eq!(sse, "event: error\ndata: {\"type\":\"error\",\"message\":\"odd\"}\n\n");
@@ -3799,9 +4327,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let mut feed = FrameFeed::default();
         feed.data.extend(super::super::ws::encode_server_frame(super::super::ws::OP_CLOSE, &1000u16.to_be_bytes()));
         let conn = super::super::ws::WsConn::over(Box::new(feed));
-        assert!(matches!(super::ws_turn_over(conn, b"m"), super::WsOutcome::FallBack));
+        assert!(matches!(super::ws_turn_over(conn, b"m", "h", false, None), super::WsOutcome::FallBack));
         let conn = super::super::ws::WsConn::over(Box::new(FrameFeed::default()));
-        assert!(matches!(super::ws_turn_over(conn, b"m"), super::WsOutcome::FallBack));
+        assert!(matches!(super::ws_turn_over(conn, b"m", "h", false, None), super::WsOutcome::FallBack));
     }
 
     #[test]
@@ -3811,7 +4339,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let mut feed = FrameFeed::default();
         feed.data.extend(text_frame(br#"{"type":"response.created","response":{"id":"r1"}}"#));
         let conn = super::super::ws::WsConn::over(Box::new(feed));
-        let super::WsOutcome::Stream(mut reader) = super::ws_turn_over(conn, b"m") else { panic!("Stream") };
+        let super::WsOutcome::Stream(mut reader) = super::ws_turn_over(conn, b"m", "h", false, None) else { panic!("Stream") };
         let mut buf = Vec::new();
         let res = reader.read_to_end(&mut buf);
         assert!(res.is_err(), "cut stream must surface an error");
@@ -3871,6 +4399,531 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
             assert_eq!(sent["model"], "gpt-6-luna");
             assert!(sent.get("type").is_none(), "HTTP body must not carry the ws response.create prefix");
         }
+    }
+
+    // ---- keep 复用 / shun 名单 / 1009 尺寸记忆（对照 codex_socket_keep_test.go
+    // ---- 与 codex_socket_test.go 的同名场景）----
+
+    /// 纯逻辑：turn_shape 的字段口径 + delta 的前缀比对（Go codexShape :218 /
+    /// codexKept.delta :300 / codexSocketItem :256 的剥除口径）。
+    #[test]
+    fn turn_shape_and_delta_go_semantics() {
+        let user = |t: &str| json!({ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": t }] });
+        let asst = |t: &str| json!({ "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": t }] });
+        let body1 = json!({ "model": "m", "stream": true, "store": false, "prompt_cache_key": "c1", "input": [user("ping")] });
+        let shape1 = super::turn_shape(&body1).expect("shape");
+        // 字段排除 input/client_metadata/stream_options，其余全收。
+        assert!(shape1.fields.contains_key("model") && shape1.fields.contains_key("store"));
+        assert!(!shape1.fields.contains_key("input") && !shape1.fields.contains_key("client_metadata"));
+
+        // 池内条目：上轮 input [user ping] + output [asst pong]、reply resp-1。
+        let kept = super::KeptConn {
+            conn: super::super::ws::WsConn::over(Box::new(FrameFeed::default())),
+            key: String::new(),
+            opened: Instant::now(),
+            used: Instant::now(),
+            fields: shape1.fields.clone(),
+            input: shape1.sums.clone(),
+            output: vec![super::item_digest(&json!({ "type": "message", "role": "assistant", "id": "msg_a",
+                "status": "completed", "content": [{ "type": "output_text", "annotations": [], "logprobs": null, "text": "pong" }] }))
+                .unwrap()],
+            reply_id: "resp-1".into(),
+        };
+        // 续跑回合：前缀 = 上轮 input + 上轮 output（output 的 id/status/
+        // annotations/logprobs 都被剥掉后应与请求里的干净条目同摘要）。
+        let body2 = json!({ "model": "m", "stream": true, "store": false, "prompt_cache_key": "c1",
+            "input": [user("ping"), asst("pong"), user("again")] });
+        let shape2 = super::turn_shape(&body2).expect("shape 2");
+        let delta = super::delta_message(&kept, &body2, &shape2).expect("delta");
+        let msg: Value = serde_json::from_slice(&delta).unwrap();
+        assert_eq!(msg["previous_response_id"], "resp-1");
+        assert_eq!(msg["input"].as_array().map(|a| a.len()), Some(1));
+        assert_eq!(msg["input"][0]["content"][0]["text"], "again");
+        assert_eq!(msg["model"], "m", "delta keeps the turn's fields");
+        assert!(delta.starts_with(br#"{"type":"response.create","#));
+
+        // 编辑过的历史：前缀对不上 → 整段。
+        let edited = json!({ "model": "m", "stream": true, "store": false, "prompt_cache_key": "c1",
+            "input": [user("PING"), asst("pong"), user("again")] });
+        let s = super::turn_shape(&edited).unwrap();
+        assert!(super::delta_message(&kept, &edited, &s).is_none(), "edited history goes whole");
+
+        // 换模型（字段变了）→ 整段；少一条前缀 → 整段。
+        let other_model = json!({ "model": "m2", "stream": true, "store": false, "prompt_cache_key": "c1",
+            "input": [user("ping"), asst("pong"), user("again")] });
+        assert!(super::delta_message(&kept, &other_model, &super::turn_shape(&other_model).unwrap()).is_none());
+        let short = json!({ "model": "m", "stream": true, "store": false, "prompt_cache_key": "c1", "input": [user("ping")] });
+        assert!(super::delta_message(&kept, &short, &super::turn_shape(&short).unwrap()).is_none());
+
+        // 上轮无 reply id → 整段；body 自带 previous_response_id → 不参与形状。
+        let no_id = super::KeptConn {
+            conn: super::super::ws::WsConn::over(Box::new(FrameFeed::default())),
+            key: String::new(),
+            opened: Instant::now(),
+            used: Instant::now(),
+            fields: shape1.fields.clone(),
+            input: shape1.sums.clone(),
+            output: kept.output.clone(),
+            reply_id: String::new(),
+        };
+        assert!(super::delta_message(&no_id, &body2, &shape2).is_none());
+        let named = json!({ "model": "m", "stream": true, "previous_response_id": "x", "input": [user("ping")] });
+        assert!(super::turn_shape(&named).is_none(), "a body naming previous_response_id is not continuable");
+        // input 非数组 → 不参与形状（Go Unmarshal 到数组失败同款）。
+        assert!(super::turn_shape(&json!({ "model": "m", "stream": true, "input": "hi" })).is_none());
+    }
+
+    /// 纯逻辑：dial 错误 → 要不要记 shun 的分类（Go socket :375-386）。
+    #[test]
+    fn shun_worthy_classification() {
+        // 非 101 的 HTTP 应答：401/429/5xx 豁免，403/404 记 shun。
+        assert!(!super::shun_worthy("ws handshake refused: HTTP 401 X"));
+        assert!(!super::shun_worthy("ws handshake refused: HTTP 429 Too Many"));
+        assert!(!super::shun_worthy("ws handshake refused: HTTP 503 busy"));
+        assert!(super::shun_worthy("ws handshake refused: HTTP 403 nope"));
+        assert!(super::shun_worthy("ws handshake refused: HTTP 404 X"));
+        // 连接层失败（Go hs == nil）：一律 shun。
+        assert!(super::shun_worthy("ws connect 1.2.3.4:443: timed out"));
+        assert!(super::shun_worthy("ws handshake: connection closed before 101"));
+        assert!(super::shun_worthy("ws handshake: Sec-WebSocket-Accept mismatch"));
+    }
+
+    /// 纯逻辑：会话键把账号/会话分开（Go codexKeepKey :102）。
+    #[test]
+    fn keep_key_separates_accounts_and_conversations() {
+        let (_gateway, _w) = world(r#"{"providers":[]}"#, "http://127.0.0.1:9/codex");
+        let mk = |token: &str, acct: &str, conv: &str| {
+            let account = Account {
+                id: String::new(),
+                token: token.into(),
+                account_id: acct.into(),
+                email: String::new(),
+                plan: String::new(),
+                exp: Some(now_secs() + 3600),
+            };
+            let body = json!({"model":"m","stream":true,"input":"hi","prompt_cache_key":conv});
+            super::ws_plan(&account, "v", &body).unwrap()
+        };
+        let a1 = super::keep_key(&mk("t1", "acct-1", "conv-1")).unwrap();
+        let a1b = super::keep_key(&mk("t1", "acct-1", "conv-1")).unwrap();
+        let a2 = super::keep_key(&mk("t2", "acct-2", "conv-1")).unwrap();
+        let c2 = super::keep_key(&mk("t1", "acct-1", "conv-2")).unwrap();
+        assert_eq!(a1, a1b, "same account+conversation → same key");
+        assert_ne!(a1, a2, "another account never finds it");
+        assert_ne!(a1, c2, "another conversation never finds it");
+        // 没有会话标识（prompt_cache_key 缺席 → 头里没有 session-id）→ None。
+        let account = Account {
+            id: String::new(),
+            token: "t".into(),
+            account_id: String::new(),
+            email: String::new(),
+            plan: String::new(),
+            exp: None,
+        };
+        let plan = super::ws_plan(&account, "v", &json!({"model":"m","stream":true,"input":"hi"})).unwrap();
+        assert!(super::keep_key(&plan).is_none());
+    }
+
+    /// 一条 WS 消息的记录：载荷、第几条握手、鉴权头。
+    struct FakeTurn {
+        msg: Vec<u8>,
+        socket: usize,
+        auth: String,
+    }
+
+    /// ChatGPT 后端假身（Go fakeSocketBackend codex_socket_test.go :33 的形
+    /// 态）：Upgrade 可拒（refuse）；每条 WS 消息按脚本应答——frames(握手
+    /// 序号, 消息) → (帧列表, 关闭码)：帧逐条 text 发出，关闭码 Some 则补
+    /// close 帧后断开（1009 = message too big、1000 = 正常收尾），None 则
+    /// 连接留着等下一回合（keep 复用的形状）；HTTP POST 回整段 SSE_OK。
+    struct WsFake {
+        base: String,
+        turns: Arc<Mutex<Vec<FakeTurn>>>,
+        handshakes: Arc<AtomicUsize>,
+        posts: Arc<AtomicUsize>,
+    }
+
+    impl WsFake {
+        fn start(
+            refuse: Option<u16>,
+            frames: impl Fn(usize, &[u8]) -> (Vec<String>, Option<u16>) + Send + Sync + 'static,
+        ) -> WsFake {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+            let port = listener.local_addr().unwrap().port();
+            let turns: Arc<Mutex<Vec<FakeTurn>>> = Arc::new(Mutex::new(Vec::new()));
+            let handshakes = Arc::new(AtomicUsize::new(0));
+            let posts = Arc::new(AtomicUsize::new(0));
+            let (t, h, p) = (turns.clone(), handshakes.clone(), posts.clone());
+            let frames = Arc::new(frames);
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { continue };
+                    let (t, h, p) = (t.clone(), h.clone(), p.clone());
+                    let frames = Arc::clone(&frames);
+                    std::thread::spawn(move || {
+                        let mut reader = BufReader::new(stream.try_clone().unwrap());
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        let mut headers = HashMap::new();
+                        loop {
+                            let mut hl = String::new();
+                            if reader.read_line(&mut hl).unwrap_or(0) == 0 {
+                                break;
+                            }
+                            let trimmed = hl.trim_end();
+                            if trimmed.is_empty() {
+                                break;
+                            }
+                            if let Some((k, v)) = trimmed.split_once(':') {
+                                headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
+                            }
+                        }
+                        if line.starts_with("POST") {
+                            let len: usize =
+                                headers.get("content-length").and_then(|l| l.parse().ok()).unwrap_or(0);
+                            let mut body = vec![0u8; len];
+                            let _ = reader.read_exact(&mut body);
+                            p.fetch_add(1, Ordering::SeqCst);
+                            let out = format!(
+                                "HTTP/1.1 200 X\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                SSE_OK.len(),
+                                SSE_OK
+                            );
+                            let _ = stream.write_all(out.as_bytes());
+                            return;
+                        }
+                        // GET Upgrade：握手尝试数在这里计（被拒的也算——Go
+                        // fakeSocketBackend 的 handshakes「a refused message's
+                        // too」同款口径）。
+                        let n = h.fetch_add(1, Ordering::SeqCst) + 1;
+                        let auth = headers.get("authorization").cloned().unwrap_or_default();
+                        if let Some(code) = refuse {
+                            let out = format!(
+                                "HTTP/1.1 {code} refused\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            );
+                            let _ = stream.write_all(out.as_bytes());
+                            return;
+                        }
+                        let key = headers.get("sec-websocket-key").cloned().unwrap_or_default();
+                        let accept = super::super::ws::accept_for(&key);
+                        let res = format!(
+                            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+                        );
+                        if stream.write_all(res.as_bytes()).is_err() {
+                            return;
+                        }
+                        loop {
+                            let Some((op, payload)) = read_client_frame(&mut reader) else { break };
+                            if op == super::super::ws::OP_CLOSE {
+                                break;
+                            }
+                            if op != super::super::ws::OP_TEXT {
+                                continue;
+                            }
+                            t.lock().unwrap().push(FakeTurn { msg: payload.clone(), socket: n, auth: auth.clone() });
+                            let (reply, close) = frames(n, &payload);
+                            for fr in reply {
+                                if stream
+                                    .write_all(&super::super::ws::encode_server_frame(
+                                        super::super::ws::OP_TEXT,
+                                        fr.as_bytes(),
+                                    ))
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
+                            if let Some(code) = close {
+                                let _ = stream.write_all(&super::super::ws::encode_server_frame(
+                                    super::super::ws::OP_CLOSE,
+                                    &code.to_be_bytes(),
+                                ));
+                                return; // drop 连接
+                            }
+                        }
+                    });
+                }
+            });
+            WsFake {
+                base: format!("http://127.0.0.1:{port}/backend-api/codex"),
+                turns,
+                handshakes,
+                posts,
+            }
+        }
+
+        fn opened(&self) -> usize {
+            self.handshakes.load(Ordering::SeqCst)
+        }
+        fn posts(&self) -> usize {
+            self.posts.load(Ordering::SeqCst)
+        }
+        fn turn(&self, i: usize) -> (usize, String, Vec<u8>) {
+            let turns = self.turns.lock().unwrap();
+            let t = &turns[i];
+            (t.socket, t.auth.clone(), t.msg.clone())
+        }
+    }
+
+    /// 读一条客户端帧（恒掩码）并解掩码；EOF/断线 → None。
+    fn read_client_frame<S: Read>(stream: &mut S) -> Option<(u8, Vec<u8>)> {
+        let mut h = [0u8; 2];
+        stream.read_exact(&mut h).ok()?;
+        let opcode = h[0] & 0x0F;
+        let len = match h[1] & 0x7F {
+            126 => {
+                let mut b = [0u8; 2];
+                stream.read_exact(&mut b).ok()?;
+                u16::from_be_bytes(b) as usize
+            }
+            127 => {
+                let mut b = [0u8; 8];
+                stream.read_exact(&mut b).ok()?;
+                u64::from_be_bytes(b) as usize
+            }
+            n => n as usize,
+        };
+        let mut mask = [0u8; 4];
+        stream.read_exact(&mut mask).ok()?;
+        let mut payload = vec![0u8; len];
+        stream.read_exact(&mut payload).ok()?;
+        for (i, b) in payload.iter_mut().enumerate() {
+            *b ^= mask[i & 3];
+        }
+        Some((opcode, payload))
+    }
+
+    /// 假后端的一条完整回合应答（created → output_item.done(item pong) →
+    /// completed(id)，item 带 id/status/annotations/logprobs——剥除口径的
+    /// 「后端原话」形态）。
+    fn kept_reply(id: &str) -> Vec<String> {
+        vec![
+            format!(r#"{{"type":"response.created","response":{{"id":"{id}"}}}}"#),
+            r#"{"type":"response.output_item.done","output_index":0,"item":{"id":"msg_a","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":null,"text":"pong"}]}}"#.into(),
+            format!(r#"{{"type":"response.completed","response":{{"id":"{id}","usage":{{"input_tokens":7,"output_tokens":1}}}}}}"#),
+        ]
+    }
+
+    const USER_PING: &str =
+        r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"ping"}]}"#;
+    const ASST_PONG: &str =
+        r#"{"type":"message","role":"assistant","content":[{"type":"output_text","text":"pong"}]}"#;
+    const USER_AGAIN: &str =
+        r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"again"}]}"#;
+
+    /// 带 prompt_cache_key 的整段回合体（input = 逗号拼接的条目串）。
+    fn kept_turn_body(conv: &str, items: &str) -> Value {
+        serde_json::from_str(&format!(
+            r#"{{"model":"codex/gpt-6-luna","stream":true,"prompt_cache_key":"{conv}","input":[{items}]}}"#
+        ))
+        .unwrap()
+    }
+
+    fn run_turn(gateway: &Gateway, body: &Value) -> (u16, String) {
+        let reply = super::super::routes::route(&post("/v1/responses", body), gateway);
+        let (status, v) = reply_json(reply);
+        (status, v.as_str().unwrap_or_default().to_string())
+    }
+
+    /// rem_thank 场景（Go TestCodexKeptSocketSendsTheDelta）：会话的第二回合
+    /// 在 keep 连接上只发增量（previous_response_id + 新输入）；编辑过的历史
+    /// 和别的模型在前缀/字段对不上时整段发，但仍在这条连接上。
+    #[test]
+    fn ws_keep_sends_the_delta_and_edited_history_goes_whole() {
+        let fake = WsFake::start(None, |socket, _| (kept_reply(&format!("resp-{socket}")), None));
+        let (gateway, w) = world(r#"{"providers":[]}"#, &fake.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let _on = WsEnv::on();
+
+        // 第一回合：整段（input 只有 user ping）。
+        let (status, body) = run_turn(&gateway, &kept_turn_body("conv-1", USER_PING));
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("response.completed"), "{body}");
+
+        // 第二回合：增量（input = ping + assistant pong + user again）。
+        let (status, body) = run_turn(
+            &gateway,
+            &kept_turn_body("conv-1", &format!("{USER_PING}, {ASST_PONG}, {USER_AGAIN}")),
+        );
+        assert_eq!(status, 200, "{body}");
+
+        // 两回合一条连接、零 HTTP POST；第二回合带 previous_response_id 且
+        // input 只剩新条目。
+        assert_eq!((fake.posts(), fake.opened()), (0, 1));
+        let (sock1, _, msg1) = fake.turn(0);
+        let m1: Value = serde_json::from_slice(&msg1).unwrap();
+        assert_eq!(sock1, 1);
+        assert!(m1.get("previous_response_id").is_none());
+        let (sock2, _, msg2) = fake.turn(1);
+        assert_eq!(sock2, 1, "second turn on the kept socket");
+        let m2: Value = serde_json::from_slice(&msg2).unwrap();
+        assert_eq!(m2["previous_response_id"], "resp-1");
+        let input = m2["input"].as_array().unwrap();
+        assert_eq!(input.len(), 1, "delta input is only the new item");
+        assert_eq!(input[0]["content"][0]["text"], "again");
+        assert_eq!(m2["model"], "gpt-6-luna", "delta keeps the turn's fields");
+        assert!(msg2.starts_with(br#"{"type":"response.create","#));
+
+        // 编辑过的历史：整段，但还在 keep 连接上（不重握手）。
+        let edited = USER_PING.replace("ping", "PING");
+        let (status, body) = run_turn(
+            &gateway,
+            &kept_turn_body("conv-1", &format!("{edited}, {ASST_PONG}, {USER_AGAIN}")),
+        );
+        assert_eq!(status, 200, "{body}");
+        let (sock3, _, msg3) = fake.turn(2);
+        let m3: Value = serde_json::from_slice(&msg3).unwrap();
+        assert_eq!(sock3, 1, "edited history still on the kept socket");
+        assert!(m3.get("previous_response_id").is_none(), "edited history goes whole");
+        assert_eq!(m3["input"].as_array().unwrap().len(), 3);
+        assert_eq!((fake.posts(), fake.opened()), (0, 1));
+    }
+
+    /// 后端丢了 response（previous_response_not_found，Go
+    /// TestCodexKeptSocketLostResponseGoesWhole）：复用连接上的 error 帧 →
+    /// Again → 新连接整段重发，回合照常完成。
+    #[test]
+    fn ws_keep_lost_response_goes_whole_on_new_socket() {
+        let fake = WsFake::start(None, |socket, msg| {
+            if msg.windows(21).any(|w| w.starts_with(br#""previous_response_id"#)) {
+                (
+                    vec![r#"{"type":"error","status":400,"error":{"type":"invalid_request_error","code":"previous_response_not_found","message":"Previous response with id 'resp-1' not found."}}"#.to_string()],
+                    None,
+                )
+            } else {
+                (kept_reply(&format!("resp-{socket}")), None)
+            }
+        });
+        let (gateway, w) = world(r#"{"providers":[]}"#, &fake.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let _on = WsEnv::on();
+
+        let (status, body) = run_turn(&gateway, &kept_turn_body("conv-1", USER_PING));
+        assert_eq!(status, 200, "{body}");
+        let (status, body) = run_turn(
+            &gateway,
+            &kept_turn_body("conv-1", &format!("{USER_PING}, {ASST_PONG}, {USER_AGAIN}")),
+        );
+        assert_eq!(status, 200, "{body}");
+
+        // 三条消息、两条握手、零 POST：delta 被拒后整段重发在新连接上。
+        assert_eq!((fake.posts(), fake.opened()), (0, 2));
+        let turns = fake.turns.lock().unwrap();
+        assert_eq!(turns.len(), 3);
+        let last = &turns[2];
+        assert_eq!(last.socket, 2, "retry on the second socket");
+        let m: Value = serde_json::from_slice(&last.msg).unwrap();
+        assert!(m.get("previous_response_id").is_none(), "retry goes whole");
+        assert_eq!(m["input"].as_array().unwrap().len(), 3);
+    }
+
+    /// 后端在回合后关了连接（Go TestCodexKeptSocketClosedMeanwhileGoesWhole）：
+    /// 下一回合取出的 keep 连接已死 → Again → 新连接整段。
+    #[test]
+    fn ws_keep_closed_meanwhile_goes_whole_on_new_socket() {
+        let fake = WsFake::start(None, |socket, _| (kept_reply(&format!("resp-{socket}")), Some(1000)));
+        let (gateway, w) = world(r#"{"providers":[]}"#, &fake.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let _on = WsEnv::on();
+
+        let (status, body) = run_turn(&gateway, &kept_turn_body("conv-1", USER_PING));
+        assert_eq!(status, 200, "{body}");
+        let (status, body) = run_turn(
+            &gateway,
+            &kept_turn_body("conv-1", &format!("{USER_PING}, {ASST_PONG}, {USER_AGAIN}")),
+        );
+        assert_eq!(status, 200, "{body}");
+        assert_eq!((fake.posts(), fake.opened()), (0, 2));
+        let (sock, _, msg) = fake.turn(1);
+        assert_eq!(sock, 2, "the dead kept socket is replaced");
+        let m: Value = serde_json::from_slice(&msg).unwrap();
+        assert!(m.get("previous_response_id").is_none(), "a new socket is sent the turn whole");
+    }
+
+    /// 别的账号绝不复用第一家的连接，也不点名它家的 response（Go
+    /// TestCodexKeptSocketIsTheAccounts）。
+    #[test]
+    fn ws_keep_is_the_accounts() {
+        let fake = WsFake::start(None, |socket, _| (kept_reply(&format!("resp-{socket}")), None));
+        let (gateway, w) = world(r#"{"providers":[]}"#, &fake.base);
+        let a = fake_jwt(json!({ "exp": now_secs() + 9000 }));
+        let b = fake_jwt(json!({ "exp": now_secs() + 1000 }));
+        write_logins_multi(
+            &w,
+            &[("acc-a", "a@example.test", &a, "acct-a"), ("acc-b", "b@example.test", &b, "acct-b")],
+        );
+        let _on = WsEnv::on();
+
+        let first = kept_turn_body("conv-1", USER_PING);
+        let mut pinned = first.clone();
+        pinned["model"] = Value::String("codex/gpt-6-luna#acc-a".into());
+        assert_eq!(run_turn(&gateway, &pinned).0, 200);
+        let mut second = kept_turn_body("conv-1", &format!("{USER_PING}, {ASST_PONG}, {USER_AGAIN}"));
+        second["model"] = Value::String("codex/gpt-6-luna#acc-b".into());
+        assert_eq!(run_turn(&gateway, &second).0, 200);
+
+        assert_eq!((fake.posts(), fake.opened()), (0, 2), "each account its own socket");
+        let (sock, auth, msg) = fake.turn(1);
+        assert_eq!(sock, 2);
+        assert_eq!(auth, format!("Bearer {b}"));
+        let m: Value = serde_json::from_slice(&msg).unwrap();
+        assert!(m.get("previous_response_id").is_none(), "acct-2 never names acct-1's response");
+    }
+
+    /// 握手被拒（403）：当轮回退 HTTP，10 分钟内不再试 WS（Go
+    /// TestCodexSocketRefusedGoesOverHTTP）。
+    #[test]
+    fn ws_shun_refused_handshake_goes_http_and_stays_http() {
+        let fake = WsFake::start(Some(403), |_, _| (Vec::new(), None));
+        let (gateway, w) = world(r#"{"providers":[]}"#, &fake.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let _on = WsEnv::on();
+
+        for _ in 0..2 {
+            let (status, body) = run_turn(&gateway, &kept_turn_body("conv-1", USER_PING));
+            assert_eq!(status, 200, "{body}");
+            assert!(body.contains("response.completed"), "{body}");
+        }
+        // 两次 HTTP POST、只有一次升级尝试（第二次被 shun 名单直接拦下）。
+        assert_eq!((fake.posts(), fake.opened()), (2, 1));
+    }
+
+    /// Lamrfu 场景（Go TestCodexSocketTooBigGoesOverHTTP）：大回合被 1009
+    /// 关闭 → 当轮回退 HTTP 并记下尺寸；期内同等大小直接 HTTP 不再连；小
+    /// 回合不受影响照走 WS。
+    #[test]
+    fn ws_too_big_1009_goes_http_and_small_turns_return() {
+        let fake = WsFake::start(None, |socket, msg| {
+            // 大回合：读完后 1009 关闭（后端 message too big 的形状，Go 用
+            // SetReadLimit 让 Read 内部关——等价于读完即 close）；小回合正常应答。
+            if msg.len() > 2000 {
+                (Vec::new(), Some(1009))
+            } else {
+                (kept_reply(&format!("resp-{socket}")), None)
+            }
+        });
+        let (gateway, w) = world(r#"{"providers":[]}"#, &fake.base);
+        write_logins(&w, &valid_token(), "me@example.test");
+        let _on = WsEnv::on();
+
+        let big_text = format!("long conversation {}", "x".repeat(4000));
+        let big = json!({ "model": "codex/gpt-6-luna", "stream": true, "prompt_cache_key": "conv-1",
+            "input": [{ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": big_text }] }] });
+        // 第一回合：WS 连上、消息发出、应答前被 1009 关 → 回退 HTTP。
+        let (status, body) = run_turn(&gateway, &big);
+        assert_eq!(status, 200, "{body}");
+        // 第二回合（同样大）：期内不再连 WS，直接 HTTP。
+        let (status, body) = run_turn(&gateway, &big);
+        assert_eq!(status, 200, "{body}");
+        assert_eq!((fake.posts(), fake.opened()), (2, 1), "one socket tried, both turns over HTTP");
+        // 小回合回到 WS。
+        let (status, body) = run_turn(&gateway, &kept_turn_body("conv-2", USER_PING));
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("response.completed"), "{body}");
+        assert_eq!((fake.posts(), fake.opened()), (2, 2), "the small turn goes over the socket");
+        assert_eq!(fake.turns.lock().unwrap().len(), 2, "both WS messages were seen");
     }
 
     #[test]
