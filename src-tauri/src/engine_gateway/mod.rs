@@ -33,6 +33,7 @@ pub mod httpd;
 pub mod integral;
 pub mod messages;
 pub mod key_balances;
+pub mod opencode_client;
 pub mod plan_quotas;
 pub mod presets;
 pub mod quota_extra;
