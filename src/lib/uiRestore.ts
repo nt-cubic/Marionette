@@ -98,11 +98,20 @@ function sanitizeSurface(value: unknown): WorkspaceSurfaceSnapshot | undefined {
 
   const rawBrowserTabs = Array.isArray(rec.browserTabs) ? rec.browserTabs : [];
   const browserTabs: WorkspaceSurfaceSnapshot["browserTabs"] = [];
-  for (const raw of rawBrowserTabs.slice(0, 20)) {
+  // Saved index -> index in the sanitized list: tabs dropped before the
+  // active one (bad URL, duplicate) must not shift which tab restores active.
+  const keptIndexBySaved = new Map<number, number>();
+  for (const [savedIndex, raw] of rawBrowserTabs.slice(0, 20).entries()) {
     if (!raw || typeof raw !== "object") continue;
     const row = raw as Record<string, unknown>;
     const url = safeHttpUrl(row.url);
-    if (!url || browserTabs.some((tab) => tab.url === url)) continue;
+    if (!url) continue;
+    const duplicate = browserTabs.findIndex((tab) => tab.url === url);
+    if (duplicate >= 0) {
+      keptIndexBySaved.set(savedIndex, duplicate);
+      continue;
+    }
+    keptIndexBySaved.set(savedIndex, browserTabs.length);
     const title =
       typeof row.title === "string" && row.title.trim()
         ? row.title.trim().slice(0, 240)
@@ -131,11 +140,13 @@ function sanitizeSurface(value: unknown): WorkspaceSurfaceSnapshot | undefined {
     Number.isInteger(rec.activeBrowserIndex)
       ? rec.activeBrowserIndex
       : null;
+  const mappedBrowserIndex =
+    requestedBrowserIndex != null
+      ? keptIndexBySaved.get(requestedBrowserIndex)
+      : undefined;
   const activeBrowserIndex =
-    requestedBrowserIndex != null &&
-    requestedBrowserIndex >= 0 &&
-    requestedBrowserIndex < browserTabs.length
-      ? requestedBrowserIndex
+    mappedBrowserIndex != null && mappedBrowserIndex < browserTabs.length
+      ? mappedBrowserIndex
       : null;
 
   return {

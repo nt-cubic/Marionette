@@ -157,6 +157,12 @@ check(
   "an eval against a dialog-blocked renderer hangs inside the process-wide CDP lease",
 );
 check(
+  "screenshot capture paths are gated by the dialog mirror too",
+  fnBody(surface, "screenshot").includes("dialog_block_note_for") &&
+    fnBody(surface, "pick_finalize").includes("dialog_block_note_for"),
+  "Page.captureScreenshot stalls behind an open dialog while holding the CDP lease",
+);
+check(
   "the dialog mirror clears when the document navigates",
   fnBody(surface, "apply_document_navigation").includes("dialog.borrow_mut()"),
 );
