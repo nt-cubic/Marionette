@@ -134,6 +134,9 @@ fn collect(gateway: &super::Gateway) -> Vec<Value> {
     // 多账号：每个账号一行（user=邮箱）。
     rows.extend(super::codex_account::quota_rows(&providers));
     // Grok 订阅（SuperGrok，Grok CLI 登录）：同款只读行，失败安静跳过。
+    if let Some(row) = super::claude_account::quota_row(&providers) {
+        rows.push(row);
+    }
     if let Some(row) = super::grok_account::quota_row(&providers) {
         rows.push(row);
     }

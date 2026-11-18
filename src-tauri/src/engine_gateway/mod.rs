@@ -94,6 +94,11 @@ pub struct Gateway {
     pub store: Mutex<store::Store>,
     pub catalog: catalog::Catalog,
     pub caps: Mutex<std::collections::HashMap<String, usize>>,
+    /// 会话粘性（affinity.rs）：同会话粘住曾答账号——厂商缓存命中 =
+    /// 速度与成本（Go affinity.go 的最小版）。
+    pub affinity: affinity::Affinity,
+    /// usage 台账（usage_ledger.rs）：每轮一行 JSONL，M2 对账数据源。
+    pub usage: usage_ledger::UsageLedger,
 }
 
 impl Gateway {
@@ -102,6 +107,8 @@ impl Gateway {
             store: Mutex::new(store::Store::load()?),
             catalog: catalog::Catalog::default(),
             caps: Mutex::new(std::collections::HashMap::new()),
+            affinity: affinity::Affinity::load(),
+            usage: usage_ledger::UsageLedger::open(),
         })
     }
 }
