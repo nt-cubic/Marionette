@@ -84,6 +84,37 @@ ureq 出站），ring-less TLS 约束不变。
 - [x] **T12 发布切换**（`1965c34a`）：门控 + `MARIONETTE_ENGINE=rust` SKU
   + 实测 **5.36MB**（见上）；magpie SKU 默认路径不变。
 
+## 已完成（2026-11-19 收尾3 批——T13 发现闭环 + 最后大项）
+
+四子代理并行 + 主会话接线，六提交（`37bb5fe0`/`aa028cb6`/`c9e9b447`/
+`363a55af`/`74de55b5`/`0e393412`），测试 1139→**1187（全量 0 失败，含 council
+flake 根治后首次全绿）**：
+
+- [x] **council same_model 系 flake 根治**（`37bb5fe0`）：根因=等瞬态
+  phase（run 几毫秒冲过 Reviewing，25ms 轮询必错过；HEAD 对照 4/5 败实锤
+  与引擎批无关但确为既有 bug）——same_model/iso 改等提案落盘、resume 升级
+  真·线程崩溃模拟（CrashOnFirstCritique panic 经 scope 传播杀死 run 线程）。
+  orchestrator 组 3×17 连跑全绿。
+- [x] **T13 真 key 对账**（`aa028cb6` + `scripts/t13-real-key-reconcile.mjs`
+  自动化）：五真实来源实弹（deepseek 全绿含 T15 工具轮首验/额度 ¥22.37；
+  ollama 额度窗 83.3%；错误保真实弹）。见上节。
+- [x] **continuation 断流续答**（`363a55af`，chat.rs +1280）：Go
+  continuation.go 直通半边——ContinuationReader 零解析直通基线不变、
+  chat_prefill（DeepSeek prefix+/beta 路径、Kimi partial）、prefill 拒答
+  记忆、Unecho 回声剔除、台账补账总额同 billed。chat:: 29→43。
+- [x] **Claude 桥 gap 1 最小可用集**（`c9e9b447`，claude_account.rs +713）：
+  淘汰即入架（claude-shelf.json）+ 冷启动 --resume 只喂增量 + 首帧偷看
+  回退 + 孤儿清扫。claude 36→44。
+- [x] **opencode-go 会话头**（`74de55b5`→H 线 + `0e393412`→主会话接线）：
+  opencode_client.rs 纯模块 + OpenCodeCtx 种子链接线进 chat.rs 出站。
+- [x] **zhipu 目录兜底**（`74de55b5`）：ensure_fresh()（Go KeepFresh 最小版
+  ——真根因是 models.dev 补抓从未被调）。
+- 验证：全量 **1187/0** + 合同 C1–C6 全绿 + T13 脚本真机复打两处闭环确认。
+
+剩余（各模块头注为准）：continuation 的 anthropic 原生半边与 7 条子项、
+Claude 桥 branch/replay 家族、opencode 的 zenFree 档与入站头穿线
+（messages/responses 翻译路径）、HEIC（红线卡住）。**引擎代码侧大项已清**。
+
 ## 已完成（2026-11-18 收尾2 批——销 25cb0d80 挂起单）
 
 四子代理并行 + 主会话接线，四提交（`4e0ae6d5`/`48caefa4`/`a3e1d420`/
@@ -141,9 +172,15 @@ T14 退役决策仍待用户。
   3. ✔ **错误保真**：zhipu 429 code 1308（5h 限额，与本会话子代理同款）/
      openrouter 401 "User not found"（key 已吊销，待用户续）/opencode-go 400
      MissingSessionID——全部原样透传，错误保真路径实弹确认。
-  4. **对账发现（引擎差距，待后续批）**：opencode-go 需 `x-opencode-session`
-     路由头，Rust 引擎未注入（Go 有 opencode-go 家族特判）；zhipu coding 端点
-     目录行 ctx=0（厂商不报窗口，preset 兜底未填——triage 是否该兜）。
+  4. ~~**对账发现（引擎差距，待后续批）**~~ **两条当日全部闭环**（2026-11-19
+     收尾3 批）：opencode-go 会话头 → `opencode_client.rs` 纯模块（1:1 移植
+     provider/opencode_client.go：UA+更新器/trace LRU/项目 id git 机制/会话
+     id 形状机，20 测试）+ chat.rs 出站接线——真机复打 **400 MissingSessionID
+     消失**（厂商开始按账号规则应答；余下 400 区域策略/403 需订阅全是账号
+     侧控制台设置）；zhipu 目录 ctx=0 → 真根因是 `presets::refresh` 生产路径
+     从未被调（Go serve 起 catalog.KeepFresh()）——`ensure_fresh()` 后台单飞
+     补抓+退避，真机 12 行 zhipu 全部填上（glm-4.5 ctx=131072 与 models.dev
+     逐字对上）。
   5. 覆盖说明：grok/dsh 跨用桥的对话面与本对账同一 chat 直通路径（已实弹）；
      CLI spawn 层留日常使用验证。真 codex 会话轮=responses 面已真轮（响应事件
      形状对），codex CLI 全链 spawn 属日常使用。
