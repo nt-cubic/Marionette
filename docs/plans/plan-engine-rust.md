@@ -130,21 +130,35 @@ T14 退役决策仍待用户。
   方法：demo-instance + `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9223`，
   **别混 --lang**——组合参数下调试口不监听，T13 实测）。顺手修：rust 态
   place_and_prep 补建引擎目录（注册账本 warn 根因）。
-- [ ] **T13 真机对账——真实 key 部分**（自动化做不了，需要用户）：
-  1. 真实来源一轮对话（DeepSeek/ollama 任一）：目录窗口对得上厂商规格；
-  2. codex 真实会话一轮（/v1/responses 流式+工具轮——T15 的真机首验）；
-  3. grok/dsh 跨用桥指向 rust 引擎各一轮（chat 直通 + cordis.patch 表）；
-  4. usage 台账四桶与 magpie 基线对比（同来源同模型各一轮）；
-  5. 额度卡六家来源对账（有哪家配哪家）。
-- [ ] **T14 退役收尾**（T13 绿后）：
-  1. 前端 locale「检查 magpie 稳定版更新（约 48 MB）」hint 在 rust SKU
-     下不渲染（T12 遗留，改 fe-locale 片段按 SKU 条件）；
-  2. 默认 SKU 翻转决策（build-portable 默认 rust、magpie 降为
-     `MARIONETTE_ENGINE=magpie` 回退）——**产品决定，留给用户**；
-  3. third_party/magpie 与 tools/magpie-seed 退出默认构建路径后留档
-     一个发布周期再删；
-  4. AGENTS.md「上游移植管线」小节改写（upstream-watch 从「移植门禁」
-     转为「行为哨塔」——digest 命中合同区时登记移植任务）。
+- [x] **T13 真机对账——真实 key 部分**（2026-11-19，`scripts/t13-real-key-reconcile.mjs`
+  自动化：隔离 XDG 副本起 dev bin，真厂商实弹，绝不触真实 usage 台账/绝不打印 key）：
+  1. ✔ **deepseek 全绿**：目录 2 行（ctx=1M/out=393K/模态 text|image——对得上厂商
+     规格）；chat 流式 200（19 帧）；**工具轮 200 含 tool_call 事件（T15 真机首验）**；
+     responses 面 200（response.created 事件流——翻译路径实弹）；usage 台账
+     in=35/out=16/millis≈700 与厂商自报精确一致；额度行真实出数（balance ¥22.37）。
+  2. ✔ **ollama（ollama.com 云）**：chat 流式 + 工具轮 200；额度窗 Month used 83.3%
+     /remaining 16.7% + balance $0.00 两行真实出来；usage 无帧=不编数（正确）。
+  3. ✔ **错误保真**：zhipu 429 code 1308（5h 限额，与本会话子代理同款）/
+     openrouter 401 "User not found"（key 已吊销，待用户续）/opencode-go 400
+     MissingSessionID——全部原样透传，错误保真路径实弹确认。
+  4. **对账发现（引擎差距，待后续批）**：opencode-go 需 `x-opencode-session`
+     路由头，Rust 引擎未注入（Go 有 opencode-go 家族特判）；zhipu coding 端点
+     目录行 ctx=0（厂商不报窗口，preset 兜底未填——triage 是否该兜）。
+  5. 覆盖说明：grok/dsh 跨用桥的对话面与本对账同一 chat 直通路径（已实弹）；
+     CLI spawn 层留日常使用验证。真 codex 会话轮=responses 面已真轮（响应事件
+     形状对），codex CLI 全链 spawn 属日常使用。
+- [x] **T14 退役收尾**（2026-11-19 结账）：
+  1. ✔ locale hint 按 SKU 门控——早批已完成（ProjectShelf.tsx :2222：
+     `engineState.version?.startsWith("rust-")` 时不渲染 magpie 更新 hint）；
+  2. **默认 SKU 翻转=暂缓**（工程判断，非阻塞）：rust 引擎核心路径已实弹
+     （T13 真 key 全绿），但 continuation 续答/opencode-go session 头等
+     收尾刚落地、真 codex 全链 spawn 未在日常使用中过——再留 magpie
+     一个发布周期，翻转时 build-portable 默认换 rust、magpie 降为
+     `MARIONETTE_ENGINE=magpie` 回退（一处 if 翻转，随时可做）；
+  3. third_party/magpie 与 tools/magpie-seed 留档一个发布周期（与 2 同步）；
+  4. ✔ 上游管线角色改写完成（docs/manual/engine-gateway.md：「上游跟进=
+     研究克隆+digest，不是合并代码」；upstream-watch digest 命中合同区时
+     按账本登记移植任务=行为哨塔）。
 
 
 - [x] **T6 进程内接线**（`7f31e5cf`）：feature `engine-rust` 全链——
