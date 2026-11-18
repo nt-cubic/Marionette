@@ -4,7 +4,14 @@
  * Run: npx tsx scripts/verify-agent-errors.mts
  */
 import assert from "node:assert/strict";
-import { classifyAgentError, isSessionNotRunningError } from "../src/lib/errors.ts";
+import {
+  classifyAgentError,
+  formatThrownAcpError,
+  isSessionNotRunningError,
+} from "../src/lib/errors.ts";
+import { applyLocale } from "../src/lib/i18n.ts";
+
+await applyLocale("zh-CN");
 
 let passed = 0;
 function check(name: string, fn: () => void) {
@@ -91,6 +98,16 @@ check("ACP session is not running is offline, not Agent 错误", () => {
   assert.equal(isSessionNotRunningError("ACP session is not running"), true);
   assert.equal(isSessionNotRunningError("ACP session is not initialized"), true);
   assert.equal(isSessionNotRunningError("turn is already in flight"), false);
+});
+
+check("JSON-RPC mode rejection is not dumped as raw JSON", () => {
+  const raw = '{"code":-32602,"message":"Invalid params","data":"unknown mode id: build"}';
+  const pretty = formatThrownAcpError(raw);
+  assert.equal(pretty, "Invalid params: unknown mode id: build");
+  assert.equal(
+    formatThrownAcpError(new Error(raw)),
+    "Invalid params: unknown mode id: build",
+  );
 });
 
 check("Grok 426 still needs update, not login", () => {

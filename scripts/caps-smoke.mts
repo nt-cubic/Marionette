@@ -15,6 +15,7 @@ import {
   expandAcpConfigAttempts,
   mergeAcpCapabilities,
   modelAssertForEffortRefresh,
+  normalizeAgentModeId,
 } from "../src/lib/acpSupplements.ts";
 import {
   groupModelsByProvider,
@@ -56,16 +57,27 @@ const grokLive = emptyLive({
   currentModel: "grok-4.5",
 });
 
-check("real plan/build modes are exposed", () => {
+check("real plan/execute modes are exposed (execute id is default since Grok 1.0.89)", () => {
   const caps = mergeAcpCapabilities("grok-build", grokLive)!;
-  assert.deepEqual(caps.modes.map((m) => m.id), ["plan", "build"]);
+  assert.deepEqual(caps.modes.map((m) => m.id), ["plan", "default"]);
+  assert.equal(caps.modes.find((m) => m.id === "default")?.label, "Build");
   // Grok silently no-ops these, so they must not be offered as modes.
   assert.ok(!caps.modes.some((m) => m.id === "ask" || m.id === "auto-approve"));
 });
 
-check("mode chip defaults to build, which is where Grok actually starts", () => {
+check("mode chip defaults to default (Build), the live execute id", () => {
   const caps = mergeAcpCapabilities("grok-build", grokLive)!;
-  assert.equal(caps.currentMode, "build");
+  assert.equal(caps.currentMode, "default");
+});
+
+check("legacy build prefs map onto Grok's default execute id", () => {
+  assert.equal(normalizeAgentModeId("grok-build", "build"), "default");
+  assert.equal(normalizeAgentModeId("grok-build", "default"), "default");
+  assert.equal(normalizeAgentModeId("grok-build", "plan"), "plan");
+  const caps = mergeAcpCapabilities("grok-build", grokLive)!;
+  assert.deepEqual(expandAcpConfigAttempts("grok-build", { mode: "build" }, caps), [
+    { configId: "mode", value: "default" },
+  ]);
 });
 
 check("effort survives having no config id, and claims no config id", () => {

@@ -3569,10 +3569,15 @@ export function App() {
           ? getSessionUpdateKind(update).toLowerCase().replace(/-/g, "_")
           : "";
         if (update && (kind === "current_mode_update" || kind === "currentmodeupdate")) {
-          const modeId =
+          const rawModeId =
             (typeof update.currentModeId === "string" && update.currentModeId) ||
             (typeof update.current_mode_id === "string" && update.current_mode_id) ||
             null;
+          const sessAgentId = sessionsRef.current.find((s) => s.id === payload.sessionId)?.agentId;
+          const modeId =
+            rawModeId && sessAgentId
+              ? normalizeAgentModeId(sessAgentId, rawModeId)
+              : rawModeId;
           if (modeId && payload.sessionId === currentSessionIdRef.current) {
             setSessionCapabilities((caps) =>
               caps ? { ...caps, currentMode: modeId } : caps,

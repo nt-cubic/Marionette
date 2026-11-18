@@ -50,14 +50,16 @@ const SUPPLEMENTS: Record<string, AcpSupplement> = {
     // `grok agent stdio` 0.2.104: session/new advertises neither `modes` nor
     // `configOptions`, so every list below has to come from here.
     //
-    // plan/build verified *behaviourally*, not by echo: in `plan` Grok refuses
-    // a file write and calls exit_plan_mode; in `build` the same prompt writes.
-    // Do not trust `current_mode_update` as validation — Grok echoes back any
-    // string you send it (`yolo`, `chat`, … all "confirm"), so the echo says
-    // nothing about whether a mode exists.
+    // plan / execute verified *behaviourally*: in `plan` Grok refuses a file
+    // write and calls exit_plan_mode; after approve it emits currentModeId
+    // `default` and the same prompt writes. Grok 1.0.89 renamed the execute
+    // mode from `build` → `default` (`unknown mode id: build`). Keep the chip
+    // label "Build". Old disk prefs / OpenCode handoff still say `build` —
+    // `normalizeAgentModeId` maps it. Do not trust current_mode_update as
+    // validation of invented ids; it does confirm the live execute id.
     modes: [
       { id: "plan", label: "Plan" },
-      { id: "build", label: "Build" },
+      { id: "default", label: "Build" },
     ],
     models: [{ id: "grok-4.5", label: "Grok 4.5" }],
     // Grok advertises the *current model's* levels under
@@ -77,9 +79,8 @@ const SUPPLEMENTS: Record<string, AcpSupplement> = {
     ],
     effortViaLegacyModel: true,
     // Grok sends no current_mode_update at session start, so this default is the
-    // only thing the chip can show. It says `build` because a fresh session that
-    // is told set_mode("build") emits no change event, while plan/build swaps do.
-    defaultMode: "build",
+    // only thing the chip can show. Execute id is `default` (Grok 1.0.89).
+    defaultMode: "default",
     defaultModel: "grok-4.5",
     // Matches _meta.modelState[].reasoningEfforts[].default for grok-4.5.
     defaultEffortId: "high",
@@ -150,8 +151,14 @@ export function getAcpSupplement(agentId: string): AcpSupplement | null {
  * codex-acp uses read-only | agent | agent-full-access.
  */
 export function normalizeAgentModeId(agentId: string, modeId: string): string {
-  if (agentId !== "codex" && agentId !== "codex-acp") return modeId;
   const key = modeId.trim().toLowerCase();
+  if (agentId === "grok-build" || agentId === "grok") {
+    // Grok 1.0.89 execute mode is `default`. Older CLIs and Marionette disk
+    // prefs / OpenCode handoff still say `build`.
+    if (key === "build") return "default";
+    return modeId;
+  }
+  if (agentId !== "codex" && agentId !== "codex-acp") return modeId;
   const legacy: Record<string, string> = {
     default: "agent",
     suggest: "read-only",

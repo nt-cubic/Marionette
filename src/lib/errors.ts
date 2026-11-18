@@ -76,6 +76,23 @@ export function formatAcpRpcError(data: unknown): string | null {
   }
 }
 
+/** Composer / toast path: Tauri `Err(String)` is often the raw JSON-RPC object. */
+export function formatThrownAcpError(raw: unknown): string {
+  if (raw instanceof Error) return formatThrownAcpError(raw.message);
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        return formatAcpRpcError(JSON.parse(trimmed)) || trimmed;
+      } catch {
+        /* not JSON */
+      }
+    }
+    return trimmed;
+  }
+  return formatAcpRpcError(raw) || "Failed to update";
+}
+
 /** Map agent / transport errors into a stable product taxonomy. */
 export function classifyAgentError(
   raw: unknown,

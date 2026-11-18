@@ -18,6 +18,7 @@ import {
   modelAssertForEffortRefresh,
   normalizeAgentModeId,
 } from "../lib/acpSupplements";
+import { formatThrownAcpError } from "../lib/errors";
 import { setSessionApproval } from "../lib/browserTabs";
 import {
   agentPreflight,
@@ -1478,12 +1479,7 @@ export function Composer({
         // Tauri rejects with a plain string for Rust `Err(String)`, and those
         // messages name the real cause ("A turn is already in flight…") — a
         // generic "may not support this option" toast hides exactly that.
-        const msg =
-          error instanceof Error
-            ? error.message
-            : typeof error === "string" && error.trim()
-              ? error.trim()
-              : "Failed to update (agent may not support this option live)";
+        const msg = formatThrownAcpError(error) || "Failed to update (agent may not support this option live)";
         if (msg.includes("does not support reasoning effort")) {
           // grok's per-model gate: Rust just latched the model, so reload caps
           // to drop the Effort control now rather than after the next touch.

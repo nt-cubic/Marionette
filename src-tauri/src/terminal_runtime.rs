@@ -323,42 +323,14 @@ fn spawn_reader<R: Read + Send + 'static>(
             match reader.read(&mut buf) {
                 Ok(0) => {
                     if !pending.is_empty() {
-                        let text = String::from_utf8_lossy(&pending);
-                        terminal.append_output(&text);
+                        terminal.append_output(&decode_pty_bytes(&pending));
+                        pending.clear();
                     }
                     break;
                 }
                 Ok(n) => {
                     pending.extend_from_slice(&buf[..n]);
-                    // 解码完整 UTF-8，保留尾部不完整字节。常见路径走借用零拷贝
-                    // （旧实现每个 chunk 都 clone 整个 pending，大输出下白烧）。
-                    match std::str::from_utf8(&pending) {
-                        Ok(text) => {
-                            if !text.is_empty() {
-                                terminal.append_output(text);
-                            }
-                            pending.clear();
-                        }
-                        Err(err) => {
-                            let valid = err.valid_up_to();
-                            if valid > 0 {
-                                let text = String::from_utf8_lossy(&pending[..valid]);
-                                terminal.append_output(&text);
-                                pending.drain(..valid);
-                            }
-                            // 尾部不完整序列 — 等更多字节。
-                            if let Some(bad_len) = err.error_len() {
-                                if pending.len() > 4 {
-                                    // 真实垃圾字节：lossy 解掉整个坏序列再前进，
-                                    // 别逐字节 drain（垃圾长跑会 O(n²) memmove）。
-                                    let text =
-                                        String::from_utf8_lossy(&pending[..bad_len.min(pending.len())]);
-                                    terminal.append_output(&text);
-                                    pending.drain(..bad_len.min(pending.len()));
-                                }
-                            }
-                        }
-                    }
+                    drain_pty_pending(&mut pending, |text| terminal.append_output(text));
                 }
                 Err(_) => break,
             }
@@ -367,6 +339,71 @@ fn spawn_reader<R: Read + Send + 'static>(
             *n = n.saturating_add(1);
         }
     });
+}
+
+/// Shift-JIS / CP932 lead byte. A lone lead at the end of a chunk must wait.
+fn is_dbcs_lead(b: u8) -> bool {
+    (0x81..=0x9F).contains(&b) || (0xE0..=0xFC).contains(&b)
+}
+
+/// Decode PTY bytes that may be UTF-8 or the Windows ANSI/OEM page (CP932).
+fn decode_pty_bytes(bytes: &[u8]) -> String {
+    crate::process_util::decode_process_bytes(bytes)
+}
+
+/// Emit complete decoded text from `pending`, leaving an incomplete trailing
+/// UTF-8 / DBCS sequence in the buffer.
+fn drain_pty_pending(pending: &mut Vec<u8>, mut emit: impl FnMut(&str)) {
+    loop {
+        if pending.is_empty() {
+            return;
+        }
+        match std::str::from_utf8(pending) {
+            Ok(text) => {
+                if !text.is_empty() {
+                    emit(text);
+                }
+                pending.clear();
+                return;
+            }
+            Err(err) => {
+                let valid = err.valid_up_to();
+                if valid > 0 {
+                    if let Ok(text) = std::str::from_utf8(&pending[..valid]) {
+                        if !text.is_empty() {
+                            emit(text);
+                        }
+                    }
+                    pending.drain(..valid);
+                    continue;
+                }
+                // Incomplete UTF-8 at the end — wait for more bytes.
+                if err.error_len().is_none() {
+                    return;
+                }
+                // Complete invalid UTF-8. Japanese cmd.exe errors are CP932
+                // (`ファイル名、ディレクトリ名…`). A lone lead byte is an
+                // incomplete pair — wait rather than lossy-replace it.
+                if pending.len() == 1 && is_dbcs_lead(pending[0]) {
+                    return;
+                }
+                // Remaining bytes are CP932 pairs (ASCII already drained as
+                // UTF-8). Odd length + trailing lead = truncated pair.
+                let keep_lead = pending.len() % 2 == 1
+                    && pending.last().copied().is_some_and(is_dbcs_lead);
+                let take = if keep_lead { pending.len() - 1 } else { pending.len() };
+                if take == 0 {
+                    return;
+                }
+                let text = decode_pty_bytes(&pending[..take]);
+                if !text.is_empty() {
+                    emit(&text);
+                }
+                pending.drain(..take);
+                return;
+            }
+        }
+    }
 }
 
 /// Shared terminal host for all ACP sessions.
@@ -912,6 +949,50 @@ mod tests {
             sid,
             None,
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn drain_pty_pending_decodes_cp932_filename_error() {
+        // CP932 for ファイル (the start of the Japanese "filename syntax" error).
+        let mut pending = vec![0x83, 0x74, 0x83, 0x40, 0x83, 0x43];
+        let mut out = String::new();
+        drain_pty_pending(&mut pending, |t| out.push_str(t));
+        assert!(
+            out.contains("ファイ"),
+            "expected CP932 ファイ, got {out:?} pending={pending:?}"
+        );
+        assert!(pending.is_empty(), "complete CP932 should drain");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn drain_pty_pending_does_not_split_a_cp932_pair_on_trail_in_lead_range() {
+        // ル = 83 8B. Trail 0x8B is also a lead-range byte — must still decode
+        // the complete pair, not hold the trail for the next chunk.
+        let mut pending = vec![0x83, 0x8B];
+        let mut out = String::new();
+        drain_pty_pending(&mut pending, |t| out.push_str(t));
+        assert!(out.contains("ル"), "expected ル, got {out:?}");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn drain_pty_pending_holds_a_trailing_dbcs_lead() {
+        let mut pending = vec![0x83];
+        let mut out = String::new();
+        drain_pty_pending(&mut pending, |t| out.push_str(t));
+        assert!(out.is_empty(), "must not emit a lone lead as U+FFFD");
+        assert_eq!(pending, vec![0x83]);
+    }
+
+    #[test]
+    fn drain_pty_pending_keeps_utf8() {
+        let mut pending = "hello 人质".as_bytes().to_vec();
+        let mut out = String::new();
+        drain_pty_pending(&mut pending, |t| out.push_str(t));
+        assert_eq!(out, "hello 人质");
+        assert!(pending.is_empty());
     }
 
     /// Regression for the close-freeze deadlock: wait_for_exit used to block

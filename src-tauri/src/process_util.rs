@@ -1092,6 +1092,18 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
+    fn decode_process_bytes_reads_cp932_filename_error() {
+        // ファイ in CP932 — prefix of cmd.exe's "filename syntax" error.
+        let text = decode_process_bytes(&[0x83, 0x74, 0x83, 0x40, 0x83, 0x43]);
+        assert!(
+            text.contains("ファイ"),
+            "expected CP932 ファイ, got {text:?}"
+        );
+        assert!(!text.contains('\u{FFFD}'));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
     fn batch_relative_path_expands_dp0_tokens() {
         let dir = std::env::temp_dir().join(format!(
             "marionette-batch-test-{}",

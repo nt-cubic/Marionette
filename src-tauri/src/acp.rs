@@ -2137,7 +2137,7 @@ impl AcpService {
 
     /// Pre-v2 ACP per-knob RPCs, used when `session/set_config_option` is absent.
     ///
-    /// Grok exposes exactly these: `session/set_mode` for plan/build, and
+    /// Grok exposes exactly these: `session/set_mode` for plan/execute, and
     /// `session/set_model` for both the model and (via `_meta.reasoningEffort`)
     /// the reasoning level.
     fn legacy_set_config(
@@ -2153,11 +2153,35 @@ impl AcpService {
                     .value
                     .as_str()
                     .ok_or_else(|| "Mode id must be a string".to_string())?;
-                request(
-                    process,
-                    "session/set_mode",
-                    json!({ "sessionId": agent_session_id, "modeId": mode_id }),
-                )
+                let agent = self
+                    .session_agents
+                    .lock()
+                    .ok()
+                    .and_then(|map| map.get(session_id).cloned())
+                    .unwrap_or_default();
+                let ids = if agent == "grok-build" || agent == "grok" {
+                    grok_mode_ids_to_try(mode_id)
+                } else {
+                    vec![mode_id.to_string()]
+                };
+                let last = ids.len().saturating_sub(1);
+                let mut last_error = None;
+                for (i, id) in ids.iter().enumerate() {
+                    let params = json!({ "sessionId": agent_session_id, "modeId": id });
+                    let result = if i == last {
+                        request(process, "session/set_mode", params)
+                    } else {
+                        request_quiet(process, "session/set_mode", params)
+                    };
+                    match result {
+                        Ok(value) => return Ok(value),
+                        Err(error) if i < last && is_unknown_mode_id(&error) => {
+                            last_error = Some(error);
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                Err(last_error.unwrap_or_else(|| format!("unknown mode id: {mode_id}")))
             }
             ConfigTarget::Model => {
                 let model_id = update
@@ -2856,6 +2880,19 @@ fn is_method_not_found(error: &str) -> bool {
 /// and answers this for a config id it never advertised.
 fn is_invalid_params(error: &str) -> bool {
     error.contains("-32602") || error.to_lowercase().contains("invalid params")
+}
+
+/// Grok 1.0.89 renamed execute from `build` to `default`. Try both.
+fn grok_mode_ids_to_try(requested: &str) -> Vec<String> {
+    match requested.trim().to_ascii_lowercase().as_str() {
+        "build" | "default" => vec!["default".into(), "build".into()],
+        _ => vec![requested.to_string()],
+    }
+}
+
+fn is_unknown_mode_id(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("unknown mode id") || lower.contains("unknown mode")
 }
 
 /// Grok's per-model effort gate: the write came back
@@ -5163,6 +5200,25 @@ mod tests {
         );
         assert_eq!(clamp_effort_id(&deepseek, "whatever", "max"), "max");
         assert_eq!(clamp_effort_id(&deepseek, "whatever", "nope"), "nope");
+    }
+
+    #[test]
+    fn grok_execute_mode_tries_default_before_legacy_build() {
+        assert_eq!(
+            grok_mode_ids_to_try("build"),
+            vec!["default".to_string(), "build".to_string()]
+        );
+        assert_eq!(
+            grok_mode_ids_to_try("default"),
+            vec!["default".to_string(), "build".to_string()]
+        );
+        assert_eq!(grok_mode_ids_to_try("plan"), vec!["plan".to_string()]);
+        assert!(is_unknown_mode_id(
+            r#"{"code":-32602,"message":"Invalid params","data":"unknown mode id: build"}"#
+        ));
+        assert!(!is_unknown_mode_id(
+            r#"{"code":-32602,"message":"Invalid params","data":"unknown config option: mode"}"#
+        ));
     }
 
     /// A mode change must stay recognisable as a *mode* after expansion, or the
