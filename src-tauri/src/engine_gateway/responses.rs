@@ -449,7 +449,12 @@ fn chat_completion_to_response(v: &Value, asked: &str, table: &super::translate:
                     "type": "function_call", "status": "completed",
                     "call_id": tc.get("id").cloned()
                         .unwrap_or_else(|| json!(format!("call_{}", fresh_suffix()))),
-                    "arguments": tc.pointer("/function/arguments").cloned()
+                    // 零分数先丢再出门：Codex 的 serde 对浮点整数整单拒绝
+                    // （integral.rs / Go grok_integral.go）。
+                    "arguments": tc.pointer("/function/arguments")
+                        .and_then(|a| a.as_str())
+                        .map(|a| json!(super::integral::whole_args(a)))
+                        .or_else(|| tc.pointer("/function/arguments").cloned())
                         .unwrap_or_else(|| json!("{}")),
                 });
                 super::translate::call_to(&mut item, &flat, table);

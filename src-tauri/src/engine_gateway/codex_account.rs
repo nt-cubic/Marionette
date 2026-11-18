@@ -2293,7 +2293,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert_eq!(delta_text, "Hello");
         let md = frames.iter().find(|(e, _)| e == "message_delta").unwrap();
         assert_eq!(md.1["delta"]["stop_reason"], "end_turn");
-        assert_eq!(md.1["usage"]["input_tokens"], 10);
+        // 净额口径（input 10 − cached 4；Go chat.go Usage 同款）
+        assert_eq!(md.1["usage"]["input_tokens"], 6);
+        assert_eq!(md.1["usage"]["cache_read_input_tokens"], 4);
         assert_eq!(md.1["usage"]["output_tokens"], 5);
         assert_eq!(frames.last().unwrap().0, "message_stop");
         let sent = sent_body(&mock);

@@ -23,6 +23,7 @@ pub mod effort;
 pub mod grok_account;
 pub mod groups;
 pub mod httpd;
+pub mod integral;
 pub mod messages;
 pub mod key_balances;
 pub mod plan_quotas;

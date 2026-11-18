@@ -733,9 +733,12 @@ pub fn rows(providers: &[Provider]) -> Vec<Value> {
             continue;
         }
         let keys = keys_of(p);
+        // 账号级读数（Command Code / Ollama / 带 token 的 AiHubMix）读的是账号
+        // 额度，不是钥匙额度——每把钥匙都会读到同一个数，只问一次主钥匙
+        //（Go 同款；多钥匙全问只会白打请求还让「第一把」取决于线程调度）。
         let wide = source_of(p).is_some_and(|s| s.account_wide);
-        let usable: Vec<(String, String)> = if wide && !effective_token(p).is_empty() {
-            vec![(p.key.clone(), String::new())] // 账号 token：钥匙无关，只问一次
+        let usable: Vec<(String, String)> = if wide {
+            vec![(p.key.clone(), String::new())]
         } else {
             keys
         };

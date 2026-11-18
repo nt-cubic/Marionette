@@ -313,6 +313,7 @@ struct Head {
     headers: Vec<(String, String)>,
 }
 
+#[derive(Debug)]
 struct Body {
     bytes: Vec<u8>,
     /// 经过了 Content-Encoding 解码。

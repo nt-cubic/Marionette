@@ -986,14 +986,17 @@ pub(super) fn chat_response_to_anthropic(body: &[u8], asked_model: &str) -> Resu
             if name.is_empty() {
                 continue;
             }
+            // 零分数在解析前丢（serde 的 f64 会把 2500.0 原样序列化回来，
+            // Claude Code 系客户端对浮点整数同样严格；integral.rs）。
             let args = tc.pointer("/function/arguments").and_then(|a| a.as_str()).unwrap_or_default();
+            let args = super::integral::whole_args(args);
             blocks.push(json!({
                 "type": "tool_use",
                 // chat 的 call_* id 原样透传：往返（下一条请求的 tool_result
                 // 回来）只要求同一根串，不要求 anthropic 的 toolu_ 前缀。
                 "id": tc.get("id").and_then(|i| i.as_str()).unwrap_or_default(),
                 "name": name,
-                "input": parse_tool_args(args),
+                "input": parse_tool_args(&args),
             }));
         }
     }
@@ -1303,7 +1306,8 @@ mod tests {
         assert_eq!(v["content"][0]["type"], "text");
         assert_eq!(v["content"][0]["text"], "hello there");
         assert_eq!(v["stop_reason"], "end_turn");
-        assert_eq!(v["usage"]["input_tokens"], 3);
+        // 净额口径（Go chat.go Usage：prompt 含缓存，input 减去 cache 桶）
+        assert_eq!(v["usage"]["input_tokens"], 2);
         assert_eq!(v["usage"]["output_tokens"], 2);
         assert_eq!(v["usage"]["cache_read_input_tokens"], 1);
 

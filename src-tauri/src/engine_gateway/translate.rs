@@ -1941,8 +1941,17 @@ impl ChatToolAccum {
     }
 
     /// 全部取走（首片到达序），拼装器清空。端点在收尾/交错冲刷时调用。
+    /// 拼好的 arguments 过 [`super::integral::whole_args`] 丢零分数——
+    /// 模型写 `2500.0` 这类整值分数会被 Codex 的 serde 整单拒绝
+    /// （Go grok_integral.go #1431/#3152）；整块改写与分片流改写等价。
     pub fn take(&mut self) -> Vec<ChatToolCall> {
-        self.calls.drain(..).map(|(_, c)| c).collect()
+        self.calls
+            .drain(..)
+            .map(|(_, mut c)| {
+                c.arguments = super::integral::whole_args(&c.arguments);
+                c
+            })
+            .collect()
     }
 }
 
