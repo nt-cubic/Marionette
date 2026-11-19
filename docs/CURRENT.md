@@ -388,6 +388,7 @@ Chief 已从「Telegram 远程助理配置」升级为 people-first 员工模式
 - **会话关系**：员工是普通 Chat 会话（`origin="chief"`），worker 是普通项目会话
   （`origin="chief-worker"`，不写 parent）；关系只进 task/event 账本和 tee。员工会话强制使用
   Agent 自报的只读/plan 权限；需要改项目时只能派 worker，不支持只读档的 Agent 拒绝启动员工会话。
+- **员工聊天**：`origin="chief"`的会话仅显示用户消息、员工消息、决策卡以及警告/错误系统通知。 thought、tool call、活动时间线、model、token和持续时间元数据保留在原始transcript和worker会话中。 员工Composer保留附件、文本和发送。技术控制保留在员工档案或右栏中。
 - **控制面**：16 个 `marionette_*` 工具只在员工会话的 `tools/list` 出现，dispatch 双保险；没有
   hire / approve 工具。`task_start` 的 requestId、并发预留和 Proposed 插入在同一任务账本锁内；
   Proposed 也计入并发和急停/辞退。`task_send` 成功后才提交 commandId，resume 只接受

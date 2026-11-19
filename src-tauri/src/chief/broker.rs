@@ -1227,8 +1227,9 @@ fn finish_completed(app: &AppHandle, chief_session_id: &str, task_id: &str, work
         "完成。".to_string()
     };
     let combined = match summary.as_deref() {
-        Some(text) => format!("{status_line} 摘要：{text}"),
-        None => format!("{status_line}（worker 未产出文本回复）"),
+        Some(text) if tool_failures > 0 => format!("{status_line} {text}"),
+        Some(text) => text.to_string(),
+        None => status_line.to_string(),
     };
     let _ = store::with_tasks(|tasks| {
         if let Some(task) = tasks.iter_mut().find(|t| t.task_id == task_id) {

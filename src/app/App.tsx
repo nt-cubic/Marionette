@@ -137,6 +137,7 @@ import {
   staffDraftFromProfile,
   staffForSession,
 } from "../lib/staffUi";
+import { isStaffChatSession, staffChatIdentity } from "../lib/staffChat";
 import { useStaffController } from "./useStaffController";
 
 /** E2E bisect flag: the dev hook opened a tab without activating the page. */
@@ -9909,6 +9910,13 @@ function AppMain() {
     const ownerStaff = ownerTask?.staffId
       ? staffController.profiles.find((profile) => profile.staffId === ownerTask.staffId)
       : null;
+    const staffChat = isStaffChatSession(session);
+    const sessionStaff = staffForSession(staffController.profiles, session.id);
+    const staffIdentity = staffChat
+      ? sessionStaff
+        ? { name: sessionStaff.name, title: sessionStaff.title }
+        : staffChatIdentity(session.label, agent.label)
+      : null;
     return (
       <>
         {ownerStaff ? (
@@ -9933,6 +9941,7 @@ function AppMain() {
           agent={agent}
           events={events}
           session={session}
+          staffIdentity={staffIdentity}
           olderCount={olderHeadsRef.current[session.id]?.firstLine ?? 0}
           olderLoading={olderHeadsRef.current[session.id]?.loading ?? false}
           onLoadOlder={() => void loadOlderTranscriptRef.current(session.id)}
@@ -10083,6 +10092,9 @@ function AppMain() {
           sessionId={session.id}
           sessionStatus={session.status}
           docked={dockActive}
+          staffMode={Boolean(staffIdentity)}
+          staffName={staffIdentity?.name ?? null}
+          staffTitle={staffIdentity?.title ?? null}
           onMemoSaved={() => {
             setMemoRevision((rev) => rev + 1);
             void memoList().then((rows) => setMemoCount(rows.length));
