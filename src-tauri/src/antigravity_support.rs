@@ -167,7 +167,11 @@ fn ensure_settings_auth_type_in(acp_dir: &Path) -> SettingsSync {
 /// Local login probe for `probe_agent_auth` (`commands.rs`).
 /// Statuses match the `auth_result` contract there: `logged_in` / `logged_out`.
 pub fn auth_probe() -> (&'static str, String) {
-    if antigravity_acp_dir().join("acp_token.json").is_file() {
+    auth_probe_in(&antigravity_acp_dir())
+}
+
+fn auth_probe_in(acp_dir: &Path) -> (&'static str, String) {
+    if acp_dir.join("acp_token.json").is_file() {
         return (
             "logged_in",
             crate::ts!("已登录 Google 账号", "Signed in with a Google account").to_string(),
@@ -1005,6 +1009,21 @@ mod tests {
         assert!(foreign.is_file() || foreign.is_dir()); // untouched
         let _ = fs::remove_dir_all(&temp);
         let _ = fs::remove_dir_all(&outside);
+    }
+
+    /// The issue #14 path: no token → logged_out with an actionable message
+    /// (the Sign in button appears exactly on this signal).
+    #[test]
+    fn auth_probe_logged_out_without_token_then_in_with_one() {
+        let acp_dir = tempdir("auth-probe");
+        let (status, message) = auth_probe_in(&acp_dir);
+        assert_eq!(status, "logged_out");
+        assert!(!message.is_empty());
+        fs::write(acp_dir.join("acp_token.json"), b"{}").unwrap();
+        let (status, message) = auth_probe_in(&acp_dir);
+        assert_eq!(status, "logged_in");
+        assert!(!message.is_empty());
+        let _ = fs::remove_dir_all(&acp_dir);
     }
 
     #[test]
