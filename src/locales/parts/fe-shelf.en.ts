@@ -5,7 +5,7 @@ export const en = {
   "shelf.pin": "Pin",
   "shelf.unpin": "Unpin",
   "shelf.pinned": "Pinned",
-  "shelf.poweredBy": "Powered by magpie",
+  "shelf.poweredBy": "Built-in model-sharing engine",
   "shelf.poweredByBuiltin": "Built-in engine · magpie-compatible config",
   "shelf.poweredByVersion": "Powered by magpie v{version}",
   "shelf.starting": "Starting",

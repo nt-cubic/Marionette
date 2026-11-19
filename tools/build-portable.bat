@@ -8,12 +8,13 @@ if /I "%~1"=="--help" (
   echo.
   echo  Usage: tools\build-portable.bat
   echo.
-  echo  Writes release\^<version^>\Marionette.exe ^(embedded magpie, UPX^).
+  echo  Writes release\^<version^>\Marionette.exe ^(in-process Rust engine, UPX^).
   echo  If that exe is running ^(locked^), the build is written as the next free
   echo  release\^<version^>\Marionette ^(N^).exe and still counts as success.
   echo  Env: SKIP_UPX=1  REQUIRE_UPX=1  INSTALL_UPX=1  NOPAUSE=1
   echo       SKIP_MAGPIE_IMPORT=1  ^(reuse third_party\magpie as-is^)
   echo       MAGPIE_TAG=v0.1.xxxx  ^(pin engine seed; default = GitHub latest stable^)
+  echo       MARIONETTE_ENGINE=magpie  ^(one-release fallback: embedded magpie payload^)
   echo.
   exit /b 0
 )
@@ -23,9 +24,23 @@ if not "%~1"=="" (
   goto fail
 )
 
+rem -- Product default is the in-process Rust engine. MARIONETTE_ENGINE=magpie
+rem    keeps the previous embedded seed as a one-release rollback SKU. build.rs
+rem    disables engine_rust_active when Magpie/embedded-engine is selected. --
+set "ENGINE_SKU=rust"
+if /I "%MARIONETTE_ENGINE%"=="magpie" set "ENGINE_SKU=magpie"
+if defined MARIONETTE_ENGINE if /I not "%MARIONETTE_ENGINE%"=="rust" if /I not "%MARIONETTE_ENGINE%"=="magpie" (
+  echo  [error] MARIONETTE_ENGINE must be rust or magpie
+  goto fail
+)
+
 echo.
 echo  === Marionette portable build ===
-echo  Single exe with embedded engine
+if "%ENGINE_SKU%"=="rust" (
+  echo  Engine SKU: rust in-process - feature engine-rust, no magpie payload
+) else (
+  echo  Engine SKU: magpie fallback - embedded seed payload
+)
 echo  TLS: ring-less ^(schannel^)
 echo.
 
@@ -90,7 +105,8 @@ if errorlevel 1 (
 )
 popd
 
-rem -- find UPX (embedded magpie always needs it; SKIP_UPX only skips the ship exe) --
+rem -- find UPX (magpie SKU: embedded payload always needs it; rust SKU / SKIP_UPX:
+rem    only the ship exe gets compressed) --
 set "UPX_BIN="
 set "UPX_NOTE="
 
@@ -125,18 +141,30 @@ echo  [upx] found: !UPX_BIN!
 
 :after_upx_find
 
+rem -- rust SKU skips the whole magpie leg (import + seed go build + payload UPX):
+rem    the engine is compiled into the exe by feature engine-rust, there is no
+rem    payload to embed. Everything below (output dir, (N) side-name fallback,
+rem    ship UPX, current-build recording) is shared with the magpie SKU. --
+if "%ENGINE_SKU%"=="rust" goto after_prepare_embed
 call :prepare_embed
 if errorlevel 1 goto fail
+:after_prepare_embed
 
 set "SRC=%~dp0..\src-tauri\target\release\marionette.exe"
 rem Per-version output dir: a running old build can never lock this one.
 set "OUTDIR=%~dp0..\release\%APP_VER%"
 if not exist "%OUTDIR%\" mkdir "%OUTDIR%"
 
+set "CARGO_ARGS=--features embedded-engine"
+set "CARGO_LABEL=embedded-engine"
+if "%ENGINE_SKU%"=="rust" (
+  set "CARGO_ARGS=--features engine-rust"
+  set "CARGO_LABEL=engine-rust"
+)
 echo.
-echo  [build] tauri release (LTO+strip+opt-z, embedded-engine)
+echo  [build] tauri release (LTO+strip+opt-z, %CARGO_LABEL%)
 echo.
-call npm run build:portable -- --features embedded-engine
+call npm run build:portable -- %CARGO_ARGS%
 if errorlevel 1 goto fail
 
 if not exist "%SRC%" (
@@ -246,9 +274,11 @@ echo.
 echo  === Done ===
 echo  TLS:          ring-less (ureq + native-tls / schannel)
 if defined UPX_NOTE echo  UPX:          %UPX_NOTE%
+if "%ENGINE_SKU%"=="rust" echo  Engine:       rust in-process - engine-rust SKU, no magpie payload
 echo  Ship:         %SHIP%
 echo                %KB% KB ^(~%MB_W%.%MB_F% MB^)
 if defined SIDE_SHIP echo  Note:         side name - Marionette.exe was locked, re-run after closing it
+if "%ENGINE_SKU%"=="magpie" echo  Note:         fallback SKU - remove after the Rust engine's stable release window
 echo.
 echo  Copy that exe and run. Needs WebView2 Runtime.
 echo  Engine starts on launch. Publish with tools\publish-release.bat

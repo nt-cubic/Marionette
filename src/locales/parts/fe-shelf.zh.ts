@@ -3,7 +3,7 @@ export const zh = {
   "shelf.pin": "置顶",
   "shelf.unpin": "取消置顶",
   "shelf.pinned": "已置顶",
-  "shelf.poweredBy": "由 magpie 强力驱动",
+  "shelf.poweredBy": "内置模型共享引擎",
   "shelf.poweredByBuiltin": "内置引擎 · 兼容 magpie 配置格式",
   "shelf.poweredByVersion": "由 magpie v{version} 强力驱动",
   "shelf.starting": "启动中",
