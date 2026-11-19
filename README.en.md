@@ -1,6 +1,8 @@
 <p align="center">
-  <img src="docs/screenshots/main.png" alt="Marionette" width="100%" />
+  <img src="docs/logo.png" alt="Marionette" width="180" />
 </p>
+
+<h1 align="center">Marionette</h1>
 
 <h3 align="center">Every model, in the environment it runs best</h3>
 
@@ -19,7 +21,6 @@
 
 <p align="center">
   <a href="https://github.com/nt-cubic/Marionette/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/nt-cubic/Marionette?style=for-the-badge&logo=github&color=1B54E8&labelColor=20242D"></a>
-  <a href="https://github.com/nt-cubic/Marionette/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/nt-cubic/Marionette/ci.yml?branch=master&style=for-the-badge&logo=github&labelColor=20242D"></a>
   <a href="https://github.com/nt-cubic/Marionette/releases"><img alt="downloads" src="https://img.shields.io/github/downloads/nt-cubic/Marionette/total?style=for-the-badge&logo=github&color=34D399&labelColor=20242D"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/github/license/nt-cubic/Marionette?style=for-the-badge&logo=opensourceinitiative&logoColor=white&color=5319E7&labelColor=20242D"></a>
   <img alt="platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078D4?style=for-the-badge&logo=windows&labelColor=20242D">
@@ -58,6 +59,12 @@ Every coding agent is strongest on its own turf: Claude in Claude Code, Grok in 
 * **Four panes**: different agents on the same job, answers side by side; sessions are tabs, Ctrl 1–9 to switch.
 * **On demand**: nothing runs until you type; close the window and they keep running — only a real quit is a quit.
 * **Web agents too**: log into the ChatGPT or DeepSeek web app once and each becomes a plain chat agent.
+
+<p align="center">
+  <img src="docs/screenshots/main.png" alt="Marionette main window" width="90%" />
+  <br/>
+  <sub>Two agents on the same project: projects and sessions on the left, this turn's changes and quotas on the right</sub>
+</p>
 
 ### 2. Hire a staff member
 

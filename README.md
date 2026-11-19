@@ -1,6 +1,8 @@
 <p align="center">
-  <img src="docs/screenshots/main.png" alt="Marionette" width="100%" />
+  <img src="docs/logo.png" alt="Marionette" width="180" />
 </p>
+
+<h1 align="center">Marionette</h1>
 
 <h3 align="center">每个模型，都跑在它最擅长的环境里</h3>
 
@@ -19,7 +21,6 @@
 
 <p align="center">
   <a href="https://github.com/nt-cubic/Marionette/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/nt-cubic/Marionette?style=for-the-badge&logo=github&color=1B54E8&labelColor=20242D"></a>
-  <a href="https://github.com/nt-cubic/Marionette/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/nt-cubic/Marionette/ci.yml?branch=master&style=for-the-badge&logo=github&labelColor=20242D"></a>
   <a href="https://github.com/nt-cubic/Marionette/releases"><img alt="downloads" src="https://img.shields.io/github/downloads/nt-cubic/Marionette/total?style=for-the-badge&logo=github&color=34D399&labelColor=20242D"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/github/license/nt-cubic/Marionette?style=for-the-badge&logo=opensourceinitiative&logoColor=white&color=5319E7&labelColor=20242D"></a>
   <img alt="platform" src="https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%2010%2F11%20x64-0078D4?style=for-the-badge&logo=windows&labelColor=20242D">
@@ -58,6 +59,12 @@ irm https://github.com/nt-cubic/Marionette/releases/latest/download/install.ps1 
 * **四格分屏**：不同 Agent 并排干同一件事，答案放在一起比；会话就是标签页，Ctrl 1–9 切换。
 * **按需启动**：你不输入，它不运行；关掉窗口它还在跑，真正退出才叫退出。
 * **网页版也在里面**：ChatGPT 与 DeepSeek 网页版登录一次，就是两个纯聊天 Agent。
+
+<p align="center">
+  <img src="docs/screenshots/main.png" alt="Marionette 主界面" width="90%" />
+  <br/>
+  <sub>两个 Agent 分屏改造同一个项目：左栏是项目与会话，右栏是本轮改动与额度</sub>
+</p>
 
 ### 2. 雇一位员工
 
