@@ -1255,6 +1255,10 @@ pub fn probe_agent_auth(
         "opencode" => probe_opencode_auth(model_id.as_deref()),
         "deepseek" | "deepseek-acp" => probe_deepseek_auth(),
         "zcode" | "zcode-acp" => probe_zcode_auth(),
+        "antigravity" | "agy-acp-server" => {
+            let (status, message) = crate::antigravity_support::auth_probe();
+            Ok(auth_result(&agent_id, status, message))
+        }
         _ => Ok(auth_result(
             &agent_id,
             "unknown",

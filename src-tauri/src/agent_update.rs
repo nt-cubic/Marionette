@@ -33,6 +33,12 @@ pub struct AgentVersionInfo {
 /// Ask the CLI what it is. Best-effort: agents disagree about `--version`, and
 /// a missing answer is normal rather than an error worth surfacing loudly.
 pub fn installed_version(command: &str) -> Option<String> {
+    // Never execute the Antigravity server from probe paths: its PyInstaller
+    // onefile unpacks ~100 MB into %TEMP% before even `--version` can answer,
+    // and the probe kill leaks it (antigravity_support::is_server_command).
+    if crate::antigravity_support::is_server_command(command) {
+        return None;
+    }
     let resolved = crate::process_util::resolve_spawn_command(command).ok()?;
     let mut cmd = Command::new(&resolved.program);
     resolved.apply_to(&mut cmd);

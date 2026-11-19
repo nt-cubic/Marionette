@@ -41,6 +41,7 @@ export const en = {
   "auth.openCodeHint": "OpenCode Zen (opencode/…) needs its own sign-in; for models that already have a key, use opencode-go/… or deepseek/…. It reconnects automatically after you click Sign in.",
   "auth.deepSeekHint": "DeepSeek isn't set up. Click Sign in on the banner, enter DEEPSEEK_API_KEY under Provider keys, or run `dsh-acp login` in a terminal.",
   "auth.zcodeHint": "ZCode isn't signed in. Click Sign in on the banner (browser-based authorization), or install and sign in to the ZCode desktop app first — credentials are shared from ~/.zcode.",
+  "auth.antigravityHint": "Antigravity isn't signed in. Starting a session opens the Google sign-in page by itself (free tier resets every 5 hours); when the browser doesn't open, a notice card with the authorization link appears in the conversation.",
   "tasks.subagent": "Subagent",
   "tasks.queuedSubagent": "{agent} · Queued",
   "tasks.signal": "Signal {signal}",
