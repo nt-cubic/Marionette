@@ -310,7 +310,6 @@ M0 结论：**四个核心开放问题（握手/settings/OAuth 闭环/文件读�
   精确吻合（13041/38 vs totalTokens 13079=input 13041+output 38）——**四桶口径对齐**。
 - **certutil 教训（已换 sha2）**：曾用 certutil 算哈希，日语系统输出无空行+本地化文案
   打破位置解析——系统工具输出的解析要本地化无关，最终直接用 sha2 crate。
->>>>>>> f691dc32 (feat(antigravity): M2 自动安装+升级链 / M3 usage 回填+历史导入+存量回收——接入全量收官)
 ## 附：官方来源
 
 - <https://antigravity.google> · <https://antigravity.google/blog/introducing-google-antigravity>
