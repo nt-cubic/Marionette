@@ -40,6 +40,7 @@
 | `verify-text-pipeline.mjs` | `npm run verify:text` | 文本 / 展示管线的冒烟检查（只依赖 `markdownText.ts`，不需要整棵 import 图） |
 | `verify-rich-markdown.mts` | `npx tsx scripts/verify-rich-markdown.mts` | 富文本管线：纯字符串扫描决定 katex/shiki/mermaid/spec 是否加载（bash `$$` 不当公式、单 `$` 永远字面、首 token 路由、```` 围栏状态机）、LaTeX `\[..\]`→`$$..$$` 改写不动围栏内、```spec 卡片 schema 三道防护（JSON 容错/原型污染/深度+尺寸上限）与各 type 形状校验 |
 | `verify-browser-pick.mts` | `npx tsx scripts/verify-browser-pick.mts` | 浏览器元素批注的数据层：不可信页面声明、URL/query/hash/path 脱敏、多页面分组、元素/框选块、ref 与截图顺序、页面文本单行净化、标签拼装、页面输入屏障/可信事件/24 条上限的静态契约、双语词典对齐 |
+| `verify-browser-overlay.mts` | `npx tsx scripts/verify-browser-overlay.mts` | 原生浏览器遮挡判断：模态弹窗、相交菜单、隐藏浮层及多个浮层关闭 |
 | `verify-workspace-surface.mts` | `npx tsx scripts/verify-workspace-surface.mts` | Surface 标签 lib 层：`document:` tab id 与会话树路径编解码、fresh browser tab 只有 `display:"workspace"` 才抢工作区。旧的并排 SurfaceWorkspace / 宽度换算助手已删除，布局与拖拽语义由 `verify-split-workspace` 钉 |
 | `verify-dev-server.mts` | `npx tsx scripts/verify-dev-server.mts` | 开发服务器发现：ANSI 去除、loopback/通配地址归一化、公网与 LAN 拒绝、尾标点清理、同 origin 去重、多服务识别、默认只通知 |
 | `verify-browser-prefs.mts` | `npx tsx scripts/verify-browser-prefs.mts` | Agent tab 空闲清理偏好：默认 10 分钟、允许值、非法值回落，以及 10 → 30 → 60 → never 循环 |

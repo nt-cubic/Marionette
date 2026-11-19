@@ -45,6 +45,7 @@ import {
   type BrowserPickRefs,
 } from "../lib/browserPick";
 import { useT } from "../lib/i18n";
+import { browserHostCovered } from "../lib/browserOverlay";
 
 /**
  * The built-in browser page: a strip of tabs over a native surface host.
@@ -120,6 +121,7 @@ export function BrowserPage({
   const t = useT();
   const rootRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
+  const [covered, setCovered] = useState(false);
   const [address, setAddress] = useState("");
   const [shareMenuFor, setShareMenuFor] = useState<string | null>(null);
   const [tabMenuFor, setTabMenuFor] = useState<string | null>(null);
@@ -171,6 +173,34 @@ export function BrowserPage({
     }
   };
 
+  // Native child webviews cannot be covered by HTML. Watch app overlays and
+  // temporarily hide the surface until the last covering overlay is gone.
+  useEffect(() => {
+    if (!visible) return;
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      if (hostRef.current) setCovered(browserHostCovered(hostRef.current));
+    };
+    const schedule = () => {
+      if (!frame) frame = requestAnimationFrame(update);
+    };
+    const observer = new MutationObserver(schedule);
+    observer.observe(document.body, {
+      childList: true, subtree: true, attributes: true,
+      attributeFilter: ["class", "style", "hidden", "role", "aria-modal"],
+    });
+    window.addEventListener("resize", schedule);
+    window.addEventListener("scroll", schedule, true);
+    update();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", schedule);
+      window.removeEventListener("scroll", schedule, true);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [visible]);
+
   // Surface visibility: the active tab shows when the page shows; everything
   // else hides. A tab is only made visible AFTER its bounds landed — the
   // native surface starts as a 1×1 dot and a failed measurement must keep it
@@ -178,7 +208,7 @@ export function BrowserPage({
   const shownRef = useRef<string | null>(null);
   useEffect(() => {
     const previous = shownRef.current;
-    const target = visible ? (active?.id ?? null) : null;
+    const target = visible && !covered ? (active?.id ?? null) : null;
     if (previous && previous !== target) {
       void browserSetTabVisible(previous, false);
     }
@@ -190,7 +220,9 @@ export function BrowserPage({
     (async () => {
       for (let attempt = 0; attempt < 20 && !cancelled; attempt++) {
         if (await syncBounds(target)) {
-          if (!cancelled) void browserSetTabVisible(target, true);
+          if (!cancelled && hostRef.current && !browserHostCovered(hostRef.current)) {
+            void browserSetTabVisible(target, true);
+          }
           return;
         }
         await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
@@ -199,7 +231,7 @@ export function BrowserPage({
     return () => {
       cancelled = true;
     };
-  }, [active?.id, visible]);
+  }, [active?.id, visible, covered]);
 
   useEffect(
     () => () => {
