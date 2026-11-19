@@ -316,6 +316,7 @@ func readAdvised(body []byte, clientMarks, facts, advised bool) (*Request, error
 		}
 		if t.Name == "DeferredToolPlaceholder" {
 			// only keeps Anthropic's deferred loading on; never to be called
+			r.DeferredNamed = true
 			continue
 		}
 		r.Tools = append(r.Tools, Tool{Name: t.Name, Description: t.Description, Schema: t.InputSchema, Deferred: t.DeferLoading})
@@ -1309,6 +1310,9 @@ func pairToolBlocks(msgs []aMessage) []aMessage {
 					open[b.ID] = true
 				}
 			}
+			// words written after a call go before it (callsLast): a
+			// Responses turn's message item after its function_call
+			m.Content = blocksCallsLast(m.Content)
 			out = append(out, m)
 			continue
 		}
@@ -1340,6 +1344,36 @@ func pairToolBlocks(msgs []aMessage) []aMessage {
 	}
 	closeExchange()
 	return out
+}
+
+// blocksCallsLast is callsLast for a built message's blocks: the ones
+// after its first call that are neither a call nor thinking go before
+// that call, an empty text block left out; blocks with none such come
+// back as they are.
+func blocksCallsLast(blocks []aBlock) []aBlock {
+	var head, calls []aBlock
+	called, moved := false, false
+	for _, b := range blocks {
+		switch {
+		case b.Type == "tool_use":
+			called = true
+			calls = append(calls, b)
+		case !called:
+			head = append(head, b)
+		case b.Type == "thinking" || b.Type == "redacted_thinking":
+			calls = append(calls, b)
+		default:
+			moved = true
+			if b.Type == "text" && strings.TrimSpace(b.Text) == "" {
+				continue
+			}
+			head = append(head, b)
+		}
+	}
+	if !moved {
+		return blocks
+	}
+	return append(head, calls...)
 }
 
 // resultSaid is what a tool_result that answers no call keeps: its text as

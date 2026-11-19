@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/access"
 	// search by meaning, when switched on (memory.Semantic)
 	_ "github.com/yetone/magpie/internal/memembed"
 	"github.com/yetone/magpie/internal/memory"
@@ -54,16 +55,29 @@ const (
 const memoryServerName = "magpie-memory"
 
 func (s *Server) memoryMCP(w http.ResponseWriter, r *http.Request) {
-	// what is known about this computer's user, and what goes into every
-	// agent's instructions here (the digest): only an agent on this
-	// computer reads or writes it, as the hub gives it (HereOnly). Another
-	// computer's gateway key, which may be a friend's, and a web page,
-	// even one Settings lists, are turned away.
-	if !local(r) || fromBrowser(r) {
-		http.Error(w, "magpie's memory MCP server answers the agents on this computer alone", http.StatusForbidden)
+	if !memoryReaches(r) {
+		http.Error(w, "magpie's memory MCP server answers the agents on this computer, and another computer's only while magpie is shared and by a gateway key let use Magpie Memory (the key's ··· › Advanced in magpie's gateway keys, or `magpie gateway-key memory <id> on`); never a web page", http.StatusForbidden)
 		return
 	}
 	serveMCP(w, r, "magpie's memory", memoryServerName, 1<<20, s.memoryMCPCall)
+}
+
+// memoryReaches is whether r may read and write magpie's memory: what is
+// known about this computer's user, and what goes into every agent's
+// instructions here (the digest). An agent on this computer may; another
+// computer's only while magpie is shared, by a gateway key the user let
+// use it themselves (access.Key.Memory, Niapyaya on X: an agent on a
+// remote machine saving to it), as the hub gives it (HubVisitor's
+// Memory). Any other key, which may be a friend's and uses every MCP
+// server unless held to some, and a web page, one Settings lists and that
+// sends a key included, are turned away. From elsewhere a page is told by
+// hubFromPage, not fromBrowser, whose Sec-Fetch-Mode Node's fetch sends
+// too (#5522): the MCP SDK's own transport, which a remote agent uses.
+func memoryReaches(r *http.Request) bool {
+	if local(r) {
+		return !fromBrowser(r)
+	}
+	return sharedWith(r) && access.Caller(r.Context()).Memory && !hubFromPage(r)
 }
 
 var memoryKinds = strings.Join(memory.Kinds, ", ")
@@ -92,7 +106,9 @@ func memoryMCPTools() []any {
 			"name":  memorySaveTool,
 			"title": "Save memory",
 			"description": "Remembers one thing for later conversations, in every agent: what the user asks you to remember, a preference or rule they state, a correction they make, a fact about them or the project that will still hold next time. " +
-				"One fact per memory, written so it reads on its own. Don't save what is in the code or its history, a task's progress, or secrets. Saving what is already remembered merges into it; with id, changes that memory.",
+				"One fact per memory, written so it reads on its own. Don't save what is in the code or its history, a task's progress, or secrets. " +
+				"Memory is for what holds for the user across projects. A rule, convention or fact of one project belongs in that project's own instruction files or docs (AGENTS.md and the like) when it keeps them: offer to write it there instead, and don't save what they already say or what disagrees with them. " +
+				"Saving what is already remembered merges into it; with id, changes that memory.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -553,7 +569,7 @@ func memoryLine(m *memory.Memory, c memoryCaller) string {
 	if m.Pinned {
 		l += ", pinned"
 	}
-	l += ", " + memoryStamp(m.Updated) + ": " + strings.Join(strings.Fields(m.Text), " ")
+	l += ", " + memoryStamp(m.Updated) + ": " + memory.Indented(m.Text, "  ")
 	if m.Why != "" {
 		l += " (why: " + strings.Join(strings.Fields(m.Why), " ") + ")"
 	}
@@ -648,7 +664,49 @@ func memorySave(c memoryCaller, a memoryArgs) (string, error) {
 	if !added {
 		return "Already remembered, merged: " + memoryLine(m, c), nil
 	}
-	return "Remembered: " + memoryLine(m, c), nil
+	return "Remembered: " + memoryLine(m, c) + projectFilesNote(c, m), nil
+}
+
+// projectInstructionFiles are the files, under a project's root, an agent
+// reads the project's own instructions from.
+var projectInstructionFiles = []string{"AGENTS.md", "CLAUDE.md", "GEMINI.md", ".github/copilot-instructions.md", ".cursorrules"}
+
+// projectFilesNote points a save that belongs in the project's own
+// instruction files there: a project's rules kept in memory too disagree
+// with those files once the files are tidied (flying_crp on X). It is for
+// a memory of the caller's project, or a rule or procedure kept for
+// everyone, saved in a project that keeps such files; "" otherwise. It
+// names only the files found, never this app nor a vendor.
+func projectFilesNote(c memoryCaller, m *memory.Memory) string {
+	if c.project == nil || m == nil {
+		return ""
+	}
+	inProject := m.Scope == memory.ScopeOf(c.project)
+	switch {
+	case inProject && m.Kind != memory.Profile && m.Kind != memory.Preference:
+	case m.Scope == memory.Global && (m.Kind == memory.Rule || m.Kind == memory.Procedure):
+	default:
+		return ""
+	}
+	var found []string
+	for _, root := range c.project.Roots {
+		for _, f := range projectInstructionFiles {
+			if fi, err := os.Stat(filepath.Join(root, filepath.FromSlash(f))); err == nil && !fi.IsDir() {
+				found = append(found, f)
+			}
+		}
+		if len(found) > 0 {
+			break
+		}
+	}
+	if len(found) == 0 {
+		return ""
+	}
+	files := strings.Join(found, ", ")
+	if inProject {
+		return "\nThis project keeps its own instructions in " + files + ". A rule or fact of the project is better written there, where everyone working on it reads it and it is kept up to date with the project: offer the user to add it there, and forget this memory once it is."
+	}
+	return "\nIf this holds only in this project, it belongs in the project's own " + files + " rather than in memory: offer the user to add it there, and forget this memory once it is."
 }
 
 func memoryForget(a memoryArgs) (string, error) {
@@ -660,7 +718,7 @@ func memoryForget(a memoryArgs) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return "Forgotten: [" + m.ID + "] " + strings.Join(strings.Fields(m.Text), " "), nil
+	return "Forgotten: [" + m.ID + "] " + memory.Indented(m.Text, "  "), nil
 }
 
 // memoryStamp is when a memory was last changed, in the reader's own zone

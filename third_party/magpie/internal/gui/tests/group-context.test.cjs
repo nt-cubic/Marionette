@@ -1,7 +1,7 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
 // A routing group says which context window agents are told (Mikan on
 // Discord: a custom length, or the shortest or longest member's). The
-// group editor's "Context" row picks Largest model's (0, as before),
+// group editor's "Context window" row picks Largest model's (0, as before),
 // Smallest model's (-1, followed as the members change) or Custom, with a
 // box that takes 300k or 1m; its hint says the length agents are told,
 // and, when the members' windows differ, which member a longer
@@ -34,8 +34,8 @@ const groups = () => ({
 });
 
 const words = {
-  en: { edit: "Edit", save: "Save", label: "Context", largest: "Largest model's", smallest: "Smallest model's", custom: "Custom", n1m: "1,000,000", n128: "128,000", n300: "300,000", bad: "not a length" },
-  zh: { edit: "编辑", save: "保存", label: "上下文", largest: "最大模型的", smallest: "最小模型的", custom: "自定义", n1m: "1,000,000", n128: "128,000", n300: "300,000", bad: "不是有效的" },
+  en: { edit: "Edit", save: "Save", label: "Context window", largest: "Largest model's", smallest: "Smallest model's", custom: "Custom", n1m: "1,000,000", n128: "128,000", n300: "300,000", bad: "not a length" },
+  zh: { edit: "编辑", save: "保存", label: "上下文窗口", largest: "最大模型的", smallest: "最小模型的", custom: "自定义", n1m: "1,000,000", n128: "128,000", n300: "300,000", bad: "不是有效的" },
 };
 
 function serve(lang, posts) {
@@ -121,6 +121,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await box.fill("abc");
       assert.equal(await box.getAttribute("aria-invalid"), "true");
       assert((await hint()).includes(w.bad), await hint());
+      // Save refused while the box doesn't read: the editor stays open on it, nothing sent
+      await ed.locator("button.primary", { hasText: w.save }).click();
+      assert.equal(await ed.locator("button.primary", { hasText: w.save }).evaluate((b) => b.classList.contains("busy")), false, "a bad context is not saved");
+      assert.equal(await box.evaluate((x) => x === document.activeElement), true, "Save takes the reader to the bad box");
+      assert.equal(await page.locator(".rt-gedit").count(), 1);
       await box.fill("300k");
       assert.equal(await box.getAttribute("aria-invalid"), "false");
       assert.equal(await box.getAttribute("aria-describedby"), await row.locator(".hint").getAttribute("id"));

@@ -284,7 +284,7 @@ func save(l List) error {
 		return err
 	}
 	listSeen.Lock()
-	listSeen.stamp, listSeen.set = listStamp(), true
+	listSeen.stamp, listSeen.set = seenStamp(), true
 	listSeen.Unlock()
 	return nil
 }
@@ -316,11 +316,12 @@ func listStamp() string {
 // running has the old ones loaded.
 var hostStale atomic.Bool
 
-// checkList notices plugins.json changed by another magpie: the host is
-// started again with the plugins as they are, and the providers the other
-// magpie last saw asked for are the ones known meanwhile.
+// checkList notices plugins.json changed by another magpie, or a plugin
+// added by its path edited (pathstamp.go): the host is started again with
+// the plugins as they are, and the providers the other magpie last saw
+// asked for are the ones known meanwhile.
 func checkList() {
-	st := listStamp()
+	st := seenStamp()
 	listSeen.Lock()
 	moved := listSeen.set && listSeen.stamp != st
 	listSeen.stamp, listSeen.set = st, true
@@ -576,7 +577,7 @@ func notPlugin(target string) error {
 	}
 	why := fmt.Sprintf("%s isn't an OpenCode or magpie plugin: its package names no file to load (no main or exports in package.json, no index file)", name)
 	if len(pkg.Bin) > 0 && string(pkg.Bin) != "null" {
-		why += ", only a command (bin). If it is an MCP server, add it under Library → MCP servers instead"
+		why += ", only a command (bin). If it is an MCP server, add it under Library › MCP servers instead"
 	}
 	return errors.New(why)
 }

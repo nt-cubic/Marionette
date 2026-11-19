@@ -128,6 +128,18 @@ func CodexLiveList(ctx context.Context) ([]byte, error) {
 	return b, nil
 }
 
+// CodexClientVersion is the Codex client version the backend's model
+// list is asked for now (codexVersion): a list asked for an older one may
+// lack a model the backend lists only to a newer client.
+func CodexClientVersion() string { return codexVersion() }
+
+// CodexVersionBehind says a list asked for Codex version asked is behind
+// now, the version magpie asks as (CodexClientVersion), or its version
+// isn't known (codexListBehind).
+func CodexVersionBehind(asked, now string) bool {
+	return asked == "" || asked != now && newerVersion(asked, now) != asked
+}
+
 var codexVersionCache struct {
 	sync.Mutex
 	v  string
@@ -473,10 +485,7 @@ const listRound = 10 * time.Minute
 // codexListBehind says a ChatGPT account's list asked for Codex version
 // asked is behind the one magpie asks as now, or its version wasn't kept:
 // a model the backend lists only to a newer client may be missing from it.
-func codexListBehind(asked string) bool {
-	now := codexVersion()
-	return asked == "" || asked != now && newerVersion(asked, now) != asked
-}
+func codexListBehind(asked string) bool { return CodexVersionBehind(asked, codexVersion()) }
 
 // Levels are the reasoning levels the account's own list gives the model —
 // a Free ChatGPT plan's may be fewer than a Plus one's — and ok is false
@@ -767,7 +776,8 @@ func CodexOwnLeftOut(keep string) func(slug string) bool {
 // CodexOrder is where each model of Codex's list goes when the user put
 // them in an order of their own on the Agents page (#855), by the slug
 // Codex knows it by — a ChatGPT account's own by its bare one, as the
-// backend lists it — and whether they did. A model it doesn't name keeps
+// backend lists it, and by magpie's id, as magpie lists one the backend's
+// list lacks — and whether they did. A model it doesn't name keeps
 // its place after them.
 func CodexOrder() (map[string]int, bool) {
 	order := ModelOrder("codex")
@@ -784,12 +794,19 @@ func CodexOrder() (map[string]int, bool) {
 		if !ok {
 			continue
 		}
-		slug := e.ID
-		if CodexOwn(e) {
-			slug = e.Model
+		put := func(slug string) {
+			if cur, seen := out[slug]; !seen || i < cur {
+				out[slug] = i
+			}
 		}
-		if cur, seen := out[slug]; !seen || i < cur {
-			out[slug] = i
+		put(e.ID)
+		// the account's own goes by its bare slug where the backend's list
+		// has it, and by magpie's id where that list lacks it
+		// (CodexListedBeside): GPT-6.2, beside a list asked for before it
+		// came, went last in the Codex app's picker wherever it was put
+		// (Wangalan167673 on X)
+		if CodexOwn(e) {
+			put(e.Model)
 		}
 	}
 	return out, true
