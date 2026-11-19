@@ -1,155 +1,143 @@
 <p align="center">
-  <img src="docs/logo.png" width="128" alt="Marionette" />
+  <img src="docs/screenshots/main.png" alt="Marionette" width="100%" />
 </p>
 
-<h1 align="center">Marionette</h1>
+<h3 align="center">每个模型，都跑在它最擅长的环境里</h3>
 
 <p align="center">
-  <strong>Agent Harness, All in One</strong><br>
-  每个模型，都应该运行在它最擅长的环境里。
-</p>
-
-<p align="center">
-  <a href="https://github.com/nt-cubic/Marionette/releases/latest"><img src="https://img.shields.io/github/v/release/nt-cubic/Marionette?style=flat-square&label=%E5%8F%91%E8%A1%8C" alt="release"></a>
-  <a href="https://github.com/nt-cubic/Marionette/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/nt-cubic/Marionette/ci.yml?branch=master&style=flat-square&label=CI" alt="CI"></a>
-  <a href="https://github.com/nt-cubic/Marionette/releases"><img src="https://img.shields.io/github/downloads/nt-cubic/Marionette/total?style=flat-square&label=%E4%B8%8B%E8%BD%BD" alt="downloads"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/nt-cubic/Marionette?style=flat-square" alt="license"></a>
-  <img src="https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%2010%2F11%20x64-blue?style=flat-square" alt="platform">
-  <img src="https://img.shields.io/badge/%E7%95%8C%E9%9D%A2-%E4%B8%AD%E6%96%87%C2%B7English-green?style=flat-square" alt="languages">
+  Claude 用 Claude Code，Grok 用 Grok Build，GPT 用 Codex，DeepSeek 用 DeepSeek Harness。<br>
+  你不需要一个 Agent 做所有事，只需要一个窗口让它们各司其职。
 </p>
 
 <p align="center">
-  <b>简体中文</b> · <a href="README.en.md">English</a>
+  上下文、模型、插件与用量统一沉淀在本地。Windows 单文件，下载即用。
 </p>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/main-dark.png">
-  <img src="docs/screenshots/main.png" alt="Marionette 主界面">
-</picture>
+<p align="center">
+  <b>中文</b> | <a href="README.en.md">English</a>
+</p>
 
----
+<p align="center">
+  <a href="https://github.com/nt-cubic/Marionette/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/nt-cubic/Marionette?style=for-the-badge&logo=github&color=1B54E8&labelColor=20242D"></a>
+  <a href="https://github.com/nt-cubic/Marionette/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/nt-cubic/Marionette/ci.yml?branch=master&style=for-the-badge&logo=github&labelColor=20242D"></a>
+  <a href="https://github.com/nt-cubic/Marionette/releases"><img alt="downloads" src="https://img.shields.io/github/downloads/nt-cubic/Marionette/total?style=for-the-badge&logo=github&color=34D399&labelColor=20242D"></a>
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/github/license/nt-cubic/Marionette?style=for-the-badge&logo=opensourceinitiative&logoColor=white&color=5319E7&labelColor=20242D"></a>
+  <img alt="platform" src="https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%2010%2F11%20x64-0078D4?style=for-the-badge&logo=windows&labelColor=20242D">
+  <a href="docs/CURRENT.md"><img alt="docs" src="https://img.shields.io/badge/%E6%96%87%E6%A1%A3-%E5%9C%A8%E7%BA%BF%E6%9F%A5%E7%9C%8B-5319E7?style=for-the-badge&labelColor=20242D"></a>
+</p>
 
-Claude 用 Claude Code，Grok 用 Grok Build，GPT 用 Codex，DeepSeek 用 DeepSeek Harness。
-
-你不需要一个 Agent 做所有事。你只需要一个窗口，让它们各司其职。
-
-Marionette 是一个 Windows 本地多 Agent 图形壳：只负责启动、展示、切换与记录 Agent，不实现 Agent runtime。**单文件，下载即用，也可一行安装。**
-
-## 一个窗口，所有 Agent
-
-OpenCode、Claude Code、Codex、Grok Build、ZCode、DeepSeek Harness、Pi——一个窗口，全部装下。其它支持 ACP 协议的 Agent，经「自定义 Agent」随时加进来。
-
-ChatGPT 和 DeepSeek 的网页版也在里面：登录一次网页，它们就是两个纯聊天 Agent。
-
-- **按需启动**——你不输入，它不运行
-- **会话即标签页**，最多四格分屏，不同 Agent 并排干活
-- **Ctrl K 命令面板**——跳转、新建、窗口行为、外观、退出，全在这一个入口（详见下文「Ctrl K 面板」）
-
-## 两条侧栏，就是工作台
-
-左边找，右边看。
-
-- 左栏：项目、会话、聊天、[收纳盒](#还有更多)
-- 右栏：Plan、Todo、用量与本轮改动
-
-所有东西都在该在的位置，不用在聊天流里翻找。
-
-## 把桌面还给你
-
-桌面被终端和 IDE 占满太久了。把 Marionette 拖到屏幕左右边缘，它收成一条窄带，只留一线把手；想用就滑出来，用完自己退回去。
-
-Agent 在边上继续跑：谁在跑、跑到哪一步、刚改了哪几个文件，扫一眼就有；想派活，就在窄带里发。窗口关掉它还在跑——真正退出才叫退出。
-
-## Ctrl K 面板
-
-任何地方按 **Ctrl K** 唤出命令面板，键盘优先，不打断手上的活：
-
-- **跳转**：按会话名搜索并切换，方向键选择、回车进入
-- **新建对话**：在默认文件夹开一个新会话
-- **全景**：圆桌、Token 用量分析、插件管理，都在这里开
-- **贴边 / 解除贴边**：切换窄带模式（与标题栏贴边按钮等效）
-- **关闭行为**：选择点 × 是**直接退出**（默认）还是**后台常驻**（窗口藏起来，会话与引擎继续跑，再启动一次唤回）
-- **侧栏常驻**：贴边时左侧面板不自动收回
-- **外观**：主题（深/浅/跟随系统）、中英语言一键切换
-- **退出**：结束全部 Agent 与引擎后退出
-
-标签页快捷键与浏览器一致：**Ctrl T** 新对话、**Ctrl W** 关标签、**Ctrl Tab / Ctrl Shift Tab** 切换、**Ctrl 1-9** 跳到第 N 个、**Ctrl Shift T** 恢复刚关掉的。
-
-## 换人，不换脑子
-
-从 Claude 切到 OpenCode，上下文不会断。Marionette 生成一份普通的 `handoff.md`：看得见，改得了，能提交 Git，不靠黑魔法。
-
-命令行里聊过的，点一下就收进列表，按时间排在一起，接着聊。
-
-## 一个来源，喂给任何 Agent
-
-OpenCode Go、DeepSeek、GLM、Kimi、OpenRouter、xAI 的钥匙，Grok 与 ChatGPT 的订阅，都能出现在任意一个会话的模型菜单里。不用为每个 Agent 配一遍。
-
-MCP、Skills、插件、长期记忆——扫描一次，统一管理。插件装一次就对所有 Agent 生效，同一个工具，这个 Agent 能用，那个也能用；你的偏好在换人时跟着走。
-
-## 收纳盒
-
-一段文字、一个链接、一张图、一个文件夹——拖进来就是一条卡片，按今天、昨天、日期排着。文字卡点开看全文，图片卡按原比例完整显示，Ctrl+V 也能收。
-
-要用的时候，多选几条开一个新对话，材料清单自动进输入框；也可以把单条拖进任何会话的光标处。贴边窄条时，拖到上半条直接进盒。
-
-## 图片批注
-
-截图贴进输入框，自动打开批注：点一下是标记，拖一下是框选，每个标记配一句话。
-
-Agent 收到的是带编号的标记和你的说明——不用再写「就是那个按钮右边那个」。
-
-## 文档标签页
-
-对话里点开 `.md` / `.txt`，直接在应用里读，不用切回编辑器。长文档开**对照模式**：左边对话流、右边文档，分隔条随便拖；一边读一边让 Agent 改，改动就在旁边。文档内的相对链接页内跳转，改完保存带冲突检测。
-
-## 内置浏览器
-
-浏览器标签就在会话旁边开着。你照常看网页，Agent 也能看同一张页面：它读到的是页面的结构树，按元素引用点击、填表、截图，不靠猜坐标。丢给它一个链接，它自己开标签、自己读、自己操作。
-
-## Computer Use
-
-要跨出浏览器窗口的活，交给 Computer Use：Agent 能看到屏幕、操作鼠标键盘。每一次控制都先过授权卡；系统设置、凭据管理器这类窗口永远不在可共享名单里，按键走白名单。
-
-## 圆桌
-
-一个议题，几个模型同席：各自陈述、互相评审，主席汇总成计划——你批准之后才动手执行。验证阶段跑到的命令里若有 `git push`、`rm -rf` 这类破坏性操作，整个审议会停下来等你裁决：绝不静默放行，也绝不静默当失败。
-
-## Token 用量
-
-跨会话的 token 台账 + 分析页（Ctrl K →「Token 用量分析」）：
-
-- **四桶记账**——新算、缓存读、缓存写、输出，按天、按模型分开记；API 牌价折算成钱（牌价，不是订阅实付），缓存命中环一眼可见模型有没有真的在替你省钱
-- **去向拆解**——每个会话的 token 构成（系统提示词、工具定义、注入上下文、对话）、时间去向（哪些工具、哪些命令、哪些技能、改了多少行）
-- **作息热图**——小时×星期，什么时候烧的 token 一目了然
-- **对话列表**——每个会话的用量与花费，中途换过模型就按轮次分摊
-- **诚实账本**——台账落盘保留 180 天，还能只读回填各家 Agent 自己的会话历史；每个指标都带口径标签（实测 / 估算 / 推导 / 牌价），不编数
-
-## Telegram
-
-和 @BotFather 建的 bot 配对，手机就是遥控器：会话跑完、等你批准、出错，通知直接到手机，正文全文可读。
-
-在 Telegram 里回一句话，就是往那个会话发消息，走和本地输入完全相同的链路；权限通知带按钮，点一下就批。置顶的总控面板随时看谁在跑、切换回复去向、远程停止。
-
-## 还有更多
-
-- **并行子代理**：各干各的，不刷屏
-- **编辑重发**：改一句说过的话，后面的对话重新来
-- **分叉**：从任意一条回复分叉出新会话，历史原样带走
-- **实时轨迹**：泳道时间图看 Agent 每一步花的时间，整轮结束折回摘要
-- **富文本渲染**：公式、流程图、代码高亮，在对话流里直接呈现
-- **定时发送**：写好，到点自动发
-- **会话挂起**：闲置两小时自动挂起，回来一条消息接上
-
-## 快速上手
-
-**一行安装（推荐）** — 装进 `%LOCALAPPDATA%\Programs\Marionette`，加入开始菜单，终端里也有 `marionette` 命令；之后应用内更新会原地替换，不用重装：
+如果本项目对你有帮助，请在右上角**给个 star** 吧！
 
 ```powershell
 irm https://github.com/nt-cubic/Marionette/releases/latest/download/install.ps1 | iex
 ```
 
-不需要管理员权限。卸载（先退出应用）：
+---
+
+## 背景与设计初衷
+
+每个 coding agent 都在自己的主场上更强：Claude 在 Claude Code 里、Grok 在 Grok Build 里、GPT 在 Codex 里。可当你想同时用几个，代价就出现了：
+
+* **窗口越开越多**：终端、IDE、三四个聊天窗口同时开着。想把同一个问题丢给两个模型对比答案，得手动复制粘贴。
+* **会话散落各处**：命令行里聊过的、改了半个小时的、跑完忘了的对话，翻不回来。换个 Agent 或换台机器，上下文就断了。
+* **每个 Agent 都要重新配一遍**：key、订阅、MCP、插件、技能、偏好，各配各的，互不相通。
+* **离开电脑就断了**：长任务跑到一半卡在权限确认上，人不敢走；走了回来发现它在等一个按钮。
+
+**Marionette 不实现 Agent，也不打算替代它们。它探索的是另一种用法：把 Agent 收进一个窗口，把它们的上下文、额度和记忆摊在一处。**
+
+* **Marionette 负责**：启动、展示、切换、记录、交接——谁在跑、跑到哪一步、改了哪些文件、花了多少钱。
+* **你负责**：判断、拍板，以及在合适的时候离开电脑。
+
+---
+
+## 核心功能
+
+### 1. 一个窗口，装下所有 Agent
+
+* **内置多家 Agent**：OpenCode、Claude Code、Codex、Grok Build、ZCode、DeepSeek Harness、Pi、Antigravity——装好就在列表里；其它支持 ACP 协议的 Agent 用「自定义 Agent」随时加进来。
+* **四格分屏**：不同 Agent 并排干同一件事，答案放在一起比；会话就是标签页，Ctrl 1–9 切换。
+* **按需启动**：你不输入，它不运行；关掉窗口它还在跑，真正退出才叫退出。
+* **网页版也在里面**：ChatGPT 与 DeepSeek 网页版登录一次，就是两个纯聊天 Agent。
+
+### 2. 雇一位员工
+
+* **长期在场**：员工有自己的名字、记忆和项目授权，不是用完即弃的会话。
+* **派活与汇报**：交代一句话，它自己开任务、派 worker 去改代码，跑完回来给结论——它的对话里只有决定，不刷工具日志。
+* **只读与审批**：员工本身只读，写操作要你点头；一个按钮急停全部员工。
+* **手机也在线**：会话跑完、等你批准、出错，通知直接推到 Telegram；回一句话就是往那个会话发消息。
+
+### 3. 一个来源，喂给任何 Agent
+
+* **Key 与订阅打通**：OpenCode Go、DeepSeek、GLM、Kimi、OpenRouter、xAI 的钥匙，Grok 与 ChatGPT 的订阅，都能出现在任意一个会话的模型菜单里。
+* **装一次，全都生效**：MCP、Skills、插件、长期记忆扫描一次统一管理，换 Agent 时偏好跟着走。
+* **自研 Rust 引擎**：进程内运行，无独立引擎进程；exe 6.2 MB，额度、余额与用量记在同一本账上。
+
+### 4. 换人，不换脑子
+
+* **handoff.md**：换 Agent 时生成一份普通 Markdown，看得见、改得了、能提交 Git——不靠黑魔法。
+* **回收命令行会话**：各 CLI 自己的历史点一下就收进列表，按时间排在一起接着聊。
+* **分叉与重发**：从任意一条回复分出新会话；改一句说过的话，后面的对话重新来。
+
+### 5. 圆桌：几个模型同席
+
+* **先审议，后动手**：各自陈述、互相评审，主席汇总成计划——你批准之后才执行。
+* **破坏性操作停下来**：验证阶段撞上 `git push`、`rm -rf` 这类命令，整个审议暂停等你裁决，绝不静默放行。
+
+### 6. Token 用量：一本诚实的账
+
+* **四桶记账**：新算、缓存读、缓存写、输出分开记，按天、按模型折算成钱。
+* **去向拆解**：花在哪些工具、哪些命令、哪些技能、改了哪些文件。
+* **口径透明**：每个数字都带「实测 / 估算 / 推导 / 牌价」标签，不编数。
+* **历史回填**：直接读各家 CLI 自己的会话库，不经过 Marionette 开的对话也算进去。
+
+### 7. 桌面边缘的那一条
+
+* **贴边收起**：拖到屏幕边缘就收成一条窄带，鼠标触碰滑出，用完自己退回去。
+* **边上继续跑**：谁在跑、跑到哪一步、刚改了哪几个文件，扫一眼就有；想派活就在窄带里发。
+* **拖进去就收下**：文件、图片、链接、文字拖到把手上，上半条进收纳盒，下半条进输入框。
+
+---
+
+## 界面与功能预览
+
+<details>
+<summary><b>点击展开：收纳盒、内置浏览器、文档对照、Computer Use、图片批注</b></summary>
+<br/>
+
+#### 收纳盒
+一段文字、一个链接、一张图、一个文件夹——拖进来就是一张卡。多选几条开新对话，材料清单自动进输入框。
+
+#### 内置浏览器
+浏览器标签就在会话旁边。Agent 读到的是页面结构树，按元素引用点击、填表、截图，不靠猜坐标。
+
+#### 文档对照
+对话里点开 `.md` 直接在应用里读。长文档开对照模式：左边读，右边让 Agent 改，分隔条随便拖。
+
+#### Computer Use
+跨出浏览器窗口的活也能交：Agent 能看到屏幕、操作鼠标键盘。每一次控制先过授权卡，按键走白名单。
+
+#### 图片批注
+截图贴进输入框自动打开批注：点一下是标记，拖一下是框选，每个标记配一句话。
+
+</details>
+
+---
+
+## 快速开始
+
+**一行安装（推荐）** — 装进 `%LOCALAPPDATA%\Programs\Marionette`，加入开始菜单，终端里也有 `marionette` 命令；之后应用内更新会原地替换。不需要管理员权限。
+
+```powershell
+irm https://github.com/nt-cubic/Marionette/releases/latest/download/install.ps1 | iex
+```
+
+> **系统要求**：Windows 10 / 11 x64，需要 WebView2 Runtime（Win11 与更新过的 Win10 自带）。
+
+### 便携版与卸载
+
+也可以[下载](https://github.com/nt-cubic/Marionette/releases/latest) `Marionette.exe` 直接双击（便携版，不进开始菜单）。
+
+卸载（先退出应用）：
 
 ```powershell
 curl.exe -fsSLo install.ps1 https://github.com/nt-cubic/Marionette/releases/latest/download/install.ps1
@@ -157,10 +145,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall
 del install.ps1
 ```
 
-或者 [下载](https://github.com/nt-cubic/Marionette/releases/latest) `Marionette.exe` 直接双击（便携版，不进开始菜单）。两种方式都需要 WebView2 Runtime（Win11 与更新过的 Win10 自带）。
-
-<details>
-<summary>从源码运行</summary>
+### 从源码运行
 
 ```bash
 git clone https://github.com/nt-cubic/Marionette
@@ -168,21 +153,18 @@ cd Marionette
 npm install && npm run tauri dev
 ```
 
-</details>
-
-<details>
-<summary>文档地图</summary>
+### 更多文档
 
 | 想了解 | 去看 |
 |---|---|
 | 产品现状与每项能力的细节 | [docs/CURRENT.md](docs/CURRENT.md) |
 | 全部文档索引 | [docs/README.md](docs/README.md) |
-| i18n（中英双语）怎么改文案 | [docs/guides/i18n-guide.md](docs/guides/i18n-guide.md) |
-
-</details>
+| 界面文案（中英双语）怎么改 | [docs/guides/i18n-guide.md](docs/guides/i18n-guide.md) |
 
 ---
 
-## License
+## 开源许可证
 
-[MIT](LICENSE) · © 2026 nt-cubic
+本项目基于 [MIT License](LICENSE) 协议开源。
+
+如果 Marionette 对你的日常工作有所帮助，欢迎在 GitHub 上为本项目点亮一个 **⭐ Star**。
