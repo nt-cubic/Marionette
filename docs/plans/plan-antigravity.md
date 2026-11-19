@@ -1,8 +1,10 @@
 # 方案：接入 Google Antigravity（agy_acp_server）
 
-状态：**设计稿（2026-11-19）**，未动工。事实依据全部来自
-[`../research/research-antigravity.md`](../research/research-antigravity.md)（codeg v0.46.0 深挖）；
-本文只写 Marionette 侧的决策、阶段与改动清单。
+状态：**M0 + M1 已落地（2026-11-19）**——M0 真机核查全过（发现回写 research 文档）；
+M1 最小可用已实现并经隔离实例 E2E 验证（settings 同步 / scratch 重定向+回收 /
+`--version` 探测防执行 / auth URL 通知卡 / 登录探测 / roster+registry），M2（自动安装）与
+M3（usage 回填、贴回登录）未动工。事实依据与实测记录在
+[`../research/research-antigravity.md`](../research/research-antigravity.md)（codeg v0.46.0 深挖 + M0/M1 真机）。
 
 ## 0. 为什么接、接的是什么
 

@@ -255,6 +255,43 @@ $GEMINI_HOME（缺省 ~/.gemini；指 .gemini 目录本身！）
 | 11 | 模型变体 id 与 family 选择器两代并存 | 保存的模型 id 失效 | 旧 id 原样重放；不猜映射 |
 | 12 | release notes 不可信（URL 两次改名都不在 notes） | 升级链接 404 | URL 模板解版本，不匹配就不提供升级 |
 
+## M0 真机实测（2026-11-19，本机 Windows x64，agy-acp-server 1.5.0）
+
+zip 从 dl.google.com 下载（105 MB），解压为**扁平两文件**：`agy_acp_server.exe`（58 MB）+
+`localharness_external.exe`（155 MB）——与 codeg registry 记录一致。裸 stdio JSON-RPC 探针
+（`D:\tmp\agy-m0-probe\`）逐项验证：
+
+| 问题 | 实测答案 |
+|---|---|
+| 握手 | **即时成功**（无冷启动等待）。`agentInfo = {name:"antigravity-acp", title:"Google Antigravity", version:"1.5.0"}`；capability 面与 codeg 记录逐字段一致（loadSession/image+audio+embeddedContext/mcp http+sse/session list+resume+additionalDirectories/auth.logout/`_meta.antigravity.tier+systemPrompt.append`） |
+| authMethods 形状 | 恰好 4 个、按序：`oauth-personal`（"Log in with Google"）→ `oauth-business` → `gemini-api-key` → `agent-platform`；**第一个就是免费档默认**，登录卡无需选择逻辑 |
+| 无 settings.json 的 session/new | `-32000 "Authentication required"`，`data.message` 自带全部方法的文档（含 env 变量名）——可直接转述给用户。**该文案还暴露第五个方法 `gateway`（`AGY_LLM_GATEWAY_URL` 自定义 AI API Gateway）**——引擎跨用的潜在钩子（开放问题 6 的新线索） |
+| settings.json 写入后 | `auth.type:"oauth-personal"` → **session/new 直接成功**（不等登录），OAuth 在后台自动触发：stderr 打印 marker 行（`Open the following link to authenticate the ACP server: <url>`）+ `webbrowser.open` 自动弹浏览器。本机浏览器闭环后 token 落 `acp_token.json`（refresh_token + scopes cloud-platform/userinfo.email/aicode + project `aicode-consumers`） |
+| 端到端 | prompt → 精确回复 ✅；免费档默认模型 **`gemini-3.8-flash`**；stderr 可见内部凭据注入代理按 `gemini-3.8-flash-high` 路由（family+thinking_level 组合 id 实锤） |
+| configOptions | 全标准 select：`model`（免费档 1 项）/ `thinking_level`（low/medium/high，cur=high，cat=thought_level）/ `mode`（default/auto_edit/yolo，cat=mode）。响应另有平铺 `models` 与 `modes` 键 |
+| **turn/complete** | **不作为通知发**——但 `session/prompt` 请求的**响应**（result）就带 `stopReason:"end_turn"` + 完整 usage（totalTokens/inputTokens/outputTokens/thoughtTokens/cachedRead/cachedWrite）。Marionette acp.rs 早有「prompt 响应即回合完成」的标准处理（`emit_turn_complete`，acp.rs:3705-3725），**回合生命周期与 usage 记账天然走通**，不需要 agentReentry 兜底（初判「无 turn/complete 会缺 usage 记账」是错的——通知与响应是两回事） |
+| %TEMP% 泄漏 | **1.5.0 每次启动解压 ~150 MB `_MEI*`**（codeg 记录的 1.17 GB 是老版本），且优雅关闭后仍残留——TMP 重定向红线维持，量级缩小 |
+| fs.readTextFile=false | **agent 用自己的 `view_file` 工具读文件**（tool_call 的 rawInput 带 `file_path/start_line/end_line`，end_line=799 与 codeg 记录的 800 行上限吻合），读出内容精确。**Marionette 无需为此 agent 打开客户端 fs 能力** |
+| 额外写盘 | 会话启动往 `~/.gemini/antigravity/bin/webm_encoder.exe` 装二进制（注意目录名是 `antigravity` 不是 `antigravity-acp`）；conversations/ 落 `<uuid>.db`+`.meta`（与 parser 布局一致） |
+| stderr URL 管道 | 1.5.0 打 **stderr**（与 codeg「1.1.1 起 stderr」记录一致）；stdout/stderr 双路刮 marker 的策略维持 |
+
+M0 结论：**四个核心开放问题（握手/settings/OAuth 闭环/文件读）全部通过，无阻断项**。
+剩余开放问题（IDE 凭据共享、限额信号、trusted_workspaces 交互）不阻塞 M1。
+
+### M1 真机追加发现（2026-11-19，隔离实例 E2E）
+
+- **会话内 E2E 四轮全通**（`MARIONETTE_CHIEF_PROBE` 驱动 start→prompt→idle→stop）：
+  settings 同步分支在进程内执行、caps 快照 `models:1/modes:3/gemini-3.8-flash`、
+  回复精确命中指令 token、stop 干净。
+- **scratch 重定向实测生效**：服务解压 42M→97M 落进
+  `~/.marionette/scratch/antigravity/<sessionId>`，stop 后连空父目录一起清掉。
+- **新坑：探测路径执行 = 泄漏**——`all_version_info`（agent 菜单每次打开都会跑）对每个
+  agent 执行 `--version`；agy 的 PyInstaller onefile **即使 `--version` 秒退也先整包解压
+  ~90-100MB**，实测每次开菜单漏 2–3 个 `_MEI*` 目录。修复：`installed_version` 对
+  `is_server_command()`（stem 精确匹配 `agy_acp_server`，大小写不敏感、剥路径与可选
+  `.exe`）直接返回 None，永不执行；守卫生效后真实 `%TEMP%` **零新增** `_MEI`。
+- **终态**：全量 `cargo test --bin marionette`（675 项）+ tsc + build 全绿。
+>>>>>>> 71770085 (feat(antigravity): M1 最小可用——Google Antigravity (agy_acp_server) 接入)
 ## 附：官方来源
 
 - <https://antigravity.google> · <https://antigravity.google/blog/introducing-google-antigravity>

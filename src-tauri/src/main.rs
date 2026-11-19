@@ -6,6 +6,7 @@ mod acp;
 mod acp_catalog;
 mod agent_registry;
 mod agent_update;
+mod antigravity_support;
 mod app_paths;
 mod browser;
 mod chief;
@@ -323,6 +324,10 @@ fn main() {
         .setup(|app| {
             use tauri::Manager;
             spawn_main_thread_watchdog(app.handle().clone());
+            // Antigravity（agy_acp_server）的 per-launch scratch：清掉上次
+            // 崩溃留下的 %TEMP% 重定向目录（>24h 视为孤儿；新鲜的不碰，
+            // 可能还属于交接过来的会话）。
+            antigravity_support::sweep_stale_scratch();
             // Chief（远程首席助理）：启动恢复（失联任务标 interrupted）+
             // 心跳线程。mode=off 时心跳第一行即返回，零开销。
             chief::commands::bootstrap_chief(app.handle());

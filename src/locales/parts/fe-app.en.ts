@@ -4,6 +4,8 @@ import type { zh } from "./fe-app.zh";
 export const en = {
   "app.silenceTitle": "Agent has had no output for 60 seconds",
   "app.silenceDesc": "The message was sent, but no events have come back. Try Stop, then send again; if it keeps happening, restart the session or the agent.",
+  "app.antigravityAuthTitle": "Waiting for Google authorization",
+  "app.antigravityAuthDesc": "Antigravity is waiting for the Google sign-in. If the browser did not open by itself, visit the authorization link below:",
   "app.needLoginSignIn": "Sign-in required — click Sign in, or run `{cmd}` in a terminal",
   "app.needLoginTerminal": "Sign-in required — run `{cmd}` in a terminal",
   "app.versionTooLowGrok": "Version too old — click \"Update\" to run `grok update`; start a new session once it finishes.",

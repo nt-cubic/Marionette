@@ -2821,6 +2821,28 @@ function AppMain() {
         if (title) applyAgentSessionTitle(payload.sessionId, title);
       }
 
+      // Antigravity: the server prints the Google OAuth consent URL while a
+      // sign-in is pending and opens the default browser itself. This notice
+      // card is the fallback surface for when that browser never appeared
+      // (remote desktop / no default browser) — the URL is selectable text.
+      if (payload.kind === "system" && payload.method === "antigravity/auth-url") {
+        const url = (payload.data as { url?: unknown } | null)?.url;
+        if (typeof url === "string" && url && payload.sessionId) {
+          updateSessionEvents(
+            payload.sessionId,
+            (current) => [
+              ...current,
+              sessionNoticeEvent(payload.sessionId, {
+                severity: "warning",
+                title: t("app.antigravityAuthTitle"),
+                description: `${t("app.antigravityAuthDesc")}\n${url}`,
+              }),
+            ],
+            { publish: true },
+          );
+        }
+      }
+
       // Live transcript: thinking / tool / assistant stream as events arrive.
       // OpenCode v2 child sessions arrive as `opencode/session/child_update`
       // when we advertised child-session-updates; otherwise they are projected

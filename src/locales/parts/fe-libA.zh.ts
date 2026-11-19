@@ -44,6 +44,7 @@ export const zh = {
   "auth.openCodeHint": "OpenCode Zen（opencode/…）要单独登录；已有 Key 的模型用 opencode-go/… 或 deepseek/…。点 Sign in 后会自动重连。",
   "auth.deepSeekHint": "DeepSeek 未配置时可点横幅 Sign in，或在 Provider keys 里填 DEEPSEEK_API_KEY，或终端执行 `dsh-acp login`。",
   "auth.zcodeHint": "ZCode 未登录时可点横幅 Sign in（走浏览器授权），或先安装并登录 ZCode 桌面版 —— 凭据共享自 ~/.zcode。",
+  "auth.antigravityHint": "Antigravity 未登录。新建对话会自动弹出 Google 登录页面（免费档每 5 小时重置）；浏览器没弹时，对话里会出现带授权链接的提示卡。",
   "tasks.subagent": "子代理",
   "tasks.queuedSubagent": "{agent} · 排队",
   "tasks.signal": "信号 {signal}",

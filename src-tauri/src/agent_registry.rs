@@ -210,6 +210,31 @@ pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
             requires_commands: &[],
             launch_env: &[],
         },
+        // Google Antigravity's first-party ACP server. Binary zip from
+        // dl.google.com → PATH (Manual). Zero launch args on Windows — the
+        // ACP registry passes `--uid=` on Linux only and an unknown flag is
+        // a hard startup error here. PYTHONUNBUFFERED keeps the OAuth consent
+        // URL visible if the marker ever lands on stdout (1.0.0 did);
+        // AGY_ACP_FORCE_FILE_STORAGE pins credentials to the token file
+        // (macOS keychain is the other home). settings.json auth sync +
+        // per-launch %TEMP% scratch live in antigravity_support.rs / acp.rs.
+        "antigravity" | "agy-acp-server" => AgentHarnessMeta {
+            id: "antigravity",
+            label: "Google Antigravity",
+            subagent_transcript: false,
+            mcp_wire: McpWirePolicy::Forward,
+            mcp_wire_label: mcp_label(McpWirePolicy::Forward),
+            distribution: DistributionKind::Manual,
+            distribution_label: dist_label(DistributionKind::Manual),
+            cmd: "agy_acp_server",
+            args: &[],
+            node_required: None,
+            requires_commands: &["agy_acp_server"],
+            launch_env: &[
+                ("PYTHONUNBUFFERED", "1"),
+                ("AGY_ACP_FORCE_FILE_STORAGE", "1"),
+            ],
+        },
         _ => AgentHarnessMeta {
             id: "unknown",
             label: "Agent",

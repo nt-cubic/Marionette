@@ -263,6 +263,24 @@ impl AgentConfig {
                     vec![dependency("zcode", "ZCode CLI (Desktop install)", None)],
                 ),
             ),
+            // Google Antigravity's first-party ACP server (`agy_acp_server`) —
+            // NOT the old `gemini` (Gemini CLI npm adapter) cut in the
+            // 2026-10-20 roster trim. Binary zip from dl.google.com (no npm);
+            // `oauth-personal` reaches the free tier with a plain Google
+            // account, settings.json/scratch/login handled host-side
+            // (antigravity_support.rs, M0 verified 2026-11-19).
+            Self::new(
+                "antigravity",
+                "Google Antigravity",
+                "agy_acp_server",
+                vec![],
+                "acp",
+                "stdin",
+                AgentInstallSpec::manual(&crate::ts!(
+                    "从 dl.google.com 下载 agy-acp-server 的 zip，解压出的整个文件夹加入 PATH —— agy_acp_server.exe 与 localharness_external.exe 必须留在同一目录（缺了后者服务能握手但 agent 不工作）。用 Google 账号登录即有免费额度。",
+                    "Download the agy-acp-server zip from dl.google.com and put the whole extracted folder on PATH — agy_acp_server.exe and localharness_external.exe must stay in the same directory (without the latter the server handshakes but the agent is dead). Signing in with a Google account includes the free tier."
+                )),
+            ),
             Self::new(
                 "web-chatgpt",
                 &crate::ts!("ChatGPT 网页版", "ChatGPT (web)"),
