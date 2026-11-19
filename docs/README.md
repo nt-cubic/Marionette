@@ -62,7 +62,7 @@
 | [`plans/plan-plugin-layer.md`](./plans/plan-plugin-layer.md) | **设计稿（2026-11-05 落地）**：共通插件层——安装一次全 agent 生效。业界对标（codeg 扇出写回 1 万行教训/Zed 直传缺口/mcpd·MCPHub 同型验证/ACP v2 条款）、url 型代理架构（stdio 子进程托管 + http 中继凭据不出主进程）、红线与落地偏差记录 |
 | [`plans/plan-employee-mode.md`](./plans/plan-employee-mode.md) | **实现对账 + 设计稿（2026-11-17 工作树）**：员工模式已施工 E1 主体，E2/E3 部分、E4 待办；逐项记录员工注册表、侧栏 roster、状态投影、任务/worker、记忆/承诺/通知/Telegram 的真实行为，含注册表级全局暂停、Proposed 任务预留竞态修复、只读硬门禁、Computer Use 项目策略、持久通知预算、自动 task journal/proposal accept-reject、稳定 staffId 路由和单 chat Telegram 限制 |
 | [`plans/plan-engine-contract.md`](./plans/plan-engine-contract.md) | **引擎合同（2026-11-17 M1 落地）**：Marionette ↔ magpie 种子的合同清单——合同面、红线与验证套件 `scripts/verify-engine-contract.mts`；`scripts/upstream-watch.mts` 按它盯上游 magpie |
-| [`plans/plan-antigravity.md`](./plans/plan-antigravity.md) | **M0+M1 已落地（2026-11-19）**：接入 Google Antigravity（`agy_acp_server`）——M0 真机核查全过；M1 最小可用（roster + settings 同步 + scratch 隔离 + 探测防执行 + auth URL 通知卡）经隔离实例 E2E 验证；M2 dir-tree 自动安装 / M3 usage 回填未动工。事实与实测在 [`research/research-antigravity.md`](./research/research-antigravity.md) |
+| [`plans/plan-antigravity.md`](./plans/plan-antigravity.md) | **M0–M3 全部落地（2026-11-19）**：接入 Google Antigravity（`agy_acp_server`）——M0 真机核查；M1 最小可用（settings 同步/scratch 隔离/探测防执行/授权 URL 通知卡）；M2 自动安装+升级链（sha256/required_siblings/系统 tar 解压）；M3 usage 回填+历史导入（prost 子集，真库 oracle 验证）+存量 %TEMP% 回收。唯一未做：无头贴回登录（Windows 桌面不需要）。事实与实测在 [`research/research-antigravity.md`](./research/research-antigravity.md) |
 | [`plans/split-workspace.md`](./plans/split-workspace.md) | 早期分屏设计稿（已落地，现行行为以 `CURRENT.md`「多窗口」为准） |
 | [`plans/telegram-bridge.md`](./plans/telegram-bridge.md) | Telegram 远程桥——MVP 已实现（通知/回复/远程批准/配对）；设计、调研与实现差异记录 |
 

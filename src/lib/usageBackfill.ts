@@ -28,7 +28,7 @@ export type BackfillUsageHour = {
 };
 
 export type BackfillSession = {
-  /** Marionette agent id: grok-build | claude-code | codex | deepseek | opencode | zcode. */
+  /** Marionette agent id: grok-build | claude-code | codex | deepseek | opencode | zcode | antigravity. */
   agent: string;
   nativeId: string;
   parentNativeId: string | null;

@@ -55,6 +55,10 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 # Token-usage history backfill: DSH session logs are zstd-compressed JSONL
 # (pure-Rust decoder, no C bindings, streams multi-frame archives).
 ruzstd = "0.7"
+# Antigravity trajectory store decode: hand-declared protobuf subset at the
+# field numbers verified against agy-acp-server 1.5.0 (see
+# docs/research/research-antigravity.md §五 + parsers/antigravity.rs).
+prost = { version = "0.13", features = ["derive"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -72,6 +76,7 @@ windows-sys = { version = "0.59", features = [
   "Win32_System_ProcessStatus",
   "Win32_System_Registry",
   "Win32_System_Threading",
+  "Win32_Storage_FileSystem",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",

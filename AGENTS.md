@@ -477,6 +477,27 @@ icacls D:\Apps\Marionette /setintegritylevel (OI)(CI)Medium
 `data_dir_gate::prompt_and_exit()` 弹原生对话框并 `exit(1)`，不再出现「静默 exit(0)」；
 单实例锁只有真被占用（Windows 32/33 共享冲突）才交接，权限类错误会记一条 `[shell] warn` 后照常启动。
 
+## Google Antigravity agent（2026-11-19，M0–M3 落地）
+
+现行行为见 `docs/CURRENT.md`「Google Antigravity agent」；事实与实测在
+`docs/research/research-antigravity.md`，方案与偏差在 `docs/plans/plan-antigravity.md`。改前先记红线：
+
+- **scratch 重定向是生存条件且只对此 agent**：Windows 构建是 PyInstaller onefile，
+  每次启动往 %TEMP% 解压 ~100MB、杀树不清——spawn 时 TMP/TEMP/TMPDIR 必须指向
+  `~/.marionette/scratch/antigravity/<sessionId>`，stop/EOF 树死回收。
+  **别把重定向扩到其它 agent**（借走 TMP 会污染用户 Git Bash 的 /tmp，codeg #1025）。
+- **探测路径永不执行 agy 二进制**：`--version` 也会整包解压（`installed_version` 的
+  `is_server_command` 守卫）；版本来自安装目录名，升级查 ACP registry + URL 模板校验。
+- **安装必须成对校验**：`agy_acp_server.exe` + `localharness_external.exe` 缺一不可
+  （"假成功"安装）；读侧缓存命中同样校验。**不加 zip crate**，解压走系统 tar.exe。
+- **GEMINI_HOME 指 `.gemini` 目录本身**（与 Gemini CLI 的 GEMINI_CLI_HOME 相反）；settings.json
+  同步单 key、strict JSON、fail-closed（server 认 Hjson，读不懂的一律不碰）。
+- **turn 边界走 prompt 响应**：不发 turn/complete 通知，但 session/prompt 响应带 stopReason+
+  usage——acp.rs 既有路径处理，**别给它接 agentReentry 兜底**（会多等 6 分钟）。
+- 回归：`cargo test --bin marionette antigravity`；真机 oracle（#[ignore]）：
+  `antigravity_oracle`（真库解析）/ `antigravity_backfill_oracle`（真库回填）/
+  `live_install_pin`（真网下载安装，测试自隔离 USERPROFILE）。
+
 ## 交付卡 / 每轮改动追踪（2026-10-23 修）
 
 **别再用 `git status` 或逐文件 `git diff` 指纹当「本轮改了什么」——口径不一致会造假。**

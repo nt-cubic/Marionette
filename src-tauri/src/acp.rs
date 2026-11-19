@@ -458,6 +458,18 @@ impl AcpService {
 
         // Prefer global ACP bins over `npx -y …` (npx cold start can hang UI for minutes).
         // Resolve by stable id so restored sessions also stop using old repo paths.
+        // Antigravity: prefer Marionette's installed tree over a PATH copy —
+        // the installer verified the required sibling; a hand-dropped PATH
+        // entry may be a "fake success" single-file extract.
+        let (command, args) = if agent_id.as_deref() == Some(crate::antigravity_support::AGENT_ID)
+        {
+            match crate::antigravity_support::installed_entry() {
+                Some(entry) => (entry.to_string_lossy().to_string(), args),
+                None => (command, args),
+            }
+        } else {
+            (command, args)
+        };
         let (command, args) = if let Some(site) = agent_id
             .as_deref()
             .and_then(crate::web_chat_bridge::site)
