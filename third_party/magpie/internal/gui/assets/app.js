@@ -4610,7 +4610,8 @@ function servedAnew(u) {
 function updateStuck(u) {
   const p = u.packaged;
   if (p) return p.command ? t("{manager} installed magpie ({pkg}), so {manager} updates it, not magpie: {cmd}", { manager: p.manager, pkg: p.package, cmd: p.command }) : t("{manager} installed magpie, so {manager} updates it, not magpie.", { manager: p.manager });
-  if (u.stuck === "container") return t("magpie runs in a container, so it can't update itself; pull the new image (docker pull ghcr.io/yetone/magpie:latest) and recreate the container.");
+  // the version's own image: latest, daily and stable may hold another (fishmagic80 on X)
+  if (u.stuck === "container") return t("magpie runs in a container, so it can't update itself; pull the image of {v} (docker pull {image}) and recreate the container from it.", { v: u.latest, image: u.image });
   if (u.stuck === "not-writable") return t("magpie can't write to the folder it runs from ({dir}), so it can't update itself; move it to a folder you can write to and open it from there.", { dir: u.stuckDir || "" });
   return u.stuck === "translocated"
     ? t("macOS is running magpie from a temporary copy, so it can't update itself; move magpie to Applications and open it from there.")
@@ -16159,6 +16160,9 @@ function quotasOpened() {
 // A load is never swallowed by a lesser one on its way. A stale answer
 // (X-Magpie-Reading) is asked again every 1.5s, 30s at most (#959).
 let quotasLoading = null, quotasLater = 0, quotasTries = 0;
+// accounts the gateway is reading yet (X-Magpie-Reading, asked again):
+// their cards keep the room they had (usageWaiting in page.js)
+let quotasReading = false;
 let quotaRefreshVersion = 0;
 const quotaRefreshVersions = new Map();
 function loadQuotas(asked, again) {
@@ -16189,6 +16193,7 @@ function loadQuotas(asked, again) {
     }, () => { quotas = quotas || []; quotasKept = reading = false; })
     .finally(() => {
       if (quotasLoading === p) quotasLoading = null;
+      quotasReading = reading && quotasTries < 20;
       if (!same) renderQuotas(true);
       if (view === "usage") loadUpstream();
       globalThis.markBalances?.();
@@ -16202,13 +16207,14 @@ function loadQuotas(asked, again) {
 }
 
 // loadQuotaHist reads the allowances' history for the curves, and draws
-// them again only when it differs from what is drawn. Of two reads on
-// their way, the later asked is the one that stands.
+// them again only when it differs from what is drawn, or on its first
+// answer, an empty one too (the cards stop waiting on it: usageWaiting).
+// Of two reads on their way, the later asked is the one that stands.
 let quotaHistSeq = 0, quotaHistV = 0;
 function loadQuotaHist() {
   const seq = ++quotaHistSeq;
   return api("usage/quotas/history?days=45").then((h) => {
-    if (seq !== quotaHistSeq || !h || JSON.stringify(h) === JSON.stringify(quotaHist)) return;
+    if (seq !== quotaHistSeq || !h || quotaHistV && JSON.stringify(h) === JSON.stringify(quotaHist)) return;
     quotaHist = h; quotaHistV++;
     if (quotas) renderQuotas(true);
   }, () => {});
@@ -16700,6 +16706,7 @@ function usageHandle(sub, card) {
       usageArranging = false;
       if (usageRenderPending) { usageRenderPending = false; renderQuotas(); }
     }, usageLayout);
+    if (usageArranging) unpin($("#view-usage"));
   };
   return b;
 }
@@ -16719,6 +16726,7 @@ async function moveUsage(key, to) {
   const prev = state.settings;
   const order = [...keys, ...(prev.usageOrder || []).filter((k) => !keys.includes(k))];
   state.settings = { ...prev, usageOrder: order };
+  unpin($("#view-usage"));
   renderQuotas();
   try {
     const s = await api("usage/arrange", { order });
@@ -23104,10 +23112,13 @@ const scrolledFrom = new WeakMap();
 // to keep in place (keepInView, the Routing page's lists under parts that
 // redraw on their own): then it is where that part is on screen as the
 // reader leaves it, and the view follows it (scroll anchoring WebKit lacked).
-const pinOf = new Map(), pinAt = new WeakMap();
-function keepInView(v, part) {
+// A view whose part comes and goes (`only`, the Usage page's cards) leaves
+// the browser's own anchoring on while it keeps none.
+const pinOf = new Map(), pinAt = new WeakMap(), pinOnly = new WeakSet();
+function keepInView(v, part, only) {
   pinOf.set(v, part);
-  v.style.overflowAnchor = "none"; // the browser's own would anchor on another part, and fight this
+  if (only) pinOnly.add(v);
+  else v.style.overflowAnchor = "none"; // the browser's own would anchor on another part, and fight this
   pinSizes.observe(v);
   for (const c of v.children) pinSizes.observe(c);
 }
@@ -23115,17 +23126,29 @@ function readerLeaves(v) {
   readerAt.set(v, v.scrollTop);
   // a view at its top stays at its top: nothing in it is kept in place
   const p = pinOf.has(v) && v.scrollTop >= 1 ? pinOf.get(v)() : null;
-  pinAt.set(v, p ? [p, onScreen(p, v)] : null);
+  pinAt.set(v, p ? [p, onScreen(p, v), p.parentElement] : null);
+  if (pinOnly.has(v)) v.style.overflowAnchor = p ? "none" : "";
+}
+// the cards the reader moves stay where they put them: none is kept in place
+// till the reader scrolls again (keepInView's part is none while arranging),
+// the browser's own anchoring back as it is with none
+function unpin(v) {
+  pinAt.delete(v);
+  v.style.overflowAnchor = "";
 }
 function pinnedAt(v) {
   const a = pinAt.get(v);
+  // a part drawn again (a card by its data-key) is found again in its box
+  if (a && !a[0].isConnected && a[0].dataset.key) a[0] = a[2].querySelector(`:scope>[data-key="${CSS.escape(a[0].dataset.key)}"]`) || a[0];
   return a && a[0].isConnected && a[0].offsetParent ? v.scrollTop + onScreen(a[0], v) - a[1] : null;
 }
 // laid out, not yet painted: a view with a part kept in place follows it
 // as soon as what's above it has changed size, before the reader sees it
-const pinSizes = new ResizeObserver(() => {
-  for (const v of pinOf.keys()) if (!v.hidden && held?.v !== v && performance.now() >= purposeUntil) backToReader(v);
-});
+// (followPin; a part redrawn or moved with nothing changing size calls it)
+function followPin(v) {
+  if (pinOf.has(v) && (!pinOnly.has(v) || pinAt.get(v)) && !v.hidden && held?.v !== v && performance.now() >= purposeUntil) backToReader(v);
+}
+const pinSizes = new ResizeObserver(() => { for (const v of pinOf.keys()) followPin(v); });
 function backToReader(v) {
   if (v.hidden) return;
   const pinned = pinnedAt(v);

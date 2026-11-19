@@ -54,7 +54,14 @@ echo  First run or Rust changes may take a while.
 echo  Close this window to stop the app.
 echo.
 
-call npm run tauri -- dev
+set "TAURI_FEATURES=--features engine-rust"
+set "ENGINE_LABEL=rust in-process"
+if /I "%MARIONETTE_ENGINE%"=="magpie" (
+  set "TAURI_FEATURES="
+  set "ENGINE_LABEL=magpie download/reuse fallback"
+)
+echo  Engine SKU: %ENGINE_LABEL%
+call npm run tauri -- dev %TAURI_FEATURES%
 set "EXITCODE=%ERRORLEVEL%"
 
 echo.

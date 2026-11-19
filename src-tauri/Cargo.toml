@@ -9,6 +9,12 @@ repository = "https://github.com/nt-cubic/Marionette"
 default-run = "marionette"
 build = "build.rs"
 
+# 开发/测试二进制：进程内引擎网关的 exe 形态（合同套件驱动它验收）。
+# 不进发布产物——正式形态由 engine.rs 在主进程内拉起网关。
+[[bin]]
+name = "marionette-engine"
+path = "src/engine_gateway_bin.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -51,7 +57,9 @@ tauri-plugin-global-shortcut = "2"
 # Only to reach the vendored wry text-drag hook (see [patch.crates-io] note).
 wry = { path = "vendor/wry", default-features = false }
 # Browser-tab screenshot shrink loop (decode → narrow → re-encode, codeg capture.rs shape).
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# webp：解码用（engine_gateway/bodyprep.rs 的 webp→PNG 转码；编码 feature 不加
+# ——同一 crate 的 feature，不算新依赖）。
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 # Token-usage history backfill: DSH session logs are zstd-compressed JSONL
 # (pure-Rust decoder, no C bindings, streams multi-frame archives).
 ruzstd = "0.7"
@@ -59,6 +67,9 @@ ruzstd = "0.7"
 # field numbers verified against agy-acp-server 1.5.0 (see
 # docs/research/research-antigravity.md §五 + parsers/antigravity.rs).
 prost = { version = "0.13", features = ["derive"] }
+# Inbound request-body gzip for the in-process engine gateway (Go gateway decodes
+# gzip/zstd). Already linked transitively (png); same pure-Rust miniz_oxide backend.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -93,7 +104,7 @@ windows = { version = "0.61.3", features = [
 ] }
 
 [features]
-default = []
+default = ["engine-rust"]
 # Enable with: cargo run --features devtools  /  tauri dev still works via debug asserts path if needed
 devtools = ["tauri/devtools"]
 # 单 exe 内置引擎（产品定稿 2026-10-16）：third_party/magpie 编出的 nogui
@@ -102,6 +113,16 @@ devtools = ["tauri/devtools"]
 # src-tauri/engine-embedded/magpie-windows-amd64.exe（UPX 后）与 VERSION
 # （gitignored 产物，见 tools/README.md）。
 embedded-engine = []
+# 引擎 Rust 化（docs/plan-engine-rust.md T6）：开启后 engine.rs 的 serve 路径
+# 不再 spawn magpie.exe，改在本进程后台线程跑 engine_gateway::httpd；
+# run_magpie_cli 家族直调 engine_gateway::cli（无子进程、无 10s 超时）。
+# 默认开启（2026-11-19 产品转正）。Magpie 回退 SKU 使用
+# `MARIONETTE_ENGINE=magpie --features embedded-engine`；dev 回退设同一环境变量、
+# 不启用 embedded feature，走本机下载/复用路径。
+# `build.rs` 派生 `engine_rust_active`：默认取 Rust；`MARIONETTE_ENGINE=magpie`
+# 或启用 embedded-engine 时自动让位。Tauri CLI 没有 --no-default-features，
+# 因此不要恢复成两个 feature 的 compile_error 互斥写法。
+engine-rust = []
 
 # tao 0.35.3 asserts that WM_PAINT on the thread-event-target is never re-entrant.
 # CJK IME (especially Chinese IME on a Japanese OS) pumps nested messages on

@@ -12,13 +12,20 @@ import path from "node:path";
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
 
-// Needs a running UI with CDP on 9222 / a real engine binary / npm-installed adapter.
+// Needs a running UI/engine, a real engine binary, real credentials, or an
+// npm-installed adapter. These stay explicit because the aggregate is offline.
 const EXCLUDE = new Set([
   "check-ui.mjs",
+  "diag-snapshot.mts",
+  "t13-real-key-reconcile.mjs",
+  "verify-engine-contract.mts",
   "verify-model-source-engine.mjs",
+  "verify-rust-sku-e2e.mjs",
   "patch-zcode-acp-personal-models.mjs",
   "verify-all.mjs",
 ]);
+
+const env = { ...process.env, MARIONETTE_VERIFY_LOCALE: "zh-CN" };
 
 const scripts = readdirSync(dir)
   .filter((f) => (f.endsWith(".mts") || f.endsWith(".mjs")) && !EXCLUDE.has(f))
@@ -36,12 +43,12 @@ for (const script of scripts) {
     run = spawnSync(`npx tsx "${scriptPath}"`, {
       stdio: ["ignore", "inherit", "inherit"],
       shell: true,
-      env: process.env,
+      env,
     });
   } else {
     run = spawnSync(process.execPath, [scriptPath], {
       stdio: ["ignore", "inherit", "inherit"],
-      env: process.env,
+      env,
     });
   }
   const ok = run.status === 0 && !run.error;

@@ -3533,6 +3533,75 @@ pub fn engine_check_update() -> crate::engine::EngineUpdateInfo {
     crate::engine::check_update()
 }
 
+/// 引擎形态偏好（逃生口）：当前选择 + magpie 安装态。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnginePreferenceInfo {
+    /// "rust" | "magpie"
+    pub choice: String,
+    /// magpie 是否已安装（engine/ 目录有完整 manifest+exe）。
+    pub magpie_installed: bool,
+    /// 已安装 magpie 的版本号。
+    pub magpie_version: Option<String>,
+    /// 引擎当前是否在跑 + 版本（切换后 UI 刷新用）。
+    pub running: bool,
+    pub running_version: Option<String>,
+}
+
+fn engine_preference_info() -> EnginePreferenceInfo {
+    let magpie_version = crate::engine::magpie_install_version();
+    match crate::engine::status() {
+        crate::engine::EngineStatus::Running { version, .. } => EnginePreferenceInfo {
+            choice: crate::engine::preferred_engine().as_str().to_string(),
+            magpie_installed: magpie_version.is_some(),
+            magpie_version,
+            running: true,
+            running_version: version,
+        },
+        _ => EnginePreferenceInfo {
+            choice: crate::engine::preferred_engine().as_str().to_string(),
+            magpie_installed: magpie_version.is_some(),
+            magpie_version,
+            running: false,
+            running_version: None,
+        },
+    }
+}
+
+#[tauri::command]
+pub fn engine_preference_get() -> EnginePreferenceInfo {
+    engine_preference_info()
+}
+
+/// 切换引擎形态：写偏好 → 停当前 serve → 按新偏好拉起。偏好 magpie 但还没
+/// 下载时，引擎保持 Absent（面板的「检查更新/更新」就是下载入口），绝不
+/// 悄悄用另一个引擎顶包。
+#[tauri::command(async)]
+pub fn engine_preference_set(choice: String) -> Result<EnginePreferenceInfo, String> {
+    let _trace = crate::debug_log::CmdTrace::new("engine_preference_set");
+    let parsed = match choice.as_str() {
+        "rust" => crate::engine::EngineChoice::Rust,
+        "magpie" => crate::engine::EngineChoice::Magpie,
+        other => {
+            return Err(format!(
+                "unknown engine choice {other:?} (want \"rust\" or \"magpie\")"
+            ))
+        }
+    };
+    crate::engine::set_preferred_engine(parsed)?;
+    crate::debug_log::append(
+        "engine",
+        "info",
+        "",
+        "engine preference switched",
+        Some(parsed.as_str()),
+    );
+    // 活切换：停当前（若在跑），再按新形态拉起（magpie 未装则自然 Absent）。
+    crate::engine::stop();
+    let _ = crate::engine::enable();
+    Ok(engine_preference_info())
+}
+
 /// 下载 GitHub latest 稳定 CLI，落位为本机权威引擎后拉起。
 #[tauri::command(async)]
 pub fn engine_update() -> Result<crate::engine::EngineStatus, String> {

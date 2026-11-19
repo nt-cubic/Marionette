@@ -69,6 +69,24 @@ codex 的裸内建名落回内建 codex 源头**烧订阅**。种子插件集 = 
   让 codex 能读懂方向而不是当传输错误原样重发）。
 - 已知例外：连续同角色消息被合并后图全在最新一条用户消息 → 无更老图可丢 → 仍 413（诚实失败）。
 
+#### C5.1 方言细则（2026-11-18 批 1 增补——Go 网关真实行为，套件 D1–D8 锁定）
+
+下表每条都以 Go 种子实测为准（`verify-engine-contract.mts` 的 D 系列 case）；
+Rust 引擎 2026-11-18 批 1–3 后 D1–D10 零挂起全绿（`CONTRACT_PENDING` 机制保留给后续批次使用）。
+
+| # | 细则 | Go 实测行为 |
+|---|---|---|
+| D1 | **三协议流式收尾**：chat SSE 以 `data: [DONE]` 收尾（尾部空 delta 帧可被折叠，finish_reason 不保证独立成帧，usage 帧与 [DONE] 是硬合同）；responses SSE **没有 [DONE]**，`response.completed` 必须是最后一个事件；anthropic SSE 帧族 `message_start → content_block_* → message_delta → message_stop` 齐全，**finish 帧缺失的怪流也要合成 message_delta**（end_turn + 已见 usage），只发裸 message_stop 是违约 |
+| D2 | **工具调用往返**：chat 直通下 `tool_calls` 原样保留（id/name/arguments 字符串不重编）；后续 `role:"tool"` 消息与工具定义必须完整到达出站体 |
+| D3 | **thinking 回放**：chat 厂商的 `reasoning_content`（整块或 delta）必须翻成 anthropic `thinking` 块 / `thinking_delta` 帧（Claude Code 可见共享模型思考） |
+| D4 | **入站压缩解码**：`Content-Encoding: gzip` 与 `zstd` 解码后路由；identity/gzip/zstd 之外的编码拒绝（Go 是 400） |
+| D5 | **Origin 防护**：外站 `Origin: https://…` 与 `Origin: null` 一律 403；agent CLI 无 Origin 放行 |
+| D6 | **错误保真**：厂商 429 的状态码与 `Retry-After` 头透传到 agent；`/v1/messages` 的厂商错误体必须是 anthropic 形状（`{"type":"error",…}`），不透传 chat 原文 |
+| D7 | **断流底线**（2026-11-18 批 3 起双引擎绿）：上游 SSE 中途断开，网关欠 agent 一个「可判定的收尾」——续答到 [DONE]、显式 error 事件、或非 200 的可判定失败（ureq chunked 断连不吐已收 chunk，与 Go http 客户端的真实行为差异——502 同样满足底线）；200 裸 EOF 违约 |
+| D8 | **组内失败转移**：组 pick 的成员 5xx/不可达时，同轮内换下一个成员重发，agent 拿到 200 而不是失败 |
+| D9 | **工具参数零分数（翻译路径）**：厂商在工具调用里写 `"yield_ms":2500.0`，翻译到 responses/messages 方言时必须是 `2500`（Codex serde 拒浮点整单，Go grok_integral.go #1431/#3152） |
+| D10 | **工具参数零分数（chat 直通）**（2026-11-18 批 3 起双引擎绿）：同上，作用于 chat→chat 直通流的 tool_calls 参数改写（chattidy.rs 的跨行状态机） |
+
 ### C6 CLI 动词（`run_magpie_cli`，10s 超时，stderr 参与判错）
 
 | 动词 | 语义要点 |
@@ -106,6 +124,18 @@ codex 的裸内建名落回内建 codex 源头**烧订阅**。种子插件集 = 
 | `/v1/magpie/quotas` 形状 | C3 |
 | `provider rm` 不存在 → `no provider` | C6 回收语义 |
 | `provider refresh → models all` | C6 顺序 + live 语义 |
+| `/v1/responses` 翻译（responses 形 → 200 + output 文本，T4） | C5 |
+| `/v1/messages` 翻译（anthropic 形 → 200 + content 文本，T3） | C5 |
+| D1 三协议流式（帧族 + 终止符断言） | C5.1 |
+| D2 工具调用往返（tool_calls 保留 + tool 消息出站） | C5.1 |
+| D3 thinking 回放（thinking 块 / thinking_delta 帧） | C5.1 |
+| D4 入站 gzip+zstd 解码（手工 zstd raw frame）+ 未知编码拒绝 | C5.1 |
+| D5 Origin 防护（外站/null 403、CLI 放行） | C5.1 |
+| D6 错误保真（429 + Retry-After + anthropic 形状错误体） | C5.1 |
+| D7 断流底线（cut 流必须可判定收尾） | C5.1 |
+| D8 组内失败转移（坏成员同轮换好成员） | C5.1 |
+| D9 工具参数零分数——翻译路径（2500.0 → 2500） | C5.1 |
+| D10 工具参数零分数——chat 直通 | C5.1 |
 
 沙箱：exe 拷进临时目录 + `.portable` 文件（beside-exe 落盘，同
 `verify-model-source-engine.mjs` 模式），env `MAGPIE_NO_ACCOUNTS=1 MAGPIE_NO_STATS=1
@@ -130,4 +160,4 @@ DO_NOT_TRACK=1 NO_COLOR=1`；绝不碰真实 `~/.config/magpie` 或 `~/.marionet
 1. 本合同全部测试对 Rust 二进制绿灯（同一套 `verify-engine-contract.mts`，换 exe 参数）；
 2. C7 的三个补丁语义在 Rust 侧有对应实现并有测试；
 3. 真机对账：usage 台账 / 额度卡 / 跨用 6 家 agent 宣告与 magpie 基线一致；
-4. 双 SKU 灰度（magpie 默认）通过后才能转正。
+4. `engine-rust` 已于 2026-11-19 转正为默认；`MARIONETTE_ENGINE=magpie` 保留一个发布周期的回退，期间继续跑双路径合同。

@@ -13,6 +13,10 @@
 | `verify-model-library.mjs` | `node scripts/verify-model-library.mjs` | 原生/共享模型按真实来源合并、不同账号同名模型保留、provider 与模型隐藏/排序/搜索、凭据扫描返回格式兼容 |
 | `verify-bridge-routing.mts` | `npx tsx scripts/verify-bridge-routing.mts` | 跨用模型路由：绑定裸 id → agent 原生 `marionette…` wire id；OpenCode 落回 OpenRouter/缺 provider 时芯片判 stale，缓存态不误报，Claude/Codex 间接注入不误判 |
 | `verify-model-source-engine.mjs` | `node scripts/verify-model-source-engine.mjs [magpie.exe]` | 临时隔离目录与本机假接口，验证已安装引擎的自定义 provider 添加、带 tag 的模型、换钥匙、模型更新、删除；仅用假 key |
+| `verify-engine-contract.mts` | `npx tsx scripts/verify-engine-contract.mts <engine.exe>` | 进程内 Rust 引擎与 Magpie 回退共用的唯一合同尺：C1–C6 + D1–D10（三协议流式/工具/thinking/压缩/Origin/错误/断流/组转移/整数工具参数） |
+| `verify-rust-sku-e2e.mjs` | `node scripts/verify-rust-sku-e2e.mjs` | 隔离 profile + CDP 9223 驱动真实 Tauri 注册链，验证进程内网关状态、来源写盘、模型目录、Chat/SSE、额度命令；不要混 `--lang` |
+| `t13-real-key-reconcile.mjs` | `node scripts/t13-real-key-reconcile.mjs` | 使用隔离目录和用户已配置的真实来源做只读/最小生成对账；不打印 key，不碰真实 usage 台账 |
+| `upstream-watch.mts` | `npx tsx scripts/upstream-watch.mts` | 研究克隆的 Magpie 上游 diff → 合同区分级 digest；只提示需要哪些行为移植，不自动合并代码 |
 | `caps-smoke.mts` | `node scripts/caps-smoke.mts` | Composer 的能力合并：live `session/new` 数据优先、兜底表只在 live 为空时生效、档位标签不重复轴名、未知 agent 直通 |
 | `smoke-stream-merge.mts` | `npx tsx scripts/smoke-stream-merge.mts` | 流式合并：Grok Reply 逐 token、Codex Thought 不丢标点、多会话交错不串台；notice/retry 作为独立通知卡进入对话流并通过 JSONL 往返；OpenCode v2 子代理流进 Task 卡不进 Reply；OpenCode write 从 `rawInput.content` 合成 diff 并在 success note 后保留；逐字数字 `1000` 与重复字不丢；Grok `spawn_subagent` + `_x.ai/session/update` 收进并行子代理卡 |
 | `verify-memo-box.mts` | `npx tsx scripts/verify-memo-box.mts` | 收纳盒：origin `memo` 的 Chat 会话拆进侧栏「收纳盒」栏目、10-22 方案的 `~/.marionette/inbox` 幽灵项目在加载口被过滤（正/反斜杠、尾斜杠）、memoPrompt dialog/doc 预填契约、文字拖放通道（页内拖拽源 tracker 让路 + dock 区文字 DOM 事件）、单列帖子流（`groupMemosByDay` / 顶上写一条 / 四种卡，不再是 40px 文件行）、图片卡按横竖比 contain 完整显示；同时钉住单格完整 tab page、真实多格才用每格标签栏、surface 标签不串格、常驻复选框多选、单一更多菜单和窄格底栏不溢出 |

@@ -111,7 +111,8 @@ func (l *Library) sync() *Result {
 func syncSteps(all, gone []*Target, b *backups, res *Result) []func(*Library) {
 	// a skill whose app moved it is followed first, for every agent to
 	// get the moved one (skill_moved.go)
-	steps := []func(*Library){func(l *Library) { l.followMovedSkills() }}
+	// an edit made in a subagent's own file too (subagent_file.go)
+	steps := []func(*Library){func(l *Library) { l.followMovedSkills(); l.followSubagentFiles() }}
 	for _, t := range all {
 		steps = append(steps, func(l *Library) {
 			l.syncInstructions(t, all, b, res, true)
@@ -120,6 +121,7 @@ func syncSteps(all, gone []*Target, b *backups, res *Result) []func(*Library) {
 			l.syncEnv(t, b, res)
 			l.syncSubagents(t, b, res)
 			l.syncCommands(t, b, res)
+			l.syncRules(t, b, res)
 		})
 	}
 	// an edit made in an agent's copy of a skill goes to the library first,
@@ -153,7 +155,7 @@ func syncSteps(all, gone []*Target, b *backups, res *Result) []func(*Library) {
 	}
 	// magpie's copies in a WSL distro no agent there is linked to any more
 	steps = append(steps, func(l *Library) { l.sweepWSLStores(append(slices.Clone(all), gone...), res) })
-	return append(steps, func(l *Library) { l.syncProjects(res) })
+	return append(steps, func(l *Library) { l.syncProjects(res) }, func(l *Library) { l.writeSubagentFiles() })
 }
 
 // Sync writes the library into the agents again: after an agent is
@@ -548,7 +550,11 @@ type View struct {
 	// the agents that can take them do with them
 	Commands      []CommandView      `json:"commands"`
 	CommandAgents []CommandAgentView `json:"commandAgents"`
-	FoundServers  []Found            `json:"foundServers"`
+	// Rules are the library's rules, and RuleAgents what the agents that
+	// can take them do with them (rules.go)
+	Rules        []RuleView      `json:"rules"`
+	RuleAgents   []RuleAgentView `json:"ruleAgents"`
+	FoundServers []Found         `json:"foundServers"`
 	// Plugins are the plugins kept as one item each (plugin.go)
 	Plugins     []PluginView `json:"plugins"`
 	Skills      []SkillView  `json:"skills"`
@@ -795,6 +801,7 @@ func readView(problems []Problem, glance bool) (*View, error) {
 	v.Env, v.EnvAgents = l.envView(append(slices.Clone(targets), gone...), of)
 	v.Subagents, v.SubagentAgents = l.subagentsView(targets, asleep, of)
 	v.Commands, v.CommandAgents = l.commandsView(targets, asleep, of)
+	v.Rules, v.RuleAgents = l.rulesView(targets, asleep, of)
 	v.Plugins = l.pluginsView()
 	tr := &tracer{}
 	for _, s := range l.Skills {
