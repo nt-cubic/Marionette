@@ -116,9 +116,19 @@ export async function browserSetTabBounds(
   await invoke("browser_set_tab_bounds", { tabId, x, y, width, height });
 }
 
+// Keep rapid overlay/tab changes in order even when IPC calls complete out of order.
+const visibilityQueues = new Map<string, Promise<void>>();
+
 export async function browserSetTabVisible(tabId: string, visible: boolean): Promise<void> {
   if (!isTauriRuntime()) return;
-  await invoke("browser_set_tab_visible", { tabId, visible });
+  const previous = visibilityQueues.get(tabId) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(() => invoke<void>("browser_set_tab_visible", { tabId, visible }));
+  visibilityQueues.set(tabId, next);
+  try {
+    await next;
+  } finally {
+    if (visibilityQueues.get(tabId) === next) visibilityQueues.delete(tabId);
+  }
 }
 
 export async function browserListTabs(): Promise<BrowserTab[]> {
