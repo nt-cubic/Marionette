@@ -2129,6 +2129,9 @@ pub fn start_agent_login(agent_id: String) -> Result<serde_json::Value, String> 
                 return start_zcode_cjs_login(&cjs);
             }
         }
+        // Antigravity has no login CLI: drive the ACP `authenticate` browser
+        // flow through a one-shot server process (issue #14).
+        "antigravity" | "agy-acp-server" => return crate::antigravity_login::start_login(),
         _ => return Err(format!("No in-app login flow for agent `{agent_id}`")),
     };
     start_cli_login(bin, args, id, message)

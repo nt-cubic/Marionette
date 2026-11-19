@@ -168,11 +168,18 @@ fn ensure_settings_auth_type_in(acp_dir: &Path) -> SettingsSync {
 /// Statuses match the `auth_result` contract there: `logged_in` / `logged_out`.
 pub fn auth_probe() -> (&'static str, String) {
     if antigravity_acp_dir().join("acp_token.json").is_file() {
-        return ("logged_in", "Google account token present".to_string());
+        return (
+            "logged_in",
+            crate::ts!("已登录 Google 账号", "Signed in with a Google account").to_string(),
+        );
     }
     (
         "logged_out",
-        "No Google account token — starting a session opens the browser sign-in".to_string(),
+        crate::ts!(
+            "还没有 Google 账号凭据——点 Sign in 打开浏览器授权（免费额度每 5 小时重置）。",
+            "No Google account credential yet — click Sign in to authorize in the browser (the free tier resets every 5 hours)."
+        )
+        .to_string(),
     )
 }
 

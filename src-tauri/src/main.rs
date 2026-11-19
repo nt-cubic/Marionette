@@ -6,6 +6,7 @@ mod acp;
 mod acp_catalog;
 mod agent_registry;
 mod agent_update;
+mod antigravity_login;
 mod antigravity_support;
 mod app_paths;
 mod browser;

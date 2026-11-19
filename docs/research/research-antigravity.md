@@ -292,6 +292,15 @@ M0 结论：**四个核心开放问题（握手/settings/OAuth 闭环/文件读�
   `.exe`）直接返回 None，永不执行；守卫生效后真实 `%TEMP%` **零新增** `_MEI`。
 - **终态**：全量 `cargo test --bin marionette`（675 项）+ tsc + build 全绿。
 
+### 登录按钮补记（2026-11-19，issue #14）
+
+外部用户报「选 Antigravity 没有登录按钮」——M1 的 `login: false`（赌会话自动弹浏览器）在产品上
+不成立：用户不知道要发第一条消息才会触发授权。补法（`antigravity_login.rs`）：点 Sign in =
+一次性 server 进程跑 `initialize → authenticate{methodId:"oauth-personal"}`，浏览器由 server
+自己打开，`authenticate` 在用户完成授权后返回，token 落位 → 前端探针轮询（`acp_token.json`
+存在性）自动刷新。真机 oracle（`live_login_driver`）实测 17s 全通（缓存 token 的
+already-signed-in 路径）。
+
 ### M2/M3 真机实测（2026-11-19）
 
 - **安装器 live 实测**（`cargo test live_install -- --ignored`，测试自隔离 USERPROFILE）：

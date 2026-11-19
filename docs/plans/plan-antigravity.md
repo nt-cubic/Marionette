@@ -1,10 +1,12 @@
 # 方案：接入 Google Antigravity（agy_acp_server）
 
-状态：**M0–M3 已全部落地（2026-11-19）**——M0 真机核查、M1 最小可用、M2 自动安装+升级链、M3 usage 回填+历史导入+存量回收全部实现并实测。**唯一刻意未做**：M3 的「贴回式无头登录」（OAuth redirect URL 贴回）——Windows 桌面产品浏览器必在（server 自己弹浏览器 + 通知卡 URL 兜底），该机制属无头 Linux 场景；出现真实需求时按 research §三移植 codeg antigravity_login.rs。
-M1 最小可用已实现并经隔离实例 E2E 验证（settings 同步 / scratch 重定向+回收 /
-`--version` 探测防执行 / auth URL 通知卡 / 登录探测 / roster+registry），M2（自动安装）与
-M3（usage 回填、贴回登录）未动工。事实依据与实测记录在
-[`../research/research-antigravity.md`](../research/research-antigravity.md)（codeg v0.46.0 深挖 + M0/M1 真机）。
+状态：**M0–M3 已全部落地（2026-11-19）**——M0 真机核查、M1 最小可用、M2 自动安装+升级链、
+M3 usage 回填+历史导入+存量回收全部实现并实测；**登录按钮**（issue #14）已补——Sign in 驱动
+一次性 server 进程跑 `initialize → authenticate`（`antigravity_login.rs`），真机 oracle 全通。
+**唯一刻意未做**：「贴回式无头登录」（OAuth redirect URL 贴回）——Windows 桌面产品浏览器必在，
+该机制属无头 Linux 场景；出现真实需求时按 research §三移植 codeg 完整登录模块。
+事实依据与实测记录在
+[`../research/research-antigravity.md`](../research/research-antigravity.md)（codeg v0.46.0 深挖 + M0/M1/M2/M3 真机）。
 
 ## 0. 为什么接、接的是什么
 

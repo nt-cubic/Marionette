@@ -1096,9 +1096,13 @@ function AppMain() {
         if (!spec) return;
         setAuthHintFor(
           agentId,
-          spec.login
-            ? t("app.needLoginSignIn", { cmd: spec.loginCommand })
-            : t("app.needLoginTerminal", { cmd: spec.loginCommand })
+          spec.loginCommand
+            ? spec.login
+              ? t("app.needLoginSignIn", { cmd: spec.loginCommand })
+              : t("app.needLoginTerminal", { cmd: spec.loginCommand })
+            : // Agents without a terminal fallback (Antigravity) carry their
+              // own instructions in the per-agent hint.
+              spec.errorHint
         );
         return;
       }
@@ -4649,9 +4653,13 @@ function AppMain() {
         setAuthHintFor(
           agentId,
           probe.message ||
-            (spec.login
-              ? t("app.needLoginSignIn", { cmd: spec.loginCommand })
-              : t("app.needLoginTerminal", { cmd: spec.loginCommand }))
+            (spec.loginCommand
+              ? spec.login
+                ? t("app.needLoginSignIn", { cmd: spec.loginCommand })
+                : t("app.needLoginTerminal", { cmd: spec.loginCommand })
+              : // No terminal fallback (Antigravity): the per-agent hint is
+                // the whole instruction.
+                spec.errorHint)
         );
       }
       // "unknown" (e.g. CodeBuddy OS-keyring) keeps whatever banner is up.

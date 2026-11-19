@@ -74,12 +74,12 @@ export const AGENT_AUTH: Record<string, AgentAuthSpec> = {
       return t("auth.zcodeHint");
     },
   },
-  // Antigravity has no login CLI: with auth.type synced into settings.json,
-  // starting a session triggers the Google OAuth loopback flow by itself
-  // (browser opens; a notice card surfaces the URL as fallback).
+  // Antigravity has no login CLI: the Sign in button drives the ACP
+  // `authenticate` browser flow (antigravity_login.rs); starting a session
+  // triggers the same flow automatically.
   antigravity: {
     probe: true,
-    login: false,
+    login: true,
     loginCommand: "",
     get errorHint() {
       return t("auth.antigravityHint");
