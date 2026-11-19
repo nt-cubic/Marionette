@@ -37,6 +37,11 @@ export type MemoPatch = {
   pinned?: boolean;
 };
 
+/** Rust stores the first 80 Unicode scalar values as a text/link's default title. */
+export function memoDefaultTitle(content: string, maxChars = 80): string {
+  return Array.from(content.trim()).slice(0, maxChars).join("");
+}
+
 /** dataTransfer type marking an in-page memo drag (Composer accepts these). */
 export const MEMO_DRAG_TYPE = "application/x-marionette-memo";
 

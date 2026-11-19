@@ -12,7 +12,17 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
+
+static MEMO_STORE_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_store() -> Result<MutexGuard<'static, ()>, String> {
+    MEMO_STORE_LOCK
+        .lock()
+        .map_err(|_| "memo store lock poisoned".to_string())
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -134,7 +144,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
-const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "avif"];
+const IMAGE_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "avif",
+];
 
 fn is_image_path(path: &Path) -> bool {
     path.extension()
@@ -143,24 +155,80 @@ fn is_image_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Copy one dragged-in FILE into files/<hash>.<ext>; content hash is both the
-/// dedup key (identical content re-dropped returns the existing entry) and
-/// the stored name (stable across restarts, no unicode pitfalls).
+fn stored_file_for_hash(root: &Path, hash: &str) -> Option<PathBuf> {
+    std::fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .find(|path| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| stem == hash)
+        })
+}
+
+/// Copy one dragged-in FILE into files/<hash>.<ext> without loading it into RAM.
+/// Content hash is both the dedup key and the stable stored name.
 fn save_one_file(source: &Path, source_label: &str, created_at: &str) -> Result<MemoEntry, String> {
-    let bytes = std::fs::read(source).map_err(|e| format!("read {source_label} failed: {e}"))?;
-    let hash = sha256_hex(&bytes);
-    let ext = source
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| format!(".{e}"))
-        .unwrap_or_default();
-    let stored_name = format!("{hash}{ext}");
-    let target = files_dir()?.join(&stored_name);
-    if !target.exists() {
-        std::fs::create_dir_all(target.parent().unwrap_or(Path::new(".")))
-            .map_err(|e| format!("create files dir failed: {e}"))?;
-        std::fs::write(&target, &bytes).map_err(|e| format!("store memo file failed: {e}"))?;
+    let root = files_dir()?;
+    std::fs::create_dir_all(&root).map_err(|e| format!("create files dir failed: {e}"))?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let temp = root.join(format!(".incoming-{}-{nonce}.tmp", std::process::id()));
+
+    let copied = (|| -> Result<(String, u64, PathBuf), String> {
+        let mut input =
+            std::fs::File::open(source).map_err(|e| format!("read {source_label} failed: {e}"))?;
+        let mut output = std::fs::File::create(&temp)
+            .map_err(|e| format!("create memo temp file failed: {e}"))?;
+        let mut hasher = Sha256::new();
+        let mut size = 0u64;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let read = input
+                .read(&mut buffer)
+                .map_err(|e| format!("read {source_label} failed: {e}"))?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+            output
+                .write_all(&buffer[..read])
+                .map_err(|e| format!("write memo temp file failed: {e}"))?;
+            size += read as u64;
+        }
+        output
+            .flush()
+            .map_err(|e| format!("flush memo temp file failed: {e}"))?;
+        drop(output);
+        let mut hash = String::with_capacity(64);
+        for byte in hasher.finalize() {
+            hash.push_str(&format!("{byte:02x}"));
+        }
+        let target = if let Some(existing) = stored_file_for_hash(&root, &hash) {
+            std::fs::remove_file(&temp)
+                .map_err(|e| format!("remove duplicate memo temp failed: {e}"))?;
+            existing
+        } else {
+            let ext = source
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| format!(".{e}"))
+                .unwrap_or_default();
+            let target = root.join(format!("{hash}{ext}"));
+            std::fs::rename(&temp, &target).map_err(|e| format!("store memo file failed: {e}"))?;
+            target
+        };
+        Ok((hash, size, target))
+    })();
+
+    if copied.is_err() {
+        let _ = std::fs::remove_file(&temp);
     }
+    let (hash, size, target) = copied?;
     let title = source
         .file_name()
         .and_then(|n| n.to_str())
@@ -168,11 +236,16 @@ fn save_one_file(source: &Path, source_label: &str, created_at: &str) -> Result<
         .to_string();
     Ok(MemoEntry {
         id: hash,
-        kind: if is_image_path(source) { "image" } else { "file" }.to_string(),
+        kind: if is_image_path(source) {
+            "image"
+        } else {
+            "file"
+        }
+        .to_string(),
         title,
         path: Some(target.to_string_lossy().to_string()),
         content: None,
-        size: Some(bytes.len() as u64),
+        size: Some(size),
         created_at: created_at.to_string(),
         source: Some(source_label.to_string()),
         pinned: false,
@@ -288,7 +361,11 @@ fn looks_like_url(text: &str) -> bool {
 
 fn upsert(dir: &Path, entry: MemoEntry) -> Result<Vec<MemoEntry>, String> {
     let mut entries = read_index(dir);
-    entries.retain(|e| e.id != entry.id);
+    // Re-dropping the same bytes keeps the original row (and its pin/tags) in
+    // place. The file copy itself already reuses files/<hash>.<ext>.
+    if entries.iter().any(|existing| existing.id == entry.id) {
+        return Ok(entries);
+    }
     entries.insert(0, entry);
     // Newest-first, cap at 500: the box is a tray, not an archive backend.
     entries.truncate(500);
@@ -298,19 +375,26 @@ fn upsert(dir: &Path, entry: MemoEntry) -> Result<Vec<MemoEntry>, String> {
 
 #[tauri::command]
 pub fn memo_list() -> Result<Vec<MemoEntry>, String> {
+    let _guard = lock_store()?;
     Ok(read_index(&memos_dir()?))
 }
 
 /// Explorer drag-in: copy each path (file or folder) into the box.
 /// Returns the full list so callers refresh count + rows in one round trip.
 #[tauri::command]
-pub fn memo_save_paths(paths: Vec<String>, source: Option<String>) -> Result<Vec<MemoEntry>, String> {
+pub fn memo_save_paths(
+    paths: Vec<String>,
+    source: Option<String>,
+) -> Result<Vec<MemoEntry>, String> {
+    let _guard = lock_store()?;
     let dir = memos_dir()?;
     let created_at = now_ms();
     let mut latest_err: Option<String> = None;
     for raw in &paths {
         let path = PathBuf::from(raw);
-        let label = source.clone().unwrap_or_else(|| crate::ts!("拖入", "Dropped in"));
+        let label = source
+            .clone()
+            .unwrap_or_else(|| crate::ts!("拖入", "Dropped in"));
         let result = if path.is_dir() {
             save_one_dir(&path, &label, &created_at)
         } else {
@@ -345,7 +429,12 @@ pub fn memo_save_paths(paths: Vec<String>, source: Option<String>) -> Result<Vec
 
 /// Ctrl+V channel: text or a bare URL (→ link kind).
 #[tauri::command]
-pub fn memo_save_text(text: String, title: Option<String>, source: Option<String>) -> Result<MemoEntry, String> {
+pub fn memo_save_text(
+    text: String,
+    title: Option<String>,
+    source: Option<String>,
+) -> Result<MemoEntry, String> {
+    let _guard = lock_store()?;
     let trimmed = text.trim().to_string();
     if trimmed.is_empty() {
         return Err("nothing to save".to_string());
@@ -401,7 +490,12 @@ fn update_entry(dir: &Path, id: &str, patch: &MemoPatch) -> Result<Vec<MemoEntry
         }
         // Keep the kind honest with the new content: a link edited away from
         // a bare URL becomes a text memo and vice versa.
-        entry.kind = if looks_like_url(trimmed) { "link" } else { "text" }.to_string();
+        entry.kind = if looks_like_url(trimmed) {
+            "link"
+        } else {
+            "text"
+        }
+        .to_string();
         entry.content = Some(trimmed.to_string());
     }
     if let Some(tags) = patch.tags.clone() {
@@ -418,11 +512,12 @@ fn update_entry(dir: &Path, id: &str, patch: &MemoPatch) -> Result<Vec<MemoEntry
 /// (same round-trip shape as `memo_delete`).
 #[tauri::command]
 pub fn memo_update(id: String, patch: MemoPatch) -> Result<Vec<MemoEntry>, String> {
+    let _guard = lock_store()?;
     update_entry(&memos_dir()?, &id, &patch)
 }
 
 /// File or directory — folder memos store a tree path.
-fn remove_any(path: &str) -> std::io::Result<()> {
+fn remove_any(path: &Path) -> std::io::Result<()> {
     let meta = std::fs::metadata(path)?;
     if meta.is_dir() {
         std::fs::remove_dir_all(path)
@@ -431,35 +526,53 @@ fn remove_any(path: &str) -> std::io::Result<()> {
     }
 }
 
-/// Remove one entry; a stored file goes only when no other entry uses it.
-#[tauri::command]
-pub fn memo_delete(id: String) -> Result<Vec<MemoEntry>, String> {
-    let dir = memos_dir()?;
-    let mut entries = read_index(&dir);
+fn owned_stored_path(files_root: &Path, raw: &str) -> Option<PathBuf> {
+    let root = std::fs::canonicalize(files_root).ok()?;
+    let target = std::fs::canonicalize(raw).ok()?;
+    (target != root && target.starts_with(&root)).then_some(target)
+}
+
+/// Remove one entry; a stored file goes only when it is still inside files/.
+fn delete_entry(dir: &Path, id: &str) -> Result<Vec<MemoEntry>, String> {
+    let mut entries = read_index(dir);
     let removed = entries.iter().position(|e| e.id == id);
     let Some(at) = removed else {
         return Ok(entries);
     };
     let entry = entries.remove(at);
     if let Some(path) = entry.path.as_deref() {
-        let still_used = entries
-            .iter()
-            .any(|e| e.path.as_deref() == Some(path));
+        let still_used = entries.iter().any(|e| e.path.as_deref() == Some(path));
         if !still_used {
-            // Best effort: a locked file must not block the list removal.
-            if let Err(err) = remove_any(path) {
+            if let Some(target) = owned_stored_path(&dir.join("files"), path) {
+                // Best effort: a locked file must not block the list removal.
+                if let Err(err) = remove_any(&target) {
+                    crate::debug_log::append(
+                        "memos",
+                        "warn",
+                        "",
+                        "memo backing file delete failed",
+                        Some(&format!("{path}: {err}")),
+                    );
+                }
+            } else {
                 crate::debug_log::append(
                     "memos",
                     "warn",
                     "",
-                    "memo backing file delete failed",
-                    Some(&format!("{path}: {err}")),
+                    "memo backing path escaped store",
+                    Some(path),
                 );
             }
         }
     }
-    write_index(&dir, &entries)?;
+    write_index(dir, &entries)?;
     Ok(entries)
+}
+
+#[tauri::command]
+pub fn memo_delete(id: String) -> Result<Vec<MemoEntry>, String> {
+    let _guard = lock_store()?;
+    delete_entry(&memos_dir()?, &id)
 }
 
 #[cfg(test)]
@@ -508,7 +621,7 @@ mod tests {
     }
 
     #[test]
-    fn upsert_dedups_by_id_newest_first_and_caps() {
+    fn upsert_dedups_without_reordering_and_caps() {
         let dir = tempdir("dedup");
         for i in 0..505 {
             let entry = MemoEntry {
@@ -528,23 +641,61 @@ mod tests {
         let entries = read_index(&dir);
         assert_eq!(entries.len(), 500);
         assert_eq!(entries[0].id, "e504");
-        // Re-upserting an old id moves it to the front without growing.
-        let again = MemoEntry {
-            id: "e10".into(),
-            kind: "text".into(),
-            title: "again".into(),
-            path: None,
-            content: None,
-            size: None,
-            created_at: "999".into(),
-            source: None,
-            pinned: false,
-            tags: Vec::new(),
-        };
+        let mut pinned = entries[17].clone();
+        pinned.pinned = true;
+        pinned.tags = vec!["keep".into()];
+        let mut rewritten = entries.clone();
+        rewritten[17] = pinned.clone();
+        write_index(&dir, &rewritten).expect("seed metadata");
+        let before_ids: Vec<String> = rewritten.iter().map(|entry| entry.id.clone()).collect();
+
+        // Re-dropping the same bytes must keep the existing row, metadata and order.
+        let mut again = pinned.clone();
+        again.title = "again".into();
+        again.created_at = "999".into();
+        again.pinned = false;
+        again.tags.clear();
         upsert(&dir, again).expect("upsert again");
         let entries = read_index(&dir);
         assert_eq!(entries.len(), 500);
-        assert_eq!(entries[0].id, "e10");
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.id.clone())
+                .collect::<Vec<_>>(),
+            before_ids
+        );
+        let kept = entries.iter().find(|entry| entry.id == pinned.id).unwrap();
+        assert_eq!(kept.title, pinned.title);
+        assert_eq!(kept.created_at, pinned.created_at);
+        assert!(kept.pinned);
+        assert_eq!(kept.tags, vec!["keep".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_never_follows_an_index_path_outside_files() {
+        let dir = tempdir("safe-delete");
+        let files = dir.join("files");
+        std::fs::create_dir_all(&files).expect("files dir");
+        let outside = dir.join("outside.txt");
+        let inside = files.join("inside.txt");
+        std::fs::write(&outside, "outside").expect("outside file");
+        std::fs::write(&inside, "inside").expect("inside file");
+
+        let mut bad = text_entry("bad");
+        bad.kind = "file".into();
+        bad.path = Some(outside.to_string_lossy().to_string());
+        upsert(&dir, bad).expect("bad entry");
+        delete_entry(&dir, "bad").expect("delete bad row");
+        assert!(outside.exists(), "outside path must never be deleted");
+
+        let mut good = text_entry("good");
+        good.kind = "file".into();
+        good.path = Some(inside.to_string_lossy().to_string());
+        upsert(&dir, good).expect("good entry");
+        delete_entry(&dir, "good").expect("delete good row");
+        assert!(!inside.exists(), "owned stored file should be removed");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

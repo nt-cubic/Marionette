@@ -10,7 +10,7 @@
  * 找 — search + kind filters + tag chips (2026-11-18) + day-grouped post
  *      cards; pinned entries float in their own top group.
  * 用 — drag ANY card onto the composer (file/image → attachment, text/link
- *      → body at the caret), or pick several (选择 / Ctrl-click) and hand
+ *      → body at the caret), or pick several (checkbox / Ctrl-click) and hand
  *      them to a new dialog.
  */
 
@@ -22,12 +22,11 @@ import {
   FileText,
   Image as ImageIcon,
   Link2,
-  MessageSquarePlus,
+  MoreHorizontal,
   Pencil,
   Pin,
   PinOff,
   Search,
-  Tag,
   Trash2,
   Type,
   X,
@@ -42,6 +41,7 @@ import {
   formatMemoSize,
   MEMO_DRAG_TYPE,
   memoDelete,
+  memoDefaultTitle,
   memoDragText,
   memoImageOrient,
   memoLinkHost,
@@ -57,6 +57,7 @@ import {
 } from "../lib/memos";
 import { showToast } from "../lib/toast";
 import { useT, type DictKey } from "../lib/i18n";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 const FILTERS: ReadonlyArray<{ id: MemoKind | "all"; label: DictKey }> = [
   { id: "all", label: "memo.kindAll" },
@@ -114,14 +115,14 @@ export function MemoBox({ onClose, onChanged, onUse, embedded = false, revision 
   const [tagsExpanded, setTagsExpanded] = useState(false);
   const [dropActive, setDropActive] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [selecting, setSelecting] = useState(false);
   const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set());
   const [draft, setDraft] = useState("");
   const [openTextId, setOpenTextId] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const composeRef = useRef<HTMLTextAreaElement>(null);
-  const selectingRef = useRef(selecting);
-  selectingRef.current = selecting;
+  const pickedRef = useRef<ReadonlySet<string>>(picked);
+  pickedRef.current = picked;
+  const selecting = picked.size > 0;
 
   const publish = useCallback(
     (next: MemoEntry[]) => {
@@ -158,8 +159,7 @@ export function MemoBox({ onClose, onChanged, onUse, embedded = false, revision 
       ) {
         return;
       }
-      if (selectingRef.current) {
-        setSelecting(false);
+      if (pickedRef.current.size > 0) {
         setPicked(new Set());
       } else onClose();
     };
@@ -373,7 +373,6 @@ export function MemoBox({ onClose, onChanged, onUse, embedded = false, revision 
   };
 
   const exitSelect = () => {
-    setSelecting(false);
     setPicked(new Set());
   };
 
@@ -403,7 +402,6 @@ export function MemoBox({ onClose, onChanged, onUse, embedded = false, revision 
       return;
     }
     if (event.ctrlKey || event.metaKey) {
-      setSelecting(true);
       toggle(entry.id);
       return;
     }
@@ -426,7 +424,7 @@ export function MemoBox({ onClose, onChanged, onUse, embedded = false, revision 
     <div
       ref={rootRef}
       className={"memo-box" + (embedded ? " is-embedded" : "") + (dropActive ? " is-drop-active" : "") + (selecting ? " is-selecting" : "")}
-      role="dialog"
+      role="region"
       aria-label={t("dock.pageMemo")}
       tabIndex={-1}
       onPaste={onPaste}
@@ -476,15 +474,6 @@ export function MemoBox({ onClose, onChanged, onUse, embedded = false, revision 
           />
           {busy && <span className="memo-box__busy">{t("memo.saving")}</span>}
         </label>
-        {entries.length > 0 && (
-          <button
-            type="button"
-            className={selecting ? "memo-box__text-btn is-on" : "memo-box__text-btn"}
-            onClick={() => (selecting ? exitSelect() : setSelecting(true))}
-          >
-            {selecting ? t("memo.done") : t("memo.select")}
-          </button>
-        )}
       </div>
       {entries.length > 0 && (
         <div className="memo-box__filters">
@@ -554,10 +543,7 @@ export function MemoBox({ onClose, onChanged, onUse, embedded = false, revision 
                       picked={picked.has(entry.id)}
                       textOpen={openTextId === entry.id}
                       onClick={(event) => onCardClick(event, entry)}
-                      onToggle={() => {
-                        if (!selecting) setSelecting(true);
-                        toggle(entry.id);
-                      }}
+                      onToggle={() => toggle(entry.id)}
                       onDelete={() => remove(entry.id)}
                       onPatch={(patch) => update(entry.id, patch)}
                       onTagClick={toggleTagFilter}
@@ -579,10 +565,7 @@ export function MemoBox({ onClose, onChanged, onUse, embedded = false, revision 
                       picked={picked.has(entry.id)}
                       textOpen={openTextId === entry.id}
                       onClick={(event) => onCardClick(event, entry)}
-                      onToggle={() => {
-                        if (!selecting) setSelecting(true);
-                        toggle(entry.id);
-                      }}
+                      onToggle={() => toggle(entry.id)}
                       onDelete={() => remove(entry.id)}
                       onPatch={(patch) => update(entry.id, patch)}
                       onTagClick={toggleTagFilter}
@@ -597,24 +580,26 @@ export function MemoBox({ onClose, onChanged, onUse, embedded = false, revision 
       </div>
       {selecting ? (
         <div className="memo-box__selbar">
-          <span>{t("v2memo.selected", { n: picked.size })}</span>
-          <span className="memo-box__sel-hint">{t("v2memo.selHint")}</span>
+          <div className="memo-box__sel-summary">
+            <span>{t("v2memo.selected", { n: picked.size })}</span>
+            <span className="memo-box__sel-hint">{t("v2memo.selHint")}</span>
+          </div>
           <span className="memo-box__spacer" />
-          <button type="button" className="memo-box__act memo-box__act--ghost" onClick={exitSelect}>
-            {t("v2memo.cancelSelect")}
-          </button>
-          {!hideUseActions && (
-            <>
-              <button type="button" className="memo-box__act" disabled={!picked.size} onClick={() => use("doc")}>
-                <FileText size={14} />
-                {t("memo.makeDoc")}
-              </button>
-              <button type="button" className="memo-box__act is-primary" disabled={!picked.size} onClick={() => use("dialog")}>
-                <MessageSquarePlus size={14} />
-                {t("memo.newDialog")}
-              </button>
-            </>
-          )}
+          <div className="memo-box__sel-actions">
+            <button type="button" className="memo-box__act memo-box__act--ghost" onClick={exitSelect}>
+              {t("v2memo.cancelSelect")}
+            </button>
+            {!hideUseActions && (
+              <>
+                <button type="button" className="memo-box__act" disabled={!picked.size} onClick={() => use("doc")}>
+                  {t("memo.makeDoc")}
+                </button>
+                <button type="button" className="memo-box__act is-primary" disabled={!picked.size} onClick={() => use("dialog")}>
+                  {t("memo.newDialog")}
+                </button>
+              </>
+            )}
+          </div>
         </div>
       ) : (
         <div className={dropActive ? "memo-box__drop is-active" : "memo-box__drop"}>
@@ -648,16 +633,17 @@ function applyShotOrient(img: HTMLImageElement) {
 function MemoCard({ entry, selecting, picked, textOpen, onClick, onToggle, onDelete, onPatch, onTagClick, activeTags }: CardProps) {
   const t = useT();
   const [imageBroken, setImageBroken] = useState(false);
-  // Edit / tag editors are card-local: the component is keyed by entry.id, so
-  // publish() re-renders do not blow away a form mid-edit.
   const [editing, setEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState(entry.title);
   const [contentDraft, setContentDraft] = useState(entry.content ?? "");
   const [tagsOpen, setTagsOpen] = useState(false);
   const [tagDraft, setTagDraft] = useState("");
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const contentEditable = entry.kind === "text" || entry.kind === "link";
   const tags = entry.tags ?? [];
-  const draggable = !selecting && !editing && !tagsOpen;
+  const draggable = !selecting && !editing && !tagsOpen && !actionsOpen;
+  const titleIsGenerated = entry.title === memoDefaultTitle(entry.content ?? "");
   const kindClass =
     entry.kind === "image" && !imageBroken
       ? "memo-box__card--image"
@@ -672,15 +658,28 @@ function MemoCard({ entry, selecting, picked, textOpen, onClick, onToggle, onDel
     picked ? "is-picked" : "",
     entry.pinned ? "is-pinned" : "",
     entry.kind === "text" && textOpen ? "is-open" : "",
+    actionsOpen ? "has-actions-open" : "",
   ]
     .filter(Boolean)
     .join(" ");
 
   const host = entry.kind === "link" ? memoLinkHost(entry.content) : "";
   const url = entry.kind === "link" ? (entry.content ?? "") : "";
-  const titleIsUrl = Boolean(url) && (entry.title === url || url.startsWith(entry.title));
+
+  useEffect(() => {
+    if (!actionsOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setActionsOpen(false);
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [actionsOpen]);
 
   const startEdit = () => {
+    setActionsOpen(false);
     setTitleDraft(entry.title);
     setContentDraft(entry.content ?? "");
     setTagsOpen(false);
@@ -692,7 +691,12 @@ function MemoCard({ entry, selecting, picked, textOpen, onClick, onToggle, onDel
     const title = titleDraft.trim();
     const content = contentDraft.trim();
     if (title && title !== entry.title) patch.title = title;
-    if (contentEditable && content && content !== entry.content) patch.content = content;
+    if (contentEditable && content && content !== entry.content) {
+      patch.content = content;
+      if (titleDraft.trim() === entry.title && titleIsGenerated) {
+        patch.title = memoDefaultTitle(content);
+      }
+    }
     setEditing(false);
     if (patch.title !== undefined || patch.content !== undefined) onPatch(patch);
   };
@@ -714,6 +718,22 @@ function MemoCard({ entry, selecting, picked, textOpen, onClick, onToggle, onDel
     event.stopPropagation();
     setEditing(false);
     setTagsOpen(false);
+    setActionsOpen(false);
+  };
+
+  const toggleTags = () => {
+    setActionsOpen(false);
+    setTagsOpen((value) => !value);
+  };
+
+  const toggleActions = () => {
+    setTagsOpen(false);
+    setActionsOpen((value) => !value);
+  };
+
+  const requestDelete = () => {
+    setActionsOpen(false);
+    setConfirmDelete(true);
   };
 
   return (
@@ -725,7 +745,14 @@ function MemoCard({ entry, selecting, picked, textOpen, onClick, onToggle, onDel
         event.dataTransfer.setData("text/plain", memoDragText(entry));
         event.dataTransfer.effectAllowed = "copy";
       }}
-      onClick={onClick}
+      onClick={(event) => {
+        if (actionsOpen) {
+          event.stopPropagation();
+          setActionsOpen(false);
+          return;
+        }
+        onClick(event);
+      }}
       title={
         entry.kind === "text"
           ? textOpen
@@ -746,12 +773,28 @@ function MemoCard({ entry, selecting, picked, textOpen, onClick, onToggle, onDel
           onToggle();
         }}
       >
-        {picked && <Check size={10} strokeWidth={3} />}
+        {picked && <Check size={9} strokeWidth={3} aria-hidden />}
       </button>
+      {!editing && (
+        <button
+          type="button"
+          className="memo-box__cardedit"
+          aria-label={t("memo.edit", { title: entry.title })}
+          title={t("memo.edit", { title: entry.title })}
+          onClick={(event) => {
+            event.stopPropagation();
+            startEdit();
+          }}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <Pencil size={13} />
+        </button>
+      )}
       {editing ? (
         <div className="memo-box__edit" onClick={(event) => event.stopPropagation()}>
           <input
             className="memo-box__edit-title"
+            autoFocus
             value={titleDraft}
             placeholder={t("memo.editTitle")}
             aria-label={t("memo.editTitle")}
@@ -810,11 +853,12 @@ function MemoCard({ entry, selecting, picked, textOpen, onClick, onToggle, onDel
             <span className="memo-box__title">{entry.title}</span>
             <CardFoot
               entry={entry}
-              selecting={selecting}
-              onDelete={onDelete}
+                tagsOpen={tagsOpen}
+              actionsOpen={actionsOpen}
+                onToggleActions={toggleActions}
+              onDeleteRequest={requestDelete}
               onPatch={onPatch}
-              onEdit={startEdit}
-              onToggleTags={() => setTagsOpen((v) => !v)}
+              onToggleTags={toggleTags}
               onTagClick={onTagClick}
               activeTags={activeTags}
             />
@@ -822,14 +866,16 @@ function MemoCard({ entry, selecting, picked, textOpen, onClick, onToggle, onDel
         </>
       ) : entry.kind === "text" ? (
         <>
+          {!titleIsGenerated && entry.title && <span className="memo-box__title">{entry.title}</span>}
           <p className="memo-box__note">{entry.content || entry.title}</p>
           <CardFoot
             entry={entry}
-            selecting={selecting}
-            onDelete={onDelete}
+            tagsOpen={tagsOpen}
+            actionsOpen={actionsOpen}
+            onToggleActions={toggleActions}
+            onDeleteRequest={requestDelete}
             onPatch={onPatch}
-            onEdit={startEdit}
-            onToggleTags={() => setTagsOpen((v) => !v)}
+            onToggleTags={toggleTags}
             onTagClick={onTagClick}
             activeTags={activeTags}
           />
@@ -842,15 +888,16 @@ function MemoCard({ entry, selecting, picked, textOpen, onClick, onToggle, onDel
             </span>
             <span className="memo-box__link-host">{host || t("memo.kindLink")}</span>
           </div>
-          {!titleIsUrl && entry.title && <span className="memo-box__title">{entry.title}</span>}
+          {!titleIsGenerated && entry.title && <span className="memo-box__title">{entry.title}</span>}
           {url && <span className="memo-box__url">{url}</span>}
           <CardFoot
             entry={entry}
-            selecting={selecting}
-            onDelete={onDelete}
+            tagsOpen={tagsOpen}
+            actionsOpen={actionsOpen}
+            onToggleActions={toggleActions}
+            onDeleteRequest={requestDelete}
             onPatch={onPatch}
-            onEdit={startEdit}
-            onToggleTags={() => setTagsOpen((v) => !v)}
+            onToggleTags={toggleTags}
             onTagClick={onTagClick}
             activeTags={activeTags}
           />
@@ -868,11 +915,12 @@ function MemoCard({ entry, selecting, picked, textOpen, onClick, onToggle, onDel
           </div>
           <CardFoot
             entry={entry}
-            selecting={selecting}
-            onDelete={onDelete}
+            tagsOpen={tagsOpen}
+            actionsOpen={actionsOpen}
+            onToggleActions={toggleActions}
+            onDeleteRequest={requestDelete}
             onPatch={onPatch}
-            onEdit={startEdit}
-            onToggleTags={() => setTagsOpen((v) => !v)}
+            onToggleTags={toggleTags}
             onTagClick={onTagClick}
             activeTags={activeTags}
           />
@@ -898,6 +946,7 @@ function MemoCard({ entry, selecting, picked, textOpen, onClick, onToggle, onDel
           ))}
           <input
             className="memo-box__tag-input"
+            autoFocus
             value={tagDraft}
             placeholder={t("memo.addTag")}
             aria-label={t("memo.addTag")}
@@ -913,25 +962,39 @@ function MemoCard({ entry, selecting, picked, textOpen, onClick, onToggle, onDel
           />
         </div>
       )}
+      {confirmDelete && (
+        <ConfirmDialog
+          title={t("memo.deleteTitle")}
+          itemName={entry.title}
+          description={t("memo.deleteBody")}
+          onCancel={() => setConfirmDelete(false)}
+          onConfirm={() => {
+            setConfirmDelete(false);
+            onDelete();
+          }}
+        />
+      )}
     </article>
   );
 }
 
 function CardFoot({
   entry,
-  selecting,
-  onDelete,
+  tagsOpen,
+  actionsOpen,
+  onToggleActions,
+  onDeleteRequest,
   onPatch,
-  onEdit,
   onToggleTags,
   onTagClick,
   activeTags,
 }: {
   entry: MemoEntry;
-  selecting: boolean;
-  onDelete: () => void;
+  tagsOpen: boolean;
+  actionsOpen: boolean;
+  onToggleActions: () => void;
+  onDeleteRequest: () => void;
   onPatch: (patch: MemoPatch) => void;
-  onEdit: () => void;
   onToggleTags: () => void;
   onTagClick: (tag: string) => void;
   activeTags: readonly string[];
@@ -960,63 +1023,61 @@ function CardFoot({
           {tags.length > 4 && <span className="memo-box__tag-more">+{tags.length - 4}</span>}
         </span>
       )}
+      <button
+        type="button"
+        className={tagsOpen ? "memo-box__tag memo-box__tag--add is-on" : "memo-box__tag memo-box__tag--add"}
+        aria-label={t("memo.tagButton", { title: entry.title })}
+        aria-expanded={tagsOpen}
+        title={t("memo.tagButton", { title: entry.title })}
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggleTags();
+        }}
+      >
+        <span aria-hidden>＋</span>
+        {t("memo.tagsAction")}
+      </button>
       <span className="memo-box__age">{formatMemoAge(entry.createdAt)}</span>
-      {!selecting && (
-        <span className="memo-box__cardacts">
+      <button
+        type="button"
+        className={actionsOpen ? "memo-box__cardact is-on" : "memo-box__cardact"}
+        aria-label={t("memo.moreActions", { title: entry.title })}
+        aria-haspopup="menu"
+        aria-expanded={actionsOpen}
+        title={t("memo.moreActions", { title: entry.title })}
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggleActions();
+        }}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <MoreHorizontal size={14} />
+      </button>
+      {actionsOpen && (
+        <div className="memo-box__card-menu" role="menu" onClick={(event) => event.stopPropagation()}>
           <button
             type="button"
-            className={pinned ? "memo-box__cardact is-on" : "memo-box__cardact"}
+            role="menuitem"
             aria-label={pinned ? t("memo.unpin", { title: entry.title }) : t("memo.pin", { title: entry.title })}
-            aria-pressed={pinned}
-            title={pinned ? t("memo.unpin", { title: entry.title }) : t("memo.pin", { title: entry.title })}
-            onClick={(event) => {
-              event.stopPropagation();
+            onClick={() => {
               onPatch({ pinned: !pinned });
+              onToggleActions();
             }}
-            onMouseDown={(event) => event.stopPropagation()}
           >
             {pinned ? <PinOff size={13} /> : <Pin size={13} />}
+            {pinned ? t("memo.unpinAction") : t("memo.pinAction")}
           </button>
           <button
             type="button"
-            className="memo-box__cardact"
-            aria-label={t("memo.edit", { title: entry.title })}
-            title={t("memo.edit", { title: entry.title })}
-            onClick={(event) => {
-              event.stopPropagation();
-              onEdit();
-            }}
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <Pencil size={13} />
-          </button>
-          <button
-            type="button"
-            className="memo-box__cardact"
-            aria-label={t("memo.tagButton", { title: entry.title })}
-            title={t("memo.tagButton", { title: entry.title })}
-            onClick={(event) => {
-              event.stopPropagation();
-              onToggleTags();
-            }}
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <Tag size={13} />
-          </button>
-          <button
-            type="button"
-            className="memo-box__delete"
+            role="menuitem"
+            className="is-danger"
             aria-label={t("memo.deleteAria", { title: entry.title })}
-            title={t("common.delete")}
-            onClick={(event) => {
-              event.stopPropagation();
-              onDelete();
-            }}
-            onMouseDown={(event) => event.stopPropagation()}
+            onClick={onDeleteRequest}
           >
-            <Trash2 size={14} />
+            <Trash2 size={13} />
+            {t("common.delete")}
           </button>
-        </span>
+        </div>
       )}
     </div>
   );

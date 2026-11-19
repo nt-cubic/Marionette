@@ -176,10 +176,12 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
 标签行隐藏、body min-width 放开）。分屏在 dock 态禁用（提示解除贴边），整页在收回时自动关。
 **普通窗口的收纳盒是标签页不是全屏覆盖**（2026-10-25 改）：入口仍在左侧栏「聊天」栏目正上方
 （`ProjectShelf.tsx` 的 `.shelf-memo-entry`），点开后 `SessionTabs` 尾部出现一枚 `is-memo`
-伪标签（App 的 `memoOpen`=标签存在 / `memoActive`=选中；`SessionTabs` 的 `memoTab` prop），
-中栏只切换对话流那一列（`App.tsx` 的 `.memo-tab-page` 覆盖 `renderConversation`/SplitWorkspace，
+伪标签（标签存在于 `PaneLeaf.tabIds`，`memoActive` 从聚焦窗格的 `activeTabId` 派生；
+`SessionTabs` 的 `memoTab` prop），单格中栏只切换对话流那一列（`App.tsx` 的
+`.memo-tab-page` 覆盖 `renderConversation`，标题栏仍是正常标签栏，
 无 composer 行；左右侧栏照常可见）。选中收纳盒时对话标签去掉 `is-active`（当前会话 id 仍记着，点回去即切回）；选中任一对话标签只取消收纳盒选中（标签保留），× 或 Esc 才关标签；
-分屏态伪标签渲染在 titlebar 的 fill 前，页面同样覆盖整个中栏。`MemoBox` 组件不再有 `showClose`
+只有真实多格才进入每格独立标签栏；收纳盒标签只出现在拥有它的那个窗格里。
+`MemoBox` 组件不再有 `showClose`
 （标题与关闭都在挂载点的铬里：贴边窄条的返回 / 普通窗口的标签 ×）。
 聊天内容上方不放收纳盒或「能力与上下文」工具栏，分屏也不重复添加入口。
 `.center-workspace` 与 `.session-pane__body` 都是「对话 1fr | composer auto」两行；
@@ -848,17 +850,17 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
   （标签筛选纯函数/拖拽契约/存盒入口）+ `npx tsx scripts/verify-split-workspace.mts`
   （tab 编解码/openSessionIds 过滤/纯 surface 树/恢复闸门）。
 
-## 浏览器 Workspace Surface（2026-11-17 P1–P4；2026-11-18 起为分屏树窗格标签）
+## 浏览器窗格标签（2026-11-17 P1–P4；2026-11-18 起为分屏树窗格标签）
 
 Browser / Document / Memo 不再有独立布局组件（`SurfaceWorkspace` 已删）：三者是
 分屏树里的窗格标签（`"browser"` / `"document:<路径>"` / `"memo"` 进 `PaneLeaf.tabIds`），
 点开默认在聚焦窗格内切标签，可拖拽分屏/上下分/跨窗格移动，与会话标签同一套管线。
 Dock 仍用整页浏览器，detached 会话窗不进入。改这块先记红线：
 
-- **状态模型**：`memoActive` / `browserActive` / `activeDocPath` 全部**从树派生**
+- **状态模型**：surface 的存在性与 `memoActive` / `browserActive` / `activeDocPath` 全部**从树派生**
   （聚焦窗格的 activeTabId 经 `splitTabKind` 判别），**不要重新引入平行的布尔
-  state**。`memoOpen` / `docTabs` / `browserTabs` 只管「标签存在性」（dirty 追踪、
-  徽标、标题）。`commitSplit` 焦点推送只认 session 种类（`focusedSessionTabIndex`），
+  state**。`memoOpen = openTabIds(tree).includes("memo")`；`docTabs` / `browserTabs`
+  只管标题、dirty 追踪和徽标。`commitSplit` 焦点推送只认 session 种类（`focusedSessionTabIndex`），
   surface 聚焦保持上一会话的 ACP 管道不动。
 - **标签生命周期**：Agent 可给 `browser_open_tab` 传稳定 `id`（小写 slug）；同名再次打开返回
   现有 tab。`pinned` / `chosenId` / claimed 用户 tab 不参加 idle cleanup；pinned 和 user-owned
@@ -867,11 +869,13 @@ Dock 仍用整页浏览器，detached 会话窗不进入。改这块先记红线
 - **只做内置开发浏览器**：Chrome/Edge 扩展、relay、配对、外部 MCP 浏览器连接和个人生活助手
   都不是 Marionette 范围。用户需要 Agent 使用自己的日常浏览器时自行安装 browse。产品里不加入
   “连接我的浏览器”假入口，也不探测或导入用户已安装的 browse relay/tab。底层 Agent 自己加载
-  全局 MCP 属于外部能力，不进入 SurfaceWorkspace，也不作为产品支持承诺。边界见
+  全局 MCP 属于外部能力，不进入 Browser 窗格标签，也不作为产品支持承诺。边界见
   plan-browser-scope.md。
 - **共同标签必须在原生 host 外**：顶部 Browser / Document / Memo 标签条是 DOM，
   BrowserPage 的 child WebView2 host 在它下方；不要把标签塞进 host 或让 native webview
-  覆盖标签。Browser 内部标签仍按后台 Rust 创建顺序稳定排序。
+  覆盖标签。拖任何标签时把 BrowserPage 的 `visible` 暂时置 false（child WebView 会盖住
+  DOM 幽灵/落点，也会抢 native hit test），放下或取消后恢复。Browser 内部标签仍按后台
+  Rust 创建顺序稳定排序。
 - **打开不是抢工作区授权**：`browser_open_tab` 默认 `background`，fresh tab 只有
   `display:"workspace"` 才激活 surface，而且只有用户明确要求查看/操作页面时才能传。
   Agent 自己起 localhost / dev server 不等于获得 workspace 权限，预览默认留后台。

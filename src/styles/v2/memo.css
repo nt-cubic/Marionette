@@ -4,6 +4,7 @@
 .memo-box {
   padding: 0;
   background: var(--panel-muted);
+  container-type: inline-size;
 }
 
 /* --- compose row: flush 44px strip, not a card -------------------------- */
@@ -25,6 +26,8 @@
 }
 
 .memo-box__compose textarea {
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 28px;
 }
 
@@ -36,6 +39,7 @@
 }
 
 .memo-box__compose-hint {
+  max-width: min(40vw, 320px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -62,11 +66,6 @@
 /* --- head row: flush search --------------------------------------------- */
 .memo-box__head {
   padding: 8px 8px 0;
-}
-
-.memo-box__text-btn {
-  height: 28px;
-  font-weight: 500;
 }
 
 .memo-box__busy {
@@ -106,10 +105,10 @@
 }
 
 .memo-box__chip.is-on {
-  color: var(--text-strong);
-  border-color: transparent;
-  background: var(--panel-raised);
-  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: none;
 }
 
 /* --- day headers ---------------------------------------------------------- */
@@ -164,6 +163,7 @@
   border-radius: var(--radius);
   background: var(--panel-raised);
   box-shadow: none;
+  overflow: visible;
 }
 
 .memo-box__card.is-picked {
@@ -187,7 +187,14 @@
   left: 10px;
   width: 14px;
   height: 14px;
+  padding: 0;
   border-radius: var(--radius-sm);
+  line-height: 0;
+}
+
+.memo-box__check > svg {
+  display: block;
+  pointer-events: none;
 }
 
 .memo-box__note {
@@ -200,6 +207,11 @@
 }
 
 .memo-box__card--link .memo-box__title {
+  color: var(--text-strong);
+  font-weight: 500;
+}
+
+.memo-box__card--text .memo-box__title {
   color: var(--text-strong);
   font-weight: 500;
 }
@@ -228,6 +240,10 @@
   background: var(--panel-soft);
 }
 
+.memo-box__shot-wrap {
+  overflow: hidden;
+}
+
 .memo-box__meta,
 .memo-box__age {
   font-size: 11px;
@@ -239,24 +255,143 @@
 
 .memo-box__foot {
   gap: 6px;
+  flex-wrap: wrap;
 }
 
-.memo-box__delete {
-  margin-left: auto;
-}
-
-/* --- pinned group / card actions / tags / edit (2026-11-18) ----------------- */
+/* --- pinned group / card actions / tags / edit (2026-11-19) ----------------- */
 .memo-box__group--pinned {
   margin-top: 0;
 }
 
-.memo-box__cardacts {
-  gap: 0;
+.memo-box__group--pinned .memo-box__day svg {
+  color: var(--text-faint);
 }
 
 .memo-box__cardact {
   width: 24px;
   height: 24px;
+}
+
+.memo-box__foot > .memo-box__cardact {
+  margin-left: auto;
+  flex: 0 0 auto;
+  opacity: 0.65;
+}
+
+.memo-box__card:hover .memo-box__foot > .memo-box__cardact,
+.memo-box__foot > .memo-box__cardact:focus-visible,
+.memo-box__foot > .memo-box__cardact.is-on {
+  opacity: 1;
+}
+
+.memo-box__cardedit {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  opacity: 0.72;
+  transition:
+    color var(--dur-fast) var(--ease-standard),
+    background-color var(--dur-fast) var(--ease-standard),
+    opacity var(--dur-fast) var(--ease-standard);
+}
+
+.memo-box__cardedit:hover,
+.memo-box__cardedit:focus-visible {
+  background: var(--panel-soft);
+  color: var(--text);
+  opacity: 1;
+}
+
+.memo-box__cardedit svg {
+  display: block;
+}
+
+.memo-box__card:not(.memo-box__card--image) :is(
+  .memo-box__note,
+  .memo-box__title,
+  .memo-box__url,
+  .memo-box__link-kicker,
+  .memo-box__file
+) {
+  padding-right: 30px;
+}
+
+.memo-box__card--image .memo-box__cardedit {
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel-raised) 88%, transparent);
+}
+
+.memo-box__tag--add {
+  gap: 2px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-faint);
+}
+
+.memo-box__tag--add:hover,
+.memo-box__tag--add.is-on {
+  border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+}
+
+.memo-box__card-menu {
+  flex: 1 0 100%;
+  order: 20;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px;
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: 1px solid var(--hairline);
+}
+
+.memo-box__card-menu button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.memo-box__card-menu button:hover,
+.memo-box__card-menu button:focus-visible {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.memo-box__card-menu button.is-danger {
+  color: var(--red);
+}
+
+.memo-box__card-menu button.is-danger:hover,
+.memo-box__card-menu button.is-danger:focus-visible {
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+}
+
+.memo-box__card-menu button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
 }
 
 .memo-box__tag {
@@ -300,6 +435,25 @@
   font-weight: 600;
 }
 
+.memo-box__sel-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.memo-box__sel-summary > span:first-child {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.memo-box__sel-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
 .memo-box__sel-hint {
   overflow: hidden;
   color: var(--text-faint);
@@ -317,6 +471,7 @@
   color: var(--text);
   font-size: 12.5px;
   font-weight: 500;
+  white-space: nowrap;
 }
 
 .memo-box__act:hover:not(:disabled) {
@@ -349,5 +504,49 @@
   .memo-box,
   .memo-box__selbar {
     animation: none;
+  }
+}
+
+@container (max-width: 520px) {
+  .memo-box__compose-hint {
+    display: none;
+  }
+}
+
+@container (max-width: 620px) {
+  .memo-box__selbar {
+    height: auto;
+    min-height: 56px;
+    flex-wrap: wrap;
+    align-content: center;
+    padding: 6px 8px;
+  }
+
+  .memo-box__sel-summary {
+    flex: 1 1 140px;
+  }
+
+  .memo-box__sel-hint,
+  .memo-box__selbar > .memo-box__spacer {
+    display: none;
+  }
+
+  .memo-box__sel-actions {
+    flex: 1 0 100%;
+    justify-content: flex-end;
+  }
+
+  .memo-box__sel-actions .memo-box__act {
+    min-width: 0;
+    padding: 0 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+@container (max-width: 420px) {
+  .memo-box__sel-actions .memo-box__act {
+    flex: 1 1 0;
+    padding: 0 4px;
   }
 }

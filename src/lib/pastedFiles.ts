@@ -16,6 +16,20 @@
  */
 import type { ClipboardFileEntry } from "./api";
 
+type ClipboardImageItem = Pick<DataTransferItem, "kind" | "type" | "getAsFile">;
+
+/**
+ * Snapshot clipboard image blobs while the paste event is still dispatching.
+ * WebView2 can invalidate DataTransferItem after the handler yields, so call
+ * this before any `await` and keep the returned File objects instead.
+ */
+export function snapshotPasteImageFiles(items: readonly ClipboardImageItem[]): File[] {
+  return items
+    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => file != null);
+}
+
 export function pairPastedFilesWithPaths(
   files: readonly File[],
   entries: readonly ClipboardFileEntry[],

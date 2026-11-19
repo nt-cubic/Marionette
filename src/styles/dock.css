@@ -419,9 +419,7 @@ body::after {
 .dock-active__all,
 .dock-active__park,
 .dock-menu button,
-.memo-box__text-btn,
 .memo-box__chip,
-.memo-box__delete,
 .memo-box__cardact,
 .memo-box__tag,
 .memo-box__tag-label,
@@ -1155,25 +1153,6 @@ html.dock-resizing * {
   font-size: 10.5px;
 }
 
-.memo-box__text-btn {
-  flex-shrink: 0;
-  height: 28px;
-  padding: 0 10px;
-  border-radius: var(--radius);
-  color: var(--text-muted);
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.memo-box__text-btn:hover {
-  color: var(--text);
-  background: var(--panel-soft);
-}
-
-.memo-box__text-btn.is-on {
-  color: var(--accent);
-}
-
 .memo-box__search {
   flex: 1 1 0;
   min-width: 0;
@@ -1578,29 +1557,6 @@ html.dock-resizing * {
   font-size: 10.5px;
 }
 
-.memo-box__delete {
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-  width: 22px;
-  height: 22px;
-  margin-right: -4px;
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  opacity: 0;
-  transition: opacity var(--dur-fast, 120ms) var(--ease-out, ease-out);
-}
-
-.memo-box__card:hover .memo-box__delete,
-.memo-box__delete:focus-visible {
-  opacity: 1;
-}
-
-.memo-box__delete:hover {
-  color: var(--red);
-  background: color-mix(in srgb, var(--red) 12%, transparent);
-}
-
 .memo-box__drop {
   margin-top: 6px;
   padding: 8px;
@@ -1700,15 +1656,6 @@ html.dock-resizing * {
 
 .memo-box__chip--more {
   color: var(--text-faint);
-}
-
-/* Card action cluster (pin / edit / tags / delete) — same shape as delete. */
-.memo-box__cardacts {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  margin-left: auto;
-  flex-shrink: 0;
 }
 
 .memo-box__cardact {

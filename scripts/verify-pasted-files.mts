@@ -9,7 +9,7 @@
  * 跑法：npx tsx scripts/verify-pasted-files.mts
  */
 
-import { pairPastedFilesWithPaths } from "../src/lib/pastedFiles";
+import { pairPastedFilesWithPaths, snapshotPasteImageFiles } from "../src/lib/pastedFiles";
 import type { ClipboardFileEntry } from "../src/lib/api";
 
 let failures = 0;
@@ -26,6 +26,28 @@ const entry = (path: string, size: number, isDir = false): ClipboardFileEntry =>
   const name = path.split(/[\\/]/).pop() ?? path;
   return { path, name, size, isDir };
 };
+
+// 截图粘贴：图片 File 必须在 paste 事件内抓成快照。之后剪贴板条目失效，
+// 已抓到的 File 仍应保留（新增的 CF_HDROP 查询会跨过一次 await）。
+{
+  const image = new File(["png"], "shot.png", { type: "image/png" });
+  let live = true;
+  const items = [
+    {
+      kind: "file",
+      type: "image/png",
+      getAsFile: () => (live ? image : null),
+    },
+    { kind: "string", type: "text/plain", getAsFile: () => null },
+  ];
+  const snapshot = snapshotPasteImageFiles(items);
+  live = false;
+  check(
+    "图片文件在 async 边界前快照",
+    snapshot.length === 1 && snapshot[0] === image,
+    `snapshot=${snapshot.map((f) => f.name).join(",")}`,
+  );
+}
 
 // 名字+大小都合 → 按真实路径配对；配不上的保持顺序进 rest。
 {

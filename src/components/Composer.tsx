@@ -42,7 +42,7 @@ import {
   type BridgeModelsResult,
   type PreflightResult,
 } from "../lib/api";
-import { pairPastedFilesWithPaths } from "../lib/pastedFiles";
+import { pairPastedFilesWithPaths, snapshotPasteImageFiles } from "../lib/pastedFiles";
 import {
   bridgePresetFor,
   getBridgeModels,
@@ -2105,6 +2105,11 @@ export function Composer({
         (item) => item.kind === "file" && item.type.startsWith("image/"),
       );
 
+      // DataTransferItem is event-scoped in WebView2. Capture the bitmap File
+      // now: waiting for the CF_HDROP lookup below can otherwise leave only
+      // an expired item whose getAsFile() returns null.
+      const pastedImageFiles = snapshotPasteImageFiles(imageItems);
+
       // Also pick up FileList entries that look like images (Explorer copy + paste).
       const pastedFiles = Array.from(dt.files ?? []);
       const fileListImages = pastedFiles.filter(
@@ -2114,7 +2119,7 @@ export function Composer({
           isImagePath((f as File & { path?: string }).path ?? ""),
       );
 
-      const hasImagePayload = imageItems.length > 0 || fileListImages.length > 0;
+      const hasImagePayload = pastedImageFiles.length > 0 || fileListImages.length > 0;
       // Any pasted File may have a real file behind it (Explorer copy); the
       // path pairing needs the desktop clipboard.
       const wantsFileAttach =
@@ -2187,9 +2192,9 @@ export function Composer({
 
           // 2) Bitmap paste without a file behind it.
           if (!hasImagePayload) return;
-          if (imageItems.length > 0) {
-            for (const item of imageItems) {
-              await absorbFile(item.getAsFile());
+          if (pastedImageFiles.length > 0) {
+            for (const file of pastedImageFiles) {
+              await absorbFile(file);
             }
           } else {
             for (const file of fileListImages) {

@@ -22,7 +22,7 @@ export const SessionPane = memo(function SessionPane({
         if (!focused) onFocus(leaf.id);
       }}
     >
-      <div className="session-pane__tabs">{tabs}</div>
+      {tabs ? <div className="session-pane__tabs">{tabs}</div> : null}
       <div className="session-pane__body">{children}</div>
     </div>
   );

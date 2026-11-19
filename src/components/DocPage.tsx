@@ -328,7 +328,7 @@ export function DocPage({
               type="button"
               className="pill-action pill-action--icon pill-action--sm"
               title={t("doc.close")}
-              onClick={onClose}
+              onClick={requestClose}
             >
               <X size={12} />
             </button>
