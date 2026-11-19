@@ -56,6 +56,7 @@
 | [`research/research-bigfatfishwife.md`](./research/research-bigfatfishwife.md) | **调研（2026-11-17 二轮全量）**：BigFatFishWife / dsh-room 的 README/产品结构、数据模型、任务执行、审批边界、通知、分层记忆、UI 与运维机制拆解——含精确参数、源码证据、适配映射、当前员工实现对账摘要、验证结果和明确不借清单 |
 | [`research/telegram-chief/README.md`](./research/telegram-chief/README.md) | **调研 / 方案（2026-11-15）**：Grok Bot 式 Telegram 远程首席助理——固定 Chief 会话、自然语言调度项目 / Agent / Provider、Host 控制 MCP、worker 任务账本、审批与恢复；含竞品对比、安全边界与 M0–M3 施工计划 |
 | [`research/ego-lite/README.md`](./research/ego-lite/README.md) | **调研 + 移植方案（2026-11-17）**：ego-lite v2.2.1 的源码/许可证边界、TaskSpace/Page/ref/wait/error 机制、Marionette master 差距、文件级复用地图与 M0–M5 路线；扩展目录还覆盖动作可见化、hard stop、Page 生命周期、popup/download/file、运行时卫生、站点经验与 benchmark。结论：闭源内核不可搬；优先借稳定 ref、typed batch、wait/dialog、错误语义和测试资产 |
+| [`research/research-antigravity.md`](./research/research-antigravity.md) | **调研（2026-11-19）**：Google Antigravity 的 `agy_acp_server` 接入——产品面（Gemini CLI 合流）、认证全景（oauth-personal 免费档/settings.json/env 防串档）、无浏览器登录机制、Windows PyInstaller 1.17GB %TEMP% 泄漏与 scratch 红线、capability/wire 差异、SQLite+protobuf 轨迹解析，全部对照 codeg v0.46.0 实现带 文件:行号 证据；12 条坑清单。接入方案见 [`plans/plan-antigravity.md`](./plans/plan-antigravity.md) |
 
 ## plans/ — 设计·实施方案
 
@@ -73,6 +74,7 @@
 | [`plans/plan-engine-contract.md`](./plans/plan-engine-contract.md) | **引擎合同（2026-11-17 M1 落地）**：Marionette ↔ magpie 种子的合同清单——合同面、红线与验证套件 `scripts/verify-engine-contract.mts`；`scripts/upstream-watch.mts` 按它盯上游 magpie |
 | [`plans/plan-engine-product-scope.md`](./plans/plan-engine-product-scope.md) | **引擎产品边界（2026-11-19 已落地）**：从 Marionette 用户旅程定义必须做、按需做和明确不做的能力；区分“核心路径可用”与“完整 Magpie 兼容”，并记录 Rust 默认切换的数据安全、Agent 矩阵与发布门槛处理结果 |
 | [`plans/plan-engine-rust.md`](./plans/plan-engine-rust.md) | **Rust 引擎演进账本**：T0–T15、真 key 对账、方言批次、收尾与转正记录；现行行为以 `CURRENT.md` 和产品边界稿为准 |
+| [`plans/plan-antigravity.md`](./plans/plan-antigravity.md) | **设计稿（2026-11-19，未动工）**：接入 Google Antigravity（`agy_acp_server`）——M0 真机核查（fs.readTextFile/authMethods/泄漏实锤）→ M1 最小可用（roster + settings 同步 + 会话内 authenticate 登录 + scratch 隔离）→ M2 dir-tree 自动安装（required_siblings 防假成功）→ M3 usage 回填/贴回登录；10 条红线与 7 个开放问题。事实依据在 [`research/research-antigravity.md`](./research/research-antigravity.md) |
 | [`plans/split-workspace.md`](./plans/split-workspace.md) | 早期分屏设计稿（已落地，现行行为以 `CURRENT.md`「多窗口」为准） |
 | [`plans/telegram-bridge.md`](./plans/telegram-bridge.md) | Telegram 远程桥——MVP 已实现（通知/回复/远程批准/配对）；设计、调研与实现差异记录 |
 
