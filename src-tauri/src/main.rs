@@ -771,6 +771,8 @@ fn main() {
             commands::engine_stop,
             commands::engine_check_update,
             commands::engine_update,
+            commands::engine_preference_get,
+            commands::engine_preference_set,
             commands::engine_restore_factory,
             commands::get_proxy_config,
             commands::set_proxy_config,

@@ -1523,6 +1523,30 @@ export async function engineUpdate(): Promise<EngineStatus | null> {
   return await invoke<EngineStatus>("engine_update");
 }
 
+/** Runtime engine-form preference (escape hatch): rust in-process | magpie child. */
+export type EnginePreferenceInfo = {
+  choice: "rust" | "magpie";
+  magpieInstalled: boolean;
+  magpieVersion?: string | null;
+  running: boolean;
+  runningVersion?: string | null;
+};
+
+export async function enginePreferenceGet(): Promise<EnginePreferenceInfo | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke<EnginePreferenceInfo>("engine_preference_get");
+  } catch {
+    return null;
+  }
+}
+
+/** Switch engine form (rust <-> magpie); backend stops and restarts the gateway. */
+export async function enginePreferenceSet(choice: "rust" | "magpie"): Promise<EnginePreferenceInfo | null> {
+  if (!isTauriRuntime()) return null;
+  return await invoke<EnginePreferenceInfo>("engine_preference_set", { choice });
+}
+
 /** Re-extract the factory seed baked into the exe, then restart the gateway. */
 export async function engineRestoreFactory(): Promise<EngineStatus | null> {
   if (!isTauriRuntime()) return null;

@@ -922,10 +922,21 @@ fn spawn_serve(exe: &Path, port: u16) -> Result<ChildHandle, String> {
     }
     #[cfg(engine_rust_active)]
     {
+        // 逃生口：偏好 magpie 且已安装 → 子进程形态，与从前完全一致。
+        if serve_magpie_runtime() {
+            return spawn_serve_magpie_child(exe, port);
+        }
         let _ = exe;
         return spawn_serve_in_process(port);
     }
     #[cfg(not(engine_rust_active))]
+    {
+        return spawn_serve_magpie_child(exe, port);
+    }
+}
+
+/// magpie 子进程形态的拉起（S1 处方的 env 全集；stdout/stderr 进 debug_log）。
+fn spawn_serve_magpie_child(exe: &Path, port: u16) -> Result<ChildHandle, String> {
     {
         let mut command = std::process::Command::new(exe);
         command
@@ -1970,6 +1981,115 @@ pub fn quota(force: bool) -> (Vec<EngineQuotaEntry>, bool) {
 // ②30 分钟没人查目录 / 同步别名 / 解析注入 / 动过凭据。唤醒是全自动的：
 // 模型菜单打开（已安装才唤醒，绝不惊喜下载）、绑定、网关按钮、下次启动。
 
+// ─── 引擎形态偏好（运行时逃生口，2026-11-19）────────────────────────────────
+//
+// 默认内置 Rust 引擎（编在 exe 里）。用户可以在模型共享面板把引擎切到
+// magpie 子进程形态（像以前一样从 GitHub 下载安装、更新），也可以随时切回。
+// 偏好是一行纯文本 `rust` / `magpie`，存 `<global>/engine-preference.json`，
+// 读失败一律按 rust 处理（fail-open）。magpie SKU 构建（MARIONETTE_ENGINE=
+// magpie）不受影响——它没有内置网关可选，行为与从前完全一致。
+
+/// 用户选的引擎形态。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EngineChoice {
+    Rust,
+    Magpie,
+}
+
+impl EngineChoice {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EngineChoice::Rust => "rust",
+            EngineChoice::Magpie => "magpie",
+        }
+    }
+}
+
+fn preference_file() -> Option<std::path::PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = test_pref_path_hook() {
+        return Some(path);
+    }
+    crate::app_paths::global_dir()
+        .ok()
+        .map(|dir| dir.join("engine-preference.json"))
+}
+
+/// 测试缝：偏好文件路径 override（并行测试共享进程 env，直接改
+/// USERPROFILE 会与 context_inventory 等测试互踩）。
+#[cfg(test)]
+fn test_pref_path_hook() -> Option<std::path::PathBuf> {
+    PREF_TEST_PATH
+        .lock()
+        .map(|guard| guard.clone())
+        .unwrap_or(None)
+}
+
+#[cfg(test)]
+static PREF_TEST_PATH: std::sync::Mutex<Option<std::path::PathBuf>> =
+    std::sync::Mutex::new(None);
+
+/// 当前偏好（默认 / 读失败 → Rust）。
+pub fn preferred_engine() -> EngineChoice {
+    let Some(path) = preference_file() else {
+        return EngineChoice::Rust;
+    };
+    match std::fs::read_to_string(path) {
+        Ok(text) if text.trim().eq_ignore_ascii_case("magpie") => EngineChoice::Magpie,
+        _ => EngineChoice::Rust,
+    }
+}
+
+/// 写偏好（同目录临时文件 + rename，storage 原子写同款形状）。
+pub fn set_preferred_engine(choice: EngineChoice) -> Result<(), String> {
+    let path = preference_file().ok_or_else(|| "global dir unavailable".to_string())?;
+    let tmp = path.with_extension("json.marionette-tmp");
+    std::fs::write(&tmp, choice.as_str()).map_err(|e| format!("write preference: {e}"))?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("rename preference: {e}"))
+}
+
+fn pref_magpie() -> bool {
+    preferred_engine() == EngineChoice::Magpie
+}
+
+/// serve / 唤醒路径用：偏好 magpie **且**本机真装着 magpie 才走子进程形态
+/// （没装时保持内置网关——否则引擎直接 Absent，聊天断流）。
+#[cfg(engine_rust_active)]
+fn serve_magpie_runtime() -> bool {
+    pref_magpie()
+        && engine_dir()
+            .map(|dir| is_installed_at(&dir))
+            .unwrap_or(false)
+}
+
+/// magpie SKU 构建不咨询此函数（自己的 cfg 分支恒走子进程形态）。
+#[cfg(not(engine_rust_active))]
+fn serve_magpie_runtime() -> bool {
+    false
+}
+
+/// magpie 安装态（面板展示 + 判定「切过去是否立即可用」）。None = 未安装。
+pub fn magpie_install_version() -> Option<String> {
+    let dir = engine_dir().ok()?;
+    if !is_installed_at(&dir) {
+        return None;
+    }
+    load_manifest_at(&dir).map(|manifest| manifest.version)
+}
+
+/// embedded_version 的存在性垫片：rust SKU 构建没有内嵌种子（embedded consts
+/// 按 `embedded-engine && !engine_rust_active` 编译），共享的 magpie 检查更新
+/// 流程在 rust 构建里取 None。
+#[cfg(all(feature = "embedded-engine", not(engine_rust_active)))]
+fn embedded_version_opt() -> Option<String> {
+    embedded_version().map(|v| v.to_string())
+}
+
+#[cfg(not(all(feature = "embedded-engine", not(engine_rust_active))))]
+fn embedded_version_opt() -> Option<String> {
+    None
+}
+
 /// 空闲多久后回收自拉 serve（无绑定 + 无需求）。
 const IDLE_RECLAIM_AFTER: Duration = Duration::from_secs(30 * 60);
 /// 回收巡检间隔。
@@ -2038,7 +2158,12 @@ pub fn wake_if_installed() {
         // magpie.exe 可查（查也只会查到旧形态的残件，语义不对）。
         #[cfg(engine_rust_active)]
         {
-            let _ = enable();
+            // 逃生口语义：偏好 rust（默认）恒可拉内置网关；偏好 magpie 且已
+            // 安装 → 拉子进程形态；偏好 magpie 但还没下载 → 不拉（保持
+            // Absent，面板引导下载或切回，绝不偷偷用另一个引擎顶包）。
+            if !pref_magpie() || serve_magpie_runtime() {
+                let _ = enable();
+            }
         }
         #[cfg(not(engine_rust_active))]
         {
@@ -2066,7 +2191,12 @@ pub fn ensure_bridge_ready_if_installed(timeout: Duration) -> bool {
         // engine-rust：同 wake_if_installed——「已安装」恒成立（编在 exe 里）。
         #[cfg(engine_rust_active)]
         {
-            ensure_bridge_ready(timeout)
+            // 逃生口语义同 wake_if_installed：偏好 magpie 未安装时不等内置。
+            if !pref_magpie() || serve_magpie_runtime() {
+                ensure_bridge_ready(timeout)
+            } else {
+                false
+            }
         }
         #[cfg(not(engine_rust_active))]
         {
@@ -2181,6 +2311,11 @@ fn stop_owned_for_replace() -> Result<(), String> {
 pub fn check_update() -> EngineUpdateInfo {
     #[cfg(engine_rust_active)]
     {
+        // 逃生口：偏好 magpie 时恢复「检查更新」的 magpie 语义（含未安装
+        // 状态：latest 有值 + update_available=true，面板由此给出下载按钮）。
+        if pref_magpie() {
+            return check_update_magpie();
+        }
         crate::debug_log::append(
             "engine",
             "info",
@@ -2199,9 +2334,16 @@ pub fn check_update() -> EngineUpdateInfo {
     }
     #[cfg(not(engine_rust_active))]
     {
+        return check_update_magpie();
+    }
+}
+
+/// magpie 形态的检查更新（magpie SKU 与 rust SKU 的逃生口共用）。
+fn check_update_magpie() -> EngineUpdateInfo {
+    {
         let dir = engine_dir().ok();
         let current_version = dir.as_ref().and_then(|d| installed_version_at(d));
-        let embedded = embedded_version().map(|v| v.to_string());
+        let embedded = embedded_version_opt();
         let can_restore_factory = match (&embedded, &current_version) {
             (Some(seed), Some(cur)) => seed != cur,
             (Some(_), None) => true,
@@ -2243,6 +2385,11 @@ pub fn check_update() -> EngineUpdateInfo {
 pub fn update() -> Result<EngineStatus, String> {
     #[cfg(engine_rust_active)]
     {
+        // 逃生口：偏好 magpie 时「更新引擎」就是从 GitHub 下载/更新 magpie
+        // 并拉起——与以前完全一致（未安装时这就是安装入口）。
+        if pref_magpie() {
+            return update_magpie_download();
+        }
         crate::debug_log::append(
             "engine",
             "info",
@@ -2253,6 +2400,13 @@ pub fn update() -> Result<EngineStatus, String> {
         return Ok(status());
     }
     #[cfg(not(engine_rust_active))]
+    {
+        return update_magpie_download();
+    }
+}
+
+/// magpie 的下载/更新流程（停自拉实例 → 下 latest → 落位 → 拉起；后台线程）。
+fn update_magpie_download() -> Result<EngineStatus, String> {
     {
         stop_owned_for_replace()?;
         let dir = engine_dir()?;
@@ -2458,12 +2612,24 @@ fn run_magpie_cli_capture(exe: &Path, args: &[&str]) -> Result<String, String> {
     // 拒收一致，调用方（fetch_quota_cli 的兜底路径）按失败处理。
     #[cfg(engine_rust_active)]
     {
+        // 逃生口：偏好 magpie 且 exe 真在（注册链拿到的就是 engine 目录的
+        // magpie.exe）→ 子进程直跑，与从前一致。
+        if pref_magpie() && exe.is_file() {
+            return run_magpie_cli_child(exe, args);
+        }
         let _ = exe;
         use_engine_data_dir();
         let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         return crate::engine_gateway::cli::run(&owned).map(|_| String::new());
     }
     #[cfg(not(engine_rust_active))]
+    {
+        return run_magpie_cli_child(exe, args);
+    }
+}
+
+/// magpie 子进程形态的 CLI 执行（capture 版）。
+fn run_magpie_cli_child(exe: &Path, args: &[&str]) -> Result<String, String> {
     {
         let mut command = std::process::Command::new(exe);
         command
@@ -2520,12 +2686,23 @@ fn run_magpie_cli(exe: &Path, args: &[&str]) -> Result<(), String> {
     }
     #[cfg(engine_rust_active)]
     {
+        // 逃生口：同 run_magpie_cli_capture——偏好 magpie 且 exe 在 → 子进程。
+        if pref_magpie() && exe.is_file() {
+            return run_magpie_cli_passthrough_child(exe, args);
+        }
         let _ = exe;
         use_engine_data_dir();
         let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         return crate::engine_gateway::cli::run(&owned);
     }
     #[cfg(not(engine_rust_active))]
+    {
+        return run_magpie_cli_passthrough_child(exe, args);
+    }
+}
+
+/// magpie 子进程形态的 CLI 执行（丢弃 stdout 版）。
+fn run_magpie_cli_passthrough_child(exe: &Path, args: &[&str]) -> Result<(), String> {
     {
         // 种子短路：标记在就跳过 TUI/quota 等完整 CLI。`provider` / `group` /
         // `models` 是种子自己的精简命令，必须放行——自定义来源登记靠它们。
@@ -2980,6 +3157,19 @@ fn place_and_prep(dir: &Path, allow_download: bool) -> Result<PrepOutcome, Strin
     // 占着 3425 会让新端口让位。
     #[cfg(engine_rust_active)]
     {
+        // 逃生口：偏好 magpie 时走子进程形态的落位。rust SKU 没有内嵌种子，
+        // 缺装时仅 allow_download 才从 GitHub 下载；刻意不复用默认端口上的
+        // 外部 magpie（见上面的两头分家注释）。
+        if pref_magpie() {
+            if !is_installed_at(dir) {
+                if !allow_download {
+                    return Ok(PrepOutcome::NotInstalled);
+                }
+                let plan = resolve_latest_release()?;
+                download_and_install(&plan, dir)?;
+            }
+            return Ok(PrepOutcome::Ready);
+        }
         // 两个参数都是 magpie 形态（落位/下载）才用的；进程内形态无副作用。
         // 引擎目录仍然要建：engine.rs 自己的两本账本
         // （registered-providers.json / discovered-providers.json）写在这里，
@@ -3077,9 +3267,13 @@ fn serve_and_run(dir: &Path) -> Result<(), String> {
         std::thread::sleep(HEALTH_POLL);
     }
     // engine-rust：版本就是编译进来的网关自身（manifest 是 magpie 形态的
-    // 产物，进程内形态不存在）。
+    // 产物，进程内形态不存在）；逃生口（偏好 magpie 已安装）读子进程 manifest。
     #[cfg(engine_rust_active)]
-    let version = Some(crate::engine_gateway::ENGINE_VERSION.to_string());
+    let version = if serve_magpie_runtime() {
+        load_manifest_at(dir).map(|manifest| manifest.version)
+    } else {
+        Some(crate::engine_gateway::ENGINE_VERSION.to_string())
+    };
     #[cfg(not(engine_rust_active))]
     let version = load_manifest_at(dir).map(|manifest| manifest.version);
     {
@@ -3752,6 +3946,43 @@ fn test_catalog() -> Option<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+    // ── 引擎形态偏好（逃生口）──
+
+    fn pref_test_home(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "marionette-engine-pref-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn preference_roundtrip_and_failopen() {
+        let home = pref_test_home("roundtrip");
+        let file = home.join("engine-preference.json");
+        *PREF_TEST_PATH.lock().unwrap() = Some(file.clone());
+        // 无文件 → 默认 rust
+        assert_eq!(preferred_engine(), EngineChoice::Rust);
+        // 写坏内容 → 仍 rust（fail-open）
+        std::fs::write(&file, "garbage!!").unwrap();
+        assert_eq!(preferred_engine(), EngineChoice::Rust);
+        // 写 magpie → 读回 magpie；再写回 rust
+        set_preferred_engine(EngineChoice::Magpie).unwrap();
+        assert_eq!(preferred_engine(), EngineChoice::Magpie);
+        set_preferred_engine(EngineChoice::Rust).unwrap();
+        assert_eq!(preferred_engine(), EngineChoice::Rust);
+        // 大小写 / 空白容忍
+        std::fs::write(&file, "  MAGPIE ").unwrap();
+        assert_eq!(preferred_engine(), EngineChoice::Magpie);
+        *PREF_TEST_PATH.lock().unwrap() = None;
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     use super::*;
     use std::fs;
     use std::net::TcpListener;
