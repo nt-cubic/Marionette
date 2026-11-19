@@ -189,6 +189,36 @@ pub fn version_info(agent: &AgentConfig, check_registry: bool) -> AgentVersionIn
             note: Some(crate::ts!("内置网页聊天桥，随 Marionette 更新", "Built-in web chat bridge; updates with Marionette")),
         };
     }
+    // Binary agents (Antigravity): the version is the install dir name and
+    // "latest" comes from the ACP registry — never executed from probe paths
+    // (a `--version` run unpacks the whole PyInstaller archive; see
+    // antigravity_support::is_server_command).
+    if agent.install.manager == "binary" {
+        let installed = crate::antigravity_support::installed_version();
+        let (latest, note) = if check_registry {
+            match crate::antigravity_support::registry_latest() {
+                Some((version, _, _)) => (Some(version), None),
+                None => (
+                    None,
+                    Some("Could not reach the ACP registry".to_string()),
+                ),
+            }
+        } else {
+            (None, None)
+        };
+        let update_available = match (&installed, &latest) {
+            (Some(installed), Some(latest)) => is_newer(latest, installed),
+            _ => false,
+        };
+        return AgentVersionInfo {
+            id: agent.id.clone(),
+            package: None,
+            installed,
+            latest,
+            update_available,
+            note,
+        };
+    }
     let installed = installed_version(&agent.command);
     // Always surface bare package name so install/auto-update track **latest**.
     let package = agent

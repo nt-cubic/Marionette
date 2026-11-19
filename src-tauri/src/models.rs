@@ -104,6 +104,16 @@ impl AgentInstallSpec {
             note: Some(note.to_string()),
         }
     }
+
+    /// `binary` → in-app downloader fetches the vendor archive (antigravity).
+    fn binary(note: &str) -> Self {
+        Self {
+            manager: "binary".to_string(),
+            package: None,
+            requires: Vec::new(),
+            note: Some(note.to_string()),
+        }
+    }
 }
 
 fn dependency(command: &str, label: &str, package: Option<&str>) -> AgentDependency {
@@ -276,9 +286,9 @@ impl AgentConfig {
                 vec![],
                 "acp",
                 "stdin",
-                AgentInstallSpec::manual(&crate::ts!(
-                    "从 dl.google.com 下载 agy-acp-server 的 zip，解压出的整个文件夹加入 PATH —— agy_acp_server.exe 与 localharness_external.exe 必须留在同一目录（缺了后者服务能握手但 agent 不工作）。用 Google 账号登录即有免费额度。",
-                    "Download the agy-acp-server zip from dl.google.com and put the whole extracted folder on PATH — agy_acp_server.exe and localharness_external.exe must stay in the same directory (without the latter the server handshakes but the agent is dead). Signing in with a Google account includes the free tier."
+                AgentInstallSpec::binary(&crate::ts!(
+                    "可一键下载安装（dl.google.com 官方 zip，约 105MB）；也可手动下载并把解压出的整个文件夹加入 PATH —— agy_acp_server.exe 与 localharness_external.exe 必须留在同一目录。Google 账号登录即有免费额度。",
+                    "One-click install (official dl.google.com zip, ~105 MB); or download manually and put the whole extracted folder on PATH — agy_acp_server.exe and localharness_external.exe must stay in the same directory. Signing in with a Google account includes the free tier."
                 )),
             ),
             Self::new(

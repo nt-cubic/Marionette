@@ -291,7 +291,26 @@ M0 结论：**四个核心开放问题（握手/settings/OAuth 闭环/文件读�
   `is_server_command()`（stem 精确匹配 `agy_acp_server`，大小写不敏感、剥路径与可选
   `.exe`）直接返回 None，永不执行；守卫生效后真实 `%TEMP%` **零新增** `_MEI`。
 - **终态**：全量 `cargo test --bin marionette`（675 项）+ tsc + build 全绿。
->>>>>>> 71770085 (feat(antigravity): M1 最小可用——Google Antigravity (agy_acp_server) 接入)
+
+### M2/M3 真机实测（2026-11-19）
+
+- **安装器 live 实测**（`cargo test live_install -- --ignored`，测试自隔离 USERPROFILE）：
+  105MB zip 下载 + 系统 tar.exe 解压 + required_siblings 校验 + 落位 **2.78s 全通**，
+  幂等重装秒回。sha256 用现成 `sha2` 依赖（引擎下载同款）；registry 带 sha256（1.4.3 起），
+  校验失败报 mismatch 不落盘。
+- **升级链**：`version_info` binary 分支——installed=安装目录名、latest=ACP registry
+  （`distribution.binary[platform].archive`，实测 shape 与 codeg 记录一致）、URL 模板
+  （dl.google.com + `agy-acp-server-` + `-{platform}.zip`）不符即不提供升级。
+- **真 bug 一枚（已修）**：`gemini_home()` 在 `GEMINI_HOME` 未设时漏了 `.join(".gemini")`——
+  E2E 期间一直显式传着 GEMINI_HOME 所以没暴露，真库 oracle 一跑就现形（解析器 0 会话）。
+  教训：**环境变量覆盖的测试路径 ≠ 默认路径**，两者都要有 oracle。
+- **解析器真库 oracle**：6 个真实会话全列（cwd 正反斜杠都对、WAL 库读通、0 字节库=空），
+  事件投影 user/assistant/thought/tool 正确（标题取首条 prompt）。
+- **usage 回填真库 oracle**：5 会话（0 字节跳过），input/output 数字与 ACP 侧 tee 记录
+  精确吻合（13041/38 vs totalTokens 13079=input 13041+output 38）——**四桶口径对齐**。
+- **certutil 教训（已换 sha2）**：曾用 certutil 算哈希，日语系统输出无空行+本地化文案
+  打破位置解析——系统工具输出的解析要本地化无关，最终直接用 sha2 crate。
+>>>>>>> f691dc32 (feat(antigravity): M2 自动安装+升级链 / M3 usage 回填+历史导入+存量回收——接入全量收官)
 ## 附：官方来源
 
 - <https://antigravity.google> · <https://antigravity.google/blog/introducing-google-antigravity>

@@ -206,6 +206,7 @@ fn render_report_with(
         .take(MAX_RECENT_ERROR_LINES)
         .collect();
 
+    let leaked = crate::antigravity_support::scan_leaked_temp();
     let manifest = json!({
         "schema": "marionette-diagnostic",
         "schemaVersion": REPORT_SCHEMA,
@@ -222,6 +223,12 @@ fn render_report_with(
             "family": runtime.family,
             "logicalCpuCount": runtime.cpu_count,
             "processId": runtime.pid,
+        },
+        // PyInstaller leftovers (Antigravity server runs predating the
+        // scratch redirect). Counts and bytes only — no raw paths.
+        "leakedTemp": {
+            "items": leaked.iter().count(),
+            "bytes": leaked.iter().map(|i| i.bytes).sum::<u64>(),
         },
         "runtime": {
             "logDirectory": &log_dir,

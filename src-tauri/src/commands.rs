@@ -352,7 +352,17 @@ fn zcode_desktop_present() -> bool {
 
 /// Is the agent's own command on PATH, and are the CLIs it drives present too?
 fn agent_command_status(agent: &AgentConfig) -> AgentCommandStatus {
-    let bridge = resolve_command(&agent.command);
+    // Antigravity: the in-app installer owns a verified tree under
+    // ~/.marionette/agents — a complete copy there counts as installed even
+    // when nothing is on PATH (and spawn prefers it over a PATH entry).
+    let bridge = if agent.id == "antigravity" {
+        match crate::antigravity_support::installed_entry() {
+            Some(entry) => Ok(Some(entry.to_string_lossy().to_string())),
+            None => resolve_command(&agent.command),
+        }
+    } else {
+        resolve_command(&agent.command)
+    };
     let mut missing: Vec<String> = Vec::new();
     let mut installable = false;
 
@@ -364,7 +374,8 @@ fn agent_command_status(agent: &AgentConfig) -> AgentCommandStatus {
         ),
         Ok(None) => {
             missing.push(format!("{} (`{}`)", agent.label, agent.command));
-            installable = agent.install.package.is_some();
+            installable =
+                agent.install.package.is_some() || agent.install.manager == "binary";
             (
                 "missing".to_string(),
                 None,
@@ -490,6 +501,12 @@ fn install_agent_blocking(
         .find(|agent| agent.id == agent_id)
         .ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
 
+    // Binary agents (Antigravity): download the vendor archive, verify the
+    // required sibling, place the tree under ~/.marionette/agents.
+    if agent.install.manager == "binary" {
+        return install_binary_agent_blocking(&agent, force);
+    }
+
     if agent.install.manager != "npm" {
         return Err(agent
             .install
@@ -557,6 +574,65 @@ fn npm_install_args(package: &str) -> Vec<String> {
     }
     args.push(package.to_string());
     args
+}
+
+/// Antigravity (the only `binary` agent): resolve the target version from the
+/// ACP registry when reachable (sha256 included), fall back to the audited
+/// pin, then download/extract/verify. `force` is the UI update path.
+fn install_binary_agent_blocking(
+    agent: &AgentConfig,
+    force: bool,
+) -> Result<serde_json::Value, String> {
+    let installed = crate::antigravity_support::installed_version();
+    if !force {
+        if let Some(version) = installed.as_deref() {
+            return Ok(serde_json::json!({
+                "agentId": agent.id,
+                "installed": [format!("agy-acp-server {version}")],
+                "message": format!("{} {version} is already installed", agent.label),
+                "status": agent_command_status(agent),
+            }));
+        }
+    }
+    // Registry first: fresher than the pin and carries a sha256. Offline or
+    // unrecognized layout → the pin (an old, audited build beats no build).
+    let (version, url, sha256) = match crate::antigravity_support::registry_latest() {
+        Some((version, url, sha256)) => (version, url, sha256),
+        None => (
+            crate::antigravity_support::PIN_VERSION.to_string(),
+            crate::antigravity_support::pin_archive_url_public(
+                crate::antigravity_support::PIN_VERSION,
+            ),
+            None,
+        ),
+    };
+    if installed.as_deref() == Some(version.as_str()) && !force {
+        return Ok(serde_json::json!({
+            "agentId": agent.id,
+            "installed": [format!("agy-acp-server {version}")],
+            "message": format!("{} {version} is already installed", agent.label),
+            "status": agent_command_status(agent),
+        }));
+    }
+    let progress = |message: &str| {
+        crate::debug_log::append("install", "info", "antigravity", message, None);
+    };
+    let entry = crate::antigravity_support::install(
+        &version,
+        &url,
+        sha256.as_deref(),
+        &progress,
+    )?;
+    Ok(serde_json::json!({
+        "agentId": agent.id,
+        "installed": [format!("agy-acp-server {version}")],
+        "message": format!(
+            "{} — {}",
+            crate::ts!("已安装", "Installed"),
+            entry.to_string_lossy()
+        ),
+        "status": agent_command_status(agent),
+    }))
 }
 
 fn npm_install_global(agent_id: &str, package: &str) -> Result<(), String> {
@@ -1231,6 +1307,23 @@ pub fn append_transcript_events(
         storage.transcript_path_for(&session_id)?
     };
     crate::storage::StorageService::append_transcript_file(&path, &events)
+}
+
+/// PyInstaller leftovers in the user's temp dir (from manual / IDE runs of
+/// the Antigravity server predating Marionette's scratch redirect).
+#[tauri::command(async)]
+pub fn antigravity_scan_leaked_temp() -> Vec<crate::antigravity_support::LeakedTempItem> {
+    crate::antigravity_support::scan_leaked_temp()
+}
+
+/// Reclaim previously scanned leftovers — every path is re-validated (age,
+/// shape, parent == temp root, still idle) inside the support module.
+#[tauri::command(async)]
+pub fn antigravity_reclaim_leaked_temp(
+    paths: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    let (reclaimed, skipped) = crate::antigravity_support::reclaim_leaked_temp(&paths);
+    Ok(serde_json::json!({ "reclaimed": reclaimed, "skipped": skipped }))
 }
 
 /// Best-effort local auth probe: CLI status commands where available, credential

@@ -81,7 +81,7 @@ Agent 在回合结束后自己续跑（它起的后台指令回来了，触发�
 - **引擎模型目录与配额的离线快照（2026-11-06）**：引擎不在 Running 时模型菜单的 marionette 组回放 `~/.marionette/engine-catalog.json`（live 非空时自动回写；note 标「引擎未运行 · 离线目录」，离线选中会经绑定链自动拉起引擎）；右栏额度卡的引擎配额行保留上次快照并标注「引擎未运行 · 快照时间」（localStorage `marionette-quota`，7 天过期）——引擎睡眠/唤醒不再让菜单组与配额行整组消失/插回。纯浏览菜单**不再唤醒引擎**（仅存在绑定时才等 5s 唤醒）。引擎目录只列**具体来源**的模型：`group/` 与 `auto/` 路由组一律隐藏（2026-11-06 起 auto 与 group 同罪；存量 auto 绑定启动时清绑，受影响会话回落 agent 原生默认）。
 - **DSH（@openma/deepseek-harness-acp）跨用（2026-10-20）**：spawn 时把 llm-pi-ai 托管路由 `marionette`（openai-completions → 引擎 `/v1`）写进 `~/.dsh/cordis.patch.yml`（文本外科手术、幂等、保用户内容），令牌常量进 `~/.dsh/.credentials.yaml` refs + spawn env；模型经 dsh-acp 原生目录广告（id `marionette::provider/model`）。引擎停用即移除路由；home patch 被 dsh Web/desktop 共享，Web 里也能走这条路由。写入器在 `dsh_bridge.rs`，调研定稿见 `research-dsh-cross-use.md` §8。
 - **pi（pi-acp）跨用（2026-10-20）**：spawn 时把 provider `marionette` 合并进 `~/.pi/agent/models.json`（pi 官方兼容端点机制，`apiKey` 用 `$MARIONETTE_ENGINE_TOKEN` env 插值、凭据不落盘；语义幂等、保用户 provider）；模型经 pi-acp 原生目录广告（id `marionette/<engineId>`，与 grok/opencode 前缀同形），`set_config_option` 直接切。引擎停用即移除托管段。写入器在 `model_bridge.rs`（`refresh_pi_marionette_route`）。
-- **Roster 收束（2026-10-20；2026-11-09 hermes 移除）**：内置 agent 收为「五跨用（claude-code / grok / codex / opencode / deepseek）+ **pi + zcode**」；cline / gemini / kimi / codebuddy / openclaw / cursor / omp 退出内置名单（cursor 封闭无口子、gemini 协议锁死，其余用户面小——可接性矩阵见 `research-acp-cross-use-matrix.md`）。退出者可经「自定义 agent」随时加回；历史会话导入的 parsers 与登录探针保留未动。hermes 则于 2026-11-09 **全量移除**（用户定案：不再支持）——roster 条目、harness_meta、auth 探针/登录、uvx 预检（`DistributionKind::Uvx` 随之删除）、会话导入 parser 一并清掉；原计划的跨用桥（config.yaml providers）不再做。**新 agent 的加入原则（2026-11-09 定案）：等阵营收敛、有人真在用再接**——agent 界正处在标准混战期（ACP 官方目录已 48 家），别为「在目录里」就抢着内置；真出线了从 ACP registry / 自定义 agent 加入都是小改动。
+- **Roster 收束（2026-10-20；2026-11-09 hermes 移除）**：内置 agent 收为「五跨用（claude-code / grok / codex / opencode / deepseek）+ **pi + zcode**」；cline / gemini / kimi / codebuddy / openclaw / cursor / omp 退出内置名单（cursor 封闭无口子、gemini 协议锁死，其余用户面小——可接性矩阵见 `research-acp-cross-use-matrix.md`）。退出者可经「自定义 agent」随时加回；历史会话导入的 parsers 与登录探针保留未动。hermes 则于 2026-11-09 **全量移除**（用户定案：不再支持）——roster 条目、harness_meta、auth 探针/登录、uvx 预检（`DistributionKind::Uvx` 随之删除）、会话导入 parser 一并清掉；原计划的跨用桥（config.yaml providers）不再做。**新 agent 的加入原则（2026-11-09 定案）：等阵营收敛、有人真在用再接**（2026-11-19 例外：antigravity 由用户点名接入——Google 官方 first-party ACP server + Google 账号免费档，见下节）——agent 界正处在标准混战期（ACP 官方目录已 48 家），别为「在目录里」就抢着内置；真出线了从 ACP registry / 自定义 agent 加入都是小改动。
 - **Grok × 智谱 Coding Plan（2026-10-27）**：Grok 自建的 `zhipu-*` 表若拿的是 Coding Plan 钥匙，spawn 时把 `base_url` 从按量 `https://open.bigmodel.cn/api/paas/v4` 改到 `https://open.bigmodel.cn/api/coding/paas/v4`（`rewrite_grok_zhipu_coding_plan_bases`）。按量钥匙与 `$ENV` 展开的自建表不动。Grok 只在进程启动读 `config.toml`，改完要新开会话。证据链见 [`pitfalls-model-share-quota.md`](./pitfalls/pitfalls-model-share-quota.md)。
 - **一种便携版**（`tools\build-portable.bat` → `release\<版本号>\Marionette.exe`）：默认把 Rust 网关直接编进 exe，不下载、不落位第二个引擎进程；打包也不需要 Go/Magpie 载荷。一个发布周期的回退用 `MARIONETTE_ENGINE=magpie`，此时才走 `import-magpie.ps1` + 精简种子载荷。发布统一用 `tools\publish-release.bat`。
 - **引擎版本**：Rust 引擎随 `marionette.exe` 发布和更新，模型共享面板不出现 Magpie 下载/恢复出厂入口。`~/.marionette/engine/data/` 继续保存 Magpie 兼容的 `providers.json`、登录桥缓存和各引擎账本；配置损坏时编辑 fail-closed，`providers.json.bak` 保留最后正确版本。Magpie 回退 SKU 才保留旧的 3425 端口复用、下载和恢复出厂路径。
@@ -89,6 +89,40 @@ Agent 在回合结束后自己续跑（它起的后台指令回来了，触发�
 - **模型目录与显示管理**：统一按来源分组原生和共享模型，只有「接口主机 + 凭证」确认同一账号的入口才合并（agent 自带 provider、Grok 的 `[model.*]` 表、引擎目录会并成一组，标题用 agent 的厂商名）；订阅登录态（Codex 的 ChatGPT、Grok 的 xAI）同样只算一个账号——拥有登录文件的 agent 整份目录并入引擎分组，另一个 agent 复制的同一 OAuth 登录（OpenCode 的 `openai`）按 `accountId` 判重后不再单列；模型名相同但主机或凭证不同的条目保留。合并前保存的隐藏与排序按旧标识迁移。模型菜单底部的「配置模型与来源…」与模型共享浮层里的「模型与来源 · 显示和排序…」都打开这一页，可分别隐藏 provider / 模型、调整 provider / 组内模型顺序、恢复默认；大来源默认收起、排序箭头悬停才出现；保存到 `~/.marionette/model-library.json`，多个窗口同步，隐藏不影响已有会话。扫描 Grok / Pi / OpenCode / Codex / Claude 的用户自定义接口，保留原配置引用，经引擎供其他已接桥 agent 使用；扫描位置与失败原因可在凭据页查看。「添加密钥」支持自定义 Chat Completions / Responses / Anthropic 接口和显式模型 ID。范围与使用说明见 [模型与来源](./guides/model-library.md)。
 - **卫生**：删除凭据条目会从引擎回收对应 provider（注册账本对账）；30 分钟无绑定且无需求的空闲引擎自动停线程，任何跨用入口（菜单/绑定/按钮/启动）自动唤醒。Rust 账本独立写 `engine-usage.jsonl`，首次打开只迁移旧文件里能严格识别的 Rust 行，不触碰 Magpie 的 `usage.jsonl`。
 - 安全底线不变：明文 key 只进子进程 env / owned-section / 进程内登记链，绝不进日志与 agent 配置；扫描只读；外站网页 Origin 调本地网关返回 403。
+
+## Google Antigravity agent（2026-11-19，M0–M3 落地）
+
+Google 官方 `agy_acp_server`（dl.google.com 二进制 zip，非 npm）作为内置 agent（id `antigravity`）。
+完整事实与实测：`docs/research/research-antigravity.md`；方案与偏差：`docs/plans/plan-antigravity.md`。
+
+- **安装**：agent 菜单一键下载（registry 版本优先 + sha256 校验，离线回退 pin 1.5.0），
+  落 `~/.marionette/agents/antigravity-acp/<version>/<platform>/`；`agy_acp_server.exe` 与
+  `localharness_external.exe` 必须**同目录成对**（缺后者=握手正常但 agent 死，安装与读侧
+  双重校验）。spawn 优先安装目录，PATH 手装其次。解压走系统 `tar.exe`（回退 PowerShell），
+  **不加 zip crate**（Cargo.toml 红线）。
+- **认证**：spawn 前把 `auth.type:"oauth-personal"`（免费档默认）同步进
+  `<GEMINI_HOME>/antigravity-acp/settings.json`（单 key RMW、strict JSON fail-closed）；
+  `GEMINI_HOME` 指 `.gemini` 目录**本身**（与 Gemini CLI 的 `GEMINI_CLI_HOME` 相反），未设时
+  默认 `~/.gemini`。settings 写好后 `session/new` 直接成功，OAuth 由 server 自己触发（弹浏览器 +
+  stderr 打授权 URL）；浏览器没弹时对话里出现「等待 Google 授权」通知卡兜底（URL 可选中复制）。
+  登录探测 = `acp_token.json` 存在性。
+- **scratch 红线**：Windows 构建是 PyInstaller onefile，**每次启动解压 ~100MB 进 %TEMP% 且杀树
+  不清**（1.5.0 实测 ~90-150MB/次）——spawn 时 `TMP/TEMP/TMPDIR` 重定向进
+  `~/.marionette/scratch/antigravity/<sessionId>`，stop/stdout-EOF 两处树死回收 + 启动清扫孤儿。
+  **只对此 agent 开**（借走 TMP 会污染用户 Git Bash 的 /tmp）。
+- **探测防执行**：`installed_version`/`--version` 类探测对 `agy_acp_server` **永不执行**
+  （stem 精确匹配，大小写/路径/可选 .exe 归一）——连 `--version` 都先整包解压。版本显示来自
+  安装目录名；升级链查 ACP registry（`cdn.agentclientprotocol.com`），URL 模板不符（Google 改名）
+  = 不提供升级。
+- **usage 回填 + 历史导入**：`parsers/antigravity.rs`（prost 手写 protobuf 子集，字段号对
+  1.5.0 实测钉死：type 14=user/15=planner、metadata 1=created/9=usage/24=model）+
+  `usage_backfill/antigravity.rs`（db 文件名即 ACP sessionId，去重锚天然对上；usage 四桶
+  input/output/cache_write/cache_read/thought 与 ACP 侧实测吻合）。0 字节库=正常空会话。
+- **turn 边界**：不发 `turn/complete` 通知，但 `session/prompt` 响应自带 stopReason+usage——
+  走 acp.rs 既有「prompt 响应即回合完成」路径，回合/记账正常，无需 re-entry 兜底。
+- **存量回收**：`antigravity_scan_leaked_temp` / `antigravity_reclaim_leaked_temp` 命令
+  （15 分钟年龄 + CreateFileW share-none 非变异存活探测 + 重校验），诊断清单报数量/体积。
+- 回归：`cargo test --bin marionette antigravity`（15 项 + 2 个 #[ignore] 真库/真网 oracle）。
 
 ## 交付卡（每轮改动的口径）
 

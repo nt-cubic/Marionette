@@ -691,6 +691,8 @@ fn main() {
             commands::write_transcript,
             commands::load_transcript,
             commands::probe_agent_auth,
+            commands::antigravity_scan_leaked_temp,
+            commands::antigravity_reclaim_leaked_temp,
             commands::memory_get,
             commands::memory_set_enabled,
             commands::memory_add,

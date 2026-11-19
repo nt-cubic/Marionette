@@ -3,6 +3,7 @@
 //! Scan is filtered to a single Marionette project root. Unknown directories
 //! never become projects.
 
+pub(crate) mod antigravity;
 mod claude;
 mod cline;
 mod codex;
@@ -89,6 +90,7 @@ fn make_parser(source: &str) -> Option<Box<dyn AgentParser>> {
         "cursor" => Box::new(cursor::CursorParser),
         "deepseek" => Box::new(deepseek::DeepSeekParser),
         "zcode" => Box::new(zcode::ZcodeParser),
+        "antigravity" => Box::new(antigravity::AntigravityParser::new()),
         _ => return None,
     })
 }
@@ -108,6 +110,7 @@ const SOURCES: &[&str] = &[
     "cursor",
     "deepseek",
     "zcode",
+    "antigravity",
 ];
 
 /// Each parser runs on its own thread. One source failing does not fail the rest.
