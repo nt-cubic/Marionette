@@ -905,21 +905,6 @@ mod tests {
         }
     }
 
-    fn fake_plugin() -> PluginRecord {
-        PluginRecord {
-            id: "fake".into(),
-            transport: "stdio".into(),
-            command: "unused-in-tests".into(),
-            args: vec![],
-            env: HashMap::new(),
-            url: String::new(),
-            headers: HashMap::new(),
-            enabled: true,
-            added_at: String::new(),
-            last_probe: None,
-        }
-    }
-
     /// Wire attach() to a scripted fake child; returns the hosted handle.
     /// The fake answers initialize → tools/list → tools/call, optionally
     /// failing one method with a plugin-side JSON-RPC error, and can inject a

@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use std::io::Write;
 use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub(super) fn request(process: &Arc<AcpProcess>, method: &str, params: Value) -> Result<Value, String> {
     request_with_timeout(process, method, params, Duration::from_secs(60), false)

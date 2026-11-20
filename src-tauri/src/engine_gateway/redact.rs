@@ -1507,7 +1507,7 @@ mod tests {
     }
 
     #[test]
-    fn phone_field_names_decide_by_phoneName() {
+    fn phone_field_names_decide_by_phone_name() {
         // 字段形态（fieldName，phone.go:100）：字段名带电话词才是电话
         let body = r#"{"phone":"13800138000","mobileNo":"13912345678"}"#;
         let out = String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap();

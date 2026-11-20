@@ -604,6 +604,7 @@ fn tool_schemas_for_session(session_id: &str) -> Value {
 // are deliberately absent; the tests pin coverage both ways.
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 pub const HELP_TOPICS: &[&str] = &[
     "overview", "refs", "snapshot", "actions", "tabs", "handoff", "waits", "batch",
 ];
@@ -1374,7 +1375,7 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
                     &mut final_generation,
                 );
                 match record {
-                    Ok(mut record) => {
+                    Ok(record) => {
                         if record.get("error").and_then(Value::as_str) == Some("stale") {
                             generation_valid = false;
                         }

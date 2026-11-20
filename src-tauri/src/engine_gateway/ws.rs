@@ -1006,7 +1006,7 @@ mod tests {
                 let Ok(mut stream) = stream else { continue };
                 serve_upgrade(&mut stream);
                 // 一个回合后以 1009 关闭并断开（后端 message too big 的形状）。
-                while let Some((op, payload)) = read_client_frame(&mut stream) {
+                while let Some((op, _payload)) = read_client_frame(&mut stream) {
                     if op == OP_CLOSE {
                         break;
                     }

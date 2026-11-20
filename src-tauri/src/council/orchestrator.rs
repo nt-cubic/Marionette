@@ -915,11 +915,11 @@ fn fan_out(
             let tx = tx.clone();
             scope.spawn(move || {
                 if job.intent == Intent::Skip {
-                    let _ = tx.send(FanResult::Skipped(job.member_id));
+                    let _ = tx.send(FanResult::Skipped);
                     return;
                 }
                 if handle.cancel.load(Ordering::SeqCst) || handle.pause.load(Ordering::SeqCst) {
-                    let _ = tx.send(FanResult::Skipped(job.member_id));
+                    let _ = tx.send(FanResult::Skipped);
                     return;
                 }
                 sem.acquire();
@@ -938,7 +938,7 @@ fn fan_out(
                 break;
             }
             match res {
-                FanResult::Skipped(_) => {}
+                FanResult::Skipped => {}
                 FanResult::Ok(member_id, out, prompt_chars) => {
                     ok_count += 1;
                     state.budget_usage.requests += 1;
@@ -972,7 +972,7 @@ fn fan_out(
 }
 
 enum FanResult {
-    Skipped(String),
+    Skipped,
     Ok(String, WorkerOutput, usize),
     Err(String, String),
 }
@@ -1580,10 +1580,6 @@ mod tests {
     }
 
     impl ModelClient for CrashOnFirstCritique {
-        fn name(&self) -> &'static str {
-            "crash-on-first-critique"
-        }
-
         fn complete(&self, req: &WorkerRequest) -> Result<WorkerOutput, String> {
             // 质询 prompt 独有特征串(prompts.rs critique_prompt);只武装
             // 一次——resume 起的第二条 run 的质询调用必须正常应答。
@@ -1791,7 +1787,7 @@ mod tests {
         let mock = Arc::new(MockClient::new());
         mock.enqueue(&spec.members[1].model, vec![plan_v2_json.to_string()]); // chair = members[1]
 
-        let harness = Arc::new(crate::council::executor::ScriptedHarness { timeout_secs: 30 });
+        let harness = Arc::new(crate::council::executor::ScriptedHarness);
         start_run(
             CouncilEventEmitter::new(None),
             spec.run_id.clone(),
@@ -1859,7 +1855,7 @@ mod tests {
         let same_plan_json = r#"{"summary":"v","steps":[{"id":"s1","title":"写","detail":"WRITE out.txt|bad","dependsOn":[],"acceptance":"含 good"}],"verification":["cmd /C exit 1"]}"#;
         let mock = Arc::new(MockClient::new());
         mock.enqueue(&spec.members[1].model, vec![same_plan_json.to_string()]);
-        let harness = Arc::new(crate::council::executor::ScriptedHarness { timeout_secs: 30 });
+        let harness = Arc::new(crate::council::executor::ScriptedHarness);
         start_run(
             CouncilEventEmitter::new(None),
             spec.run_id.clone(),
@@ -2031,7 +2027,7 @@ mod tests {
         let plan_v2_json = r#"{"summary":"v2 换安全验证","steps":[{"id":"s1","title":"写文件","detail":"WRITE out.txt|good","dependsOn":[],"acceptance":"含 good"}],"verification":["cmd /C exit 0"]}"#;
         let mock = Arc::new(MockClient::new());
         mock.enqueue(&spec.members[1].model, vec![plan_v2_json.to_string()]);
-        let harness = Arc::new(crate::council::executor::ScriptedHarness { timeout_secs: 30 });
+        let harness = Arc::new(crate::council::executor::ScriptedHarness);
         start_run(
             CouncilEventEmitter::new(None),
             spec.run_id.clone(),
@@ -2055,7 +2051,7 @@ mod tests {
             &spec.run_id,
             true,
             Some("我确认这条命令"),
-            RunClients { model: Some(mock.clone()), harness: Some(Arc::new(crate::council::executor::ScriptedHarness { timeout_secs: 30 })) },
+            RunClients { model: Some(mock.clone()), harness: Some(Arc::new(crate::council::executor::ScriptedHarness)) },
         )
         .unwrap();
         wait_phase(&spec.run_id, RunPhase::Completed, 120_000);
@@ -2111,7 +2107,7 @@ mod tests {
         let plan_v2_json = r#"{"summary":"v2 去掉危险命令","steps":[{"id":"s1","title":"写文件","detail":"WRITE out.txt|good","dependsOn":[],"acceptance":"含 good"}],"verification":["cmd /C exit 0"]}"#;
         let mock = Arc::new(MockClient::new());
         mock.enqueue(&spec.members[1].model, vec![plan_v2_json.to_string()]);
-        let harness = Arc::new(crate::council::executor::ScriptedHarness { timeout_secs: 30 });
+        let harness = Arc::new(crate::council::executor::ScriptedHarness);
         start_run(
             CouncilEventEmitter::new(None),
             spec.run_id.clone(),
@@ -2126,7 +2122,7 @@ mod tests {
             &spec.run_id,
             false,
             None,
-            RunClients { model: Some(mock.clone()), harness: Some(Arc::new(crate::council::executor::ScriptedHarness { timeout_secs: 30 })) },
+            RunClients { model: Some(mock.clone()), harness: Some(Arc::new(crate::council::executor::ScriptedHarness)) },
         )
         .unwrap();
         wait_phase(&spec.run_id, RunPhase::Completed, 120_000);

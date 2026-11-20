@@ -54,6 +54,7 @@ pub struct StaffTaskCounts {
     pub total: u32,
 }
 
+#[allow(dead_code)]
 impl StaffTaskCounts {
     pub fn active(self) -> u32 {
         self.proposed
@@ -83,6 +84,7 @@ pub struct StaffStatus {
     pub stale: bool,
 }
 
+#[allow(dead_code)]
 impl StaffStatus {
     pub fn is_stale_at(&self, now: u64, after_ms: u64) -> bool {
         self.display_state.is_active()
@@ -101,6 +103,7 @@ pub fn project_status(staff_id: &str, tasks: &[Task], now: u64) -> StaffStatus {
 }
 
 /// 兼容更明确的调用命名。
+#[allow(dead_code)]
 pub fn project_staff_status(staff_id: &str, tasks: &[Task], now: u64) -> StaffStatus {
     project_status(staff_id, tasks, now)
 }

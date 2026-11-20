@@ -28,8 +28,10 @@ static ROOT_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
 /// chief 账本的单写者锁（config / tasks / events 都走它）。
 static STORE_LOCK: Mutex<()> = Mutex::new(());
 /// 测试串行锁：store 与 broker 的测试共用（进程级静态，override 互踩）。
+#[cfg(test)]
 pub(crate) static SANDBOX_LOCK: Mutex<()> = Mutex::new(());
 
+#[cfg(test)]
 pub fn set_root_override_for_tests(path: Option<PathBuf>) {
     if let Ok(mut slot) = ROOT_OVERRIDE.lock() {
         *slot = path;
@@ -161,6 +163,7 @@ pub fn save_tasks(tasks: &[Task]) -> Result<(), String> {
     crate::storage::write_atomic(&path, &encode_tasks(tasks))
 }
 
+#[cfg(test)]
 pub fn find_by_request_id(request_id: &str) -> Option<Task> {
     load_tasks()
         .into_iter()
@@ -273,6 +276,7 @@ pub fn load_events_for_task(task_id: &str) -> Vec<TaskEvent> {
 }
 
 /// 读全部事件（唤醒队列重建 / 审计用）。
+#[cfg(test)]
 pub fn load_all_events() -> Vec<TaskEvent> {
     let path = match events_path() {
         Ok(path) => path,

@@ -1603,7 +1603,7 @@ const SOURCE_LIVE_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from
 fn maybe_refresh_source_live(exe: &Path, id: &str, force: bool, changed: &mut bool) {
     static NEXT_DUE: OnceLock<Mutex<std::collections::HashMap<String, Instant>>> = OnceLock::new();
     {
-        let Ok(mut due_map) = NEXT_DUE
+        let Ok(due_map) = NEXT_DUE
             .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
             .lock()
         else {

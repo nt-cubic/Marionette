@@ -26,6 +26,7 @@ static REGISTRY_LOCK: Mutex<()> = Mutex::new(());
 static ROOT_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// 测试沙箱覆写；生产路径始终来自 `app_paths::global_dir()`.
+#[cfg(test)]
 pub fn set_root_override_for_tests(path: Option<PathBuf>) {
     if let Ok(mut slot) = ROOT_OVERRIDE.lock() {
         *slot = path;
@@ -354,6 +355,8 @@ impl Default for StaffRegistry {
     }
 }
 
+// 注册表 CRUD 尚未全部接线；接上消费点后删除本属性（惯例同 credentials.rs）。
+#[allow(dead_code)]
 impl StaffRegistry {
     pub fn new() -> Self {
         Self::default()
@@ -740,10 +743,12 @@ pub fn with_registry<T>(
     Ok(result)
 }
 
+#[allow(dead_code)]
 pub fn load_registry() -> StaffRegistry {
     load()
 }
 
+#[allow(dead_code)]
 pub fn save_registry(registry: &StaffRegistry) -> Result<(), String> {
     save(registry)
 }

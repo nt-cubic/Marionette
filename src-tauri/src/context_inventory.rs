@@ -572,6 +572,7 @@ pub(crate) fn parse_skill_front_matter(text: &str) -> (Option<String>, Option<St
 }
 
 /// pub(crate)（仅测试跨模块用）：见 Collector。
+#[cfg(test)]
 pub(crate) fn scan_skills_dir_for_test(
     dir: &Path,
     source: &str,

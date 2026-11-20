@@ -1446,7 +1446,7 @@ mod tests {
         let inner = outer.join("inner");
         std::fs::create_dir_all(&inner).expect("inner");
         std::fs::write(inner.join(".git"), "not a gitdir file\n").expect("git file");
-        let (r, rem, ok5) = open_code_repository(inner.to_str().unwrap());
+        let (_r, rem, ok5) = open_code_repository(inner.to_str().unwrap());
         assert!(!ok5, "坏 .git 文件不是「回到 outer 的 remote」，是直接不是 repo");
         assert!(rem.is_empty());
         let _ = std::fs::remove_dir_all(&root);

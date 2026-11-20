@@ -8,8 +8,11 @@
 //! 端口永不缓存:`engine::running_base()` 每次现查(引擎端口会漂移,
 //! 见 engine.rs:22 的注释)。
 
+#[cfg(test)]
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use std::collections::VecDeque;
+#[cfg(test)]
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -24,7 +27,8 @@ pub struct WorkerRequest {
 #[derive(Clone, Debug, Default)]
 pub struct WorkerOutput {
     pub content: String,
-    /// prompt+output 字符数,预算估算用。
+    /// prompt+output 字符数,预算估算用（读侧未接线,保留 allow）。
+    #[allow(dead_code)]
     pub prompt_chars: usize,
     pub output_chars: usize,
 }
@@ -33,7 +37,6 @@ pub struct WorkerOutput {
 /// 测试 = `MockClient`(脚本化响应,按 model id 区分,验收 #1/#14 的
 /// mock/live 区分点)。
 pub trait ModelClient: Send + Sync {
-    fn name(&self) -> &'static str;
     fn complete(&self, req: &WorkerRequest) -> Result<WorkerOutput, String>;
 }
 
@@ -52,10 +55,6 @@ impl Default for EngineClient {
 }
 
 impl ModelClient for EngineClient {
-    fn name(&self) -> &'static str {
-        "engine"
-    }
-
     fn complete(&self, req: &WorkerRequest) -> Result<WorkerOutput, String> {
         let (port, _version) = crate::engine::running_base()
             .ok_or_else(|| "模型共享引擎未运行(无法发起 Council 模型调用)".to_string())?;
@@ -114,6 +113,7 @@ impl ModelClient for EngineClient {
 
 /// 测试用脚本化客户端:按 model id 排队弹出响应;队列为空 → 错误
 /// (模拟失败注入)。记录全部调用供断言(哪些模型收到了什么)。
+#[cfg(test)]
 pub struct MockClient {
     /// model id → 响应队列(循环弹出)。
     scripts: Mutex<std::collections::HashMap<String, VecDeque<String>>>,
@@ -123,12 +123,14 @@ pub struct MockClient {
     pub calls: Mutex<Vec<MockCall>>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MockCall {
     pub model: String,
     pub prompt: String,
 }
 
+#[cfg(test)]
 impl MockClient {
     pub fn new() -> Self {
         MockClient {
@@ -159,17 +161,15 @@ impl MockClient {
     }
 }
 
+#[cfg(test)]
 impl Default for MockClient {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(test)]
 impl ModelClient for MockClient {
-    fn name(&self) -> &'static str {
-        "mock"
-    }
-
     fn complete(&self, req: &WorkerRequest) -> Result<WorkerOutput, String> {
         self.calls
             .lock()

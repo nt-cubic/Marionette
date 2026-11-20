@@ -1,3 +1,4 @@
+#[cfg(test)]
 use agent_client_protocol_schema::v1 as acp_schema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

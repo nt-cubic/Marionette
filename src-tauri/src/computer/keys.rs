@@ -6,7 +6,10 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     Window,
+    /// 生产路径目前只发 Window；App/Screen 分支由测试构造覆盖。
+    #[allow(dead_code)]
     App,
+    #[allow(dead_code)]
     Screen,
 }
 

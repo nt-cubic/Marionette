@@ -92,9 +92,7 @@ impl TaskHarness for AcpHarness {
 /// 脚本化 harness:按 step_id 给结果;同时执行文件写动作模拟真实编码
 /// (验收 #10 用:两个并行任务写同一文件 → 合并冲突)。
 #[cfg(test)]
-pub struct ScriptedHarness {
-    pub timeout_secs: u64,
-}
+pub struct ScriptedHarness;
 
 #[cfg(test)]
 impl TaskHarness for ScriptedHarness {
@@ -378,7 +376,7 @@ mod tests {
         ]);
         let mut tasks = crate::council::tasks::build_task_progress(&plan).unwrap();
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        let harness = ScriptedHarness { timeout_secs: 30 };
+        let harness = ScriptedHarness;
         let ctx = ExecuteContext {
             run_id: "testconflict",
             project_root: root.clone(),
@@ -427,7 +425,7 @@ mod tests {
         ]);
         let mut tasks = crate::council::tasks::build_task_progress(&plan).unwrap();
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        let harness = ScriptedHarness { timeout_secs: 30 };
+        let harness = ScriptedHarness;
         let ctx = ExecuteContext {
             run_id: "testclean",
             project_root: root.clone(),
@@ -463,7 +461,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        let harness = ScriptedHarness { timeout_secs: 30 };
+        let harness = ScriptedHarness;
         let ctx = ExecuteContext {
             run_id: "testfail",
             project_root: root.clone(),
