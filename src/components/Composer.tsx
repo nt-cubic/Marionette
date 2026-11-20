@@ -163,6 +163,8 @@ type ComposerProps = {
   } | null;
   /** Parent may discard the one-shot injection after it has been merged. */
   onImageAttachmentInjectionApplied?: (token: number) => void;
+  /** Unsent pills restored after this dialog's Composer was unmounted. */
+  initialImageAttachments?: ImageAttachment[];
   /** Mirrors unsent image pills so an external annotator can reopen their marks. */
   onImageAttachmentsChange?: (sessionId: string, attachments: ImageAttachment[]) => void;
   /** Disk prefs for this dialog — restored when caps advertise the option. */
@@ -629,6 +631,7 @@ export function Composer({
   prefillToken = 0,
   imageAttachmentInjection = null,
   onImageAttachmentInjectionApplied,
+  initialImageAttachments = [],
   onImageAttachmentsChange,
   sessionPrefs = null,
   onSessionPrefsChange,
@@ -730,7 +733,12 @@ export function Composer({
   const [modelQuery, setModelQuery] = useState("");
   const [draft, setDraft] = useState(() => readDraftCache(sessionId));
   /** Image attachments as Codex-style pills (not raw paths in the textarea). */
-  const [imageAttachments, setImageAttachments] = useState<ImageAttachment[]>([]);
+  const [imageAttachments, setImageAttachments] = useState<ImageAttachment[]>(() =>
+    initialImageAttachments.map((attachment) => ({
+      ...attachment,
+      marks: attachment.marks ?? [],
+    })),
+  );
   const attachmentsRef = useRef<HTMLDivElement>(null);
   /**
    * Height the attachment pills add inside .composer__field. The field's

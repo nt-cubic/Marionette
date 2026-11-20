@@ -1138,7 +1138,7 @@ function AppMain() {
     token: number;
     attachments: ImageAttachment[];
   } | null>(null);
-  /** Unsent pills in each Composer; viewer annotation must start from these marks. */
+  /** Unsent pills by session: restored across Composer remounts and reused by annotators. */
   const [composerImageAttachmentsBySession, setComposerImageAttachmentsBySession] = useState<
     Record<string, ImageAttachment[]>
   >({});
@@ -10263,6 +10263,7 @@ function AppMain() {
               current?.token === token ? null : current,
             );
           }}
+          initialImageAttachments={composerImageAttachmentsBySession[session.id] ?? []}
           onImageAttachmentsChange={handleComposerImageAttachmentsChange}
           sessionPrefs={{
             preferredModel: session.preferredModel,
