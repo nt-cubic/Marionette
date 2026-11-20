@@ -707,6 +707,81 @@ export function parseClaudeUsageText(text: string): UsageWindow[] {
   return out;
 }
 
+function antigravityBucketLabel(raw: string): string {
+  const cleaned = raw
+    .replace(/\s+limit\s+remaining$/i, "")
+    .replace(/\s+remaining$/i, "")
+    .replace(/\s+limit$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const hours = /^(\d+)\s*hours?$/i.exec(cleaned);
+  return hours ? `${hours[1]}-hour` : cleaned;
+}
+
+/**
+ * Parse Antigravity ACP's `/usage` markdown.
+ *
+ * Live shape (antigravity-acp 1.5.0):
+ *   ### Quota Limits
+ *   - **Gemini Models**
+ *     - **Weekly Limit Remaining:** 91% remaining (resets Oct 02, 2026)
+ *   - **Claude and GPT models**
+ *     - **Weekly Limit Remaining:** 100% remaining
+ *
+ * Antigravity prints what is left; Marionette's quota UI stores used %, so
+ * every `remaining` row is inverted exactly as Codex's `/status` rows are.
+ */
+export function parseAntigravityUsageText(text: string): UsageWindow[] {
+  const marker = /^###\s+Quota Limits\s*$/im.exec(text);
+  if (!marker || !text.includes("%")) return [];
+  const section = text
+    .slice(marker.index + marker[0].length)
+    .split(/^###\s+/m)[0] ?? "";
+  const out: UsageWindow[] = [];
+  let groupName = "Antigravity";
+
+  for (const line of section.split(/\r?\n/)) {
+    const bucket = /^\s{2,}-\s+\*\*([^*]+):\*\*\s*(.*)$/.exec(line);
+    if (bucket) {
+      const rawBucket = bucket[1]!.trim();
+      const rest = bucket[2]!.trim();
+      const pct = /(\d+(?:\.\d+)?)\s*%\s*(remaining|left|used)/i.exec(rest);
+      if (!pct) continue;
+      const value = Number(pct[1]);
+      if (!Number.isFinite(value)) continue;
+      const mode = pct[2]!.toLowerCase();
+      const used = mode === "used" ? value : 100 - value;
+      const resetRaw = /\bresets?\s+(.+?)(?:\)|$)/i.exec(rest)?.[1]?.trim();
+      const bucketLabel = antigravityBucketLabel(rawBucket) || "Limit";
+      const groupLabel = groupName
+        .replace(/\s+models?\s*$/i, "")
+        .replace(/\band\b/gi, "&")
+        .replace(/\s+/g, " ")
+        .trim();
+      const idPart = `${groupLabel}-${bucketLabel}`
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+      out.push({
+        id: `antigravity-${idPart || "quota"}`,
+        label: groupLabel ? `${groupLabel} \u00b7 ${bucketLabel}` : bucketLabel,
+        percentage: Math.max(0, Math.min(100, Math.round(used * 10) / 10)),
+        detail: [
+          `${Math.round(value * 10) / 10}% ${mode === "used" ? "used" : "left"}`,
+          resetRaw ? `resets ${resetRaw}` : null,
+        ]
+          .filter(Boolean)
+          .join(" \u00b7 "),
+        kind: "rate_limit",
+      });
+      continue;
+    }
+    const group = /^-\s+\*\*([^*]+)\*\*\s*$/.exec(line);
+    if (group) groupName = group[1]!.trim();
+  }
+  return out;
+}
+
 /**
  * Parse Codex `/status` markdown lines, e.g.
  * `**5h limit:** 42% left · resets at …`
@@ -1173,6 +1248,7 @@ export function mergeUsageFromText(
   const rateWindows = [
     ...parseCodexStatusRateLimits(text),
     ...parseClaudeUsageText(text),
+    ...parseAntigravityUsageText(text),
     ...parseGrokCostText(text),
   ];
   if (rateWindows.length === 0) return null;
@@ -1420,6 +1496,7 @@ export function buildUsageSnapshot(args: {
     agentId === "codex" ||
     agentId === "claude-code" ||
     agentId === "claude" ||
+    agentId === "antigravity-acp" ||
     isGrok;
   const byId = new Map(rateWindows.map((w) => [w.id, w]));
   // Don't duplicate ids already shown from provider probe (Go 5h/weekly).

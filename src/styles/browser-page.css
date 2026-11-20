@@ -238,13 +238,6 @@
   flex: 0 0 auto;
 }
 
-/* Annotate-mode crosshair: glows while the page picker runs. */
-.browser-page__pick.is-active {
-  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-}
-
 .browser-page__share-btn {
   display: inline-flex;
   align-items: center;
@@ -453,6 +446,7 @@
 .browser-page__picker-head {
   flex: 0 0 auto;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 5px 8px;
@@ -461,10 +455,12 @@
 
 .browser-page__picker-modes {
   display: inline-flex;
+  flex: 0 0 auto;
   gap: 4px;
 }
 
 .browser-page__picker-mode {
+  white-space: nowrap;
   height: 22px;
   padding: 0 7px;
   border-radius: var(--radius-sm, 3px);
@@ -622,11 +618,19 @@
 .browser-page__picker-foot {
   flex: 0 0 auto;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
   padding: 6px 8px;
   border-top: 1px solid var(--border);
+}
+
+/* Small icon buttons have a fixed width; text buttons need their own width. */
+.browser-page .pill-action--sm:not(.pill-action--icon) {
+  width: auto;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .browser-page__picker-send {

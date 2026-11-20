@@ -195,9 +195,10 @@ pub fn check_for_update() -> AppUpdateInfo {
         .map(|s| {
             let t = s.trim();
             // Cap by UTF-8 bytes without splitting a multi-byte character —
-            // release notes often contain CJK/emoji; `&t[..400]` panics mid-codepoint.
-            if t.len() > 400 {
-                let mut end = 400;
+            // release notes often contain CJK/emoji; slicing at an arbitrary byte
+            // boundary would panic. Keep enough room for the full release notes.
+            if t.len() > 64 * 1024 {
+                let mut end = 64 * 1024;
                 while end > 0 && !t.is_char_boundary(end) {
                     end -= 1;
                 }

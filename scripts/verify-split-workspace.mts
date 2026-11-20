@@ -12,6 +12,8 @@ import {
   TAB_DETACH_SLOP_PX,
   activateTab,
   addTabToPane,
+  activateTabInPlaceOrFocused,
+  focusPane,
   adoptExternalSession,
   assertInvariants,
   clientPointFromScreen,
@@ -217,6 +219,19 @@ check("focusSession inserts into the focused pane when missing", () => {
   const after = expectTree(focusSession(split, "Z"));
   assert.equal(paneOfSession(after, "Z")?.id, "pane-2");
   assert.equal(focusedSessionId(after), "Z");
+});
+
+check("automatic browser activation preserves its pane and tab position", () => {
+  const split = splitPane(migrateFromFlat(["A", "B"], "A"), "pane-1", "right", "B");
+  const left = addTabToPane(split, "pane-1", "browser");
+  const focusedRight = focusPane(left, "pane-2");
+  const before = paneOfSession(focusedRight, "browser")!.tabIds;
+  const after = activateTabInPlaceOrFocused(focusedRight, "browser");
+  assert.equal(paneOfSession(after, "browser")?.id, "pane-1");
+  assert.deepEqual(paneOfSession(after, "browser")?.tabIds, before);
+  assert.equal(paneOfSession(after, "browser")?.activeTabId, "browser");
+  const withoutBrowser = activateTabInPlaceOrFocused(split, "browser");
+  assert.equal(paneOfSession(withoutBrowser, "browser")?.id, split.focusedPaneId);
 });
 
 check("addTabToPane on empty workspace fills the placeholder leaf", () => {

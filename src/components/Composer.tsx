@@ -4313,9 +4313,13 @@ export function Composer({
             <ImageAnnotator
               attachment={att}
               onClose={() => setAnnotatingId(null)}
-              onSave={(marks: ImageMark[]) => {
+              onSave={(marks: ImageMark[], cropped) => {
                 setImageAttachments((cur) =>
-                  cur.map((a) => (a.id === att.id ? { ...a, marks } : a)),
+                  cur.map((a) =>
+                    a.id === att.id
+                      ? { ...(cropped ?? a), id: a.id, marks }
+                      : a,
+                  ),
                 );
               }}
             />

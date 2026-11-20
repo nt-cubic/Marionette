@@ -3,6 +3,8 @@
 根目录的 GUI 双击入口只有 `..\start-marionette.bat`，其余脚本都在这里；根目录的另一个文件 `install.ps1` 是发布资产（一行安装器，`releases/latest/download/install.ps1` 靠它），属有意例外。
 本目录同时用来放本地二进制：`build-portable.bat` 会优先找 `upx.exe` 或 `upx\upx.exe`。
 
+右下角「检查更新」直接显示 GitHub 最新 Release 的正文，发布前请在对应的 `docs/releases/v<版本号>.md` 写好面向用户的更新日志。已有 tag 重传资产不会更新正文；需要修改已发布的日志时，另行编辑 GitHub Release 正文。
+
 | 脚本 | 用途 |
 |---|---|
 | `build-portable.bat` | 打便携版：内置引擎，产物在 `release\<版本号>\Marionette.exe`（按版本分目录，运行中的**旧版本**不会锁住新构建）。**同一版本号在跑时**（`Marionette.exe` 被占用）不再报错退场：自动降级写成 `release\<版本号>\Marionette (N).exe`（N 取最小空闲号，1–99）并照常 `exit 0`，且**不动** `current-build.txt`/快捷方式（指针必须留在 `publish-release` 会传的那份 canonical `Marionette.exe`）。下次关掉应用重跑即刷新 canonical。打开即拉起 magpie。默认会先 `import-magpie.ps1` 拉 **GitHub latest 稳定版** 再编。环境变量：`SKIP_UPX=1`（内嵌 magpie 仍需要 UPX）、`REQUIRE_UPX=1`、`INSTALL_UPX=1`、`NOPAUSE=1`、`SKIP_MAGPIE_IMPORT=1`（沿用已有 `third_party\magpie`）、`MAGPIE_TAG=v…`（钉死种子版本） |

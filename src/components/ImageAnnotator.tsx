@@ -2,18 +2,25 @@ import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPoi
 import { X } from "lucide-react";
 import {
   clamp01,
+  clampImageCropRect,
+  FULL_IMAGE_CROP,
+  isFullImageCrop,
   newMarkId,
+  remapMarksForCrop,
+  resizeImageCrop,
   type ImageAttachment,
+  type ImageCropHandle,
+  type ImageCropRect,
   type ImageMark,
 } from "../lib/imageAttachments";
-import { isTauriRuntime, readImageDataUrl } from "../lib/api";
+import { isTauriRuntime, readImageDataUrl, savePastedImage } from "../lib/api";
 import { useT } from "../lib/i18n";
 import { DialogShell } from "./DialogShell";
 
 type Props = {
   attachment: ImageAttachment;
   onClose: () => void;
-  onSave: (marks: ImageMark[]) => void;
+  onSave: (marks: ImageMark[], cropped?: ImageAttachment) => void;
   /** Replaces the footer action label when the result goes somewhere specific. */
   saveLabel?: string;
 };
@@ -24,6 +31,37 @@ type DragState = {
   curX: number;
   curY: number;
 };
+
+type CropDragState = {
+  handle: ImageCropHandle;
+  pointerId: number;
+  startPointerX: number;
+  startPointerY: number;
+  startRect: ImageCropRect;
+};
+
+const CROP_HANDLES: ImageCropHandle[] = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
+
+async function cropImageDataUrl(
+  dataUrl: string,
+  crop: ImageCropRect,
+): Promise<{ dataUrl: string; width: number; height: number }> {
+  const image = new Image();
+  image.src = dataUrl;
+  await image.decode();
+  const box = clampImageCropRect(crop);
+  const sx = Math.max(0, Math.min(image.naturalWidth - 1, Math.round(box.nx * image.naturalWidth)));
+  const sy = Math.max(0, Math.min(image.naturalHeight - 1, Math.round(box.ny * image.naturalHeight)));
+  const width = Math.max(1, Math.min(image.naturalWidth - sx, Math.round(box.nw * image.naturalWidth)));
+  const height = Math.max(1, Math.min(image.naturalHeight - sy, Math.round(box.nh * image.naturalHeight)));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas is unavailable");
+  ctx.drawImage(image, sx, sy, width, height, 0, 0, width, height);
+  return { dataUrl: canvas.toDataURL("image/png"), width, height };
+}
 
 /**
  * Full-screen image annotator: click = point, drag = rect, then write a comment.
@@ -40,13 +78,21 @@ export function ImageAnnotator({ attachment, onClose, onSave, saveLabel }: Props
   >(null);
   const [comment, setComment] = useState("");
   const [drag, setDrag] = useState<DragState | null>(null);
+  const [crop, setCrop] = useState<ImageCropRect>({ ...FULL_IMAGE_CROP });
+  const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [cropError, setCropError] = useState<string | null>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const commentRef = useRef<HTMLInputElement>(null);
+  const cropDragRef = useRef<CropDragState | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setError(null);
     setDataUrl(null);
+    setCrop({ ...FULL_IMAGE_CROP });
+    setImageSize(null);
+    setCropError(null);
     if (!isTauriRuntime()) {
       setError(t("v2dialogs.desktopOnly"));
       return;
@@ -78,8 +124,55 @@ export function ImageAnnotator({ attachment, onClose, onSave, saveLabel }: Props
     return { nx, ny };
   }, []);
 
+  const onCropPointerDown = (
+    e: ReactPointerEvent<HTMLButtonElement>,
+    handle: ImageCropHandle,
+  ) => {
+    if (e.button !== 0 || saving) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const { nx, ny } = clientToNorm(e.clientX, e.clientY);
+    cropDragRef.current = {
+      handle,
+      pointerId: e.pointerId,
+      startPointerX: nx,
+      startPointerY: ny,
+      startRect: crop,
+    };
+  };
+
+  const onCropPointerMove = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    const active = cropDragRef.current;
+    if (!active || active.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const { nx, ny } = clientToNorm(e.clientX, e.clientY);
+    setCrop(
+      resizeImageCrop(
+        active.startRect,
+        active.handle,
+        nx - active.startPointerX,
+        ny - active.startPointerY,
+      ),
+    );
+  };
+
+  const onCropPointerUp = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    const active = cropDragRef.current;
+    if (!active || active.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    cropDragRef.current = null;
+  };
+
   const onPointerDown = (e: ReactPointerEvent<HTMLImageElement>) => {
-    if (pending) return;
+    if (pending || saving) return;
     if (e.button !== 0) return;
     e.currentTarget.setPointerCapture(e.pointerId);
     const { nx, ny } = clientToNorm(e.clientX, e.clientY);
@@ -146,6 +239,42 @@ export function ImageAnnotator({ attachment, onClose, onSave, saveLabel }: Props
     setMarks((m) => m.filter((x) => x.id !== id));
   };
 
+  const cropChanged = !isFullImageCrop(crop);
+  const cropWidth = imageSize ? Math.max(1, Math.round(imageSize.width * crop.nw)) : 0;
+  const cropHeight = imageSize ? Math.max(1, Math.round(imageSize.height * crop.nh)) : 0;
+
+  const finishSave = async () => {
+    if (saving) return;
+    setSaving(true);
+    setCropError(null);
+    try {
+      let croppedAttachment: ImageAttachment | undefined;
+      let savedMarks = marks;
+      if (cropChanged && dataUrl) {
+        const result = await cropImageDataUrl(dataUrl, crop);
+        const saved = await savePastedImage(result.dataUrl, "image/png");
+        const base = attachment.name.replace(/\.[^.]+$/, "") || attachment.name;
+        croppedAttachment = {
+          id: attachment.id,
+          path: saved.path,
+          name: `${base}-cropped.png`,
+          mimeType: "image/png",
+          marks: [],
+        };
+        savedMarks = remapMarksForCrop(marks, crop);
+      }
+      onSave(savedMarks, croppedAttachment);
+      onClose();
+    } catch (err) {
+      setCropError(
+        t("annotator.cropFailed", {
+          message: err instanceof Error ? err.message : String(err),
+        }),
+      );
+      setSaving(false);
+    }
+  };
+
   const dragRect =
     drag &&
     (() => {
@@ -191,12 +320,42 @@ export function ImageAnnotator({ attachment, onClose, onSave, saveLabel }: Props
                   alt={attachment.name}
                   className="image-annotator__img"
                   draggable={false}
+                  onLoad={(e) =>
+                    setImageSize({
+                      width: e.currentTarget.naturalWidth,
+                      height: e.currentTarget.naturalHeight,
+                    })
+                  }
                   onPointerDown={onPointerDown}
                   onPointerMove={onPointerMove}
                   onPointerUp={onPointerUp}
                   onPointerCancel={() => setDrag(null)}
                 />
-                <div className="image-annotator__overlay" aria-hidden>
+                <div className="image-annotator__overlay">
+                  <div
+                    className={`image-annotator__crop${cropChanged ? " is-active" : ""}`}
+                    style={{
+                      left: `${crop.nx * 100}%`,
+                      top: `${crop.ny * 100}%`,
+                      width: `${crop.nw * 100}%`,
+                      height: `${crop.nh * 100}%`,
+                    }}
+                  >
+                    {CROP_HANDLES.map((handle) => (
+                      <button
+                        key={handle}
+                        type="button"
+                        className={`image-annotator__crop-handle is-${handle}`}
+                        title={t("annotator.cropHandle")}
+                        aria-label={t("annotator.cropHandle")}
+                        disabled={saving}
+                        onPointerDown={(event) => onCropPointerDown(event, handle)}
+                        onPointerMove={onCropPointerMove}
+                        onPointerUp={onCropPointerUp}
+                        onPointerCancel={onCropPointerUp}
+                      />
+                    ))}
+                  </div>
                   {marks.map((m, i) =>
                     m.kind === "point" ? (
                       <span
@@ -259,6 +418,26 @@ export function ImageAnnotator({ attachment, onClose, onSave, saveLabel }: Props
           </div>
 
           <aside className="image-annotator__side">
+            <div className="image-annotator__crop-panel">
+              <div className="image-annotator__crop-panel-head">
+                <strong>{t("annotator.cropTitle")}</strong>
+                <span>
+                  {imageSize
+                    ? t("annotator.cropSize", { w: cropWidth, h: cropHeight })
+                    : ""}
+                </span>
+              </div>
+              <p>{t("annotator.cropHint")}</p>
+              <button
+                type="button"
+                className="project-dialog__cancel"
+                disabled={!cropChanged || saving}
+                onClick={() => setCrop({ ...FULL_IMAGE_CROP })}
+              >
+                {t("annotator.cropReset")}
+              </button>
+              {cropError && <p className="image-annotator__error">{cropError}</p>}
+            </div>
             {pending ? (
               <div className="image-annotator__compose">
                 <div className="image-annotator__compose-meta">
@@ -344,12 +523,10 @@ export function ImageAnnotator({ attachment, onClose, onSave, saveLabel }: Props
           <button
             type="button"
             className="project-dialog__submit"
-            onClick={() => {
-              onSave(marks);
-              onClose();
-            }}
+            disabled={saving || !!error || !dataUrl}
+            onClick={() => void finishSave()}
           >
-            {saveLabel ?? t("annotator.done")}
+            {saving ? t("annotator.cropping") : saveLabel ?? t("annotator.done")}
           </button>
         </div>
     </DialogShell>

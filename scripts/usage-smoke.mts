@@ -24,6 +24,7 @@ import {
   mergeUsageFromAcp,
   mergeUsageFromPromptResult,
   mergeUsageFromText,
+  parseAntigravityUsageText,
   parseClaudeUsageText,
   parseCodexStatusRateLimits,
   parseGrokBilling,
@@ -156,6 +157,47 @@ check("Codex /status still parses as % left", () => {
   const rows = parseCodexStatusRateLimits("**5h limit:** 58% left");
   assert.equal(rows[0]?.percentage, 42);
   assert.deepEqual(parseClaudeUsageText("**5h limit:** 58% left"), []);
+});
+
+console.log("\nAntigravity /usage (ACP-markdown quota report)");
+
+const ANTIGRAVITY_USAGE = `### Session Usage
+- **Session total:** 1,200 tokens (prompt: 1,000, completion: 200)
+
+### Quota Limits
+- **Gemini Models**
+  - **Weekly Limit Remaining:** 91% remaining (resets Oct 02, 2026)
+- **Claude and GPT models**
+  - **Weekly Limit Remaining:** 100% remaining`;
+
+check("remaining % becomes used % for each Antigravity quota family", () => {
+  const rows = parseAntigravityUsageText(ANTIGRAVITY_USAGE);
+  assert.equal(rows.length, 2);
+  const gemini = rows.find((r) => r.id === "antigravity-gemini-weekly");
+  const claude = rows.find((r) => r.id === "antigravity-claude-gpt-weekly");
+  assert.equal(gemini?.percentage, 9, "91% remaining must render as 9% used");
+  assert.equal(claude?.percentage, 0, "100% remaining must render as 0% used");
+  assert.match(gemini?.detail ?? "", /91% left/);
+  assert.match(gemini?.detail ?? "", /resets Oct 02, 2026/);
+});
+
+check("Antigravity quota report reaches the live usage snapshot", () => {
+  const state = mergeUsageFromText(undefined, ANTIGRAVITY_USAGE);
+  assert.ok(state, "expected /usage text to produce usage state");
+  const snap = buildUsageSnapshot({
+    agentId: "antigravity-acp",
+    agentLabel: "Google Antigravity",
+    state: state!,
+    connected: true,
+  });
+  assert.equal(
+    snap.windows.find((w) => w.id === "antigravity-gemini-weekly")?.percentage,
+    9,
+  );
+  assert.equal(
+    snap.windows.find((w) => w.id === "antigravity-claude-gpt-weekly")?.percentage,
+    0,
+  );
 });
 
 console.log("\nsession/prompt result (the only usage Grok reports)");

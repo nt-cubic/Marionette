@@ -42,6 +42,7 @@ import { buildTurnDeliveries, type TurnDeliveryUnit } from "../lib/turnDelivery"
 import { modeTone } from "../lib/modeTone";
 import { diffTargetPath, isImagePath, isWorkspaceDiffPath, splitToolBody } from "../lib/toolBody";
 import {
+  activityRunStartedMs,
   activityRunUntilMs,
   activityTimeline,
   classifyToolCall,
@@ -3573,13 +3574,16 @@ function CleanPlaceholder({
             const live = liveItem != null || (unit.key === tailFoldKey && viewRunning);
             const open = activityFoldPins.get(unit.key) ?? false;
             const groups = groupConsecutiveByKind(unit.items);
+            const startedAtMs = activityRunStartedMs(unit.items, visibleEvents, session.id);
             const untilMs = activityRunUntilMs(unit.items, visibleEvents, session.id);
-            const timeline = open && !live ? activityTimeline(unit.items, undefined, untilMs) : null;
+            const timeline = open && !live
+              ? activityTimeline(unit.items, undefined, untilMs, startedAtMs)
+              : null;
             const liveIcon = <NineDotSpinner compact />;
             return (
               <ActivityPanel
                 key={unit.key}
-                summary={summarizeActivity(unit.items, { liveEvent, untilMs })}
+                summary={summarizeActivity(unit.items, { liveEvent, untilMs, startedAtMs })}
                 open={open}
                 live={live}
                 agentId={session.agentId}
@@ -3587,7 +3591,12 @@ function CleanPlaceholder({
                 cwd={session.cwd}
                 trace={live ? (
                   <>
-                    <LiveActivityTimeline items={unit.items} live untilMs={untilMs} />
+                    <LiveActivityTimeline
+                      items={unit.items}
+                      live
+                      untilMs={untilMs}
+                      startedAtMs={startedAtMs}
+                    />
                     <LiveThoughtPreview items={unit.items} thinking={liveEvent?.type === "thought"} />
                   </>
                 ) : null}

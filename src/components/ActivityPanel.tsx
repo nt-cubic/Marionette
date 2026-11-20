@@ -3,6 +3,7 @@ import {
   activitySpanLayout,
   activityTimeline,
   clipTeaser,
+  formatStepDuration,
   formatSpanDuration,
   LIVE_AXIS_FLOOR_MS,
   liveAxisMs,
@@ -10,6 +11,7 @@ import {
   tallyWord,
   toolKindVerb,
   type ActivitySummary,
+  type ActivityCommunicationSpan,
   type ActivityTimelineData,
   type ActivityDetailItem,
 } from "../lib/turnActivity";
@@ -142,12 +144,15 @@ export function LiveActivityTimeline({
   items,
   live = true,
   untilMs,
+  startedAtMs,
 }: {
   items: ActivityDetailItem[];
   /** When false the last live frame freezes — no clock, same occupancy. */
   live?: boolean;
   /** Reply (or other closer) that seals the last step after the run ends. */
   untilMs?: number;
+  /** User send anchor; exposes request latency before the first activity step. */
+  startedAtMs?: number;
 }) {
   const [now, setNow] = useState(() => Date.now());
   const t = useT();
@@ -156,7 +161,7 @@ export function LiveActivityTimeline({
     const timer = window.setInterval(() => setNow(Date.now()), 500);
     return () => window.clearInterval(timer);
   }, [live]);
-  const data = activityTimeline(items, live ? now : undefined, untilMs);
+  const data = activityTimeline(items, live ? now : undefined, untilMs, startedAtMs);
   if (!data) return null;
   return (
     <div className="activity-trace" role="group" aria-label={live ? t("trace.livePanel") : t("trace.panel")}>
@@ -223,10 +228,10 @@ export function ActivityKindGroup({
 }
 
 /**
- * Run timeline: one lane per kind (tally order), one bar per step on a
- * shared time axis. Native title tooltips keep it free of state. Live sits
- * in the trace slot; the same occupancy + 60s floor is used inside an
- * open historical fold.
+ * Run timeline: one communication lane when measured, then one lane per kind
+ * (tally order), all on the shared time axis. Native title tooltips keep it
+ * free of state. Live sits in the trace slot; the same occupancy + 60s floor
+ * is used inside an open historical fold.
  */
 export function ActivityTimeline({
   data,
@@ -238,8 +243,47 @@ export function ActivityTimeline({
 }) {
   const t = useT();
   const total = liveAxisMs(data.durationMs, axisFloorMs);
+  const communication = data.communication ?? [];
+  const communicationMs = communication.reduce(
+    (sum: number, span: ActivityCommunicationSpan) => sum + Math.max(0, span.end - span.start),
+    0,
+  );
   return (
     <div className="activity-timeline" role="img" aria-label={t("trace.timelineLabel", { span: formatSpanDuration(total) })}>
+      {communication.length > 0 && (
+        <div className="activity-timeline__lane is-communication">
+          <span className="activity-timeline__label">{t("trace.communication")}</span>
+          <span className="activity-timeline__track">
+            {communication.map((span, i) => {
+              const { leftPct, widthPct } = activitySpanLayout(span, total);
+              const reason = t(
+                span.reason === "send"
+                  ? "trace.communicationSend"
+                  : "trace.communicationTool",
+              );
+              return (
+                <i
+                  key={`${span.reason}-${i}`}
+                  className={`activity-timeline__span is-communication${span.open ? " is-open" : ""}`}
+                  style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+                  title={t("trace.communicationSpan", {
+                    reason,
+                    duration: formatStepDuration(span.end - span.start),
+                  })}
+                />
+              );
+            })}
+          </span>
+          <span
+            className="activity-timeline__count"
+            title={t("trace.communicationTotal", {
+              duration: formatStepDuration(communicationMs),
+            })}
+          >
+            {formatStepDuration(communicationMs)}
+          </span>
+        </div>
+      )}
       {data.lanes.map((bucket) => {
         const spans = data.spans.filter((span) => span.bucket === bucket);
         return (

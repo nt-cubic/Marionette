@@ -556,20 +556,26 @@
   position: fixed;
   right: 16px;
   bottom: 16px;
-  z-index: 35;
+  z-index: 9940;
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 10px;
-  align-items: center;
-  max-width: min(420px, calc(100vw - 32px));
-  padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  align-items: stretch;
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  padding: 14px;
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   background: var(--panel-raised);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3);
   color: var(--text);
   font-size: 12px;
 }
+
+.update-banner__status { font-weight: 600; }
+.update-banner__release { min-height: 0; display: flex; flex-direction: column; border-top: 1px solid var(--hairline); padding-top: 10px; }
+.update-banner__heading { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.update-banner__notes { overflow: auto; min-height: 0; max-height: min(50vh, 400px); overflow-wrap: anywhere; }
+.update-banner__empty { color: var(--text-muted); }
 
 .update-banner__actions {
   display: flex;

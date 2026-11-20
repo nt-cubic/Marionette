@@ -121,4 +121,9 @@ export const en = {
   "trace.thinkingNow": "Thinking",
   "trace.recentThought": "Latest thought",
   "trace.timelineLabel": "Run timeline, {span}",
+  "trace.communication": "comm wait",
+  "trace.communicationSend": "request sent -> first activity",
+  "trace.communicationTool": "tool result -> next response",
+  "trace.communicationSpan": "{reason} ({duration})",
+  "trace.communicationTotal": "Communication wait: {duration}",
 } satisfies Record<keyof typeof zh, string>;

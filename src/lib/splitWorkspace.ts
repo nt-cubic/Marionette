@@ -595,6 +595,15 @@ export function addTabToPane(
   return normalize({ root, focusedPaneId: paneId });
 }
 
+/** Automatic opens reuse an existing tab's pane instead of moving it. */
+export function activateTabInPlaceOrFocused(
+  state: SplitWorkspaceState,
+  tabId: string,
+): SplitWorkspaceState {
+  const existing = paneOfSession(state, tabId);
+  return addTabToPane(state, existing?.id ?? state.focusedPaneId, tabId);
+}
+
 export function moveTab(
   state: SplitWorkspaceState,
   sessionId: string,

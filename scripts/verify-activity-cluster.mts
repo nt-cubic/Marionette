@@ -7,7 +7,9 @@ import assert from "node:assert/strict";
 import type { SessionEvent } from "../src/lib/types.ts";
 import {
   clusterActivityRuns,
+  activityRunStartedMs,
   activityRunUntilMs,
+  ACTIVITY_COMMUNICATION_MIN_MS,
   activitySpanLayout,
   activitySpanWidthPct,
   activityTimeline,
@@ -224,6 +226,114 @@ check("the first streaming thought has a growing time bar before any tool arrive
   assert.equal(early.durationMs, 500);
   assert.equal(later.durationMs, 2500);
   assert.equal(activityTimeline(first)!.spans[0].open, false);
+});
+
+check("the user send anchor exposes latency before the first activity", () => {
+  const start = Date.parse("2026-10-24T12:00:00Z");
+  const user = {
+    type: "user_message" as const,
+    sessionId: "s",
+    text: "go",
+    createdAt: new Date(start).toISOString(),
+    sentAt: new Date(start + 100).toISOString(),
+  };
+  const first = {
+    event: { ...thought, createdAt: new Date(start + 3_100).toISOString() },
+    index: 1,
+  };
+  assert.equal(activityRunStartedMs([first], [user, first.event], "s"), start + 100);
+  const trace = activityTimeline([first], start + 5_000, undefined, start + 100)!;
+  assert.equal(trace.durationMs, 4_900);
+  assert.deepEqual(trace.communication, [
+    { start: 0, end: 3_000, reason: "send", open: false },
+  ]);
+  assert.equal(trace.spans[0]!.start, 3_000);
+});
+
+check("agent re-entry starts at the preceding reply, not the old user send", () => {
+  const start = Date.parse("2026-10-24T12:00:00Z");
+  const user = {
+    type: "user_message" as const,
+    sessionId: "s",
+    text: "go",
+    createdAt: new Date(start).toISOString(),
+  };
+  const reply = {
+    type: "assistant_message" as const,
+    sessionId: "s",
+    text: "first segment",
+    createdAt: new Date(start + 8_000).toISOString(),
+    endedAt: new Date(start + 10_000).toISOString(),
+  };
+  const resumed = {
+    event: { ...thought, createdAt: new Date(start + 13_000).toISOString() },
+    index: 2,
+  };
+  assert.equal(activityRunStartedMs([resumed], [user, reply, resumed.event], "s"), start + 10_000);
+  const trace = activityTimeline([resumed], start + 15_000, undefined, start + 10_000)!;
+  assert.deepEqual(trace.communication, [
+    { start: 0, end: 3_000, reason: "send", open: false },
+  ]);
+});
+
+check("tool completion to next model activity is communication wait", () => {
+  const start = Date.parse("2026-10-24T12:00:00Z");
+  const steps = [
+    {
+      event: tool({
+        toolName: "bash",
+        createdAt: new Date(start).toISOString(),
+        completedAt: new Date(start + 200).toISOString(),
+      }),
+      index: 0,
+    },
+    { event: { ...thought, createdAt: new Date(start + 4_200).toISOString() }, index: 1 },
+  ];
+  const trace = activityTimeline(steps, undefined, start + 6_000, start)!;
+  assert.deepEqual(trace.communication, [
+    { start: 200, end: 4_200, reason: "tool", open: false },
+  ]);
+  // Occupancy bars stay unchanged; the communication lane explains the gap.
+  assert.equal(trace.spans[0]!.end, 4_200);
+});
+
+check("a completed final tool opens a live communication wait", () => {
+  const start = Date.parse("2026-10-24T12:00:00Z");
+  const steps = [
+    {
+      event: tool({
+        toolName: "read",
+        createdAt: new Date(start).toISOString(),
+        completedAt: new Date(start + ACTIVITY_COMMUNICATION_MIN_MS + 50).toISOString(),
+      }),
+      index: 0,
+    },
+  ];
+  const trace = activityTimeline(steps, start + 2_000, undefined, start)!;
+  assert.deepEqual(trace.communication, [
+    {
+      start: ACTIVITY_COMMUNICATION_MIN_MS + 50,
+      end: 2_000,
+      reason: "tool",
+      open: true,
+    },
+  ]);
+});
+
+check("sub-100ms scheduling gaps stay out of the communication lane", () => {
+  const start = Date.parse("2026-10-24T12:00:00Z");
+  const steps = [
+    {
+      event: tool({
+        toolName: "read",
+        createdAt: new Date(start).toISOString(),
+        completedAt: new Date(start + 50).toISOString(),
+      }),
+      index: 0,
+    },
+  ];
+  const trace = activityTimeline(steps, undefined, start + 100, start)!;
+  assert.deepEqual(trace.communication, []);
 });
 
 check("live axis grows left-to-right on the 60s floor, then compresses", () => {

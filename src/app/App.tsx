@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { ChevronLeft, ChevronRight, FolderOpen, Merge, UsersRound, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, memo, type CSSProperties } from "react";
+import ReactMarkdown from "react-markdown";
 import { agents, projects, sessions } from "../lib/mockData";
 import {
   collapseIntermediateAssistantAsThought,
@@ -129,6 +130,7 @@ import { MemoBox } from "../components/MemoBox";
 import { CouncilPage } from "../components/CouncilPage";
 import { discardDocDraft, DocPage } from "../components/DocPage";
 import { setDocTabOpener } from "../lib/openFile";
+import { setBrowserLinkOpener } from "../lib/openBrowserLink";
 import { BrowserPage, BrowserPermissionDialog } from "../components/BrowserPage";
 import { ComputerShareDialog } from "../components/ComputerShareDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -245,6 +247,7 @@ import {
   formatAcpRpcError,
   formatClassifiedError,
   formatThrownAcpError,
+  isCancelAckPendingError,
   isSessionNotRunningError,
   isTurnInFlightError,
 } from "../lib/errors";
@@ -267,6 +270,7 @@ import {
 import {
   MAX_PANES,
   activateTab,
+  activateTabInPlaceOrFocused,
   addTabToPane,
   adoptExternalSession,
   closeTab,
@@ -412,9 +416,13 @@ function asIdleOnLoad(session: Session): Session {
 /**
  * How long an agent may stay silent after `session/cancel` before we call the
  * turn unrecoverable. Cancel gets no reply, so renewed output is the only ack;
- * an agent that honours it reacts within a second or two.
+ * most agents react quickly; Antigravity can take about nine seconds.
  */
-const CANCEL_ACK_GRACE_MS = 6_000;
+// Antigravity 1.5.0 measured 9.2s between session/cancel and the old prompt's
+// JSON-RPC response. A 6s watchdog declared a healthy cancel wedged, and the
+// follow-up raced the still-unwinding turn. Wait past the measured tail before
+// replacing a process; faster agents still clear this on their first event.
+const CANCEL_ACK_GRACE_MS = 15_000;
 
 /**
  * How long a `session/prompt` refused by the ACP concurrency gate waits for the
@@ -1273,6 +1281,9 @@ function AppMain() {
   const activateBrowserSurface = useLatestCallback(() => {
     activateSurfaceTabInFocusedPane("browser");
   });
+  const activateBrowserSurfaceInPlace = useLatestCallback(() => {
+    commitSplit(activateTabInPlaceOrFocused(surfaceTreeBase(), "browser"));
+  });
   const selectBrowserTab = useLatestCallback((tabId: string) => {
     setActiveBrowserTabId(tabId);
     void browserTouchTab(tabId).catch(() => undefined);
@@ -1980,7 +1991,7 @@ function AppMain() {
           setAppUpdate(info);
           return;
         }
-        // Manual check with no update: brief status banner, auto-dismiss.
+        // Keep the result open so release notes can be read at any pace.
         const note =
           info.note ??
           `${t("app.upToDate", { version: info.currentVersion })}${
@@ -1993,9 +2004,6 @@ function AppMain() {
           updateAvailable: false,
           note,
         });
-        window.setTimeout(() => {
-          setAppUpdate((cur) => (cur && !cur.updateAvailable ? null : cur));
-        }, 4500);
       } catch (error) {
         pushDebug({
           source: "update",
@@ -2732,6 +2740,26 @@ function AppMain() {
       // ACP wire already logged in Rust emit_event → dev.log
       if (payload.sessionId) touchActivity(payload.sessionId);
 
+      // A cancel closes the visible turn immediately, but some adapters keep
+      // the old prompt handler alive for several seconds. Rust forwards the
+      // eventual JSON-RPC response as this private boundary; only now is the
+      // wire slot safe for the queued follow-up.
+      if (payload.sessionId && payload.method === "session/cancel/ack") {
+        const sid = payload.sessionId;
+        const watchdog = cancelWatchdogsRef.current.get(sid);
+        if (watchdog) clearTimeout(watchdog);
+        cancelWatchdogsRef.current.delete(sid);
+        cancelIgnoredRef.current.delete(sid);
+        releaseTurnSlotWaiters(turnSlotWaitersRef.current, sid);
+        pushDebug({
+          sessionId: sid,
+          level: "info",
+          source: "interrupt",
+          summary: "agent acknowledged session/cancel",
+        });
+        queueMicrotask(() => drainQueuedSendRef.current(sid));
+      }
+
       // @-delegate children: any event re-arms the 600s idle timeout.
       if (payload.sessionId && delegateMetaRef.current.has(payload.sessionId)) {
         const meta = delegateMetaRef.current.get(payload.sessionId);
@@ -2751,8 +2779,15 @@ function AppMain() {
           payload.method === "process/ended" ||
           payload.method === "process/stopped")
       ) {
-        // A send parked because the connection's turn slot was busy may go now.
-        releaseTurnSlotWaiters(turnSlotWaitersRef.current, payload.sessionId);
+        // The synthetic cancel boundary closes Working, but the agent-side
+        // prompt may still be unwinding. Only session/cancel/ack (or a real
+        // boundary from another turn) opens the wire gate.
+        const cancelStillUnwinding =
+          payload.method === "turn/complete" &&
+          (payload.data as { source?: unknown } | null)?.source === "session/cancel";
+        if (!cancelStillUnwinding) {
+          releaseTurnSlotWaiters(turnSlotWaitersRef.current, payload.sessionId);
+        }
         turnEndedAtRef.current[payload.sessionId] = Date.now();
         // A re-entry segment ends here too — adapters that do send a boundary
         // for the continuation let the normal turn/complete path below seal
@@ -3213,8 +3248,12 @@ function AppMain() {
           if (sessAgentId) clearAgentBanner(sessAgentId);
         }
 
-        // Usage panel: refresh once after each completed Reply turn.
-        refreshUsageAfterTurnRef.current(payload.sessionId);
+        // Usage panel: refresh once after each completed Reply turn. A cancel
+        // is not a completed turn, and probing here would steal the wire slot
+        // back from the follow-up waiting in the queue.
+        if (stopReason !== "cancelled") {
+          refreshUsageAfterTurnRef.current(payload.sessionId);
+        }
         // ACP dispatcher owns the native background chime (it must run while
         // WebView2 is suspended). Here we only maintain frontend-only state:
         // consume silent/probe bookkeeping and mark a genuinely unseen reply.
@@ -4735,7 +4774,7 @@ function AppMain() {
 
     const probes: Promise<unknown>[] = [];
 
-    // Codex (/status) and Claude (/usage) only surface account rate limits as
+    // Codex (/status), Claude (/usage) and Antigravity (/usage) surface account limits as
     // command text. Both are local slash commands — no model turn, no tokens.
     // Claude’s `_claude/rateLimit` meta is not a substitute: it rides on a
     // `rate_limit_event`, which never fires while you are comfortably inside
@@ -4743,7 +4782,11 @@ function AppMain() {
     // While a real turn is in flight the probe is rejected ("interrupt it
     // first") — the own-family engine rows now back the panel up (2026-11-11).
     const limitCommand =
-      agent?.id === "codex" ? "/status" : agent?.id === "claude-code" ? "/usage" : null;
+      agent?.id === "codex"
+        ? "/status"
+        : agent?.id === "claude-code" || agent?.id === "antigravity-acp"
+          ? "/usage"
+          : null;
     if (
       agent?.transport === "acp" &&
       limitCommand &&
@@ -5817,6 +5860,18 @@ function AppMain() {
     return () => setDocTabOpener(null);
   }, [openDocTab]);
 
+  useEffect(() => {
+    if (IS_DETACHED_WINDOW || !isTauriRuntime()) return;
+    setBrowserLinkOpener(async (url) => {
+      const result = await browserOpenTab(url);
+      if (!result) throw new Error("Could not open the browser tab.");
+      selectBrowserTab(result.tabId);
+      activateBrowserSurfaceInPlace();
+      if (getDockState() === "docked-expanded") setDockPage("browser");
+    });
+    return () => setBrowserLinkOpener(null);
+  }, [activateBrowserSurfaceInPlace, selectBrowserTab]);
+
   // Built-in browser tabs: the backend owns the list and emits it whole.
   // Opening a tab is not permission to steal the current workspace. A fresh
   // `display=workspace` tab is the one explicit exception (Web app preview);
@@ -5825,11 +5880,15 @@ function AppMain() {
   useEffect(() => {
     if (IS_DETACHED_WINDOW) return;
     let known = new Set<string>();
+    let receivedEvent = false;
+    let disposed = false;
     void browserListTabs().then((tabs) => {
+      if (disposed || receivedEvent) return;
       known = new Set(tabs.map((tab) => tab.id));
       setBrowserTabs(tabs);
     });
     const stop = onBrowserTabs((tabs) => {
+      receivedEvent = true;
       setBrowserTabs(tabs);
       const live = new Set(tabs.map((tab) => tab.id));
       setBrowserPickModes((prev) => {
@@ -5874,7 +5933,7 @@ function AppMain() {
       );
       if (workspaceTabId) {
         setActiveBrowserTabId(workspaceTabId);
-        activateBrowserSurface();
+        activateBrowserSurfaceInPlace();
         // While docked the strip has no chip — the page itself takes over.
         // Only a live, expanded strip takes the page: set while floating it
         // would linger and pop the browser open the next time the user docks.
@@ -5889,9 +5948,10 @@ function AppMain() {
       }
     });
     return () => {
+      disposed = true;
       void stop.then((unlisten) => unlisten());
     };
-  }, [activateBrowserSurface, removeTabFromTree]);
+  }, [activateBrowserSurfaceInPlace, removeTabFromTree]);
 
   // Restore content surfaces only after the focused chat is back. Surface tab
   // POSITIONS come back with the pane tree (restoreSplitFromSnapshot +
@@ -8753,11 +8813,16 @@ function AppMain() {
     text: string,
     imagePaths: string[],
     filePaths: string[] = [],
+    history?: { events: SessionEvent[]; included: boolean },
   ) => {
+    let outboundText = text;
+    let clearHistoryMarker = false;
     try {
-      return await sendAcpPrompt(sid, text, imagePaths, false, filePaths);
+      return await sendAcpPrompt(sid, outboundText, imagePaths, false, filePaths);
     } catch (error) {
       if (!isTurnInFlightError(error)) throw error;
+      const cancelPending = isCancelAckPendingError(error);
+      const waitMs = cancelPending ? CANCEL_ACK_GRACE_MS : TURN_SLOT_WAIT_MS;
       pushDebug({
         sessionId: sid,
         level: "warn",
@@ -8768,17 +8833,38 @@ function AppMain() {
       const freed = await waitForTurnSlot(
         turnSlotWaitersRef.current,
         sid,
-        TURN_SLOT_WAIT_MS
+        waitMs
       );
+      if (!freed && cancelPending) {
+        pushDebug({
+          sessionId: sid,
+          level: "warn",
+          source: "interrupt",
+          summary: "cancel acknowledgement timed out - replacing agent before resend",
+        });
+        await restartAcpProcess(sid);
+        await ensureAcpReady(sid);
+        if (history) {
+          if (!history.included) {
+            outboundText = withHistoryInjection(
+              buildHistoryInjection(history.events, sid),
+              outboundText,
+            );
+          }
+          clearHistoryMarker = true;
+        }
+      }
       pushDebug({
         sessionId: sid,
         level: freed ? "info" : "warn",
         source: "composer",
         summary: freed
           ? "turn slot freed — retrying session/prompt"
-          : `turn still in flight after ${Math.round(TURN_SLOT_WAIT_MS / 1000)}s — retrying anyway`,
+          : `turn still in flight after ${Math.round(waitMs / 1000)}s - retrying anyway`,
       });
-      return await sendAcpPrompt(sid, text, imagePaths, false, filePaths);
+      const sent = await sendAcpPrompt(sid, outboundText, imagePaths, false, filePaths);
+      if (clearHistoryMarker) acpNeedsHistoryRef.current.delete(sid);
+      return sent;
     }
   };
 
@@ -9108,7 +9194,7 @@ function AppMain() {
       touchActivity(sid);
       armSendSilenceWatchdog(sid);
       const imagePaths = imageAttachments.map((a) => a.path);
-      const wireText = promptText;
+      let wireText = promptText;
       const projectId = sendRow?.projectId || currentProjectId;
       // Turn baseline for the end-of-turn delivery card: a worktree tree taken
       // now, so the card can show what *this* turn changed. It never delays the
@@ -9119,7 +9205,13 @@ function AppMain() {
         startTurnBaseline(sid, projectId);
       }
       try {
-        await sendPromptWithTurnWait(sid, wireText, imagePaths, composerSnap?.filePaths);
+        await sendPromptWithTurnWait(
+          sid,
+          wireText,
+          imagePaths,
+          composerSnap?.filePaths,
+          { events: priorForInject, included: willInjectHistory },
+        );
       } catch (wireError) {
         if (!isSessionNotRunningError(wireError)) throw wireError;
         pushDebug({
@@ -9131,9 +9223,22 @@ function AppMain() {
         });
         await restartAcpProcess(sid);
         await ensureAcpReady(sid);
-        // This prompt already carries the transcript; do not inject twice.
+        // The replacement process starts empty. If this send did not already
+        // carry history, replay the pre-message transcript before retrying.
+        if (!willInjectHistory) {
+          wireText = withHistoryInjection(
+            buildHistoryInjection(priorForInject, sid),
+            wireText,
+          );
+        }
         acpNeedsHistoryRef.current.delete(sid);
-        await sendPromptWithTurnWait(sid, wireText, imagePaths, composerSnap?.filePaths);
+        await sendPromptWithTurnWait(
+          sid,
+          wireText,
+          imagePaths,
+          composerSnap?.filePaths,
+          { events: priorForInject, included: true },
+        );
       }
       clearSendSilenceWatchdog(sid);
       touchActivity(sid);
@@ -11003,7 +11108,7 @@ function AppMain() {
                 setSeenViewerIndex(Math.min(pending.viewerIndex, seenImages.length - 1));
               }
             }}
-            onSave={(marks) => {
+            onSave={(marks, cropped) => {
               const pending = annotatingSeenImage;
               if (!pending) return;
               annotatingSeenSavedRef.current = true;
@@ -11012,7 +11117,7 @@ function AppMain() {
               setComposerImageInjection({
                 sessionId: pending.sessionId,
                 token,
-                attachments: [{ ...pending.attachment, marks }],
+                attachments: [{ ...(cropped ?? pending.attachment), marks }],
               });
               setComposerAutoFocus(true);
             }}
@@ -11273,22 +11378,37 @@ function AppMain() {
         <ComputerShareDialog onClose={() => setComputerShareOpen(false)} />
       )}
       {appUpdate && (
-        <div className="update-banner" role="status">
-          <span>
+        <div className="update-banner" role="region" aria-label={t("app.releaseNotes")}>
+          <div className="update-banner__status" role="status">
             {appUpdate.updateAvailable
               ? `${t("app.updateNew", { version: appUpdate.latestVersion })}${
                   appUpdate.currentVersion ? t("app.updateCurrentSuffix", { version: appUpdate.currentVersion }) : ""
                 }`
               : appUpdate.note ||
                 t("app.upToDate", { version: appUpdate.currentVersion || "" }).trim()}
-          </span>
+          </div>
           {(appUpdateError || (appUpdate.updateAvailable && appUpdate.note)) && (
             <div className="update-banner__error" role="alert">
               {appUpdateError ? t("app.updateFailed", { error: appUpdateError }) : appUpdate.note}
             </div>
           )}
+          {appUpdate.latestVersion && (
+            <section className="update-banner__release">
+              <div className="update-banner__heading">{t("app.releaseNotesVersion", { version: appUpdate.latestVersion })}</div>
+              {appUpdate.notes ? (
+                <div className="update-banner__notes md-body">
+                  <ReactMarkdown components={{
+                    a: ({ href, children }) => href && /^https?:\/\//i.test(href) ? (
+                      <a href={href} onClick={(event) => { event.preventDefault(); void openExternal(href); }}>{children}</a>
+                    ) : <span>{children}</span>,
+                    img: () => null,
+                  }}>{appUpdate.notes}</ReactMarkdown>
+                </div>
+              ) : <div className="update-banner__empty">{t("app.releaseNotesEmpty")}</div>}
+            </section>
+          )}
           <div className="update-banner__actions">
-            {appUpdate.updateAvailable && appUpdate.releaseUrl && (
+            {appUpdate.releaseUrl && (
               <a
                 href={appUpdate.releaseUrl}
                 target="_blank"

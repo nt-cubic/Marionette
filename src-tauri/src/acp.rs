@@ -310,6 +310,9 @@ struct AcpProcess {
     /// `set_config_option` / model / mode / effort / probes must never clear
     /// the UI "Working" state — that was the false "turn complete" bug.
     in_flight_prompt_id: Arc<AtomicU64>,
+    /// Prompt already closed locally for the UI, but not yet acknowledged by
+    /// the agent. The wire gate stays closed until its JSON-RPC response lands.
+    cancelling_prompt_id: Arc<AtomicU64>,
     /// 跨 agent 记忆卡只在该进程的首条 prompt 注入一次（见 memory.rs）。
     memory_card_sent: AtomicBool,
     /// Explicit local file picks may be passed only to an opt-in local adapter.
@@ -1193,6 +1196,7 @@ impl AcpService {
             quiet_ids: Arc::new(Mutex::new(HashSet::new())),
             config_option_unsupported: AtomicBool::new(false),
             in_flight_prompt_id,
+            cancelling_prompt_id: Arc::new(AtomicU64::new(0)),
             memory_card_sent: AtomicBool::new(false),
             local_file_upload: AtomicBool::new(false),
             #[cfg(target_os = "windows")]
@@ -2479,6 +2483,12 @@ impl AcpService {
         // Codeg concurrency gate: one prompt turn per connection. A second
         // send while the first is still open would race responses and make
         // "running" untrustworthy again.
+        if process.cancelling_prompt_id.load(Ordering::SeqCst) != 0 {
+            return Err(
+                "A turn is already in flight on this session (the cancelled turn is still winding down)"
+                    .into(),
+            );
+        }
         if process.in_flight_prompt_id.load(Ordering::SeqCst) != 0 {
             return Err(
                 "A turn is already in flight on this session — interrupt it first".into(),
@@ -2652,15 +2662,30 @@ impl AcpService {
             .ok_or_else(|| "ACP session is not initialized".to_string())?;
         // Codeg: free the client immediately — do not wait for the agent to
         // honour session/cancel (it may hang inside a tool). Clear in-flight
-        // so a late prompt response is ignored; emit turn/complete so UI
-        // leaves "Working" without needing a second signal.
-        let had_turn = take_in_flight_prompt_id(&process.in_flight_prompt_id).is_some();
-        notify(
+        // but remember the cancelled prompt until its response arrives, and
+        // emit turn/complete so the UI leaves Working immediately.
+        let cancelled_prompt_id = take_in_flight_prompt_id(&process.in_flight_prompt_id);
+        if let Some(id) = cancelled_prompt_id {
+            process
+                .cancelling_prompt_id
+                .store(id, Ordering::SeqCst);
+        }
+        if let Err(error) = notify(
             &process,
             "session/cancel",
             json!({ "sessionId": agent_session_id }),
-        )?;
-        if had_turn {
+        ) {
+            if let Some(id) = cancelled_prompt_id {
+                let _ = process.cancelling_prompt_id.compare_exchange(
+                    id,
+                    0,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
+            }
+            return Err(error);
+        }
+        if let Some(id) = cancelled_prompt_id {
             // Best-effort: we need the AppHandle to emit. cancel is invoked
             // from commands without app in AcpService — use a deferred path
             // via the registered emitter if present.
@@ -2668,7 +2693,7 @@ impl AcpService {
                 session_id,
                 "response",
                 "cancelled",
-                json!({ "source": "session/cancel" }),
+                json!({ "source": "session/cancel", "promptId": id }),
             );
         }
         Ok(())
@@ -3642,6 +3667,10 @@ fn read_stdout(
                     let current = process.in_flight_prompt_id.load(Ordering::SeqCst);
                     current != 0 && current == id
                 };
+                let is_cancel_ack = {
+                    let cancelling = process.cancelling_prompt_id.load(Ordering::SeqCst);
+                    cancelling != 0 && cancelling == id
+                };
                 if is_prompt_turn {
                     let _ = take_in_flight_prompt_id(&process.in_flight_prompt_id);
                     let stop_reason = if result.is_ok() {
@@ -3655,6 +3684,23 @@ fn read_stdout(
                         &session_id,
                         kind,
                         stop_reason,
+                        message.clone(),
+                    );
+                } else if is_cancel_ack {
+                    let _ = process.cancelling_prompt_id.compare_exchange(
+                        id,
+                        0,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    );
+                    // The synthetic turn/complete already freed the UI. This
+                    // second signal is the wire-level acknowledgement: only
+                    // now may a queued follow-up enter session/prompt.
+                    emit_event(
+                        &app,
+                        &session_id,
+                        "response",
+                        Some("session/cancel/ack"),
                         message.clone(),
                     );
                 } else if !quiet_failure {
@@ -3680,7 +3726,7 @@ fn read_stdout(
                 if let Ok(mut pending) = pending.lock() {
                     if let Some(sender) = pending.remove(&id) {
                         let _ = sender.send(result);
-                    } else {
+                    } else if !is_cancel_ack {
                         // 超时被移出 pending 后的迟到应答：留一条痕迹，
                         // 别让「请求石沉大海」只能靠猜。
                         crate::debug_log::append(

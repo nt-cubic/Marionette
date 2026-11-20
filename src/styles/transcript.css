@@ -1643,7 +1643,7 @@
 
 .activity-timeline__lane {
   display: grid;
-  grid-template-columns: 56px minmax(0, 1fr) 24px;
+  grid-template-columns: 56px minmax(0, 1fr) 40px;
   gap: 8px;
   align-items: center;
   height: 12px;
@@ -1661,6 +1661,7 @@
 
 .activity-timeline__count {
   text-align: right;
+  white-space: nowrap;
 }
 
 .activity-timeline__track {
@@ -1695,6 +1696,25 @@
   background: var(--agent-ink, var(--accent));
 }
 
+.activity-timeline__span.is-communication {
+  outline: 1px solid color-mix(in srgb, var(--text-faint) 55%, transparent);
+  outline-offset: -1px;
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--text-faint) 52%, transparent) 0 1px,
+    transparent 1px 3px
+  );
+}
+
+.activity-timeline__span.is-communication.is-open {
+  outline-color: color-mix(in srgb, var(--agent-ink, var(--accent)) 62%, transparent);
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--agent-ink, var(--accent)) 62%, transparent) 0 1px,
+    transparent 1px 3px
+  );
+}
+
 .activity-timeline__span:hover {
   outline: 1px solid var(--text);
   outline-offset: 1px;
@@ -1703,7 +1723,7 @@
 .activity-timeline__axis {
   display: flex;
   justify-content: space-between;
-  margin: 1px 32px 0 64px;
+  margin: 1px 48px 0 64px;
   font-weight: 500;
 }
 

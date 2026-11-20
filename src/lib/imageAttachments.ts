@@ -31,6 +31,17 @@ export type ImageAttachment = {
   marks: ImageMark[];
 };
 
+export type ImageCropRect = {
+  nx: number;
+  ny: number;
+  nw: number;
+  nh: number;
+};
+
+export type ImageCropHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
+
+export const FULL_IMAGE_CROP: ImageCropRect = { nx: 0, ny: 0, nw: 1, nh: 1 };
+
 const IMAGE_EXT = new Set([
   ".png",
   ".jpg",
@@ -225,4 +236,82 @@ export function formatImageMarksForSend(attachments: ImageAttachment[]): string 
 export function clamp01(n: number): number {
   if (!Number.isFinite(n)) return 0;
   return Math.min(1, Math.max(0, n));
+}
+
+export function isFullImageCrop(rect: ImageCropRect, epsilon = 0.0005): boolean {
+  return (
+    Math.abs(rect.nx) <= epsilon &&
+    Math.abs(rect.ny) <= epsilon &&
+    Math.abs(rect.nw - 1) <= epsilon &&
+    Math.abs(rect.nh - 1) <= epsilon
+  );
+}
+
+/** Keep a normalized crop rectangle inside the image and above the minimum size. */
+export function clampImageCropRect(rect: ImageCropRect, minSize = 0.01): ImageCropRect {
+  const min = Math.min(1, Math.max(0.001, minSize));
+  let nx = clamp01(rect.nx);
+  let ny = clamp01(rect.ny);
+  const nw = Math.min(1, Math.max(min, Number.isFinite(rect.nw) ? rect.nw : 1));
+  const nh = Math.min(1, Math.max(min, Number.isFinite(rect.nh) ? rect.nh : 1));
+  if (nx + nw > 1) nx = Math.max(0, 1 - nw);
+  if (ny + nh > 1) ny = Math.max(0, 1 - nh);
+  return { nx, ny, nw, nh };
+}
+
+/** Resize one edge/corner by a normalized pointer delta. */
+export function resizeImageCrop(
+  start: ImageCropRect,
+  handle: ImageCropHandle,
+  dx: number,
+  dy: number,
+  minSize = 0.02,
+): ImageCropRect {
+  const base = clampImageCropRect(start, minSize);
+  const min = Math.min(1, Math.max(0.005, minSize));
+  let left = base.nx;
+  let top = base.ny;
+  let right = base.nx + base.nw;
+  let bottom = base.ny + base.nh;
+
+  if (handle.includes("w")) left = Math.min(right - min, Math.max(0, base.nx + dx));
+  if (handle.includes("e")) right = Math.max(left + min, Math.min(1, base.nx + base.nw + dx));
+  if (handle.includes("n")) top = Math.min(bottom - min, Math.max(0, base.ny + dy));
+  if (handle.includes("s")) bottom = Math.max(top + min, Math.min(1, base.ny + base.nh + dy));
+
+  return { nx: left, ny: top, nw: right - left, nh: bottom - top };
+}
+
+/** Marks are stored against the original image; move them into cropped space. */
+export function remapMarksForCrop(marks: readonly ImageMark[], crop: ImageCropRect): ImageMark[] {
+  const box = clampImageCropRect(crop);
+  const right = box.nx + box.nw;
+  const bottom = box.ny + box.nh;
+  const out: ImageMark[] = [];
+
+  for (const mark of marks) {
+    if (mark.kind === "point") {
+      if (mark.nx < box.nx || mark.nx > right || mark.ny < box.ny || mark.ny > bottom) continue;
+      out.push({
+        ...mark,
+        nx: clamp01((mark.nx - box.nx) / box.nw),
+        ny: clamp01((mark.ny - box.ny) / box.nh),
+      });
+      continue;
+    }
+
+    const left = Math.max(box.nx, mark.nx);
+    const top = Math.max(box.ny, mark.ny);
+    const rectRight = Math.min(right, mark.nx + mark.nw);
+    const rectBottom = Math.min(bottom, mark.ny + mark.nh);
+    if (rectRight <= left || rectBottom <= top) continue;
+    out.push({
+      ...mark,
+      nx: clamp01((left - box.nx) / box.nw),
+      ny: clamp01((top - box.ny) / box.nh),
+      nw: clamp01((rectRight - left) / box.nw),
+      nh: clamp01((rectBottom - top) / box.nh),
+    });
+  }
+  return out;
 }

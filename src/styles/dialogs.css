@@ -784,7 +784,95 @@
 .image-annotator__overlay {
   position: absolute;
   inset: 0;
+  overflow: hidden;
   pointer-events: none;
+}
+
+.image-annotator__crop {
+  position: absolute;
+  z-index: 3;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.42);
+  pointer-events: none;
+}
+
+.image-annotator__crop.is-active {
+  border-color: var(--accent);
+}
+
+.image-annotator__crop-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  border: 1px solid #fff;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: auto;
+  touch-action: none;
+  cursor: pointer;
+}
+
+.image-annotator__crop-handle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.image-annotator__crop-handle:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.image-annotator__crop-handle.is-nw {
+  top: -1px;
+  left: -1px;
+  cursor: nwse-resize;
+}
+
+.image-annotator__crop-handle.is-n {
+  top: -1px;
+  left: 50%;
+  transform: translateX(-50%);
+  cursor: ns-resize;
+}
+
+.image-annotator__crop-handle.is-ne {
+  top: -1px;
+  right: -1px;
+  cursor: nesw-resize;
+}
+
+.image-annotator__crop-handle.is-e {
+  top: 50%;
+  right: -1px;
+  transform: translateY(-50%);
+  cursor: ew-resize;
+}
+
+.image-annotator__crop-handle.is-se {
+  right: -1px;
+  bottom: -1px;
+  cursor: nwse-resize;
+}
+
+.image-annotator__crop-handle.is-s {
+  bottom: -1px;
+  left: 50%;
+  transform: translateX(-50%);
+  cursor: ns-resize;
+}
+
+.image-annotator__crop-handle.is-sw {
+  bottom: -1px;
+  left: -1px;
+  cursor: nesw-resize;
+}
+
+.image-annotator__crop-handle.is-w {
+  top: 50%;
+  left: -1px;
+  transform: translateY(-50%);
+  cursor: ew-resize;
 }
 
 .image-annotator__point {
@@ -842,6 +930,35 @@
   padding: 12px;
   border-left: 1px solid var(--border);
   overflow: auto;
+}
+
+.image-annotator__crop-panel {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+
+.image-annotator__crop-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.image-annotator__crop-panel-head strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.image-annotator__crop-panel-head span,
+.image-annotator__crop-panel p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .image-annotator__hint,

@@ -121,4 +121,9 @@ export const zh = {
   "trace.thinkingNow": "正在思考",
   "trace.recentThought": "最近思考",
   "trace.timelineLabel": "运行时间轨迹，{span}",
+  "trace.communication": "\u901a\u8baf",
+  "trace.communicationSend": "\u53d1\u51fa\u8bf7\u6c42 \u2192 \u9996\u4e2a\u6d3b\u52a8",
+  "trace.communicationTool": "\u5de5\u5177\u56de\u4f20 \u2192 \u4e0b\u4e00\u6b21\u54cd\u5e94",
+  "trace.communicationSpan": "{reason}\uff08{duration}\uff09",
+  "trace.communicationTotal": "\u901a\u8baf\u7b49\u5f85\u5408\u8ba1\uff1a{duration}",
 } as const;

@@ -290,6 +290,13 @@ export function isTurnInFlightError(raw: unknown): boolean {
   return /turn is already in flight/i.test(errorMessageOf(raw));
 }
 
+/** A cancelled turn is still unwinding inside the agent; do not send yet. */
+export function isCancelAckPendingError(raw: unknown): boolean {
+  return /turn is already in flight.*cancelled turn is still winding down/i.test(
+    errorMessageOf(raw),
+  );
+}
+
 /**
  * The ACP process map no longer has this dialog — parked, crashed, or a
  * race with `stop`. Callers must respawn and retry rather than paint

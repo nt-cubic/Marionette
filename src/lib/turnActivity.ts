@@ -513,7 +513,7 @@ export function formatActivityTally(items: ActivityDetailItem[]): string {
  */
 export function summarizeActivity(
   items: ActivityDetailItem[],
-  opts?: { liveEvent?: SessionEvent | null; untilMs?: number },
+  opts?: { liveEvent?: SessionEvent | null; untilMs?: number; startedAtMs?: number },
 ): ActivitySummary {
   const live = opts?.liveEvent;
   const tally = formatActivityTally(items);
@@ -536,7 +536,7 @@ export function summarizeActivity(
       images: summaryImages(items),
     };
   }
-  const span = activityTimeline(items, undefined, opts?.untilMs);
+  const span = activityTimeline(items, undefined, opts?.untilMs, opts?.startedAtMs);
   return {
     title: tally || "Activity",
     preview: "",
@@ -558,6 +558,18 @@ export type ActivitySpan = {
   event: SessionEvent;
 };
 
+/** A measured wait for model/service response, not a ping measurement. */
+export type ActivityCommunicationSpan = {
+  /** ms from the turn's send anchor. */
+  start: number;
+  end: number;
+  reason: "send" | "tool";
+  open: boolean;
+};
+
+/** Sub-100ms gaps are scheduling noise, not a visible communication phase. */
+export const ACTIVITY_COMMUNICATION_MIN_MS = 100;
+
 /**
  * Minimum visual share of the track for one step bar. Instant tools finish
  * inside the same millisecond (Write/search_replace land at 0–1 ms — measured
@@ -567,8 +579,10 @@ export type ActivitySpan = {
  */
 export const ACTIVITY_MIN_SPAN_PCT = 0.75;
 
+type ActivityTimeSpan = Pick<ActivitySpan, "start" | "end">;
+
 /** Track-share width of a span, clamped so instant steps stay visible. */
-export function activitySpanWidthPct(span: ActivitySpan, durationMs: number): number {
+export function activitySpanWidthPct(span: ActivityTimeSpan, durationMs: number): number {
   const total = Math.max(durationMs, 1);
   const raw = ((span.end - span.start) / total) * 100;
   return Math.min(100, Math.max(raw, ACTIVITY_MIN_SPAN_PCT));
@@ -591,7 +605,7 @@ export function liveAxisMs(elapsedMs: number, floorMs = LIVE_AXIS_FLOOR_MS): num
 
 /** Left/width on the track. Instant ticks stay inside; growing bars keep their start. */
 export function activitySpanLayout(
-  span: ActivitySpan,
+  span: ActivityTimeSpan,
   axisMs: number,
 ): { leftPct: number; widthPct: number } {
   const widthPct = activitySpanWidthPct(span, axisMs);
@@ -605,12 +619,37 @@ export type ActivityTimelineData = {
   /** Buckets in first-seen order — the same order as the closed tally. */
   lanes: ActivityKindBucket[];
   spans: ActivitySpan[];
+  /** Send/response and tool-return/response waits on the same ruler. */
+  communication: ActivityCommunicationSpan[];
 };
 
 function eventMs(value: string | undefined): number | null {
   if (!value) return null;
   const ms = Date.parse(value);
   return Number.isFinite(ms) ? ms : null;
+}
+
+/** The user send anchor immediately before this activity run, if loaded. */
+export function activityRunStartedMs(
+  items: ActivityDetailItem[],
+  events: readonly SessionEvent[],
+  sessionId: string,
+): number | undefined {
+  const firstIndex = items[0]?.index;
+  if (firstIndex == null) return undefined;
+  for (let i = Math.min(firstIndex - 1, events.length - 1); i >= 0; i -= 1) {
+    const event = events[i];
+    if (!event || event.sessionId !== sessionId) continue;
+    if (event.type === "user_message") {
+      return eventMs(event.sentAt ?? event.createdAt) ?? undefined;
+    }
+    // Agent re-entry starts after the Reply that closed the previous segment,
+    // not after the original user prompt (which can be hours old).
+    if (event.type === "assistant_message") {
+      return eventMs(event.endedAt ?? event.createdAt) ?? undefined;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -660,16 +699,22 @@ export function activityTimeline(
   items: ActivityDetailItem[],
   nowMs?: number,
   untilMs?: number,
+  startedAtMs?: number,
 ): ActivityTimelineData | null {
   const starts = items.map((item) => eventMs(item.event.createdAt));
   const first = starts.find((ms): ms is number => ms != null);
   if (first == null) return null;
+  const origin = startedAtMs != null && startedAtMs < first ? startedAtMs : first;
   // Next known start per step, filled back to front so the run stays O(n).
   const nextStart: (number | null)[] = new Array(items.length).fill(null);
   for (let i = items.length - 2; i >= 0; i -= 1) nextStart[i] = starts[i + 1]! ?? nextStart[i + 1];
   const lanes: ActivityKindBucket[] = [];
   const spans: ActivitySpan[] = [];
+  const rawCommunication: ActivityCommunicationSpan[] = [];
   let last = first;
+  if (first - origin >= ACTIVITY_COMMUNICATION_MIN_MS) {
+    rawCommunication.push({ start: 0, end: first - origin, reason: "send", open: false });
+  }
   items.forEach((item, i) => {
     const bucket = activityBucket(item.event);
     const start = starts[i];
@@ -695,10 +740,33 @@ export function activityTimeline(
     let end = next ?? nowMs ?? untilMs ?? own ?? start;
     if (end < start) end = start;
     last = Math.max(last, end);
-    spans.push({ bucket, start: start - first, end: end - first, failed: status === "failed", open, event: ev });
+    if (ev.type === "tool_call" && own != null && !isToolInProgress(status)) {
+      const waitEnd = next ?? nowMs ?? untilMs;
+      if (waitEnd != null && waitEnd - own >= ACTIVITY_COMMUNICATION_MIN_MS) {
+        rawCommunication.push({
+          start: own - origin,
+          end: waitEnd - origin,
+          reason: "tool",
+          open: nowMs != null && next == null && untilMs == null,
+        });
+        last = Math.max(last, waitEnd);
+      }
+    }
+    spans.push({ bucket, start: start - origin, end: end - origin, failed: status === "failed", open, event: ev });
   });
   if (spans.length === 0) return null;
-  return { durationMs: last - first, lanes, spans };
+  rawCommunication.sort((a, b) => a.start - b.start || a.end - b.end);
+  const communication: ActivityCommunicationSpan[] = [];
+  for (const span of rawCommunication) {
+    const prev = communication[communication.length - 1];
+    if (prev && span.start <= prev.end + 1) {
+      prev.end = Math.max(prev.end, span.end);
+      prev.open = prev.open || span.open;
+    } else {
+      communication.push({ ...span });
+    }
+  }
+  return { durationMs: last - origin, lanes, spans, communication };
 }
 
 export function countFailed(items: ActivityDetailItem[]): number {

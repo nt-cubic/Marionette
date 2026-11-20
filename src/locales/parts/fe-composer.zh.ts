@@ -99,4 +99,11 @@ export const zh = {
   "composer.info.output": "输出",
   "composer.info.cacheRead": "缓存读",
   "composer.info.cacheWrite": "缓存写",
+  "annotator.cropTitle": "\u88c1\u526a",
+  "annotator.cropHint": "\u9ed8\u8ba4\u4fdd\u7559\u6574\u5f20\u56fe\u3002\u62d6\u52a8\u4efb\u610f\u8fb9\u6216\u56db\u89d2\u540e\u4fdd\u5b58\uff0c\u4f1a\u751f\u6210\u4e00\u5f20\u88c1\u526a\u540e\u7684\u526f\u672c\u3002",
+  "annotator.cropHandle": "\u62d6\u52a8\u88c1\u526a",
+  "annotator.cropReset": "\u91cd\u7f6e\u88c1\u526a",
+  "annotator.cropSize": "{w} x {h}px",
+  "annotator.cropping": "\u6b63\u5728\u88c1\u526a...",
+  "annotator.cropFailed": "\u88c1\u526a\u5931\u8d25\uff1a{message}",
 } as const;
