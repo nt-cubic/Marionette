@@ -782,6 +782,22 @@ export function parseAntigravityUsageText(text: string): UsageWindow[] {
   return out;
 }
 
+/** Local slash command that makes a subscription-backed agent report limits. */
+const USAGE_LIMIT_COMMAND: Record<string, string> = {
+  codex: "/status",
+  "codex-acp": "/status",
+  "claude-code": "/usage",
+  claude: "/usage",
+  antigravity: "/usage",
+  // Older/imported rows may retain the ACP server name rather than the
+  // canonical Marionette agent id.
+  "antigravity-acp": "/usage",
+};
+
+export function usageLimitCommandForAgent(agentId: string | null | undefined): string | null {
+  return agentId ? (USAGE_LIMIT_COMMAND[agentId] ?? null) : null;
+}
+
 /**
  * Parse Codex `/status` markdown lines, e.g.
  * `**5h limit:** 42% left · resets at …`
@@ -1492,11 +1508,12 @@ export function buildUsageSnapshot(args: {
     (w) => w.kind === "rate_limit" || w.kind == null
   );
   const isGrok = agentId === "grok-build" || agentId === "grok";
+  const isAntigravity = agentId === "antigravity" || agentId === "antigravity-acp";
   const wantsPlanLimits =
     agentId === "codex" ||
     agentId === "claude-code" ||
     agentId === "claude" ||
-    agentId === "antigravity-acp" ||
+    isAntigravity ||
     isGrok;
   const byId = new Map(rateWindows.map((w) => [w.id, w]));
   // Don't duplicate ids already shown from provider probe (Go 5h/weekly).

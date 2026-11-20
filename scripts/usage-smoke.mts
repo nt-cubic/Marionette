@@ -31,6 +31,7 @@ import {
   parseGrokCallUsage,
   parseGrokCostText,
   applyModelContextSize,
+  usageLimitCommandForAgent,
 } from "../src/lib/usage.ts";
 import { measureTurnDecodeMs, tokenBuckets } from "../src/lib/sessionStats.ts";
 import type { SessionEvent } from "../src/lib/types.ts";
@@ -161,6 +162,13 @@ check("Codex /status still parses as % left", () => {
 
 console.log("\nAntigravity /usage (ACP-markdown quota report)");
 
+check("local usage probes follow the canonical agent ids", () => {
+  assert.equal(usageLimitCommandForAgent("codex"), "/status");
+  assert.equal(usageLimitCommandForAgent("claude-code"), "/usage");
+  assert.equal(usageLimitCommandForAgent("antigravity"), "/usage");
+  assert.equal(usageLimitCommandForAgent("opencode"), null);
+});
+
 const ANTIGRAVITY_USAGE = `### Session Usage
 - **Session total:** 1,200 tokens (prompt: 1,000, completion: 200)
 
@@ -185,7 +193,7 @@ check("Antigravity quota report reaches the live usage snapshot", () => {
   const state = mergeUsageFromText(undefined, ANTIGRAVITY_USAGE);
   assert.ok(state, "expected /usage text to produce usage state");
   const snap = buildUsageSnapshot({
-    agentId: "antigravity-acp",
+    agentId: "antigravity",
     agentLabel: "Google Antigravity",
     state: state!,
     connected: true,

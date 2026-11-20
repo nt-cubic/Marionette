@@ -99,6 +99,7 @@ import {
   mergeUsageFromPromptResult,
   mergeUsageFromText,
   parseGrokCallUsage,
+  usageLimitCommandForAgent,
   type GrokTurnUsage,
   type SessionUsageState,
 } from "../lib/usage";
@@ -4825,12 +4826,7 @@ function AppMain() {
     // your plan, so the panel would sit empty exactly when nothing is wrong.
     // While a real turn is in flight the probe is rejected ("interrupt it
     // first") — the own-family engine rows now back the panel up (2026-11-11).
-    const limitCommand =
-      agent?.id === "codex"
-        ? "/status"
-        : agent?.id === "claude-code" || agent?.id === "antigravity-acp"
-          ? "/usage"
-          : null;
+    const limitCommand = usageLimitCommandForAgent(agent?.id);
     if (
       agent?.transport === "acp" &&
       limitCommand &&

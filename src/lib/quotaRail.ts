@@ -28,6 +28,8 @@ export const ENGINE_OWN_FAMILY: Record<string, string> = {
   claude: "claude",
   "grok-build": "grok",
   grok: "grok",
+  antigravity: "antigravity",
+  "antigravity-acp": "antigravity",
 };
 
 /**
