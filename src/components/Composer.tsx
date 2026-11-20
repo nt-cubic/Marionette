@@ -825,6 +825,13 @@ export function Composer({
   const appliedPrefillToken = useRef(0);
   /** Restore disk prefs once per (session, agent) after caps are known. */
   const prefsRestoredKey = useRef("");
+  /**
+   * Token for the in-flight pref restore. Caps/sessionPrefs identity churn
+   * re-runs the restore effect while `prefsRestoredKey` blocks a second job;
+   * that must not cancel the running one (always-approve is its last step).
+   * Only a dialog change or a dead agent bumps this.
+   */
+  const restoreGeneration = useRef(0);
   /** One repair for legacy raw-engine ids persisted by the bridge chip. */
   const bridgePrefRepairKey = useRef("");
   /**
@@ -1086,6 +1093,8 @@ export function Composer({
   // the cache of *this* agent keeps that rule while avoiding an empty toolbar.
   useEffect(() => {
     loadSeq.current += 1;
+    // Any restore still running belongs to the previous dialog.
+    restoreGeneration.current += 1;
     setMenu(null);
     setModelQuery("");
     pinsRef.current = null;
@@ -1102,14 +1111,18 @@ export function Composer({
     const rebound = cachedCapabilitiesFor(agent.id, sessionPrefsRef.current);
     if (rebound) {
       applyCaps(rebound, "cache");
-      return;
+    } else {
+      setCaps(null);
+      setCurrentMode(null);
+      setCurrentModel(null);
+      setCurrentEffort(null);
+      setCurrentEffortId(null);
+      setCurrentPermission(null);
     }
-    setCaps(null);
-    setCurrentMode(null);
-    setCurrentModel(null);
-    setCurrentEffort(null);
-    setCurrentEffortId(null);
-    setCurrentPermission(null);
+    return () => {
+      // Unmounting this composer also ends any restore job it started.
+      restoreGeneration.current += 1;
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, agent.id]);
 
@@ -1183,6 +1196,7 @@ export function Composer({
       // its own defaults, so this dialog's saved prefs must be pushed again.
       setCapsLive(false);
       prefsRestoredKey.current = "";
+      restoreGeneration.current += 1;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent.id, capabilitiesProp, applyCaps]);
@@ -1651,7 +1665,12 @@ export function Composer({
     if (prefModel) pinOptions({ model: prefModel });
     if (prefMode) pinOptions({ mode: prefMode });
 
-    let cancelled = false;
+    // Only a dialog change / dead agent invalidates this job. A cleanup flag
+    // here cancelled the sequence whenever caps or sessionPrefs identity
+    // changed — which happens as soon as step 1 persists a model — so the
+    // always-approve replay (the last step) never ran on startup.
+    const generation = ++restoreGeneration.current;
+    const alive = () => generation === restoreGeneration.current;
 
     void (async () => {
       const baseline = caps;
@@ -1661,7 +1680,7 @@ export function Composer({
       //    from session/new (OpenCode / Zed #31961 class of bug).
       if (modelAssert) {
         await commitUpdate({ model: modelAssert.model }, () => {
-          if (!cancelled) setCurrentModel(baseline.currentModel);
+          if (alive()) setCurrentModel(baseline.currentModel);
         });
       }
 
@@ -1672,7 +1691,7 @@ export function Composer({
       let live = baseline;
       if (needModelWait && modelAssert) {
         for (let i = 0; i < 8; i++) {
-          if (cancelled) return;
+          if (!alive()) return;
           await new Promise((r) => window.setTimeout(r, 80 + i * 40));
           const next = await getSessionCapabilities(sessionId).catch(() => null);
           if (!next) continue;
@@ -1687,7 +1706,7 @@ export function Composer({
         const next = await getSessionCapabilities(sessionId).catch(() => null);
         if (next) live = next;
       }
-      if (cancelled) return;
+      if (!alive()) return;
 
       // 3) Drift only after the preferred model is the one we are judging —
       //    otherwise a default-model catalog (no "max") erases a deepseek "max".
@@ -1709,7 +1728,7 @@ export function Composer({
       const codexMode = agent.id === "codex" || agent.id === "codex-acp";
       if (modeOk && prefMode && (codexMode || prefMode !== live.currentMode)) {
         await commitUpdate({ mode: prefMode }, () => {
-          if (!cancelled) setCurrentMode(live.currentMode);
+          if (alive()) setCurrentMode(live.currentMode);
         });
       }
 
@@ -1722,7 +1741,7 @@ export function Composer({
           deferredAlwaysApprove.current = true;
         } else {
           await commitUpdate({ alwaysApprove: true }, () => {
-            if (!cancelled) setAlwaysApprove(false);
+            if (alive()) setAlwaysApprove(false);
           });
         }
       }
@@ -1751,13 +1770,13 @@ export function Composer({
       if (prefEffortId && !canTryEffortId) {
         // Not on this model's menu and we have no config id to probe — leave
         // the agent default on the chip; disk still holds the preference.
-        if (!cancelled) setCurrentEffortId(live.currentEffortId);
+        if (alive()) setCurrentEffortId(live.currentEffortId);
         unpinOption("effortId");
       } else if (canTryEffortId && prefEffortId) {
-        if (!cancelled) setCurrentEffortId(prefEffortId);
+        if (alive()) setCurrentEffortId(prefEffortId);
         if (prefEffortId !== live.currentEffortId) {
           await commitUpdate({ effortId: prefEffortId }, () => {
-            if (!cancelled) {
+            if (alive()) {
               unpinOption("effortId");
               setCurrentEffortId(live.currentEffortId);
             }
@@ -1766,10 +1785,10 @@ export function Composer({
           unpinOption("effortId");
         }
       } else if (liveNumericOk && !effortRejectedLive && prefEffort != null) {
-        if (!cancelled) setCurrentEffort(prefEffort);
+        if (alive()) setCurrentEffort(prefEffort);
         if (live.currentEffort == null || Math.abs(live.currentEffort - prefEffort) > 1e-6) {
           await commitUpdate({ thinkingEffort: prefEffort }, () => {
-            if (!cancelled) {
+            if (alive()) {
               unpinOption("effort");
               setCurrentEffort(live.currentEffort);
             }
@@ -1789,7 +1808,7 @@ export function Composer({
       // Wholly-unsaved dialog (e.g. OpenCode republished a model to surface the
       // Effort menu): remember the settled live chips, or the next launch will
       // have nothing to restore.
-      if (!cancelled && !prefModel && !prefMode && !prefEffortId && prefEffort == null) {
+      if (alive() && !prefModel && !prefMode && !prefEffortId && prefEffort == null) {
         const adopted: SessionComposerPrefs = {};
         if (live.currentModel) adopted.preferredModel = live.currentModel;
         if (live.currentMode) {
@@ -1801,9 +1820,6 @@ export function Composer({
       }
     })();
 
-    return () => {
-      cancelled = true;
-    };
     // commitUpdate / pin helpers are stable enough; re-run only when the
     // dialog's live caps identity or saved prefs change.
     // eslint-disable-next-line react-hooks/exhaustive-deps

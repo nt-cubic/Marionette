@@ -22,7 +22,7 @@ import {
   UserAttentionType,
 } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
-import { isTauriRuntime } from "./api";
+import { appendDebugLog, isTauriRuntime } from "./api";
 import completeSoundUrl from "../assets/notifications/complete.wav";
 import errorSoundUrl from "../assets/notifications/error.wav";
 import permissionSoundUrl from "../assets/notifications/permission.wav";
@@ -91,6 +91,45 @@ const listeners = new Set<Listener>();
 const lastRaisedAt: Partial<Record<NotifyKind, number>> = {};
 const scheduledRaises = new Map<string, ReturnType<typeof setTimeout>>();
 const activeAudio = new Set<HTMLAudioElement>();
+
+/**
+ * Native chrome (taskbar bar + title badge) is tracked separately from
+ * `pending`: a raise can land while the focus signal is stale, and the
+ * renderer can be reloaded while the shell keeps the bar painted. Either way
+ * the window still has chrome that `pending` alone would not clear.
+ */
+let nativeChrome = false;
+/** Focus backstop while chrome is up — DOM focus events can be missed across
+ *  minimize/restore and WebView2 suspension, and the bar must never stick. */
+let chromeWatch: ReturnType<typeof setInterval> | null = null;
+const CHROME_FOCUS_POLL_MS = 2000;
+
+function syncChromeWatch(): void {
+  if (nativeChrome) {
+    if (chromeWatch != null) return;
+    chromeWatch = setInterval(() => {
+      if (!nativeChrome) {
+        stopChromeWatch();
+        return;
+      }
+      void isAppWindowFocused().then((focused) => {
+        if (focused && nativeChrome) void clearDesktopNotify();
+      });
+    }, CHROME_FOCUS_POLL_MS);
+    return;
+  }
+  stopChromeWatch();
+}
+
+function stopChromeWatch(): void {
+  if (chromeWatch == null) return;
+  clearInterval(chromeWatch);
+  chromeWatch = null;
+}
+
+function logChrome(summary: string, detail: string): void {
+  void appendDebugLog({ source: "notify", summary, detail });
+}
 
 function readEnabled(): boolean {
   try {
@@ -234,15 +273,25 @@ async function win() {
   }
 }
 
+/**
+ * Is the user looking at this window?
+ *
+ * The page-level focus comes first. On Windows tao tracks the focus of the
+ * host window, and after the webview is suspended and resumed (minimize →
+ * `TrySuspend` → restore) that flag stays false while the page itself is
+ * focused. Trusting it alone meant "you are away" for a user sitting in the
+ * window: every completion raised the yellow bar and nothing ever cleared it,
+ * because no further focus transition happened.
+ */
 export async function isAppWindowFocused(): Promise<boolean> {
-  // Browser / preview: document.hasFocus is good enough.
-  if (!isTauriRuntime()) return document.hasFocus();
+  if (document.hasFocus()) return true;
+  if (!isTauriRuntime()) return false;
   try {
     const w = await win();
-    if (!w) return document.hasFocus();
+    if (!w) return false;
     return await w.isFocused();
   } catch {
-    return document.hasFocus();
+    return false;
   }
 }
 
@@ -268,6 +317,7 @@ export async function raiseDesktopNotify(
   if (focused) {
     // Taskbar chrome is pointless while the user is looking at the window, but
     // an audible cue still plays — with the same 1s same-kind throttle.
+    if (nativeChrome) void clearDesktopNotify();
     if (!opts?.audibleWhenFocused) return;
     if (now - prev < DEDUPE_MS) return;
     lastRaisedAt[kind] = now;
@@ -279,7 +329,10 @@ export async function raiseDesktopNotify(
 
   pending = kind;
   lastDetail = detail?.trim() || null;
+  nativeChrome = true;
+  syncChromeWatch();
   emit();
+  logChrome("attention raised", `kind=${kind}`);
 
   playNotifySound(kind);
 
@@ -335,6 +388,11 @@ export async function raiseDesktopNotify(
   } catch {
     // ignore
   }
+
+  // The user may have come back while those IPC calls were in flight — the
+  // focus event already fired before `pending` existed, so nothing else would
+  // clear the bar. Drop it now instead of leaving it until the next alt-tab.
+  if (await isAppWindowFocused()) void clearDesktopNotify();
 }
 
 /**
@@ -346,7 +404,8 @@ export async function raiseDesktopNotify(
  *
  * Rules:
  *  - JS state (title, pending) updates immediately — no native.
- *  - Native clear only if we actually raised attention (`hadPending`).
+ *  - Native clear whenever this window may own chrome (`nativeChrome`), not
+ *    just while `pending` happens to be set.
  *  - Never call `requestUserAttention(null)` — worst offender on focus.
  *  - Defer remaining native work well after the focus paint settles.
  */
@@ -358,7 +417,8 @@ const NATIVE_CLEAR_DELAY_MS = 400;
 
 export async function clearDesktopNotify(opts?: { silent?: boolean }): Promise<void> {
   // JS-side state can update immediately (cheap, no Win32 re-entry).
-  const hadPending = pending != null;
+  const clearedKind = pending;
+  const hadChrome = nativeChrome;
   pending = null;
   lastDetail = null;
   emit();
@@ -371,7 +431,7 @@ export async function clearDesktopNotify(opts?: { silent?: boolean }): Promise<v
 
   // No native work needed: we never raised attention, and this isn't a
   // "force reset native chrome" (feature toggle off) call.
-  if (!hadPending && !opts?.silent) {
+  if (clearedKind == null && !hadChrome && !opts?.silent) {
     return;
   }
 
@@ -388,6 +448,8 @@ export async function clearDesktopNotify(opts?: { silent?: boolean }): Promise<v
   try {
     const w = await win();
     if (!w) return;
+    // A newer notification landed while we waited — it owns the chrome now.
+    if (pending != null) return;
 
     // Title only — cheap compared to attention/progress, still deferred.
     try {
@@ -404,8 +466,15 @@ export async function clearDesktopNotify(opts?: { silent?: boolean }): Promise<v
     } catch {
       // ignore
     }
+    if (hadChrome) logChrome("attention cleared", `kind=${clearedKind ?? "stale"}`);
   } finally {
     clearInflight = false;
+    // Keep the bookkeeping when a newer notification took over the bar; a
+    // failed native clear still drops it so the watcher cannot spin forever.
+    if (pending == null) {
+      nativeChrome = false;
+      syncChromeWatch();
+    }
   }
 }
 
@@ -423,8 +492,9 @@ export function bindDesktopNotifyFocusHandlers(): () => void {
   const scheduleClear = () => {
     if (disposed || scheduled) return;
     // Skip entirely when there is nothing to clear — avoids native Win32
-    // calls on every alt-tab / click-back (the main crash path).
-    if (pending == null) return;
+    // calls on every alt-tab / click-back (the main crash path). Compound
+    // with `nativeChrome` so a stale bar (reload, missed event) still goes.
+    if (pending == null && !nativeChrome) return;
     scheduled = true;
     // Defer past focus paint; do not use rAF alone (still inside paint frame).
     if (scheduleTimer != null) clearTimeout(scheduleTimer);
@@ -432,10 +502,15 @@ export function bindDesktopNotifyFocusHandlers(): () => void {
       scheduleTimer = null;
       scheduled = false;
       if (disposed) return;
-      if (pending == null) return;
+      if (pending == null && !nativeChrome) return;
       void clearDesktopNotify();
     }, NATIVE_CLEAR_DELAY_MS);
   };
+
+  // A page reload (dev HMR, the crash screen's Reload button) loses the JS
+  // bookkeeping while the shell keeps our bar painted. Reset it once here;
+  // the call is a no-op when nothing was raised.
+  void clearDesktopNotify({ silent: true });
 
   void (async () => {
     const w = await win();

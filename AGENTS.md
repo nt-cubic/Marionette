@@ -240,6 +240,24 @@ thought / tool / command / search 等泳道与时间条），**下方默认关�
 收尾，否则组标题会只剩工具那几秒。实时最后一帧与冻结图的 span 起止必须一致。
 回归：`npx tsx scripts/verify-activity-cluster.mts`。
 
+## 桌面通知（任务栏红/黄条，2026-11-20 修）
+
+`src/lib/desktopNotify.ts`：离开时闪任务栏 + 黄色（Paused，回复/待办）或红色（Error，失败/卡住）
+进度条 + 标题徽标，回到窗口清除。三条红线：
+
+- **焦点判定以页面为准**：`isAppWindowFocused()` 先看 `document.hasFocus()`，再退回
+  `window.isFocused()`。Windows 下主窗最小化会触发 webview 级 `TrySuspend`，还原后 tao 的
+  host 焦点标志会**一直停在 false**（2026-11-20 实测：还原后 `doc:true, tauri:false` 持续数分钟）。
+  只看 Tauri 的 `isFocused()` 等于「用户明明坐在窗口里也被当成离开」，每次完成都亮条，
+  且之后再没有焦点变化来清它——这就是红/黄条永久残留的根因。
+- **清除不能只认 `pending`**：native chrome 用独立 `nativeChrome` 记账；`clearDesktopNotify`
+  在 `pending == null` 时也要清（页面重载会丢掉 JS 状态，shell 上的条还在）。另有三道兜底：
+  raise 完成后复检焦点、chrome 存在时每 2s 的焦点轮询、`bindDesktopNotifyFocusHandlers`
+  挂载时静默复位一次。
+- **`requestUserAttention(null)` 仍然禁用**（tao 0.35 聚焦时重入消息泵 panic）；清除只做
+  `setTitle` + `setProgressBar(None)`，且在焦点稳定 400ms 后执行。不要为了「更及时」把这个
+  延时去掉。诊断日志：dev.log 的 `[notify] attention raised/cleared`。
+
 ## 富文本渲染管线（2026-10-26 接线定稿）
 
 MarkdownBody 之上的懒加载富文本（公式/代码高亮/流程图/生成式卡片）。库件在 `5adf569` 入库、本次接线；改前先过这几条：
