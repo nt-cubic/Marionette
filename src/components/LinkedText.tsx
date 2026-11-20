@@ -4,6 +4,8 @@ import { openExternal, resolveLinkTarget, revealInFileManager, type LinkResoluti
 import { normalizeWindowsDrivePath, stripFileUri } from "../lib/imageAttachments";
 import { linkLabel, splitLinkSegments, type LinkTarget } from "../lib/linkTargets";
 import { isDocPath, openInDocTabIfEligible } from "../lib/openFile";
+import { openInBrowserWorkspace } from "../lib/openBrowserLink";
+import { useT } from "../lib/i18n";
 
 /**
  * Paths and URLs inside agent text become clickable.
@@ -56,9 +58,10 @@ export function useLinkMenu() {
   );
 
   const primaryAction = useCallback(
-    async (event: React.MouseEvent, target: LinkTarget) => {
+    async (event: { clientX: number; clientY: number }, target: LinkTarget) => {
       if (target.kind === "url") {
         try {
+          if (await openInBrowserWorkspace(target.raw)) return;
           const result = await openExternal(linkActionPath(target), cwd);
           if (!result?.opened) {
             void openMenu(event, target, result?.message ?? "Could not open this link.");
@@ -164,6 +167,7 @@ function LinkMenu({
   onClose: () => void;
   onNote: (note: string) => void;
 }) {
+  const t = useT();
   const { target, resolution } = state;
   const isUrl = target.kind === "url" || resolution?.kind === "url";
   const exists = resolution != null && resolution.kind !== "missing";
@@ -213,7 +217,7 @@ function LinkMenu({
       </div>
       {isUrl ? (
         <button type="button" role="menuitem" onClick={() => void run(() => openExternal(linkActionPath(target), cwd))}>
-          Open in browser
+          {t("browser.openSystemBrowser")}
         </button>
       ) : (
         <>

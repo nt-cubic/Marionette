@@ -129,6 +129,7 @@ import { MemoBox } from "../components/MemoBox";
 import { CouncilPage } from "../components/CouncilPage";
 import { discardDocDraft, DocPage } from "../components/DocPage";
 import { setDocTabOpener } from "../lib/openFile";
+import { setBrowserLinkOpener } from "../lib/openBrowserLink";
 import { BrowserPage, BrowserPermissionDialog } from "../components/BrowserPage";
 import { ComputerShareDialog } from "../components/ComputerShareDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -270,6 +271,7 @@ import {
   MAX_PANES,
   MEMO_TAB_ID,
   activateTab,
+  activateTabInPlaceOrFocused,
   addTabToPane,
   adoptExternalSession,
   closeTab,
@@ -1289,6 +1291,9 @@ function AppMain() {
   /** Browser surface wins the center explicitly; the caller's gesture decides. */
   const activateBrowserSurface = useLatestCallback(() => {
     activateSurfaceTabInFocusedPane("browser");
+  });
+  const activateBrowserSurfaceInPlace = useLatestCallback(() => {
+    commitSplit(activateTabInPlaceOrFocused(surfaceTreeBase(), "browser"));
   });
   const selectBrowserTab = useLatestCallback((tabId: string) => {
     setActiveBrowserTabId(tabId);
@@ -5860,6 +5865,18 @@ function AppMain() {
     return () => setDocTabOpener(null);
   }, [openDocTab]);
 
+  useEffect(() => {
+    if (IS_DETACHED_WINDOW || !isTauriRuntime()) return;
+    setBrowserLinkOpener(async (url) => {
+      const result = await browserOpenTab(url);
+      if (!result) throw new Error("Could not open the browser tab.");
+      selectBrowserTab(result.tabId);
+      activateBrowserSurfaceInPlace();
+      if (getDockState() === "docked-expanded") setDockPage("browser");
+    });
+    return () => setBrowserLinkOpener(null);
+  }, [activateBrowserSurfaceInPlace, selectBrowserTab]);
+
   // Built-in browser tabs: the backend owns the list and emits it whole.
   // Opening a tab is not permission to steal the current workspace. A fresh
   // `display=workspace` tab is the one explicit exception (Web app preview);
@@ -5868,11 +5885,15 @@ function AppMain() {
   useEffect(() => {
     if (IS_DETACHED_WINDOW) return;
     let known = new Set<string>();
+    let receivedEvent = false;
+    let disposed = false;
     void browserListTabs().then((tabs) => {
+      if (disposed || receivedEvent) return;
       known = new Set(tabs.map((tab) => tab.id));
       setBrowserTabs(tabs);
     });
     const stop = onBrowserTabs((tabs) => {
+      receivedEvent = true;
       setBrowserTabs(tabs);
       const live = new Set(tabs.map((tab) => tab.id));
       setBrowserPickModes((prev) => {
@@ -5917,7 +5938,7 @@ function AppMain() {
       );
       if (workspaceTabId) {
         setActiveBrowserTabId(workspaceTabId);
-        activateBrowserSurface();
+        activateBrowserSurfaceInPlace();
         // While docked the strip has no chip — the page itself takes over.
         // Only a live, expanded strip takes the page: set while floating it
         // would linger and pop the browser open the next time the user docks.
@@ -5932,9 +5953,10 @@ function AppMain() {
       }
     });
     return () => {
+      disposed = true;
       void stop.then((unlisten) => unlisten());
     };
-  }, [activateBrowserSurface, removeTabFromTree]);
+  }, [activateBrowserSurfaceInPlace, removeTabFromTree]);
 
   // Restore content surfaces only after the focused chat is back. Surface tab
   // POSITIONS come back with the pane tree (restoreSplitFromSnapshot +

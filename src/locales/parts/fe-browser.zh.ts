@@ -1,6 +1,7 @@
 /** Built-in browser tabs + agent tool channel (fe-browser batch). */
 export const zh = {
   "browser.tabTitle": "浏览器",
+  "browser.openSystemBrowser": "使用系统浏览器打开",
   "browser.surfaceAgentPane": "Agent 对话",
   "browser.surfaceClose": "返回对话",
   "browser.surfaceCloseTab": "关闭内容标签",

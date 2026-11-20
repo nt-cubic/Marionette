@@ -1,10 +1,11 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { isTauriRuntime, openExternal } from "../lib/api";
+import { isTauriRuntime } from "../lib/api";
 import { copyText } from "../lib/clipboard";
 import { patchWebReply, sanitizeWebReply, type WebReply } from "../lib/webReply";
 import { MarkdownBody } from "./MarkdownBody";
 import { ImageLightbox } from "./ImageLightbox";
+import { useLinkMenu } from "./LinkedText";
 
 const NATIVE_CSS = `
 :host {
@@ -60,6 +61,9 @@ export const WebReplyBody = memo(function WebReplyBody({ reply, text }: { reply:
   const [failed, setFailed] = useState(false);
   const [ready, setReady] = useState(false);
   const [image, setImage] = useState<{ src: string; alt: string } | null>(null);
+  const links = useLinkMenu();
+  const linksRef = useRef(links);
+  linksRef.current = links;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -117,7 +121,13 @@ export const WebReplyBody = memo(function WebReplyBody({ reply, text }: { reply:
       if (anchor) {
         event.preventDefault();
         const href = anchor.getAttribute("href") || "";
-        if (/^https?:\/\//i.test(href)) void openExternal(href).catch(() => undefined);
+        if (/^https?:\/\//i.test(href)) {
+          const mouse = event as MouseEvent;
+          void linksRef.current.primaryAction(
+            { clientX: mouse.clientX, clientY: mouse.clientY },
+            { kind: "url", raw: href, start: 0, end: href.length },
+          );
+        }
         else if (href.startsWith("#")) {
           const destination = [...root.querySelectorAll("[id]")].find(el => el.id === href.slice(1));
           destination?.scrollIntoView({ block: "nearest" });
@@ -137,7 +147,20 @@ export const WebReplyBody = memo(function WebReplyBody({ reply, text }: { reply:
         }
       }
     };
+    const contextMenu = (event: Event) => {
+      const target = event.composedPath().find(n => n instanceof Element) as Element | undefined;
+      const href = target?.closest("a[href]")?.getAttribute("href") || "";
+      if (!/^https?:\/\//i.test(href)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const mouse = event as MouseEvent;
+      void linksRef.current.openMenu(
+        { clientX: mouse.clientX, clientY: mouse.clientY },
+        { kind: "url", raw: href, start: 0, end: href.length },
+      );
+    };
     shadow.addEventListener("click", click);
+    shadow.addEventListener("contextmenu", contextMenu);
     sheet.onload = () => { if (!disposed) setReady(true); };
     sheet.onerror = () => { if (!disposed) setFailed(true); };
     sheet.href = localAsset(reply.cssPath);
@@ -152,6 +175,7 @@ export const WebReplyBody = memo(function WebReplyBody({ reply, text }: { reply:
       shadow.removeEventListener("mouseup", resume);
       shadow.removeEventListener("keyup", resume);
       shadow.removeEventListener("click", click);
+      shadow.removeEventListener("contextmenu", contextMenu);
     };
   }, [reply.cssPath]);
 
@@ -164,6 +188,7 @@ export const WebReplyBody = memo(function WebReplyBody({ reply, text }: { reply:
       {ready && !failed && reply.textLength != null && text.length > reply.textLength &&
         <MarkdownBody text={text.slice(reply.textLength)} />}
       {image && <ImageLightbox src={image.src} alt={image.alt} onClose={() => setImage(null)} />}
+      {links.renderMenu()}
     </div>
   );
 });

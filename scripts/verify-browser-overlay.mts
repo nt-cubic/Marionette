@@ -12,12 +12,17 @@ function overlay(bounds: Rect, options: { modal?: boolean; hidden?: boolean } = 
   };
 }
 let overlays: ReturnType<typeof overlay>[] = [];
+let queriedSelector = "";
 Object.assign(globalThis, {
-  document: { querySelectorAll: () => overlays },
+  document: { querySelectorAll: (selector: string) => { queriedSelector = selector; return overlays; } },
   getComputedStyle: () => ({ visibility: "visible" }),
 });
 
 assert.equal(browserHostCovered(host), false);
+assert.match(queriedSelector, /\.project-dialog-backdrop/, "legacy modal backdrops are observed even without aria-modal");
+assert.match(queriedSelector, /\.permission-dialog-backdrop/);
+overlays = [overlay(rect(0, 0, 1000, 800))];
+assert.equal(browserHostCovered(host), true, "a full-window backdrop hides the browser even if its dialog panel is elsewhere");
 overlays = [overlay(rect(0, 0, 50, 50), { modal: true })];
 assert.equal(browserHostCovered(host), true, "modal backdrop covers the browser even if its panel does not");
 overlays = [overlay(rect(500, 150, 800, 300))];

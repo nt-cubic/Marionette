@@ -166,8 +166,8 @@ function decodeLocalTarget(url: string): string {
 
 /**
  * Markdown link — same click behaviour as linkified prose: never navigate the
- * app window, hand the target to the OS, and on failure show the menu with the
- * reason instead of silently doing nothing.
+ * app window, open web links in the browser workspace, and on failure show
+ * the menu with the reason instead of silently doing nothing.
  */
 function MdLink({ href, children }: { href?: string; children?: ReactNode }) {
   const { openMenu, primaryAction, renderMenu } = useLinkMenu();

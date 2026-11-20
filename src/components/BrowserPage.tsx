@@ -3,7 +3,6 @@ import type { Dispatch, SetStateAction } from "react";
 import {
   Bot,
   Check,
-  Crosshair,
   Globe,
   MoreHorizontal,
   Pin,
@@ -345,12 +344,6 @@ export function BrowserPage({
     [setPickModes, t],
   );
 
-  const togglePicker = () => {
-    if (!active) return;
-    const current = pickModes[active.id] ?? null;
-    void setPickerMode(active.id, current ? null : "element");
-  };
-
   // A crop can land while another tab's CDP call holds the lease — retry a
   // few times before showing the failed chip.
   const finalizeScreenshot = useCallback(async (tabId: string, pickId: string): Promise<boolean> => {
@@ -582,9 +575,6 @@ export function BrowserPage({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [active, embedded, pickModes, setPickerMode, onExit, shareMenuFor]);
 
-  const drawerOpen =
-    Boolean(active) && (pickerMode !== null || pickRows.length > 0 || pickerNotice !== null);
-
   return (
     <div ref={rootRef} className="browser-page">
       <div className="browser-page__bar">
@@ -751,18 +741,6 @@ export function BrowserPage({
             />
             <button
               type="button"
-              className={`pill-action pill-action--icon pill-action--sm browser-page__pick${
-                pickerMode ? " is-active" : ""
-              }`}
-              title={t("picker.title")}
-              aria-label={t("picker.title")}
-              aria-pressed={Boolean(pickerMode)}
-              onClick={togglePicker}
-            >
-              <Crosshair size={12} />
-            </button>
-            <button
-              type="button"
               className="pill-action pill-action--icon pill-action--sm"
               title={t("browser.reload")}
               onClick={() => void browserNavigateTab(active.id, active.url)}
@@ -819,154 +797,142 @@ export function BrowserPage({
           </div>
         )}
       </div>
-      {active && drawerOpen && (
+      {active && (
         <div className="browser-page__picker">
           <div className="browser-page__picker-head">
-            {pickerMode ? (
-              <>
-                <div className="browser-page__picker-modes" role="tablist">
-                  {(["element", "region"] as const).map((mode) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      role="tab"
-                      aria-selected={pickerMode === mode}
-                      className={`browser-page__picker-mode${pickerMode === mode ? " is-active" : ""}`}
-                      onClick={() => void setPickerMode(active.id, mode)}
-                    >
-                      {t(mode === "element" ? "picker.modeElement" : "picker.modeRegion")}
-                    </button>
-                  ))}
-                </div>
-                <span
-                  className={`browser-page__picker-hint${pickerNotice ? " is-error" : ""}`}
-                  role="status"
-                  aria-live="polite"
-                >
-                  {pickerNotice ||
-                    t(pickerMode === "element" ? "picker.hint" : "picker.hintRegion")}
-                </span>
+            <div className="browser-page__picker-modes">
+              {(["element", "region"] as const).map((mode) => (
                 <button
+                  key={mode}
                   type="button"
-                  className="pill-action pill-action--sm browser-page__picker-exit"
-                  onClick={() => void setPickerMode(active.id, null)}
+                  aria-pressed={pickerMode === mode}
+                  className={`browser-page__picker-mode${pickerMode === mode ? " is-active" : ""}`}
+                  onClick={() => void setPickerMode(active.id, pickerMode === mode ? null : mode)}
                 >
-                  {t("picker.exit")}
+                  {t(mode === "element" ? "picker.modeElement" : "picker.modeRegion")}
                 </button>
-              </>
-            ) : (
-              <span
-                className={`browser-page__picker-hint${pickerNotice ? " is-error" : ""}`}
-                role="status"
-                aria-live="polite"
-              >
-                {pickerNotice || t("picker.sendHint")}
-              </span>
-            )}
+              ))}
+            </div>
+            {(pickerMode || pickerNotice) && <span
+              className={`browser-page__picker-hint${pickerNotice ? " is-error" : ""}`}
+              role="status"
+              aria-live="polite"
+            >
+              {pickerNotice ||
+                t(pickerMode === "element" ? "picker.hint" : "picker.hintRegion")}
+            </span>}
+            {pickerMode && <button
+              type="button"
+              className="pill-action pill-action--sm browser-page__picker-exit"
+              onClick={() => void setPickerMode(active.id, null)}
+            >
+              {t("picker.exit")}
+            </button>}
           </div>
-          <div className="browser-page__picker-rows">
-            {pickRows.length === 0 && (
-              <div className="browser-page__picker-empty">{t("picker.empty")}</div>
-            )}
-            {pickRows.map((row) => (
-              <div key={row.pickId} className="browser-pick-row">
-                {row.screenshot ? (
-                  <img className="browser-pick-row__thumb" src={row.screenshot} alt="" />
-                ) : row.screenshotFailed ? (
-                  <button
-                    type="button"
-                    className="browser-pick-row__thumb is-pending is-failed"
-                    title={t("picker.retryScreenshot")}
-                    onClick={() => retryScreenshot(active.id, row.pickId)}
-                  >
-                    {t("picker.retryScreenshot")}
-                  </button>
-                ) : (
-                  <div className="browser-pick-row__thumb is-pending">
-                    {t("picker.screenshotPending")}
-                  </div>
-                )}
-                <div className="browser-pick-row__body">
-                  <div className="browser-pick-row__title">
-                    {row.kind === "element" && row.info ? (
-                      <>
-                        {pickTargetLabel(row.info)}
-                        {(row.info.text || row.info.placeholder) && (
-                          <span className="browser-pick-row__text">
-                            「{row.info.text || row.info.placeholder}」
-                          </span>
-                        )}
-                      </>
+          {pickRows.length > 0 && (
+            <>
+              <div className="browser-page__picker-rows">
+                {pickRows.map((row) => (
+                  <div key={row.pickId} className="browser-pick-row">
+                    {row.screenshot ? (
+                      <img className="browser-pick-row__thumb" src={row.screenshot} alt="" />
+                    ) : row.screenshotFailed ? (
+                      <button
+                        type="button"
+                        className="browser-pick-row__thumb is-pending is-failed"
+                        title={t("picker.retryScreenshot")}
+                        onClick={() => retryScreenshot(active.id, row.pickId)}
+                      >
+                        {t("picker.retryScreenshot")}
+                      </button>
                     ) : (
-                      <>
-                        {t("picker.modeRegion")}
-                        {row.rect && (
-                          <span className="browser-pick-row__text">
-                            {" "}
-                            {Math.round(row.rect.width)}×{Math.round(row.rect.height)}
-                          </span>
-                        )}
-                        {row.scanCapped && (
-                          <span className="browser-pick-row__capped">{t("picker.regionCapped")}</span>
-                        )}
-                      </>
+                      <div className="browser-pick-row__thumb is-pending">
+                        {t("picker.screenshotPending")}
+                      </div>
                     )}
-                  </div>
-                  {row.kind === "region" && row.elements && row.elements.length > 0 && (
-                    <div className="browser-pick-row__elements">
-                      {row.elements.slice(0, 5).map(elementShort).join(" / ")}
-                      {row.elements.length > 5 ? " / …" : ""}
+                    <div className="browser-pick-row__body">
+                      <div className="browser-pick-row__title">
+                        {row.kind === "element" && row.info ? (
+                          <>
+                            {pickTargetLabel(row.info)}
+                            {(row.info.text || row.info.placeholder) && (
+                              <span className="browser-pick-row__text">
+                                「{row.info.text || row.info.placeholder}」
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            {t("picker.modeRegion")}
+                            {row.rect && (
+                              <span className="browser-pick-row__text">
+                                {" "}
+                                {Math.round(row.rect.width)}×{Math.round(row.rect.height)}
+                              </span>
+                            )}
+                            {row.scanCapped && (
+                              <span className="browser-pick-row__capped">{t("picker.regionCapped")}</span>
+                            )}
+                          </>
+                        )}
+                      </div>
+                      {row.kind === "region" && row.elements && row.elements.length > 0 && (
+                        <div className="browser-pick-row__elements">
+                          {row.elements.slice(0, 5).map(elementShort).join(" / ")}
+                          {row.elements.length > 5 ? " / …" : ""}
+                        </div>
+                      )}
+                      <input
+                        className="browser-pick-row__note"
+                        value={row.note}
+                        placeholder={t("picker.notePlaceholder")}
+                        spellCheck={false}
+                        onChange={(event) => {
+                          const { value } = event.target;
+                          setPicksByTab((prev) => ({
+                            ...prev,
+                            [active.id]: (prev[active.id] ?? []).map((existing) =>
+                              existing.pickId === row.pickId ? { ...existing, note: value } : existing,
+                            ),
+                          }));
+                        }}
+                      />
                     </div>
-                  )}
-                  <input
-                    className="browser-pick-row__note"
-                    value={row.note}
-                    placeholder={t("picker.notePlaceholder")}
-                    spellCheck={false}
-                    onChange={(event) => {
-                      const { value } = event.target;
-                      setPicksByTab((prev) => ({
-                        ...prev,
-                        [active.id]: (prev[active.id] ?? []).map((existing) =>
-                          existing.pickId === row.pickId ? { ...existing, note: value } : existing,
-                        ),
-                      }));
-                    }}
-                  />
-                </div>
+                    <button
+                      type="button"
+                      className="pill-action pill-action--icon pill-action--sm browser-pick-row__remove"
+                      title={t("picker.remove")}
+                      aria-label={t("picker.remove")}
+                      onClick={() => removePick(row.pickId)}
+                    >
+                      <X size={11} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <div className="browser-page__picker-foot">
                 <button
                   type="button"
-                  className="pill-action pill-action--icon pill-action--sm browser-pick-row__remove"
-                  title={t("picker.remove")}
-                  aria-label={t("picker.remove")}
-                  onClick={() => removePick(row.pickId)}
+                  className="pill-action pill-action--sm"
+                  disabled={pickRows.length === 0 || resolving}
+                  onClick={() => void clearBatch()}
                 >
-                  <X size={11} />
+                  {t("picker.clear")}
+                </button>
+                <button
+                  type="button"
+                  className="pill-action pill-action--sm browser-page__picker-send"
+                  disabled={pickRows.length === 0 || resolving || pendingScreenshots || !onSendToChat}
+                  title={pendingScreenshots ? t("picker.waitScreenshots") : t("picker.sendHint")}
+                  onClick={() => void sendToChat()}
+                >
+                  {resolving
+                    ? t("picker.resolving")
+                    : t("picker.send", { total: pickRows.length })}
                 </button>
               </div>
-            ))}
-          </div>
-          <div className="browser-page__picker-foot">
-            <button
-              type="button"
-              className="pill-action pill-action--sm"
-              disabled={pickRows.length === 0 || resolving}
-              onClick={() => void clearBatch()}
-            >
-              {t("picker.clear")}
-            </button>
-            <button
-              type="button"
-              className="pill-action pill-action--sm browser-page__picker-send"
-              disabled={pickRows.length === 0 || resolving || pendingScreenshots || !onSendToChat}
-              title={pendingScreenshots ? t("picker.waitScreenshots") : t("picker.sendHint")}
-              onClick={() => void sendToChat()}
-            >
-              {resolving
-                ? t("picker.resolving")
-                : t("picker.send", { total: pickRows.length })}
-            </button>
-          </div>
+            </>
+          )}
         </div>
       )}
       {handoff && active?.id === handoff.tabId && (
