@@ -651,6 +651,7 @@ fn main() {
             usage_store::usage_session_append,
             usage_store::usage_session_read,
             desktop_notify::desktop_notify_set_enabled,
+            desktop_notify::desktop_notify_clear,
             usage_backfill::usage_backfill_scan,
             usage_backfill::usage_grok_composition,
             commands::list_projects,

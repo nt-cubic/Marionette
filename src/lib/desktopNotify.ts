@@ -479,6 +479,20 @@ export async function clearDesktopNotify(opts?: { silent?: boolean }): Promise<v
 }
 
 /**
+ * Drop Rust-owned taskbar chrome as well.
+ *
+ * ACP reply/permission alerts are raised by the backend (`desktop_notify.rs`),
+ * which keeps its own bookkeeping. Its focus clear depends on a native focus
+ * event; after a webview suspend/resume that event can be missed, leaving a
+ * yellow bar with no owner in JS. The page's focus state is the reliable
+ * signal, so clear both sides here (no-op when Rust owns nothing).
+ */
+function clearNativeAttention(): void {
+  if (!isTauriRuntime()) return;
+  void invoke("desktop_notify_clear").catch(() => undefined);
+}
+
+/**
  * Call once from App: clear attention on focus; optional visibility fallback.
  */
 export function bindDesktopNotifyFocusHandlers(): () => void {
@@ -491,10 +505,10 @@ export function bindDesktopNotifyFocusHandlers(): () => void {
 
   const scheduleClear = () => {
     if (disposed || scheduled) return;
-    // Skip entirely when there is nothing to clear — avoids native Win32
-    // calls on every alt-tab / click-back (the main crash path). Compound
-    // with `nativeChrome` so a stale bar (reload, missed event) still goes.
-    if (pending == null && !nativeChrome) return;
+    // JS painting is skipped when it owns nothing — that avoids the native
+    // Win32 calls that are the main crash path on every alt-tab. The backend
+    // still gets the focus signal below (the command itself is a cheap no-op).
+    const ownsChrome = pending != null || nativeChrome;
     scheduled = true;
     // Defer past focus paint; do not use rAF alone (still inside paint frame).
     if (scheduleTimer != null) clearTimeout(scheduleTimer);
@@ -502,6 +516,10 @@ export function bindDesktopNotifyFocusHandlers(): () => void {
       scheduleTimer = null;
       scheduled = false;
       if (disposed) return;
+      // Backend-owned alerts (ACP reply/permission/question/plan) keep their
+      // own bookkeeping; hand it the same settled focus signal.
+      clearNativeAttention();
+      if (!ownsChrome) return;
       if (pending == null && !nativeChrome) return;
       void clearDesktopNotify();
     }, NATIVE_CLEAR_DELAY_MS);
@@ -509,8 +527,9 @@ export function bindDesktopNotifyFocusHandlers(): () => void {
 
   // A page reload (dev HMR, the crash screen's Reload button) loses the JS
   // bookkeeping while the shell keeps our bar painted. Reset it once here;
-  // the call is a no-op when nothing was raised.
+  // the call is a no-op when nothing was raised. The backend is reset too.
   void clearDesktopNotify({ silent: true });
+  clearNativeAttention();
 
   void (async () => {
     const w = await win();

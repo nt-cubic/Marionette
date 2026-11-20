@@ -240,6 +240,40 @@ pub fn observe_acp_event(
     }
 }
 
+/// Is any Marionette window the OS foreground window?
+///
+/// `window.is_focused()` alone is not trustworthy on Windows: after the
+/// webview is suspended and resumed (minimize → TrySuspend → restore),
+/// tao's host-focus flag can stay `false` for minutes while the user sits in
+/// the window (2026-11-20). A notification raised on that stale signal paints
+/// a yellow taskbar bar and the focus clear never runs, so the bar sticks.
+/// The Win32 foreground window is the same truth the page's `document.hasFocus()`
+/// sees, minus tao's bookkeeping.
+fn app_in_foreground(app: &AppHandle) -> bool {
+    app.webview_windows().values().any(|window| {
+        if window.is_focused().unwrap_or(false) {
+            return true;
+        }
+        window_is_foreground(window)
+    })
+}
+
+#[cfg(windows)]
+fn window_is_foreground(window: &tauri::WebviewWindow) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+    let Ok(hwnd) = window.hwnd() else {
+        return false;
+    };
+    let foreground = unsafe { GetForegroundWindow() };
+    !foreground.is_null() && foreground as isize == hwnd.0 as isize
+}
+
+#[cfg(not(windows))]
+fn window_is_foreground(_window: &tauri::WebviewWindow) -> bool {
+    false
+}
+
 fn raise(
     app: &AppHandle,
     preferred_window: &str,
@@ -251,11 +285,7 @@ fn raise(
         return;
     }
 
-    let focused = app
-        .webview_windows()
-        .values()
-        .any(|window| window.is_focused().unwrap_or(false));
-    if focused {
+    if app_in_foreground(app) {
         if audible_when_focused {
             play_sound(kind);
         }
@@ -291,11 +321,19 @@ fn raise(
 
     if let Ok(mut pending) = pending_attention().lock() {
         *pending = Some(PendingAttention {
-            window_label,
+            window_label: window_label.clone(),
             previous_title,
             alert_title: title,
         });
     }
+    crate::debug_log::append(
+        "notify",
+        "info",
+        "",
+        "attention raised",
+        Some(&format!("kind={kind:?} window={window_label}")),
+    );
+    ensure_chrome_watch(app);
 }
 
 fn duplicate(kind: Kind) -> bool {
@@ -347,11 +385,50 @@ pub fn schedule_clear_on_focus(app: &AppHandle) {
         if generation != CLEAR_GENERATION.load(Ordering::Acquire) {
             return;
         }
-        let still_focused = app
-            .webview_windows()
-            .values()
-            .any(|window| window.is_focused().unwrap_or(false));
-        if still_focused {
+        if app_in_foreground(&app) {
+            clear_attention(&app);
+        }
+    });
+}
+
+/// Backstop for the same reason the web UI polls: a raise can land after the
+/// only focus event already fired, and tao can miss focus transitions across
+/// minimize/restore. While Rust owns chrome, re-check the real foreground
+/// window every few seconds and drop the bar once the user is back.
+static CHROME_WATCHING: AtomicBool = AtomicBool::new(false);
+const CHROME_POLL: Duration = Duration::from_secs(2);
+
+fn ensure_chrome_watch(app: &AppHandle) {
+    if CHROME_WATCHING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(CHROME_POLL);
+        let pending = pending_attention()
+            .lock()
+            .map(|pending| pending.is_some())
+            .unwrap_or(false);
+        if !pending {
+            CHROME_WATCHING.store(false, Ordering::Release);
+            // A raise may have slipped in between the check and the store; if
+            // so it already saw `true` and did not spawn, so take the watch on.
+            let still_pending = pending_attention()
+                .lock()
+                .map(|pending| pending.is_some())
+                .unwrap_or(false);
+            if !still_pending || CHROME_WATCHING.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            continue;
+        }
+        if !app_in_foreground(&app) {
+            continue;
+        }
+        // Same paint-settle guard as the focus handler: never touch native
+        // chrome inside the focus transition.
+        std::thread::sleep(CLEAR_AFTER_FOCUS);
+        if app_in_foreground(&app) {
             clear_attention(&app);
         }
     });
@@ -377,6 +454,13 @@ fn clear_attention(app: &AppHandle) {
         status: None,
         progress: None,
     });
+    crate::debug_log::append(
+        "notify",
+        "info",
+        "",
+        "attention cleared",
+        Some(&format!("window={}", pending.window_label)),
+    );
 }
 
 fn title_prefix(kind: Kind) -> &'static str {
@@ -443,6 +527,16 @@ fn play_sound(_kind: Kind) {}
 #[tauri::command(async)]
 pub fn desktop_notify_set_enabled(app: AppHandle, enabled: bool) {
     set_enabled(&app, enabled);
+}
+
+/// Frontend focus knowledge clears Rust-owned chrome too.
+///
+/// The page's `document.hasFocus()` is the most reliable "user is here"
+/// signal; the native focus event can be missed across suspend/resume. This
+/// command is a no-op when Rust owns nothing.
+#[tauri::command(async)]
+pub fn desktop_notify_clear(app: AppHandle) {
+    clear_attention(&app);
 }
 
 #[cfg(test)]
