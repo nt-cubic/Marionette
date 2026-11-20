@@ -133,4 +133,11 @@ export const zh = {
   "staff.forgetMemoryDescription": "固定事实、当前状态、候选记忆和日记都会被删除并留下 tombstone，之后自动整理不会复活它们。",
   "staff.workerFrom": "来自 {name} 的任务",
   "staff.backToStaff": "回到员工",
+  "staff.chatEmptyTitle": "与{name}聊天",
+  "staff.chatEmptyHint": "给我一项任务，或者告诉我你想要解决什么问题。",
+  "staff.chatPlaceholder": "发送消息至 {name}",
+  "staff.chatOnline": "在线",
+  "staff.chatWorking": "进行中",
+  "staff.chatTyping": "{name} 正在输入",
+  "staff.chatMessageFrom": "来自{name}的消息",
 } as const;

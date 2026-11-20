@@ -2,6 +2,8 @@
 export const zh = {
   "app.silenceTitle": "Agent 已 60 秒无任何输出",
   "app.silenceDesc": "消息已发出,但没有收到任何回传事件。可先点停止再重发;若反复出现,重启该会话或 agent。",
+  "app.antigravityAuthTitle": "等待 Google 授权",
+  "app.antigravityAuthDesc": "Antigravity 正在等待 Google 登录。若浏览器没有自动打开，请手动访问下面的授权链接：",
   "app.needLoginSignIn": "需要登录 — 点 Sign in，或终端执行 `{cmd}`",
   "app.needLoginTerminal": "需要登录 — 终端执行 `{cmd}`",
   "app.versionTooLowGrok": "版本过低 — 点「更新」运行 `grok update`，完成后新建会话。",

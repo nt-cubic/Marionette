@@ -1,4 +1,4 @@
-# Marionette — 当前状态（2026-10）
+# Marionette — 当前状态（2026-11）
 
 > 现行产品说明。历史设计稿与已完成路线图见 [`archive/`](./archive/)。
 
@@ -22,11 +22,11 @@ Windows 本地 **多 Agent CLI 图形壳**（Tauri + React）。不替代 OpenCo
 | Clean 对话 | transcript JSONL、edit&resend（重发会带上原来的 agent/模型标记，后面的回复仍是 Reply 而不是 Notification）、普通权限弹窗、Ask/Plan 进对话流（卡片上回复，输入框收起，写入 handoff.md）、ACP notice / Codex 重试 / Claude 会话失败 / 发送后 60 秒无输出以独立「通知」卡进入对话流（不在输入框上方弹条）、@ 派任务、从任意一条回复分叉出新会话（复制到该条为止，首次发送自动带上这段历史）、回复里的图片按会话工作目录解析（文件名差一个字符时找同目录里唯一近似的那张）；**Reply/You 里的图片链接（`[说明](D:/x.png)`）会在链接上方直接出图，远程 http(s) 图片同样显示**；Agent 读到的图片在工具卡里直接出预览，**收起的工具行/运行段行也带小缩略图（点击开灯箱）**；输入框贴图带缩略图；点图片开四周发黑的灯箱（拖动平移、滚轮缩放）；并行子代理按厂商走私方式认成独立卡（Claude Agent/Task + parentToolUseId、OpenCode Task、Grok `spawn_subagent`、Codex collab `spawnAgent` / 无 spawn 工具的 `_meta.codex.subagent`、ZCode Agent 标题是任务描述、通用 spawn 动词（`delegate_task` 等）；ACP 没转发内层转录就不编造）收进专用格子而不是刷进 tally / 主消息流；Markdown 走主流 GFM（react-markdown + remark-gfm，编号列表 10/1000、重复字不再被流合并吃掉）；富文本按内容懒加载：公式（KaTeX，单 `$` 恒字面）、代码高亮（Shiki 双主题）、流程图（```mermaid）、生成式卡片（```spec，见下节）；按「运行段」折叠 tool/thinking（**没有全局眼睛开关**，永远折叠；单卡仍可点开）：**当前轨迹从第一步就作为一张组卡出现**（标题是 `1 thought, 1 read, 1 search` 这类 tally），live 时上方显示**实时泳道时间图**，下方 tally 详情保持折叠（**不自动展开 thought 或工具正文**）；**整轮结束后自动折回 tally 摘要**（时间图一起收起；点开摘要看到同一套占位条 + 60s 标尺，不是短轴断点），运行时可手动查看详情，完成时统一折叠（细则见下节） |
 | Handoff / Git | handoff.md、changed files、只读 diff；**每轮交付卡走私有 index 的内容树快照（本轮窗口口径，见下节）** |
 | 右侧栏 | 固定三标签：**当前**保留 Tasks / 额度 / 改动文件与后台任务行；**共享**收纳 MCP、技能、插件、记忆、交接；**图片**按当前对话列出用户附图和工具图片（总数、来源筛选、日期分组、随栏宽自适应的两列以上网格，长列表分页加载）。标签选择持久化，并支持左右方向键切换；图片不再原地展开挤压其它右栏内容。点图开全屏查看器，点图片外空白 / 遮罩、Esc 或关闭键均可退出；本地图片可点「批注并添加」进入现有打点/框选批注器，确认后作为带批注的 Composer 附件回到当前对话（同路径复用同一附件，再次批注会更新标记而不是重复插图）。后台任务聚合层已为后续独立「任务」标签预留扩展点 |
-| 多窗口 | Tab 幽灵撕出 → 松手开 detached 窗；关窗 hide 防 tao 闪退；隐藏壳 LRU 回收。主窗对话区最多 4 格分屏（拖标签到中区/格的左、右、上、下约 1/4；可 1\|1\|1、1\|2 或 2×2；同一方向再拆会均分整行/整列）；每格自己的标签、转写、输入框；标签 Columns2 / 右键「在右侧打开」「在下方打开」；重启恢复分屏。**收纳盒 / 文档 / 浏览器面板也是窗格标签（2026-11-18）**：点开落在聚焦窗格内切标签，可与对话任意混排分屏、拖动条调宽高、跨窗格移动；收纳盒与文档标签可拖出主窗口成独立小窗（无对话栏的纯面板窗，「合并回主窗口」按钮或拖回主窗恢复原位），浏览器面板不可撕（原生控件钉在主窗，拖出=取消）。撕出去的窗口拖回主窗：边缘拆格、中间并入、坐标失败进焦点格；关撕窗也插回焦点格。侧栏点已撕开的对话只聚焦那个窗口。权限/提问/计划卡片会把焦点切到当事格；权限框一到就画。**输入框过窄时底栏芯片收成贴边同款 hub**（量的是这一格 composer 自己的宽度，不是整窗）：≤580px 收成滑杆+当前模型名一个入口（＋ 附文件与发送留在外），≥640px 再摊开芯片，中间一段不来回闪 |
-| Usage | 上下文、OpenCode 余额探测、Claude/Codex/Grok 限流类数据、**订阅配额（引擎 `magpie quota`，跨 agent 可见的订阅窗口并入同一面板）**、**Token 用量分析伪标签页 v2**（2026-11-08 家里做的版面 + 2026-11-09 修正批）。入口只有 Ctrl K「Token 用量分析」（**右栏不放 Token 总览卡**；主界面不加按钮）：普通窗口开 `is-usage` 伪标签、贴边走 DockPage `usage` 整页（**对话列表行可点开对话**）、detached 弹窗兜底。页面（`src/components/usage/`）：英雄五数（四桶合计/费用/缓存命中/轮数/活跃时长，均带环比与来源标签）→ 每日四桶堆叠柱+折算费用虚线（按天/按周）→ Token 去向树图（缓存命中历史/工具调用/agent 自带+未缓存历史/你的输入/思考/回复，每块标实测/估算/推算）+ 时间去向（等首字/思考/回复/工具/其它，每日丝带 + p50/p95）→ 按 agent·模型表（可展开、走势火花线）→ 工具/命令/技能·MCP 排行 + **文件活动**（被读/被改最多的文件）→ 作息热图 + 上下文占用分布 + **压缩/失败轮/中断轮统计** → 对话列表（**可搜索**、按时间窗取数——短窗口不再显示整段历史累计；行尾「详情」开**单会话按轮面板**：上下文占用曲线、压缩刻度、失败轮、逐轮 token/模型/结局、**对话组成**（Grok：九类真数组成条——系统提示词/工具定义/注入/你的输入/附件/回复/思考/工具调用/结果，按结束时的实测上下文大小校准；其它 agent 如实显示暂无））→ **历史对话（本机日志）**：扫描各 agent CLI 自己的会话库（`usage_backfill.rs`，增量缓存），补上不经过 Marionette 开的对话，与实时台账按 agent 自报会话编号去重（重复的只列不计）→ 口径脚注。**记账口径（`usageLedger.ts` + `usageDigest.ts`）**：四桶 + 按天/按 agent/按会话三层聚合，每轮 turn/complete O(1) 增量、绝不重载转录、保留 180 天；时间去向/工具命令技能计数/文件活动/可见输入估算按轮折叠；**改动行数优先 git 对账**（轮末交付卡同一快照，工具文本口径仅兜底）；**上下文占用只记本轮被实时更新过的读数**（usage_update / Grok per-call；冻结的种子值不算——部分 agent 只报一次，旧版把它们当实测堆进图表）；**agent 自报费用优先**（Grok `costUsdTicks` 记相邻轮差值；其 token 不再叠牌价）+ **DeepSeek 高峰时段按牌价 ×2**（北京时间工作日 9–12/14–18，仅 DeepSeek 自家牌价的模型，不含法定节假日、略偏高——文案注明）；压缩事件吃 ACP `compaction_update`（能力早已声明）；agent 自续跑（无 turn 边界的续段）按「上一轮记账时刻」去重防重复折叠；失败/中断轮按 turn/complete 停止原因分类。**存放位置**：桌面版 `~/.marionette/usage/`（`usage_store.rs`：`ledger.json` 乐观 rev 写 + `sessions/<id>.jsonl` 按轮行；写失败记 dev.log 并在下一轮重试，localStorage 配额问题成为历史，首次启动自动迁移旧 localStorage 账本）；浏览器预览退 localStorage。牌价折算（models.dev 目录 24h 缓存、厂商自家价优先、未计价 token 标覆盖率；CSP 仅放行 `https://models.dev`；文案「API 牌价折算，非订阅实付」）。**工具栏「导出 CSV」**：long format（`scope=total` 日合计 + `scope=model` 模型拆分），原生另存为，成功 toast 可一键打开所在文件夹 |
+| 多窗口 | Tab 幽灵撕出 → 松手开 detached 窗；关窗 hide 防 tao 闪退；隐藏壳 LRU 回收。主窗对话区最多 4 格分屏（拖标签到中区/格的左、右、上、下约 1/4；可 1\|1\|1、1\|2 或 2×2；同一方向再拆会均分整行/整列）；每格自己的标签、转写、输入框；标签 Columns2 / 右键「在右侧打开」「在下方打开」；重启恢复分屏。**收纳盒 / 文档 / 浏览器面板也是窗格标签（2026-11-18）**：单格时点击就是完整标签页，主标题栏照常列标签，不出现第二套空标签栏；拖到中栏边缘才进入多格，每格只列自己拥有的标签，可与对话任意混排、拖动条调宽高、跨窗格移动；收纳盒与文档标签可拖出主窗口成独立小窗（无对话栏的纯面板窗，「合并回主窗口」按钮或拖回主窗恢复原位），浏览器面板不可撕（原生控件钉在主窗，拖出=取消）。撕出去的窗口拖回主窗：边缘拆格、中间并入、坐标失败进焦点格；关撕窗也插回焦点格。侧栏点已撕开的对话只聚焦那个窗口。权限/提问/计划卡片会把焦点切到当事格；权限框一到就画。**输入框过窄时底栏芯片收成贴边同款 hub**（量的是这一格 composer 自己的宽度，不是整窗）：≤580px 收成滑杆+当前模型名一个入口（＋ 附文件与发送留在外），≥640px 再摊开芯片，中间一段不来回闪 |
+| Usage | 上下文、OpenCode 余额探测、Claude/Codex/Grok 限流类数据、**订阅配额（内置引擎 `/v1/magpie/quotas`，跨 agent 可见的订阅窗口并入同一面板）**、**Token 用量分析伪标签页 v2**（2026-11-08 家里做的版面 + 2026-11-09 修正批）。入口只有 Ctrl K「Token 用量分析」（**右栏不放 Token 总览卡**；主界面不加按钮）：普通窗口开 `is-usage` 伪标签、贴边走 DockPage `usage` 整页（**对话列表行可点开对话**）、detached 弹窗兜底。页面（`src/components/usage/`）：英雄五数（四桶合计/费用/缓存命中/轮数/活跃时长，均带环比与来源标签）→ 每日四桶堆叠柱+折算费用虚线（按天/按周）→ Token 去向树图（缓存命中历史/工具调用/agent 自带+未缓存历史/你的输入/思考/回复，每块标实测/估算/推算）+ 时间去向（等首字/思考/回复/工具/其它，每日丝带 + p50/p95）→ 按 agent·模型表（可展开、走势火花线）→ 工具/命令/技能·MCP 排行 + **文件活动**（被读/被改最多的文件）→ 作息热图 + 上下文占用分布 + **压缩/失败轮/中断轮统计** → 对话列表（**可搜索**、按时间窗取数——短窗口不再显示整段历史累计；行尾「详情」开**单会话按轮面板**：上下文占用曲线、压缩刻度、失败轮、逐轮 token/模型/结局、**对话组成**（Grok：九类真数组成条——系统提示词/工具定义/注入/你的输入/附件/回复/思考/工具调用/结果，按结束时的实测上下文大小校准；其它 agent 如实显示暂无））→ **历史对话（本机日志）**：扫描各 agent CLI 自己的会话库（`usage_backfill.rs`，增量缓存），补上不经过 Marionette 开的对话，与实时台账按 agent 自报会话编号去重（重复的只列不计）→ 口径脚注。**记账口径（`usageLedger.ts` + `usageDigest.ts`）**：四桶 + 按天/按 agent/按会话三层聚合，每轮 turn/complete O(1) 增量、绝不重载转录、保留 180 天；时间去向/工具命令技能计数/文件活动/可见输入估算按轮折叠；**改动行数优先 git 对账**（轮末交付卡同一快照，工具文本口径仅兜底）；**上下文占用只记本轮被实时更新过的读数**（usage_update / Grok per-call；冻结的种子值不算——部分 agent 只报一次，旧版把它们当实测堆进图表）；**agent 自报费用优先**（Grok `costUsdTicks` 记相邻轮差值；其 token 不再叠牌价）+ **DeepSeek 高峰时段按牌价 ×2**（北京时间工作日 9–12/14–18，仅 DeepSeek 自家牌价的模型，不含法定节假日、略偏高——文案注明）；压缩事件吃 ACP `compaction_update`（能力早已声明）；agent 自续跑（无 turn 边界的续段）按「上一轮记账时刻」去重防重复折叠；失败/中断轮按 turn/complete 停止原因分类。**存放位置**：桌面版 `~/.marionette/usage/`（`usage_store.rs`：`ledger.json` 乐观 rev 写 + `sessions/<id>.jsonl` 按轮行；写失败记 dev.log 并在下一轮重试，localStorage 配额问题成为历史，首次启动自动迁移旧 localStorage 账本）；浏览器预览退 localStorage。牌价折算（models.dev 目录 24h 缓存、厂商自家价优先、未计价 token 标覆盖率；CSP 仅放行 `https://models.dev`；文案「API 牌价折算，非订阅实付」）。**工具栏「导出 CSV」**：long format（`scope=total` 日合计 + `scope=model` 模型拆分），原生另存为，成功 toast 可一键打开所在文件夹 |
 | 登录 | 多 agent probe + Sign in 横幅 |
 | **Telegram 远程** | 左下角纸飞机图标：@BotFather 建个 bot 粘 token（getMe 校验，DPAPI 落 `~/.marionette/telegram.json`）→ 给 bot 发条消息在浮层确认配对（只认这一个 chat）。会话跑完/等你批准（权限、ask、plan）/出错/进程死亡推送到手机；**跑完推送带全文正文，MarkdownV2 格式（代码块/粗体/链接），长文自动分片**；权限/ask/plan 的通知带内联按钮，远程解答与 UI 共享同一 waiter（先答先得）；在 Telegram 里回复文字 = 送进对应会话（引用回复定向，裸文本去最近活跃会话），走与本地输入完全相同的发送管线（挂起重连/历史注入/排队）；权限等待 120s 到期前 30s 追加提醒。**置顶「总控」面板**：谁在跑/谁在等你实时重画（忙时每 60s 保鲜），按钮点会话名 = 切换裸发文字去向，⏹ = 远程停止（与 UI 停止键同路），`/status` 拉全量清单。通知偏好（跑完/等待/出错/带内容）在浮层开关。token 校验、配对轮询和消息发送统一跟随应用代理，设置变化在下次请求生效，无需 TUN。纯出站 HTTPS，零新依赖；未配对时零行为变化。详见 [`telegram-bridge.md`](./plans/telegram-bridge.md) |
-| **贴边停靠（edge dock）** | 主窗可并入屏幕左右边缘（`dockMode.ts` 三态：floating / docked-hidden / docked-expanded）：**把普通窗口拖到屏幕左右边缘会自动吸附**（离边约 20 逻辑 px 停住，边缘亮一条青色提示，松手后贴边并保持展开；**抓住窄条顶部往外拖 >48 逻辑 px 即解除贴边**，窗口留在松手处并恢复普通尺寸，不再弹回贴边前的位置；也可从 Ctrl K 命令面板执行贴边/解除）。停好后整条移出屏外只留 6px 淡轨 + 中间一根青色把手（有对话在跑时把手呼吸），鼠标触碰滑出（~160ms 9 步），离开 300ms 且失焦收回（⋯ 菜单开「**侧边栏常驻**」后不再自动收回，手动收回/解除贴边照旧）；**把文件或文字拖到把手上也会滑出**（OLE 拖拽期间鼠标事件被抑制，展开信号改听 tao 的 onDragDropEvent 与 wry 补丁的 drag-text 通道）；滑出后整条分区接住拖放：**上半条（标题/额度/进行中）= 收入收纳盒，下半条对话区 = 进输入框成附件**（拖的是文字时下半条落进输入框光标处成文本，同一条 `marionette:dock-drop-text` 转交链路），拖动中双层虚线提示标出两个落点、悬停侧点亮（收纳盒整页开着时，App 级路由器整体让路——收纳盒页自己的监听接住**整窗**拖放；其它整页或无对话在开时全部进收纳盒）；弹出只挪窗不抢焦点，全屏视频/演示模式不弹。关闭主窗 = 贴边收起（引擎、全部会话、Telegram 桥继续跑；`autoHideOnClose` 默认开，可在 Ctrl K 切换），真正退出走窄条 ⋯ 菜单或 Ctrl K 的「退出 Marionette」（`quit_app`）；再次启动 Marionette 唤起。窄条（默认 400，**贴边展开时抓内缘可拖宽 320–560**，松手记住宽度）自上而下：标题栏（拖动区 · 搜索=Ctrl K · ⋯ 菜单收纳 侧边栏常驻/用量与项目/升级/解除贴边/退出；**右上角不再单独放用量图标**）→ 操作行（**新建对话点开是目的地菜单**：聊天（默认文件夹）/ 各项目（在所选项目里开新会话）/ 全部对话（进完整列表用每个项目的 ＋），不再固定建进聊天；旁为收纳盒）→ **额度**（每个订阅一张紧凑计量卡：名称独占一行 + 一条 3px 进度条 + 最紧窗口百分比；纯余额来源单独一行做成「余额 + 金额」chip，不再画空心圈；悬停看全部窗口与重置时间，点开用量页）→ 「进行中」列表（仍持有进程的对话 + 当前对话，取代标签行，超过 5 行滚动，悬停可挂起；**完成（waiting）的对话不退场，一直留到真正挂起——2 小时自动挂起 / 行内 ⏸ 手动挂起 / 进程退出——才从列表消失**；只影响这个列表的显示，全部对话里完成徽标还在）→ 对话与输入框（**贴边时工具栏收成单个入口**：滑杆图标 + 当前模型名，点开「模式/权限/模型/Agent」分组菜单，选一项再进原有完整列表；＋ 附文件与发送钮保留在外，不再是一排会换行的芯片；**composer 在贴边时默认按内容自动高度**（跟着正文增长、有上限），不再沿用普通窗口记住的 104/112px；**顶边拖拽把手在贴边态保留：上下拖动即钉住高度（84–340px，单独记住，双击把手恢复自动高度）**，普通窗口的高度记忆互不影响，42vh 展开按钮仍只在普通窗口——底边直接压在底栏上沿，附图时向上长高，工具按钮不再被挤下去）→ **底栏**（输入框下面单独一栏：模型共享入口 + 设置齿轮（打开 Ctrl K）+ 主题/通知/Telegram + 右侧检查更新；语言与代理收进 Ctrl K。由两条侧栏把各自的 footer 子树 portal 进来，见 `src/lib/dockFooter.ts`）；**composer 的所有下拉（模型/agent/mode/权限/effort/发送）在打开后会按视口 8px 边距夹回屏内**（400px 窄条里右对齐的模型菜单原先会从左边溢出被 WebView 裁掉，看起来像整张列表消失）；**窄条标题栏的 ⋯ 菜单与「新建对话」目的地菜单 portal 到 body 层**（`.dock-chrome` 自带层叠上下文，菜单挂在里面永远压在整页覆盖层下面，表现为「点了没反应」），按锚点几何现算位置并夹进视口；**贴边态弹出的对话框（Add project / 设置 / 权限卡 / 确认框）同样在这一层之上**，不会藏到侧栏整页后面。全部对话 / 用量与项目 / 收纳盒是整页切换，标题栏变成「‹ 返回 + 页名」，Esc 或返回回到主条，从全部对话里选中对话也自动返回；窗口按钮在条内隐藏，分屏停靠时暂停。**收纳盒**（`~/.marionette/memos/`）：收纳盒页开着时**整窗都是落点**——资源管理器拖到窗口任意位置（含侧栏、标签行）即收，不再只认页面本体的矩形（内容哈希去重、复制落盘）、**从其它应用拖入文字/链接也整窗即收**（浏览器选区、链接、图片 URL——裸 URL 自动成链接条目；走 vendor wry 补丁的 `marionette-drag-text` 通道，与文件拖放互不干扰；普通窗口里把文字/链接拖到输入框上则直接插入光标处）、Ctrl+V 收文字/链接、**顶上「写一条」输入卡**（Ctrl+Enter 保存，裸 URL 自动成链接）、搜索与类型筛选、条目按时间倒序铺成**单列帖子卡**（文字卡铺 6 行正文点开展开、图片卡按横竖比完整显示不裁切、链接卡域名+网址、文件卡扁卡；按「今天 / 昨天 / N月N日」分段）、文件条目可直接拖进输入框成附件；**任何卡片都可拖进输入框（2026-11-18）**：文件/图片成附件，文字/链接条目落光标处成正文；**卡上操作区**：置顶（置顶条目浮到顶部独立「置顶」组，不占日分组）、编辑（文字/链接改标题+正文，文件/图片改标题）、标签（每条目 ≤8 个标签，筛选行的标签芯片多选=并集，搜索也匹配标签）；**输入框「存入收纳盒」按钮**（＋ 旁，紧凑 hub 同款入口）把当前草稿与图片附件存副本进盒（不清空输入框），收纳盒开着即时刷新；编辑/置顶/标签走 `memo_update`（原地更新不重排信息流）。「选择」或 Ctrl 点击多选后可「开新对话」（一律在左侧栏「聊天」栏目下方的「收纳盒」分组里建出新对话，材料清单预填进输入框）或「整理成文档」（预填让 agent 按主题整理并存到项目 `docs/notes/<日期>-<主题>.md` 的指令；开着项目建进该项目，没开项目同样落收纳盒分组），都只预填不自动发送。收纳盒分组复用聊天行（挂起/删除/⋯ 里置顶·重命名·导出），有对话才显示。**普通窗口的收纳盒入口位于左侧栏「聊天」栏目正上方**，点开后在标签栏尾部出现一枚「收纳盒」伪标签（带条目数徽标），与其他对话标签并列；中栏只切换对话流那一列（左右侧栏照常），会话 composer 行藏掉，页内顶上是「写一条」卡。选中收纳盒时只有它是当前页（对话标签退成未选中，当前会话仍记着）；选中任一对话标签时收纳盒标签保留、页面切回对话；× 或 Esc 关闭标签（分屏态同样支持）。聊天内容上方不再有「收纳盒 / 能力与上下文」工具栏，分屏不重复入口。实施与红线见 `AGENTS.md`「贴边停靠」节，设计稿 `docs/plans/plan-edge-dock.md` |
+| **贴边停靠（edge dock）** | 主窗可并入屏幕左右边缘（`dockMode.ts` 三态：floating / docked-hidden / docked-expanded）：**把普通窗口拖到屏幕左右边缘会自动吸附**（离边约 20 逻辑 px 停住，边缘亮一条青色提示，松手后贴边并保持展开；**抓住窄条顶部往外拖 >48 逻辑 px 即解除贴边**，窗口留在松手处并恢复普通尺寸，不再弹回贴边前的位置；也可从 Ctrl K 命令面板执行贴边/解除）。停好后整条移出屏外只留 6px 淡轨 + 中间一根青色把手（有对话在跑时把手呼吸），鼠标触碰滑出（~160ms 9 步），离开 300ms 且失焦收回（⋯ 菜单开「**侧边栏常驻**」后不再自动收回，手动收回/解除贴边照旧）；**把文件或文字拖到把手上也会滑出**（OLE 拖拽期间鼠标事件被抑制，展开信号改听 tao 的 onDragDropEvent 与 wry 补丁的 drag-text 通道）；滑出后整条分区接住拖放：**上半条（标题/额度/进行中）= 收入收纳盒，下半条对话区 = 进输入框成附件**（拖的是文字时下半条落进输入框光标处成文本，同一条 `marionette:dock-drop-text` 转交链路），拖动中双层虚线提示标出两个落点、悬停侧点亮（收纳盒整页开着时，App 级路由器整体让路——收纳盒页自己的监听接住**整窗**拖放；其它整页或无对话在开时全部进收纳盒）；弹出只挪窗不抢焦点，全屏视频/演示模式不弹。关闭主窗 = 贴边收起（引擎、全部会话、Telegram 桥继续跑；`autoHideOnClose` 默认开，可在 Ctrl K 切换），真正退出走窄条 ⋯ 菜单或 Ctrl K 的「退出 Marionette」（`quit_app`）；再次启动 Marionette 唤起。窄条（默认 400，**贴边展开时抓内缘可拖宽 320–560**，松手记住宽度）自上而下：标题栏（拖动区 · 搜索=Ctrl K · ⋯ 菜单收纳 侧边栏常驻/用量与项目/升级/解除贴边/退出；**右上角不再单独放用量图标**）→ 操作行（**新建对话点开是目的地菜单**：聊天（默认文件夹）/ 各项目（在所选项目里开新会话）/ 全部对话（进完整列表用每个项目的 ＋），不再固定建进聊天；旁为收纳盒）→ **额度**（每个订阅一张紧凑计量卡：名称独占一行 + 一条 3px 进度条 + 最紧窗口百分比；纯余额来源单独一行做成「余额 + 金额」chip，不再画空心圈；悬停看全部窗口与重置时间，点开用量页）→ 「进行中」列表（仍持有进程的对话 + 当前对话，取代标签行，超过 5 行滚动，悬停可挂起；**完成（waiting）的对话不退场，一直留到真正挂起——2 小时自动挂起 / 行内 ⏸ 手动挂起 / 进程退出——才从列表消失**；只影响这个列表的显示，全部对话里完成徽标还在）→ 对话与输入框（**贴边时工具栏收成单个入口**：滑杆图标 + 当前模型名，点开「模式/权限/模型/Agent」分组菜单，选一项再进原有完整列表；＋ 附文件与发送钮保留在外，不再是一排会换行的芯片；**composer 在贴边时默认按内容自动高度**（跟着正文增长、有上限），不再沿用普通窗口记住的 104/112px；**顶边拖拽把手在贴边态保留：上下拖动即钉住高度（84–340px，单独记住，双击把手恢复自动高度）**，普通窗口的高度记忆互不影响，42vh 展开按钮仍只在普通窗口——底边直接压在底栏上沿，附图时向上长高，工具按钮不再被挤下去）→ **底栏**（输入框下面单独一栏：模型共享入口 + 设置齿轮（打开 Ctrl K）+ 主题/通知/Telegram + 右侧检查更新；语言与代理收进 Ctrl K。由两条侧栏把各自的 footer 子树 portal 进来，见 `src/lib/dockFooter.ts`）；**composer 的所有下拉（模型/agent/mode/权限/effort/发送）在打开后会按视口 8px 边距夹回屏内**（400px 窄条里右对齐的模型菜单原先会从左边溢出被 WebView 裁掉，看起来像整张列表消失）；**窄条标题栏的 ⋯ 菜单与「新建对话」目的地菜单 portal 到 body 层**（`.dock-chrome` 自带层叠上下文，菜单挂在里面永远压在整页覆盖层下面，表现为「点了没反应」），按锚点几何现算位置并夹进视口；**贴边态弹出的对话框（Add project / 设置 / 权限卡 / 确认框）同样在这一层之上**，不会藏到侧栏整页后面。全部对话 / 用量与项目 / 收纳盒是整页切换，标题栏变成「‹ 返回 + 页名」，Esc 或返回回到主条，从全部对话里选中对话也自动返回；窗口按钮在条内隐藏，分屏停靠时暂停。**收纳盒**（`~/.marionette/memos/`）：收纳盒页开着时**整窗都是落点**——资源管理器拖到窗口任意位置（含侧栏、标签行）即收，不再只认页面本体的矩形（内容哈希去重、复制落盘）、**从其它应用拖入文字/链接也整窗即收**（浏览器选区、链接、图片 URL——裸 URL 自动成链接条目；走 vendor wry 补丁的 `marionette-drag-text` 通道，与文件拖放互不干扰；普通窗口里把文字/链接拖到输入框上则直接插入光标处）、Ctrl+V 收文字/链接、**顶上「写一条」输入卡**（Ctrl+Enter 保存，裸 URL 自动成链接）、搜索与类型筛选、条目按时间倒序铺成**单列帖子卡**（文字卡铺 6 行正文点开展开、图片卡按横竖比完整显示不裁切、链接卡域名+网址、文件卡扁卡；按「今天 / 昨天 / N月N日」分段）、文件条目可直接拖进输入框成附件；**任何卡片都可拖进输入框（2026-11-18）**：文件/图片成附件，文字/链接条目落光标处成正文；**卡上操作区**：编辑（文字/链接改标题+正文，文件/图片改标题）是卡片右上角的常驻铅笔图标；标签（每条目 ≤8 个标签，筛选行的标签芯片多选=并集，搜索也匹配标签）从卡底标签行末尾的「＋ 标签」新建；「更多」只放置顶（置顶条目浮到顶部独立「置顶」组，不占日分组）与删除；**输入框「存入收纳盒」按钮**（＋ 旁，紧凑 hub 同款入口）把当前草稿与图片附件存副本进盒（不清空输入框），收纳盒开着即时刷新；编辑/置顶/标签走 `memo_update`（原地更新不重排信息流）。点卡片左侧常驻复选框或 Ctrl 点击多选后可「开新对话」（一律在左侧栏「聊天」栏目下方的「收纳盒」分组里建出新对话，材料清单预填进输入框）或「整理成文档」（预填让 agent 按主题整理并存到项目 `docs/notes/<日期>-<主题>.md` 的指令；开着项目建进该项目，没开项目同样落收纳盒分组），都只预填不自动发送。收纳盒分组复用聊天行（挂起/删除/⋯ 里置顶·重命名·导出），有对话才显示。**普通窗口的收纳盒入口位于左侧栏「聊天」栏目正上方**，点开后在标签栏尾部出现一枚「收纳盒」伪标签（带条目数徽标），与其他对话标签并列；中栏只切换对话流那一列（左右侧栏照常），会话 composer 行藏掉，页内顶上是「写一条」卡。选中收纳盒时只有它是当前页（对话标签退成未选中，当前会话仍记着）；选中任一对话标签时收纳盒标签保留、页面切回对话；× 或 Esc 关闭标签（分屏态同样支持）。聊天内容上方不再有「收纳盒 / 能力与上下文」工具栏，分屏不重复入口。实施与红线见 `AGENTS.md`「贴边停靠」节，设计稿 `docs/plans/plan-edge-dock.md` |
 | **跨用（模型/key/订阅互通）** | 见下节 |
 | **圆桌会议（Council）** | 侧栏「圆桌」/ Ctrl+K「打开圆桌会议」进入（标签行出「圆桌」伪标签，与收纳盒同语义）：多个模型独立提案 → 交叉质询 → 修订 → 主席综合，产出经评审的结构化实施计划（Plan Gate 等待用户裁决）。召集页可套阵容模板（标准圆桌 / 身份局 / 垂帘听政 / 科研研讨）或 AI 组队（画像 → 可选探针 → 审阅后填席位）；人卡分主导/协办，协办产出须主导背书才进综合。模型来自共享引擎目录（同模型可配多个成员，角色独立）；独立提案阶段互相不可见（编排器构造输入时强制隔离，非提示词约定）；分歧不靠投票，裁决不了进「遗留不确定性」并附消解实验。run 可暂停/取消/崩溃恢复（已完成的阶段不重调模型）；请求数/token/墙钟三层预算，触顶即停；全部消息与状态转移 append-only 落盘（`~/.marionette/council/runs/`），可审计。M1 为「仅审议」全流程：计划批准即交付完成，自动执行（agent 落码）在后续版本接入——不伪造 Executing 状态。设计文档见 [`council/`](./council/)，架构定稿 [`council/architecture.md`](./council/architecture.md) |
 
@@ -77,18 +77,87 @@ Agent 在回合结束后自己续跑（它起的后台指令回来了，触发�
 
 - **跨用模型选择 fail-closed（2026-11-18）**：会话绑定保存引擎裸 id，真正写入 agent 时由 `lib/bridgeRouting.ts` 转成各 agent 原生 `marionette…` id；桥芯片的 stale 判定只看 live ACP caps，不被磁盘偏好覆盖。若 agent 落回原生默认、目录没有注入 provider，或发送前模型同步失败，界面显示实际模型并中止本轮 prompt，避免「芯片写 Ollama DeepSeek、账单走 OpenRouter GPT」的静默串源。回归：`npx tsx scripts/verify-bridge-routing.mts`。
 - **key 型直连**（OpenCode Go / DeepSeek / GLM / Kimi / OpenRouter / xAI）：claude-code 走 spawn env、grok 走 owned 配置表，不过网关；来源含凭据库手存的 key 和 opencode `auth.json` 的只读扫描引用（引用只在直连注入瞬间读钥匙，不复制）。
-- **订阅型 + codex 全场景**：经内嵌翻译引擎（[yetone/magpie](https://github.com/yetone/magpie)，MIT，Go）。引擎**懒启动（2026-11-06）**：随应用启动只做落位/清障（便携版种子照旧离线落位，不起进程）——**存在引擎模型绑定才自动拉起 serve**，纯 GPT/键 key 直连用户引擎零进程。按需唤醒入口：网关按钮、绑定共享模型（最多等 20s）、启动已接桥的 agent 会话（dsh/pi/zcode/opencode）；30 分钟无绑定且无需求自动停 serve。key-plan 与扫描引用的 api key 自动注册进引擎；Grok / ChatGPT 订阅由引擎 discovery 自己发现。codex 只接引擎源（协议约束），经 `providers/set` 改道 + 路由组把内建模型名别名到所选引擎模型；spawn 时再把目录里的真实 `context_window` 合并进 `CODEX_CONFIG.model_context_window`，避免 Codex 继续按内建窗口提前压缩。
+- **订阅型 + codex 全场景**：默认经 `engine-rust` **进程内模型共享引擎**（`src-tauri/src/engine_gateway/`）；它只兼容 Magpie 配置格式，不再启动 Go 子进程。`MARIONETTE_ENGINE=magpie` 只保留一个发布周期的构建回退。引擎仍**懒启动（2026-11-06）**：随应用启动只做目录/清障，不启动网关——**存在引擎模型绑定或跨用入口才自动拉起线程**，纯 GPT/键 key 直连用户引擎零监听。按需唤醒入口：网关按钮、绑定共享模型（最多等 20s）、启动已接桥的 agent 会话（dsh/pi/zcode/opencode）；30 分钟无绑定且无需求自动停线程。key-plan 与扫描引用的 api key 自动登记进引擎；Grok / ChatGPT / Claude 订阅走只读登录桥。codex 只接引擎源（协议约束），经 `providers/set` 改道 + 路由组把内建模型名别名到所选引擎模型；spawn 时再把目录里的真实 `context_window` 合并进 `CODEX_CONFIG.model_context_window`，避免 Codex 继续按内建窗口提前压缩。
 - **引擎模型目录与配额的离线快照（2026-11-06）**：引擎不在 Running 时模型菜单的 marionette 组回放 `~/.marionette/engine-catalog.json`（live 非空时自动回写；note 标「引擎未运行 · 离线目录」，离线选中会经绑定链自动拉起引擎）；右栏额度卡的引擎配额行保留上次快照并标注「引擎未运行 · 快照时间」（localStorage `marionette-quota`，7 天过期）——引擎睡眠/唤醒不再让菜单组与配额行整组消失/插回。纯浏览菜单**不再唤醒引擎**（仅存在绑定时才等 5s 唤醒）。引擎目录只列**具体来源**的模型：`group/` 与 `auto/` 路由组一律隐藏（2026-11-06 起 auto 与 group 同罪；存量 auto 绑定启动时清绑，受影响会话回落 agent 原生默认）。
 - **DSH（@openma/deepseek-harness-acp）跨用（2026-10-20）**：spawn 时把 llm-pi-ai 托管路由 `marionette`（openai-completions → 引擎 `/v1`）写进 `~/.dsh/cordis.patch.yml`（文本外科手术、幂等、保用户内容），令牌常量进 `~/.dsh/.credentials.yaml` refs + spawn env；模型经 dsh-acp 原生目录广告（id `marionette::provider/model`）。引擎停用即移除路由；home patch 被 dsh Web/desktop 共享，Web 里也能走这条路由。写入器在 `dsh_bridge.rs`，调研定稿见 `research-dsh-cross-use.md` §8。
 - **pi（pi-acp）跨用（2026-10-20）**：spawn 时把 provider `marionette` 合并进 `~/.pi/agent/models.json`（pi 官方兼容端点机制，`apiKey` 用 `$MARIONETTE_ENGINE_TOKEN` env 插值、凭据不落盘；语义幂等、保用户 provider）；模型经 pi-acp 原生目录广告（id `marionette/<engineId>`，与 grok/opencode 前缀同形），`set_config_option` 直接切。引擎停用即移除托管段。写入器在 `model_bridge.rs`（`refresh_pi_marionette_route`）。
-- **Roster 收束（2026-10-20；2026-11-09 hermes 移除）**：内置 agent 收为「五跨用（claude-code / grok / codex / opencode / deepseek）+ **pi + zcode**」；cline / gemini / kimi / codebuddy / openclaw / cursor / omp 退出内置名单（cursor 封闭无口子、gemini 协议锁死，其余用户面小——可接性矩阵见 `research-acp-cross-use-matrix.md`）。退出者可经「自定义 agent」随时加回；历史会话导入的 parsers 与登录探针保留未动。hermes 则于 2026-11-09 **全量移除**（用户定案：不再支持）——roster 条目、harness_meta、auth 探针/登录、uvx 预检（`DistributionKind::Uvx` 随之删除）、会话导入 parser 一并清掉；原计划的跨用桥（config.yaml providers）不再做。**新 agent 的加入原则（2026-11-09 定案）：等阵营收敛、有人真在用再接**——agent 界正处在标准混战期（ACP 官方目录已 48 家），别为「在目录里」就抢着内置；真出线了从 ACP registry / 自定义 agent 加入都是小改动。
+- **Roster 收束（2026-10-20；2026-11-09 hermes 移除）**：内置 agent 收为「五跨用（claude-code / grok / codex / opencode / deepseek）+ **pi + zcode**」；cline / gemini / kimi / codebuddy / openclaw / cursor / omp 退出内置名单（cursor 封闭无口子、gemini 协议锁死，其余用户面小——可接性矩阵见 `research-acp-cross-use-matrix.md`）。退出者可经「自定义 agent」随时加回；历史会话导入的 parsers 与登录探针保留未动。hermes 则于 2026-11-09 **全量移除**（用户定案：不再支持）——roster 条目、harness_meta、auth 探针/登录、uvx 预检（`DistributionKind::Uvx` 随之删除）、会话导入 parser 一并清掉；原计划的跨用桥（config.yaml providers）不再做。**新 agent 的加入原则（2026-11-09 定案）：等阵营收敛、有人真在用再接**（2026-11-19 例外：antigravity 由用户点名接入——Google 官方 first-party ACP server + Google 账号免费档，见下节）——agent 界正处在标准混战期（ACP 官方目录已 48 家），别为「在目录里」就抢着内置；真出线了从 ACP registry / 自定义 agent 加入都是小改动。
 - **Grok × 智谱 Coding Plan（2026-10-27）**：Grok 自建的 `zhipu-*` 表若拿的是 Coding Plan 钥匙，spawn 时把 `base_url` 从按量 `https://open.bigmodel.cn/api/paas/v4` 改到 `https://open.bigmodel.cn/api/coding/paas/v4`（`rewrite_grok_zhipu_coding_plan_bases`）。按量钥匙与 `$ENV` 展开的自建表不动。Grok 只在进程启动读 `config.toml`，改完要新开会话。证据链见 [`pitfalls-model-share-quota.md`](./pitfalls/pitfalls-model-share-quota.md)。
-- **一种便携版**（`tools\build-portable.bat` → `release\<版本号>\Marionette.exe`，~15.9MB）：引擎作为出厂种子打进 exe，打开即离线落位。种子是**精简 magpie**（`tools\magpie-seed`：绕过上游的 agent 管理器/TUI，只挂 gateway/routing/usage 插件，跑 `serve` + 精简 `provider`/`group`/`models`，自定义来源和钥匙直接登记，不必下上游完整版；UPX 载荷 ~12MB vs 完整版 ~19.6MB）；「更新引擎」装上完整上游版后种子自动让位。体积构成（2026-10-30）：壳 ~5.8MB + 前端 dist ~11MB（shiki 全量 317 语言裁到精选 36 门 + JS regex 引擎，原 19MB）。打包默认先拉上游 **latest 稳定版**（`import-magpie.ps1`，导入后自动重放种子补丁；`SKIP_MAGPIE_IMPORT=1` / `MAGPIE_TAG=` 可跳过或钉版本）。`third_party/magpie` 是提交进仓库的源码，**打包日志会提示「与 HEAD 不一致」——发布前把 `third_party/magpie` 一起提交**，release 提交与发出去的种子才对得上。发布用 `tools\publish-release.bat`。
-- **引擎可更新**：本机权威在 `~/.marionette/engine/`。左下角「模型共享」可检查/下载 yetone/magpie 稳定版（约 48MB CLI）；下载的版本**比内嵌新就粘住**，反之**本机装的比出厂种子旧时启动会自动前移**（否则重编新版本也一直跑旧引擎）。默认端口 3425 上若已有别的 magpie：版本 ≥ 内嵌就复用，**更旧则忽略它，自己在下一个空闲端口起最新引擎**。「恢复出厂引擎」仍可随时再解 exe 内嵌。与 Harness 等 agent 自更新同级，不必等 Marionette 发版。
+- **一种便携版**（`tools\build-portable.bat` → `release\<版本号>\Marionette.exe`）：默认把 Rust 网关直接编进 exe，不下载、不落位第二个引擎进程；打包也不需要 Go/Magpie 载荷。一个发布周期的回退用 `MARIONETTE_ENGINE=magpie`，此时才走 `import-magpie.ps1` + 精简种子载荷。发布统一用 `tools\publish-release.bat`。
+- **引擎形态切换（运行时逃生口，2026-11-19）**：默认内置 Rust 引擎；模型共享面板新增「引擎形态」——可切到 **magpie 子进程形态**（面板的「检查更新/更新」即从 GitHub 下载安装 magpie，与旧版一致），随时切回。偏好存 `~/.marionette/engine-preference.json`（一行 `rust`/`magpie`，读失败按 rust）；切换 = 写偏好 + 停当前网关 + 按新形态拉起。偏好 magpie 但未下载时引擎保持未运行（绝不偷偷用另一个引擎顶包），面板引导下载或切回。serve/唤醒/CLI/检查更新/下载共八处按偏好运行时分流；magpie 回退 SKU 构建行为不变。
+- **引擎版本**：Rust 引擎随 `marionette.exe` 发布和更新；默认形态下面板不出现 Magpie 下载/恢复出厂入口（切到 magpie 形态后恢复，恢复出厂仍仅内嵌种子构建可用）。`~/.marionette/engine/data/` 继续保存 Magpie 兼容的 `providers.json`、登录桥缓存和各引擎账本；配置损坏时编辑 fail-closed，`providers.json.bak` 保留最后正确版本。Magpie 回退 SKU 才保留旧的 3425 端口复用、下载和恢复出厂路径。
 - **入口**：左下角互联图标 = 模型共享状态/一键启动；凭据管理退居其浮层底部链接。用量面板点刷新会拉网关 `/v1/magpie/quotas`（各家订阅额度）。
 - **模型目录与显示管理**：统一按来源分组原生和共享模型，只有「接口主机 + 凭证」确认同一账号的入口才合并（agent 自带 provider、Grok 的 `[model.*]` 表、引擎目录会并成一组，标题用 agent 的厂商名）；订阅登录态（Codex 的 ChatGPT、Grok 的 xAI）同样只算一个账号——拥有登录文件的 agent 整份目录并入引擎分组，另一个 agent 复制的同一 OAuth 登录（OpenCode 的 `openai`）按 `accountId` 判重后不再单列；模型名相同但主机或凭证不同的条目保留。合并前保存的隐藏与排序按旧标识迁移。模型菜单底部的「配置模型与来源…」与模型共享浮层里的「模型与来源 · 显示和排序…」都打开这一页，可分别隐藏 provider / 模型、调整 provider / 组内模型顺序、恢复默认；大来源默认收起、排序箭头悬停才出现；保存到 `~/.marionette/model-library.json`，多个窗口同步，隐藏不影响已有会话。扫描 Grok / Pi / OpenCode / Codex / Claude 的用户自定义接口，保留原配置引用，经引擎供其他已接桥 agent 使用；扫描位置与失败原因可在凭据页查看。「添加密钥」支持自定义 Chat Completions / Responses / Anthropic 接口和显式模型 ID。范围与使用说明见 [模型与来源](./guides/model-library.md)。
-- **卫生**：删除凭据条目会从引擎回收对应 provider（注册账本对账）；30 分钟无绑定且无需求的空闲引擎自动停 serve，任何跨用入口（菜单/绑定/按钮/启动）自动唤醒。
-- 安全底线不变：明文 key 只进 env / owned-section / magpie CLI 命令行，绝不进日志与 agent 配置；扫描只读。
+- **卫生**：删除凭据条目会从引擎回收对应 provider（注册账本对账）；30 分钟无绑定且无需求的空闲引擎自动停线程，任何跨用入口（菜单/绑定/按钮/启动）自动唤醒。Rust 账本独立写 `engine-usage.jsonl`，首次打开只迁移旧文件里能严格识别的 Rust 行，不触碰 Magpie 的 `usage.jsonl`。
+- 安全底线不变：明文 key 只进子进程 env / owned-section / 进程内登记链，绝不进日志与 agent 配置；扫描只读；外站网页 Origin 调本地网关返回 403。
+
+## Google Antigravity agent（2026-11-19，M0–M3 落地）
+
+Google 官方 `agy_acp_server`（dl.google.com 二进制 zip，非 npm）作为内置 agent（id `antigravity`）。
+完整事实与实测：`docs/research/research-antigravity.md`；方案与偏差：`docs/plans/plan-antigravity.md`。
+
+- **安装**：agent 菜单一键下载（registry 版本优先 + sha256 校验，离线回退 pin 1.5.0），
+  落 `~/.marionette/agents/antigravity-acp/<version>/<platform>/`；`agy_acp_server.exe` 与
+  `localharness_external.exe` 必须**同目录成对**（缺后者=握手正常但 agent 死，安装与读侧
+  双重校验）。spawn 优先安装目录，PATH 手装其次。解压走系统 `tar.exe`（回退 PowerShell），
+  **不加 zip crate**（Cargo.toml 红线）。
+- **认证**：spawn 前把 `auth.type:"oauth-personal"`（免费档默认）同步进
+  `<GEMINI_HOME>/antigravity-acp/settings.json`（单 key RMW、strict JSON fail-closed）；
+  `GEMINI_HOME` 指 `.gemini` 目录**本身**（与 Gemini CLI 的 `GEMINI_CLI_HOME` 相反），未设时
+  默认 `~/.gemini`。settings 写好后 `session/new` 直接成功，OAuth 由 server 自己触发（弹浏览器 +
+  stderr 打授权 URL）；浏览器没弹时对话里出现「等待 Google 授权」通知卡兜底（URL 可选中复制）。
+  登录探测 = `acp_token.json` 存在性。
+- **scratch 红线**：Windows 构建是 PyInstaller onefile，**每次启动解压 ~100MB 进 %TEMP% 且杀树
+  不清**（1.5.0 实测 ~90-150MB/次）——spawn 时 `TMP/TEMP/TMPDIR` 重定向进
+  `~/.marionette/scratch/antigravity/<sessionId>`，stop/stdout-EOF 两处树死回收 + 启动清扫孤儿。
+  **只对此 agent 开**（借走 TMP 会污染用户 Git Bash 的 /tmp）。
+- **探测防执行**：`installed_version`/`--version` 类探测对 `agy_acp_server` **永不执行**
+  （stem 精确匹配，大小写/路径/可选 .exe 归一）——连 `--version` 都先整包解压。版本显示来自
+  安装目录名；升级链查 ACP registry（`cdn.agentclientprotocol.com`），URL 模板不符（Google 改名）
+  = 不提供升级。
+- **usage 回填 + 历史导入**：`parsers/antigravity.rs`（prost 手写 protobuf 子集，字段号对
+  1.5.0 实测钉死：type 14=user/15=planner、metadata 1=created/9=usage/24=model）+
+  `usage_backfill/antigravity.rs`（db 文件名即 ACP sessionId，去重锚天然对上；usage 四桶
+  input/output/cache_write/cache_read/thought 与 ACP 侧实测吻合）。0 字节库=正常空会话。
+- **turn 边界**：不发 `turn/complete` 通知，但 `session/prompt` 响应自带 stopReason+usage——
+  走 acp.rs 既有「prompt 响应即回合完成」路径，回合/记账正常，无需 re-entry 兜底。
+- **存量回收**：`antigravity_scan_leaked_temp` / `antigravity_reclaim_leaked_temp` 命令
+  （15 分钟年龄 + CreateFileW share-none 非变异存活探测 + 重校验），诊断清单报数量/体积。
+- 回归：`cargo test --bin marionette antigravity`（15 项 + 2 个 #[ignore] 真库/真网 oracle）。
+
+## Google Antigravity agent（2026-11-19，M0–M3 落地）
+
+Google 官方 `agy_acp_server`（dl.google.com 二进制 zip，非 npm）作为内置 agent（id `antigravity`）。
+完整事实与实测：`docs/research/research-antigravity.md`；方案与偏差：`docs/plans/plan-antigravity.md`。
+
+- **安装**：agent 菜单一键下载（registry 版本优先 + sha256 校验，离线回退 pin 1.5.0），
+  落 `~/.marionette/agents/antigravity-acp/<version>/<platform>/`；`agy_acp_server.exe` 与
+  `localharness_external.exe` 必须**同目录成对**（缺后者=握手正常但 agent 死，安装与读侧
+  双重校验）。spawn 优先安装目录，PATH 手装其次。解压走系统 `tar.exe`（回退 PowerShell），
+  **不加 zip crate**（Cargo.toml 红线）。
+- **认证**：spawn 前把 `auth.type:"oauth-personal"`（免费档默认）同步进
+  `<GEMINI_HOME>/antigravity-acp/settings.json`（单 key RMW、strict JSON fail-closed）；
+  `GEMINI_HOME` 指 `.gemini` 目录**本身**（与 Gemini CLI 的 `GEMINI_CLI_HOME` 相反），未设时
+  默认 `~/.gemini`。settings 写好后 `session/new` 直接成功，OAuth 由 server 自己触发（弹浏览器 +
+  stderr 打授权 URL）；浏览器没弹时对话里出现「等待 Google 授权」通知卡兜底（URL 可选中复制）。
+  登录探测 = `acp_token.json` 存在性。
+- **scratch 红线**：Windows 构建是 PyInstaller onefile，**每次启动解压 ~100MB 进 %TEMP% 且杀树
+  不清**（1.5.0 实测 ~90-150MB/次）——spawn 时 `TMP/TEMP/TMPDIR` 重定向进
+  `~/.marionette/scratch/antigravity/<sessionId>`，stop/stdout-EOF 两处树死回收 + 启动清扫孤儿。
+  **只对此 agent 开**（借走 TMP 会污染用户 Git Bash 的 /tmp）。
+- **探测防执行**：`installed_version`/`--version` 类探测对 `agy_acp_server` **永不执行**
+  （stem 精确匹配，大小写/路径/可选 .exe 归一）——连 `--version` 都先整包解压。版本显示来自
+  安装目录名；升级链查 ACP registry（`cdn.agentclientprotocol.com`），URL 模板不符（Google 改名）
+  = 不提供升级。
+- **usage 回填 + 历史导入**：`parsers/antigravity.rs`（prost 手写 protobuf 子集，字段号对
+  1.5.0 实测钉死：type 14=user/15=planner、metadata 1=created/9=usage/24=model）+
+  `usage_backfill/antigravity.rs`（db 文件名即 ACP sessionId，去重锚天然对上；usage 四桶
+  input/output/cache_write/cache_read/thought 与 ACP 侧实测吻合）。0 字节库=正常空会话。
+- **turn 边界**：不发 `turn/complete` 通知，但 `session/prompt` 响应自带 stopReason+usage——
+  走 acp.rs 既有「prompt 响应即回合完成」路径，回合/记账正常，无需 re-entry 兜底。
+- **存量回收**：`antigravity_scan_leaked_temp` / `antigravity_reclaim_leaked_temp` 命令
+  （15 分钟年龄 + CreateFileW share-none 非变异存活探测 + 重校验），诊断清单报数量/体积。
+- 回归：`cargo test --bin marionette antigravity`（15 项 + 2 个 #[ignore] 真库/真网 oracle）。
 
 ## 交付卡（每轮改动的口径）
 
@@ -121,8 +190,9 @@ Agent 在回合结束后自己续跑（它起的后台指令回来了，触发�
 ## 文档标签页（2026-11-18 起为分屏树窗格标签）
 
 `.md` / `.markdown` / `.mdx` / `.txt` 点击后在 app 内打开：文档是分屏树里的一枚窗格标签
-（`document:<绝对路径>`），与会话标签同条同拖拽——点开默认落在聚焦窗格内切标签，想并排
-就把它拖出来分屏（左右/上下、拖动条调宽高），还能拖出主窗口成独立小窗（拖回合并）。
+（`document:<绝对路径>`），与会话标签同条同拖拽。单格时它就是完整标签页，主标题栏继续
+显示会话 / 文档 / 收纳盒 / 浏览器标签；把它拖到中栏边缘才拆成多格（左右/上下、拖动条
+调宽高），文档还能拖出主窗口成独立小窗（拖回合并）。
 
 - **入口**：转录链接、交付卡、ContextPanel 改动文件行、收纳盒文件卡——四处都经
   `src/lib/openFile.ts::openInDocTabIfEligible` 分流（先照旧 resolve，命中 doc 扩展名
@@ -143,8 +213,9 @@ Agent 在回合结束后自己续跑（它起的后台指令回来了，触发�
 ## 内置浏览器 Workspace Surface + agent 工具通道（2026-11-17 P1–P4；2026-11-18 起为分屏树窗格标签）
 
 app 内置浏览器，agent 通过工具通道读写它。普通窗口里 Browser、Document、Memo 都是
-分屏树里的窗格标签（点开落在聚焦窗格，可拖拽分屏/跨窗格移动；浏览器面板不可撕出主窗
-——child WebView 钉在主窗）；Dock 仍用整页浏览器。
+分屏树里的窗格标签（点开落在聚焦窗格，可拖拽分屏/跨窗格移动）。单格时页面占满该标签页，
+标题栏仍是正常标签栏；多格时每个窗格只列出自己拥有的标签。浏览器面板不可撕出主窗
+——child WebView 钉在主窗；Dock 仍用整页浏览器。
 
 - **入口**：标签条「浏览器」chip、Ctrl K「新建浏览器标签」、贴边态整页。agent 的
   `browser_open_tab(display:"background"|"workspace")` 默认把 tab 留在后台；只有
@@ -154,10 +225,12 @@ app 内置浏览器，agent 通过工具通道读写它。普通窗口里 Browse
   导航改写为 `127.0.0.1` 避开 WebView2 先连 `::1`；`file:///D:/…/index.html` 和绝对
   Windows 路径直接作为本地文件打开，不会再被补成 `https://file…`。
 - **窗格标签（2026-11-18）**：Browser / Document / Memo 标签在窗格标签条里（child
-  WebView2 host 之外），与会话标签同一套拖拽/分屏/键盘管线；surface 标签位置随
+  WebView2 host 之外），与会话标签同一套拖拽/分屏/键盘管线。单格继续用顶部正常标签栏，
+  不额外画一条空的首格标签栏；真实多格才切成每格标签栏。surface 标签位置随
   `splitLayout` 快照恢复，但 **Browser 标签冷启动不恢复**（绝不自动创建 child
   WebView2——否则一个卡死的 demo 页会形成「启动自动恢复 → UI 卡住 → 强杀 → 再恢复」循环）；
-  旧快照里的浏览器字段一律忽略。
+  旧快照里的浏览器字段一律忽略。拖任何标签期间 BrowserPage 暂时隐藏 child WebView，
+  让 DOM 的拖拽幽灵、分屏高亮和落点命中不被原生 surface 抢走；放下或取消后立即恢复。
 - **运行状态（P2）**：Agent 打开的 tab 记录 `ownerSessionId`、`busy`、
   `status: idle|running|waiting_user|failed` 与最近使用时间；并发调用用计数，避免一个
   调用结束时把仍在工作的 tab 误报为空闲。删除会话/项目会关闭该会话拥有的 tabs，
@@ -170,9 +243,10 @@ app 内置浏览器，agent 通过工具通道读写它。普通窗口里 Browse
   必须由人完成的步骤。tab 进入 WAIT，应用切到来源会话并打开 Browser surface，页面与
   对话之间显示标题、指令、origin、Continue / Deny；后台窗口同时发通知。Continue 放行，
   Deny 作为可转述的拒绝返回工具，超时不会默认继续。
-- **Workspace 布局**：浏览器默认约 62%，对话最小 320px；seam 可拖且宽度持久化，
-  内容区 <760px 自动上下堆叠。进入时 ContextPanel 收起，关闭后恢复；原 session-only
-  `SplitWorkspace` 树不重写，surface 退出后原样恢复。
+- **布局**：单格标签页占满中栏；需要并排时拖到中栏边缘进入统一 `SplitWorkspace`，
+  每格自带标签栏和会话 composer，分隔条可拖、宽高随树快照恢复。浏览器 child WebView 只
+  跟随自己窗格里的 host 矩形；离开该标签或整页接管时隐藏。ContextPanel 不再因 surface
+  自动收起。
 - **标签生命周期（2026-11-17）**：Agent 打开 tab 可传稳定 `id`（如 `work-mail`），同名调用
   返回已有标签而不重复导航。标签菜单可「保留 / 取消保留」或「转为我的标签」；claim 后清空
   owner 与 grant，会话删除和空闲 cleanup 都不能关它。用户切换 tab、手动导航和分享动作都会
@@ -349,6 +423,7 @@ Chief 已从「Telegram 远程助理配置」升级为 people-first 员工模式
 - **会话关系**：员工是普通 Chat 会话（`origin="chief"`），worker 是普通项目会话
   （`origin="chief-worker"`，不写 parent）；关系只进 task/event 账本和 tee。员工会话强制使用
   Agent 自报的只读/plan 权限；需要改项目时只能派 worker，不支持只读档的 Agent 拒绝启动员工会话。
+- **员工聊天**：`origin="chief"`的会话仅显示用户消息、员工消息、决策卡以及警告/错误系统通知。 thought、tool call、活动时间线、model、token和持续时间元数据保留在原始transcript和worker会话中。 员工Composer保留附件、文本和发送。技术控制保留在员工档案或右栏中。
 - **控制面**：16 个 `marionette_*` 工具只在员工会话的 `tools/list` 出现，dispatch 双保险；没有
   hire / approve 工具。`task_start` 的 requestId、并发预留和 Proposed 插入在同一任务账本锁内；
   Proposed 也计入并发和急停/辞退。`task_send` 成功后才提交 commandId，resume 只接受
@@ -389,8 +464,8 @@ Chief 已从「Telegram 远程助理配置」升级为 people-first 员工模式
 - 前端：`src/`
 - 后端：`src-tauri/src/`
 - 启动：`start-marionette.bat`（根目录唯一的 GUI 入口；`install.ps1` 是发布资产，不算入口）/ `npm run tauri dev`
-- 便携构建：`tools/build-portable.bat` → `release/<版本号>/Marionette.exe`
-- 引擎源码吸纳/升级：`tools\import-magpie.ps1`（默认 latest 稳定；或 `-Tag <上游tag>`）
+- 便携构建：`tools/build-portable.bat` → `release/<版本号>/Marionette.exe`（默认 Rust 进程内引擎）
+- Magpie 回退源码：`MARIONETTE_ENGINE=magpie` + `tools\import-magpie.ps1`（仅一个发布周期）
 - 验证脚本：`scripts/`；Windows 脚本：`tools/`（各目录索引见其中的 `README.md`）
 
 ## 归档说明

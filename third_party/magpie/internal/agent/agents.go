@@ -208,6 +208,13 @@ var others = []*Agent{
 	// Icons are the apps' own App Store icons (#shannnnnks on X).
 	{ID: "flowdown", Name: "FlowDown", Icon: "flowdown-color", UA: []string{"flowdown"}},
 	{ID: "bob", Name: "Bob", Icon: "bob-color", UA: []string{"bob/"}},
+	// DimCode (dimcode.dev) says "DimCode/<version>", or "DimAgent/<version>"
+	// to a provider set to send its identity (npm's dimagent 0.5.29,
+	// resolveDimOAuthIdentityHeaders). It is arcships' own app, apart from
+	// the Dim alpha magpie starts (dim.go); dimcode.dev's favicon is the
+	// same mark as dim-color. Unknown, it read as the cube and "DimAgent"
+	// on a Docker magpie's Routing page (Yayoi_no_yume on X)
+	{ID: "dimcode", Name: "DimCode", Icon: "dim-color", UA: []string{"dimagent", "dimcode"}},
 	// Kimi Code Desktop runs Kimi Code's engine on ~/.kimi-code, so it
 	// reaches magpie through Kimi Code's config, under a client name of
 	// its own ("kimi-code-desktop/…", jiabubu on Discord). Its icon is the
@@ -642,6 +649,26 @@ func magpieProviderJSONFor(shape, catalog string) any {
 }
 
 // magpieProviderJSONAt is magpieProviderJSONFor for an agent that reaches
+// openCodeLimit is a model's limit as OpenCode is told it. OpenCode's
+// limit has three sizes (packages/schema/src/config/provider.ts, and
+// OpenCode 1's models.dev schema): context, the window prompt and
+// reply share; input, the most a prompt may hold, which it compacts by
+// (core's session/compaction.ts inputWindow, the least of the two;
+// OpenCode 1's isOverflow takes it over context less output); and
+// output. m.Context is the prompt's, models.dev's input limit where it
+// gives one, so a model with both is told both as models.dev gives them:
+// gpt-6.2-sol's {context:1050000, input:922000, output:128000}, where
+// OpenCode was told the input limit as its context and no input
+// (Nepsama1337 on X). A window with no larger context beside it in
+// models.dev (one the user typed, one a vendor's list gives) is the
+// context alone, as before.
+func openCodeLimit(m catalog.Model) map[string]any {
+	if whole := catalog.WholeOf(m.ID, m.Context); whole > m.Context {
+		return map[string]any{"context": whole, "input": m.Context, "output": maxTokens(m)}
+	}
+	return map[string]any{"context": m.Context, "output": maxTokens(m)}
+}
+
 // openCodeKinds are the input kinds OpenCode's config takes for a model
 // (its modalities enum, models.dev's words).
 var openCodeKinds = []string{"text", "image", "audio", "video", "pdf"}
@@ -690,7 +717,7 @@ func magpieProviderJSONAt(shape, catalog, gw string) any {
 			// group's context (magpie group set … context=) never reaches
 			// it; an output of 0 is OpenCode's own default
 			if m.Context > 0 {
-				e["limit"] = map[string]any{"context": m.Context, "output": maxTokens(m)}
+				e["limit"] = openCodeLimit(m)
 			}
 			if openCodeReasons(m) {
 				e["reasoning"] = true
@@ -1238,7 +1265,7 @@ func openCodeLike(at place, id, name, icon, bin, dir, auth string, ua []string, 
 	block := func() any { return magpieProviderJSONAt("opencode", id, at.gw()) }
 	// the file as the agent reads it: in OpenCode 2's words for an
 	// OpenCode 2, asked each time, as an update may have come since
-	file := func() ocFile { return ocFile{path: path, two: id == "opencode" && openCodeTwo(at), block: block} }
+	file := func() ocFile { return openCodeFileAt(at, path, id, block) }
 	opts := func(key string) func(map[string]string) []Option {
 		return func(cur map[string]string) []Option {
 			return withVia(ownOptions(auth, cur[key]), id, magpieID+"/")
@@ -1269,7 +1296,10 @@ func openCodeLike(at place, id, name, icon, bin, dir, auth string, ua []string, 
 				if onMagpie() {
 					return nil
 				}
-				return edit.DelJSON(path, "provider."+magpieID, openCodeNativeKey)
+				if err := edit.DelJSON(path, "provider."+magpieID, openCodeNativeKey); err != nil {
+					return err
+				}
+				return openCodePluginGone(path)
 			}
 			v, err := openCodeRefAt(at, path, id, v)
 			if err != nil {
@@ -1332,7 +1362,7 @@ func openCodeRefAt(at place, path, id, v string) (string, error) {
 		return own + "/" + ref, nil
 	}
 	block := func() any { return magpieProviderJSONAt("opencode", id, at.gw()) }
-	return v, ocFile{path: path, two: id == "opencode" && openCodeTwo(at), block: block}.sync(true)
+	return v, openCodeFileAt(at, path, id, block).sync(true)
 }
 
 // ownGatewayProvider is the provider in an OpenCode config, other than

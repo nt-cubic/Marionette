@@ -131,4 +131,11 @@ export const en = {
   "staff.forgetMemoryDescription": "Pinned facts, current state, proposals and journals are deleted with tombstones so automatic consolidation cannot revive them.",
   "staff.workerFrom": "Task from {name}",
   "staff.backToStaff": "Back to staff",
+  "staff.chatEmptyTitle": "Chat with {name}",
+  "staff.chatEmptyHint": "Hand me a task, or tell me what you want to work through.",
+  "staff.chatPlaceholder": "Message {name}...",
+  "staff.chatOnline": "Online",
+  "staff.chatWorking": "In progress",
+  "staff.chatTyping": "{name} is typing",
+  "staff.chatMessageFrom": "Message from {name}",
 } satisfies Record<keyof typeof zh, string>;

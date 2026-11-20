@@ -43,7 +43,7 @@ button.row.sm-else-row { width: 100%; gap: 10px; text-align: left; cursor: point
 .sess-from { margin-bottom: 8px; }
 .sm-bar { gap: 8px; padding: 0 11px; }
 .sm-bar .grow { flex: 1; }
-.sm-bar .sm-delete, .sm-bar .sm-empty { display: inline-flex; align-items: center; gap: 5px; }
+.sm-bar .sm-delete, .sm-bar .sm-empty, .sm-bar .sm-small { display: inline-flex; align-items: center; gap: 5px; }
 .sm-bar .sm-delete:disabled { opacity: .45; }
 .sm-count { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .sm-check { flex: none; margin: 0; width: 14px; height: 14px; accent-color: var(--accent); }
@@ -96,6 +96,7 @@ body.window .sm-group .row.sm-sess { padding-left: 32px; }
 .sm-ask-list { grid-column: 1 / -1; min-width: 0; margin: 0; padding: 0; list-style: none; font-size: 12.5px; color: var(--fg); line-height: 1.6; }
 .sm-ask-list li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sm-ask-list li.more { color: var(--muted); }
+.sm-ask-small { grid-column: 1 / -1; min-width: 0; margin: 0; font-size: 12px; color: var(--muted); }
 /* a field in a session dialog (#1991): its label above it, both across the
    dialog, never squeezed into the form's 72px label column */
 .editor label.sm-ask-field { grid-column: 1 / -1; min-width: 0; display: flex; flex-direction: column; gap: 6px; text-align: left; padding-top: 0; }
@@ -196,6 +197,7 @@ body.window .row.sm-sub-row { min-height: 42px; padding-left: calc(14px + var(--
 .sm-consent-row .lib-switch { flex: none; cursor: pointer; padding: 0; border: 0; }
 .sm-consent-row .lib-switch:disabled { opacity: .5; cursor: default; }
 .sm-consent-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.sm-later .sm-consent-row { cursor: default; }
 /* a session's output speed (session_speed.go): its last two minutes and
    tokens a second now, opening the round's numbers */
 .row.sm-sess .sm-speed { flex: none; display: inline-flex; align-items: center; gap: 10px; height: 30px; padding: 0 8px; border: 0; border-radius: 7px; background: none; color: var(--muted); font: inherit; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; transition: background-color .15s ease; }

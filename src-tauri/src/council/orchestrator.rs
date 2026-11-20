@@ -915,11 +915,11 @@ fn fan_out(
             let tx = tx.clone();
             scope.spawn(move || {
                 if job.intent == Intent::Skip {
-                    let _ = tx.send(FanResult::Skipped(job.member_id));
+                    let _ = tx.send(FanResult::Skipped);
                     return;
                 }
                 if handle.cancel.load(Ordering::SeqCst) || handle.pause.load(Ordering::SeqCst) {
-                    let _ = tx.send(FanResult::Skipped(job.member_id));
+                    let _ = tx.send(FanResult::Skipped);
                     return;
                 }
                 sem.acquire();
@@ -938,7 +938,7 @@ fn fan_out(
                 break;
             }
             match res {
-                FanResult::Skipped(_) => {}
+                FanResult::Skipped => {}
                 FanResult::Ok(member_id, out, prompt_chars) => {
                     ok_count += 1;
                     state.budget_usage.requests += 1;
@@ -972,7 +972,7 @@ fn fan_out(
 }
 
 enum FanResult {
-    Skipped(String),
+    Skipped,
     Ok(String, WorkerOutput, usize),
     Err(String, String),
 }
@@ -1384,6 +1384,23 @@ mod tests {
         );
     }
 
+    /// 等 N 份提案全部落盘。**别用 `wait_phase(…, Reviewing, …)` 等中间态**：
+    /// mock 即时应答下 run 会瞬态冲过 Reviewing（rounds=2 还二次进出），
+    /// 25ms 轮询几乎必错过磁盘上只存在微秒级的状态——`same_model` 的
+    /// 高失败率 flake（HEAD 对照 4/5 败）就是这个。等断言的真实前置
+    /// （消息落盘）才稳；粘滞终态（PlanReady/AwaitingApproval/终态）仍可
+    /// 用 wait_phase。
+    fn wait_all_member_proposals(run_id: &str, timeout_ms: u64) {
+        wait_for(
+            || {
+                store::load_messages(run_id)
+                    .map(|ms| ms.iter().filter(|m| m.kind == MessageKind::Proposal).count() == 3)
+                    .unwrap_or(false)
+            },
+            timeout_ms,
+        );
+    }
+
     fn wait_for(f: impl Fn() -> bool, timeout_ms: u64) {
         let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
         while std::time::Instant::now() < deadline {
@@ -1452,7 +1469,7 @@ mod tests {
             }
         }
         start_run(CouncilEventEmitter::new(None), spec.run_id.clone(), crate::council::orchestrator::RunClients { model: Some(mock.clone()), harness: None }).unwrap();
-        wait_phase(&spec.run_id, RunPhase::Reviewing, 30_000);
+        wait_all_member_proposals(&spec.run_id, 30_000);
         cancel_run(&spec.run_id).ok();
 
         let calls = mock.calls.lock().unwrap().clone();
@@ -1544,27 +1561,66 @@ mod tests {
     }
 
     /// 验收 #7:重启恢复——已完成的提案不重调,从评审续跑。
+    ///
+    /// 崩溃模拟用**真线程死亡**:客户端在第一条质询调用上 panic——fan_out
+    /// 的 scoped 线程 panic 经 scope 传播杀死 run 线程,注册表清理代码
+    /// (start_run 闭包里 run_loop 之后那行)不再执行,条目残留——正是要
+    /// 模拟的崩溃现场。旧写法(只摘注册表)下 run 线程其实活着,与即时
+    /// mock 赛跑:等 Reviewing 的轮询多半错过瞬态,run 早已到 PlanReady,
+    /// resume 无活可干 →「恢复后确有新调用」偶发红(与 same_model 同根因)。
+    struct CrashOnFirstCritique {
+        inner: MockClient,
+        armed: std::sync::atomic::AtomicBool,
+    }
+
+    impl CrashOnFirstCritique {
+        fn is_armed(&self) -> bool {
+            self.armed.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl ModelClient for CrashOnFirstCritique {
+        fn complete(&self, req: &WorkerRequest) -> Result<WorkerOutput, String> {
+            // 质询 prompt 独有特征串(prompts.rs critique_prompt);只武装
+            // 一次——resume 起的第二条 run 的质询调用必须正常应答。
+            // 先判特征串再消耗武装:swap 先行会被第一个调用(简报)吃掉。
+            let is_critique =
+                req.system.contains("请逐份质询") || req.user.contains("请逐份质询");
+            if is_critique && self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                panic!("模拟 worker 线程崩溃于质询调用(测试注入)");
+            }
+            self.inner.complete(req)
+        }
+    }
+
     #[test]
     fn resume_does_not_replay_completed_phase() {
         let sandbox = Sandbox::new("resume");
         let spec = setup_run(&sandbox, "resume");
-        let mock = Arc::new(MockClient::new());
+        let client = Arc::new(CrashOnFirstCritique {
+            inner: MockClient::new(),
+            armed: std::sync::atomic::AtomicBool::new(true),
+        });
         for (i, m) in spec.members.iter().enumerate() {
             let resp = if m.is_chair { MOCK_PLAN.to_string() } else { format!("R{i}") };
-            mock.enqueue(&m.model, vec![resp]);
+            client.inner.enqueue(&m.model, vec![resp]);
         }
-        start_run(CouncilEventEmitter::new(None), spec.run_id.clone(), crate::council::orchestrator::RunClients { model: Some(mock.clone()), harness: None }).unwrap();
-        wait_phase(&spec.run_id, RunPhase::Reviewing, 30_000);
-        // 模拟崩溃:直接摘掉活线程注册。
+        start_run(CouncilEventEmitter::new(None), spec.run_id.clone(), crate::council::orchestrator::RunClients { model: Some(client.clone() as Arc<dyn ModelClient>), harness: None }).unwrap();
+        // 三份提案落盘后 run 进 Reviewing,首条质询调用触发注入的 panic。
+        wait_all_member_proposals(&spec.run_id, 30_000);
+        wait_for(|| !client.is_armed(), 30_000);
+        // scope 传播 + 线程退场;之后注册表条目仍残留 = 清理代码没跑。
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(run_is_live(&spec.run_id), "崩溃后注册表条目应残留(清理代码未及执行)");
         registry().lock().unwrap().remove(&spec.run_id);
-        let calls_before = mock.call_count();
+        let calls_before = client.inner.call_count();
         let proposals_before = store::load_messages(&spec.run_id)
             .unwrap()
             .iter()
             .filter(|m| m.kind == MessageKind::Proposal)
             .count();
         assert_eq!(proposals_before, 3);
-        // resume:同一 mock 看增量。
+        // resume:同一客户端看增量(armed 已消费,质询正常应答)。
         let proposal_calls = |m: &MockClient| {
             m.calls.lock().unwrap().iter().filter(|c| c.prompt.contains("独立完成对以下任务的技术提案")).count()
         };
@@ -1572,14 +1628,14 @@ mod tests {
             // briefing_prompt 独有特征串(质询/修订 prompt 里的简报引用段不含它)。
             m.calls.lock().unwrap().iter().filter(|c| c.prompt.contains("为以下任务产出开场简报")).count()
         };
-        let proposals_before = proposal_calls(&mock);
-        let briefs_before = brief_calls(&mock);
-        start_run(CouncilEventEmitter::new(None), spec.run_id.clone(), crate::council::orchestrator::RunClients { model: Some(mock.clone()), harness: None }).unwrap();
+        let proposals_before = proposal_calls(&client.inner);
+        let briefs_before = brief_calls(&client.inner);
+        start_run(CouncilEventEmitter::new(None), spec.run_id.clone(), crate::council::orchestrator::RunClients { model: Some(client.clone() as Arc<dyn ModelClient>), harness: None }).unwrap();
         wait_phase(&spec.run_id, RunPhase::PlanReady, 30_000);
         // 恢复绝不重放已完成的 briefing/proposal(验收 #7:不重放副作用)。
-        assert_eq!(proposal_calls(&mock), proposals_before, "提案调用零重放");
-        assert_eq!(brief_calls(&mock), briefs_before, "简报调用零重放");
-        assert!(mock.call_count() > calls_before, "恢复后确有新调用(续跑质询及以后)");
+        assert_eq!(proposal_calls(&client.inner), proposals_before, "提案调用零重放");
+        assert_eq!(brief_calls(&client.inner), briefs_before, "简报调用零重放");
+        assert!(client.inner.call_count() > calls_before, "恢复后确有新调用(续跑质询及以后)");
         let state = store::load_state(&spec.run_id).unwrap();
         assert_eq!(state.phase, RunPhase::PlanReady);
         // briefing 仍只有一条(未重放)。
@@ -1663,7 +1719,7 @@ mod tests {
             }
         }
         start_run(CouncilEventEmitter::new(None), spec.run_id.clone(), crate::council::orchestrator::RunClients { model: Some(mock.clone()), harness: None }).unwrap();
-        wait_phase(&spec.run_id, RunPhase::Reviewing, 30_000);
+        wait_all_member_proposals(&spec.run_id, 30_000);
         cancel_run(&spec.run_id).ok();
         let messages = store::load_messages(&spec.run_id).unwrap();
         let glm = &spec.members[0].id;
@@ -1731,7 +1787,7 @@ mod tests {
         let mock = Arc::new(MockClient::new());
         mock.enqueue(&spec.members[1].model, vec![plan_v2_json.to_string()]); // chair = members[1]
 
-        let harness = Arc::new(crate::council::executor::ScriptedHarness { timeout_secs: 30 });
+        let harness = Arc::new(crate::council::executor::ScriptedHarness);
         start_run(
             CouncilEventEmitter::new(None),
             spec.run_id.clone(),
@@ -1799,7 +1855,7 @@ mod tests {
         let same_plan_json = r#"{"summary":"v","steps":[{"id":"s1","title":"写","detail":"WRITE out.txt|bad","dependsOn":[],"acceptance":"含 good"}],"verification":["cmd /C exit 1"]}"#;
         let mock = Arc::new(MockClient::new());
         mock.enqueue(&spec.members[1].model, vec![same_plan_json.to_string()]);
-        let harness = Arc::new(crate::council::executor::ScriptedHarness { timeout_secs: 30 });
+        let harness = Arc::new(crate::council::executor::ScriptedHarness);
         start_run(
             CouncilEventEmitter::new(None),
             spec.run_id.clone(),
@@ -1971,7 +2027,7 @@ mod tests {
         let plan_v2_json = r#"{"summary":"v2 换安全验证","steps":[{"id":"s1","title":"写文件","detail":"WRITE out.txt|good","dependsOn":[],"acceptance":"含 good"}],"verification":["cmd /C exit 0"]}"#;
         let mock = Arc::new(MockClient::new());
         mock.enqueue(&spec.members[1].model, vec![plan_v2_json.to_string()]);
-        let harness = Arc::new(crate::council::executor::ScriptedHarness { timeout_secs: 30 });
+        let harness = Arc::new(crate::council::executor::ScriptedHarness);
         start_run(
             CouncilEventEmitter::new(None),
             spec.run_id.clone(),
@@ -1995,7 +2051,7 @@ mod tests {
             &spec.run_id,
             true,
             Some("我确认这条命令"),
-            RunClients { model: Some(mock.clone()), harness: Some(Arc::new(crate::council::executor::ScriptedHarness { timeout_secs: 30 })) },
+            RunClients { model: Some(mock.clone()), harness: Some(Arc::new(crate::council::executor::ScriptedHarness)) },
         )
         .unwrap();
         wait_phase(&spec.run_id, RunPhase::Completed, 120_000);
@@ -2051,7 +2107,7 @@ mod tests {
         let plan_v2_json = r#"{"summary":"v2 去掉危险命令","steps":[{"id":"s1","title":"写文件","detail":"WRITE out.txt|good","dependsOn":[],"acceptance":"含 good"}],"verification":["cmd /C exit 0"]}"#;
         let mock = Arc::new(MockClient::new());
         mock.enqueue(&spec.members[1].model, vec![plan_v2_json.to_string()]);
-        let harness = Arc::new(crate::council::executor::ScriptedHarness { timeout_secs: 30 });
+        let harness = Arc::new(crate::council::executor::ScriptedHarness);
         start_run(
             CouncilEventEmitter::new(None),
             spec.run_id.clone(),
@@ -2066,7 +2122,7 @@ mod tests {
             &spec.run_id,
             false,
             None,
-            RunClients { model: Some(mock.clone()), harness: Some(Arc::new(crate::council::executor::ScriptedHarness { timeout_secs: 30 })) },
+            RunClients { model: Some(mock.clone()), harness: Some(Arc::new(crate::council::executor::ScriptedHarness)) },
         )
         .unwrap();
         wait_phase(&spec.run_id, RunPhase::Completed, 120_000);

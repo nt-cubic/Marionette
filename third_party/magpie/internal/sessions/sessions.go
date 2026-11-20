@@ -1656,6 +1656,9 @@ func saved() {
 	saving.Unlock()
 	ccFamilyWrites.Wait()
 	ccRestWrites.Wait()
+	ccRestIDWrites.Wait()
+	ccUUIDWait()
+	flushCallPack()
 }
 
 // saveHook, when a test sets it, runs before each save is written.
@@ -1857,6 +1860,7 @@ func refresh(want, all []file) {
 			if !unsaved {
 				continue
 			}
+			flushCallPack()
 			mu.Lock()
 			if generation == cacheGeneration {
 				saveCacheWithin(checkpointGap)
@@ -1865,6 +1869,7 @@ func refresh(want, all []file) {
 			unsaved = false
 		}
 	}
+	flushCallPack() // the calls read along, in one pack (call_pack.go)
 	mu.Lock()
 	progress.finish()
 	if generation == cacheGeneration {

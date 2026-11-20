@@ -675,6 +675,24 @@ export async function savePastedImage(
   });
 }
 
+/** 文件清单剪贴板（CF_HDROP）的一条：资源管理器复制的文件。 */
+export type ClipboardFileEntry = {
+  path: string;
+  name: string;
+  size: number;
+  isDir: boolean;
+};
+
+/** 粘贴时读 OS 剪贴板的文件清单（无文件或非桌面环境返回空表）。 */
+export async function readClipboardFiles(): Promise<ClipboardFileEntry[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await invoke<ClipboardFileEntry[]>("clipboard_files");
+  } catch {
+    return [];
+  }
+}
+
 export async function cancelAcpSession(sessionId: string): Promise<void> {
   if (!isTauriRuntime()) return;
   await invoke("cancel_acp_session", { sessionId });
@@ -709,6 +727,8 @@ export type AcpTerminalRow = {
   running: boolean;
   startedAtMs: number;
   exitStatus?: { exitCode?: number; signal?: string };
+  /** PTY 输出尾部（Rust 截好的 ~2KB）：退出码含义判读用。 */
+  outputTail?: string;
 };
 
 export async function listAcpTerminals(): Promise<AcpTerminalRow[]> {
@@ -1501,6 +1521,30 @@ export async function engineCheckUpdate(): Promise<EngineUpdateInfo | null> {
 export async function engineUpdate(): Promise<EngineStatus | null> {
   if (!isTauriRuntime()) return null;
   return await invoke<EngineStatus>("engine_update");
+}
+
+/** Runtime engine-form preference (escape hatch): rust in-process | magpie child. */
+export type EnginePreferenceInfo = {
+  choice: "rust" | "magpie";
+  magpieInstalled: boolean;
+  magpieVersion?: string | null;
+  running: boolean;
+  runningVersion?: string | null;
+};
+
+export async function enginePreferenceGet(): Promise<EnginePreferenceInfo | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke<EnginePreferenceInfo>("engine_preference_get");
+  } catch {
+    return null;
+  }
+}
+
+/** Switch engine form (rust <-> magpie); backend stops and restarts the gateway. */
+export async function enginePreferenceSet(choice: "rust" | "magpie"): Promise<EnginePreferenceInfo | null> {
+  if (!isTauriRuntime()) return null;
+  return await invoke<EnginePreferenceInfo>("engine_preference_set", { choice });
 }
 
 /** Re-extract the factory seed baked into the exe, then restart the gateway. */

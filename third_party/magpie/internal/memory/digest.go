@@ -38,7 +38,7 @@ var kindTitles = map[string]string{
 }
 
 // render is the digest of one scope's memories within budget characters:
-// a heading per kind, a line per memory, pinned and newer ones first, and
+// a heading per kind, an item per memory (its own lines kept), pinned and newer ones first, and
 // none cut in the middle. "" when the scope has none.
 func render(ms []*Memory, scope string, budget int) string {
 	pool := []*Memory{}
@@ -63,7 +63,7 @@ func render(ms []*Memory, scope string, budget int) string {
 	picked := map[string][]string{}
 	used := 0
 	for _, m := range pool {
-		line := "- " + oneLine(m.Text)
+		line := "- " + Indented(m.Text, "  ")
 		if m.Why != "" {
 			line += " (why: " + oneLine(m.Why) + ")"
 		}
@@ -90,6 +90,22 @@ func render(ms []*Memory, scope string, budget int) string {
 }
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// Indented is a memory's text with its line breaks kept, each line after
+// the first led by pad, so a memory the user wrote in several lines reads
+// as they wrote it and stays one item of a list. Spaces closing a line and
+// blank lines' pads are left out.
+func Indented(s, pad string) string {
+	lines := strings.Split(strings.TrimSpace(strings.ReplaceAll(s, "\r\n", "\n")), "\n")
+	for i, l := range lines {
+		l = strings.TrimRight(l, " \t\r")
+		if i > 0 && l != "" {
+			l = pad + l
+		}
+		lines[i] = l
+	}
+	return strings.Join(lines, "\n")
+}
 
 // publish renders every scope's digest into f.
 func publish(f *file) {
@@ -208,6 +224,6 @@ func digestOf(f *file, agent string) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return "## Memory\n\nWhat is known from earlier conversations with the user. Follow it unless the user says otherwise now. When a memory_search tool is at hand, search it for more before asking the user again, and save what they ask to be remembered with memory_save.\n\n" +
+	return "## Memory\n\nWhat is known from earlier conversations with the user. Follow it unless the user says otherwise now. The project's own instruction files (AGENTS.md and the like) and docs come first: where a memory disagrees with them, follow the project's files and tell the user which memory is out of date. A rule or fact of one project belongs in that project's files; memory keeps what holds for the user across projects. When a memory_search tool is at hand, search it for more before asking the user again, and save what they ask to be remembered with memory_save.\n\n" +
 		strings.Join(parts, "\n\n")
 }

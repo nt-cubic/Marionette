@@ -40,6 +40,7 @@ struct TeeHandle {
     dropped: std::sync::Arc<AtomicU64>,
 }
 
+#[cfg(test)]
 pub fn set_root_override_for_tests(path: Option<PathBuf>) {
     if let Ok(mut slot) = ROOT_OVERRIDE.lock() {
         *slot = path;

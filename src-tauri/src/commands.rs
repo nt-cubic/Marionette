@@ -352,7 +352,17 @@ fn zcode_desktop_present() -> bool {
 
 /// Is the agent's own command on PATH, and are the CLIs it drives present too?
 fn agent_command_status(agent: &AgentConfig) -> AgentCommandStatus {
-    let bridge = resolve_command(&agent.command);
+    // Antigravity: the in-app installer owns a verified tree under
+    // ~/.marionette/agents — a complete copy there counts as installed even
+    // when nothing is on PATH (and spawn prefers it over a PATH entry).
+    let bridge = if agent.id == "antigravity" {
+        match crate::antigravity_support::installed_entry() {
+            Some(entry) => Ok(Some(entry.to_string_lossy().to_string())),
+            None => resolve_command(&agent.command),
+        }
+    } else {
+        resolve_command(&agent.command)
+    };
     let mut missing: Vec<String> = Vec::new();
     let mut installable = false;
 
@@ -364,7 +374,8 @@ fn agent_command_status(agent: &AgentConfig) -> AgentCommandStatus {
         ),
         Ok(None) => {
             missing.push(format!("{} (`{}`)", agent.label, agent.command));
-            installable = agent.install.package.is_some();
+            installable =
+                agent.install.package.is_some() || agent.install.manager == "binary";
             (
                 "missing".to_string(),
                 None,
@@ -490,6 +501,12 @@ fn install_agent_blocking(
         .find(|agent| agent.id == agent_id)
         .ok_or_else(|| format!("Unknown agent: {agent_id}"))?;
 
+    // Binary agents (Antigravity): download the vendor archive, verify the
+    // required sibling, place the tree under ~/.marionette/agents.
+    if agent.install.manager == "binary" {
+        return install_binary_agent_blocking(&agent, force);
+    }
+
     if agent.install.manager != "npm" {
         return Err(agent
             .install
@@ -557,6 +574,65 @@ fn npm_install_args(package: &str) -> Vec<String> {
     }
     args.push(package.to_string());
     args
+}
+
+/// Antigravity (the only `binary` agent): resolve the target version from the
+/// ACP registry when reachable (sha256 included), fall back to the audited
+/// pin, then download/extract/verify. `force` is the UI update path.
+fn install_binary_agent_blocking(
+    agent: &AgentConfig,
+    force: bool,
+) -> Result<serde_json::Value, String> {
+    let installed = crate::antigravity_support::installed_version();
+    if !force {
+        if let Some(version) = installed.as_deref() {
+            return Ok(serde_json::json!({
+                "agentId": agent.id,
+                "installed": [format!("agy-acp-server {version}")],
+                "message": format!("{} {version} is already installed", agent.label),
+                "status": agent_command_status(agent),
+            }));
+        }
+    }
+    // Registry first: fresher than the pin and carries a sha256. Offline or
+    // unrecognized layout → the pin (an old, audited build beats no build).
+    let (version, url, sha256) = match crate::antigravity_support::registry_latest() {
+        Some((version, url, sha256)) => (version, url, sha256),
+        None => (
+            crate::antigravity_support::PIN_VERSION.to_string(),
+            crate::antigravity_support::pin_archive_url_public(
+                crate::antigravity_support::PIN_VERSION,
+            ),
+            None,
+        ),
+    };
+    if installed.as_deref() == Some(version.as_str()) && !force {
+        return Ok(serde_json::json!({
+            "agentId": agent.id,
+            "installed": [format!("agy-acp-server {version}")],
+            "message": format!("{} {version} is already installed", agent.label),
+            "status": agent_command_status(agent),
+        }));
+    }
+    let progress = |message: &str| {
+        crate::debug_log::append("install", "info", "antigravity", message, None);
+    };
+    let entry = crate::antigravity_support::install(
+        &version,
+        &url,
+        sha256.as_deref(),
+        &progress,
+    )?;
+    Ok(serde_json::json!({
+        "agentId": agent.id,
+        "installed": [format!("agy-acp-server {version}")],
+        "message": format!(
+            "{} — {}",
+            crate::ts!("已安装", "Installed"),
+            entry.to_string_lossy()
+        ),
+        "status": agent_command_status(agent),
+    }))
 }
 
 fn npm_install_global(agent_id: &str, package: &str) -> Result<(), String> {
@@ -1233,6 +1309,23 @@ pub fn append_transcript_events(
     crate::storage::StorageService::append_transcript_file(&path, &events)
 }
 
+/// PyInstaller leftovers in the user's temp dir (from manual / IDE runs of
+/// the Antigravity server predating Marionette's scratch redirect).
+#[tauri::command(async)]
+pub fn antigravity_scan_leaked_temp() -> Vec<crate::antigravity_support::LeakedTempItem> {
+    crate::antigravity_support::scan_leaked_temp()
+}
+
+/// Reclaim previously scanned leftovers — every path is re-validated (age,
+/// shape, parent == temp root, still idle) inside the support module.
+#[tauri::command(async)]
+pub fn antigravity_reclaim_leaked_temp(
+    paths: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    let (reclaimed, skipped) = crate::antigravity_support::reclaim_leaked_temp(&paths);
+    Ok(serde_json::json!({ "reclaimed": reclaimed, "skipped": skipped }))
+}
+
 /// Best-effort local auth probe: CLI status commands where available, credential
 /// files / env vars otherwise. Every built-in agent is probed so the Clean
 /// banner can offer a per-agent Sign in.
@@ -1255,6 +1348,10 @@ pub fn probe_agent_auth(
         "opencode" => probe_opencode_auth(model_id.as_deref()),
         "deepseek" | "deepseek-acp" => probe_deepseek_auth(),
         "zcode" | "zcode-acp" => probe_zcode_auth(),
+        "antigravity" | "agy-acp-server" => {
+            let (status, message) = crate::antigravity_support::auth_probe();
+            Ok(auth_result(&agent_id, status, message))
+        }
         _ => Ok(auth_result(
             &agent_id,
             "unknown",
@@ -2032,6 +2129,9 @@ pub fn start_agent_login(agent_id: String) -> Result<serde_json::Value, String> 
                 return start_zcode_cjs_login(&cjs);
             }
         }
+        // Antigravity has no login CLI: drive the ACP `authenticate` browser
+        // flow through a one-shot server process (issue #14).
+        "antigravity" | "agy-acp-server" => return crate::antigravity_login::start_login(),
         _ => return Err(format!("No in-app login flow for agent `{agent_id}`")),
     };
     start_cli_login(bin, args, id, message)
@@ -2388,6 +2488,26 @@ fn resolve_image_path(path: &str) -> Result<std::path::PathBuf, String> {
         return Ok(name_suffix.remove(0));
     }
     Err(not_found())
+}
+
+/// 文件清单剪贴板（CF_HDROP，资源管理器复制）：粘贴时把 webview 给的
+/// `File`（只有名字和大小，没有路径）配上真实路径，按路径附加（与拖放同款）。
+#[tauri::command(async)]
+pub fn clipboard_files() -> Result<Vec<serde_json::Value>, String> {
+    let mut out = Vec::new();
+    for path in crate::computer::win::clipboard_file_paths() {
+        // 大小与目录标记在粘贴配对时用：名字 NFC 相同 +（普通文件）大小相同。
+        let meta = std::fs::metadata(&path).ok();
+        let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+        let name = path
+            .rsplit(['\\', '/'])
+            .next()
+            .unwrap_or(&path)
+            .to_string();
+        out.push(serde_json::json!({ "path": path, "name": name, "size": size, "isDir": is_dir }));
+    }
+    Ok(out)
 }
 
 /// Materialize a clipboard/paste image (base64) under `~/.marionette/clipboard/`.
@@ -3414,6 +3534,75 @@ pub fn engine_stop() {
 pub fn engine_check_update() -> crate::engine::EngineUpdateInfo {
     let _trace = crate::debug_log::CmdTrace::new("engine_check_update");
     crate::engine::check_update()
+}
+
+/// 引擎形态偏好（逃生口）：当前选择 + magpie 安装态。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnginePreferenceInfo {
+    /// "rust" | "magpie"
+    pub choice: String,
+    /// magpie 是否已安装（engine/ 目录有完整 manifest+exe）。
+    pub magpie_installed: bool,
+    /// 已安装 magpie 的版本号。
+    pub magpie_version: Option<String>,
+    /// 引擎当前是否在跑 + 版本（切换后 UI 刷新用）。
+    pub running: bool,
+    pub running_version: Option<String>,
+}
+
+fn engine_preference_info() -> EnginePreferenceInfo {
+    let magpie_version = crate::engine::magpie_install_version();
+    match crate::engine::status() {
+        crate::engine::EngineStatus::Running { version, .. } => EnginePreferenceInfo {
+            choice: crate::engine::preferred_engine().as_str().to_string(),
+            magpie_installed: magpie_version.is_some(),
+            magpie_version,
+            running: true,
+            running_version: version,
+        },
+        _ => EnginePreferenceInfo {
+            choice: crate::engine::preferred_engine().as_str().to_string(),
+            magpie_installed: magpie_version.is_some(),
+            magpie_version,
+            running: false,
+            running_version: None,
+        },
+    }
+}
+
+#[tauri::command]
+pub fn engine_preference_get() -> EnginePreferenceInfo {
+    engine_preference_info()
+}
+
+/// 切换引擎形态：写偏好 → 停当前 serve → 按新偏好拉起。偏好 magpie 但还没
+/// 下载时，引擎保持 Absent（面板的「检查更新/更新」就是下载入口），绝不
+/// 悄悄用另一个引擎顶包。
+#[tauri::command(async)]
+pub fn engine_preference_set(choice: String) -> Result<EnginePreferenceInfo, String> {
+    let _trace = crate::debug_log::CmdTrace::new("engine_preference_set");
+    let parsed = match choice.as_str() {
+        "rust" => crate::engine::EngineChoice::Rust,
+        "magpie" => crate::engine::EngineChoice::Magpie,
+        other => {
+            return Err(format!(
+                "unknown engine choice {other:?} (want \"rust\" or \"magpie\")"
+            ))
+        }
+    };
+    crate::engine::set_preferred_engine(parsed)?;
+    crate::debug_log::append(
+        "engine",
+        "info",
+        "",
+        "engine preference switched",
+        Some(parsed.as_str()),
+    );
+    // 活切换：停当前（若在跑），再按新形态拉起（magpie 未装则自然 Absent）。
+    crate::engine::stop();
+    let _ = crate::engine::enable();
+    Ok(engine_preference_info())
 }
 
 /// 下载 GitHub latest 稳定 CLI，落位为本机权威引擎后拉起。

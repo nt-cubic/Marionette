@@ -1547,7 +1547,11 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
 	if r.CacheKey != "" {
 		out["prompt_cache_key"] = r.CacheKey
 	}
-	if r.System != "" {
+	if r.System != "" && provider.InstructionsAfterInput(model) {
+		// GPT-6.2 reads top-level instructions after the input, uncached
+		// every turn: the system prompt goes first in it instead
+		out["input"] = append([]any{provider.DeveloperMessage(r.System)}, input...)
+	} else if r.System != "" {
 		out["instructions"] = r.System
 	}
 	if r.MaxTokens > 0 {
@@ -1565,8 +1569,9 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
 	if r.Fast && (host == "chatgpt.com" || host == "api.openai.com") {
 		out["service_tier"] = "priority"
 	}
-	// Ultrafast only the ChatGPT backend offers
-	if r.Ultrafast && host == "chatgpt.com" {
+	// Ultrafast the ChatGPT backend offers, and OpenAI's API on the models
+	// its Ultrafast mode names (OoopsHh on X); elsewhere it goes as Fast
+	if r.Ultrafast && (host == "chatgpt.com" || host == "api.openai.com" && provider.OpenAIUltra(model)) {
 		out["service_tier"] = "ultrafast"
 	}
 	if r.OwnTier && r.Tier != "" {

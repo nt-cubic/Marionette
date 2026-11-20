@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -42,11 +43,41 @@ func piNPM(t *testing.T, popular, found []string) (asked *atomic.Int32, texts *[
 		fmt.Fprintf(w, `{"total":%d,"objects":[%s]}`, len(list), strings.Join(list, ","))
 	}))
 	t.Cleanup(srv.Close)
-	was := piNPMURL
-	piNPMURL = srv.URL
-	t.Cleanup(func() { piNPMURL = was })
+	was, wasReg := piNPMURL, piRegistry
+	piNPMURL, piRegistry = srv.URL, func() string { return "" }
+	t.Cleanup(func() { piNPMURL, piRegistry = was, wasReg })
 	piForget(t)
 	return asked, texts, down
+}
+
+// The registry in use is searched first (a user behind a registry of their
+// own, or npmmirror with the 「国内镜像」 switch), and npm's own only when it
+// can't search.
+func TestPiSearchAsksTheRegistryInUse(t *testing.T) {
+	piCacheHere(t)
+	pkg := `{"package":{"name":"pi-own","version":"1.0.0","keywords":["pi-package"]}}`
+	asked, _, _ := piNPM(t, []string{`{"package":{"name":"pi-npm","version":"1.0.0","keywords":["pi-package"]}}`}, nil)
+	var regAsked atomic.Int32
+	var regDown atomic.Bool
+	reg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		regAsked.Add(1)
+		if regDown.Load() || r.URL.Path != "/-/v1/search" {
+			http.Error(w, "no search here", http.StatusNotFound)
+			return
+		}
+		fmt.Fprintf(w, `{"total":1,"objects":[%s]}`, pkg)
+	}))
+	t.Cleanup(reg.Close)
+	piRegistry = func() string { return reg.URL + "/" }
+	list, _, err := searchPiNPM("", 250, 0)
+	if err != nil || len(list) != 1 || list[0].Name != "pi-own" || asked.Load() != 0 {
+		t.Fatalf("registry in use: %v %+v, npm asked %d times", err, list, asked.Load())
+	}
+	regDown.Store(true)
+	list, _, err = searchPiNPM("", 250, 0)
+	if err != nil || len(list) != 1 || list[0].Name != "pi-npm" || asked.Load() != 1 {
+		t.Fatalf("registry can't search: %v %+v, npm asked %d times", err, list, asked.Load())
+	}
 }
 
 func piForget(t *testing.T) {
@@ -351,5 +382,55 @@ func TestPiRunGivesAgentDir(t *testing.T) {
 	testenv.Program(t, bin, "#!/bin/sh\necho 'npm ERR! 404 Not Found' >&2\nexit 1\n")
 	if _, err := piRun(bin, dir, "install", "npm:nope"); err == nil || !strings.Contains(err.Error(), "404") {
 		t.Errorf("err = %v, want npm's own words", err)
+	}
+}
+
+// eachg0 on X: with npmmirror as the registry (the 「国内镜像」 switch),
+// searching the Pi market for "rename" or "pi-rename" found nothing, though
+// pi-rename has the pi-package keyword. npmmirror answers every search with
+// a keywords: qualifier with {"objects":[],"total":0}; its plain search
+// finds them. The answers are npmmirror's own bytes (testdata/npmmirror,
+// 2026-11-19), and npm's own search is down, so the mirror has to find it.
+func TestPiSearchFindsByNameOnNPMMirror(t *testing.T) {
+	piCacheHere(t)
+	_, _, down := piNPM(t, nil, nil)
+	down.Store(true)
+	read := func(f string) []byte {
+		b, err := os.ReadFile(filepath.Join("testdata", "npmmirror", f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	var texts []string
+	var mu sync.Mutex
+	mirror := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		text := r.URL.Query().Get("text")
+		mu.Lock()
+		texts = append(texts, text)
+		mu.Unlock()
+		switch {
+		case strings.Contains(text, "keywords:"):
+			w.Write(read("search-keywords.json"))
+		case text == "pi-package rename":
+			w.Write(read("search-pi-package-rename.json"))
+		case text == "pi-package pi-rename":
+			w.Write(read("search-pi-package-pi-rename.json"))
+		default:
+			w.Write(read("search-keywords.json"))
+		}
+	}))
+	t.Cleanup(mirror.Close)
+	piRegistry = func() string { return mirror.URL }
+	for _, q := range []string{"rename", "pi-rename"} {
+		list, err := MarketPiPackages(q)
+		if err != nil || !slices.Contains(piNames(list), "pi-rename") {
+			t.Errorf("%q: %v %v (asked %q)", q, piNames(list), err, texts)
+		}
+		for _, p := range list {
+			if p.Name == "pi-rename" && (p.Source != "npm:pi-rename" || p.Version != "1.2.0" || p.Publisher != "shanelevs") {
+				t.Errorf("pi-rename = %+v", p)
+			}
+		}
 	}
 }

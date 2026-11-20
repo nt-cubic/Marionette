@@ -1138,10 +1138,6 @@ impl StorageService {
         })
     }
 
-    fn count_transcript_lines(&self, path: &Path) -> usize {
-        Self::count_transcript_lines_at(path)
-    }
-
     fn count_transcript_lines_at(path: &Path) -> usize {
         std::fs::read_to_string(path)
             .map(|text| text.lines().filter(|line| !line.trim().is_empty()).count())

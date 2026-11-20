@@ -111,7 +111,8 @@ func (l *Library) sync() *Result {
 func syncSteps(all, gone []*Target, b *backups, res *Result) []func(*Library) {
 	// a skill whose app moved it is followed first, for every agent to
 	// get the moved one (skill_moved.go)
-	steps := []func(*Library){func(l *Library) { l.followMovedSkills() }}
+	// an edit made in a subagent's own file too (subagent_file.go)
+	steps := []func(*Library){func(l *Library) { l.followMovedSkills(); l.followSubagentFiles() }}
 	for _, t := range all {
 		steps = append(steps, func(l *Library) {
 			l.syncInstructions(t, all, b, res, true)
@@ -120,6 +121,7 @@ func syncSteps(all, gone []*Target, b *backups, res *Result) []func(*Library) {
 			l.syncEnv(t, b, res)
 			l.syncSubagents(t, b, res)
 			l.syncCommands(t, b, res)
+			l.syncRules(t, b, res)
 		})
 	}
 	// an edit made in an agent's copy of a skill goes to the library first,
@@ -153,7 +155,7 @@ func syncSteps(all, gone []*Target, b *backups, res *Result) []func(*Library) {
 	}
 	// magpie's copies in a WSL distro no agent there is linked to any more
 	steps = append(steps, func(l *Library) { l.sweepWSLStores(append(slices.Clone(all), gone...), res) })
-	return append(steps, func(l *Library) { l.syncProjects(res) })
+	return append(steps, func(l *Library) { l.syncProjects(res) }, func(l *Library) { l.writeSubagentFiles() })
 }
 
 // Sync writes the library into the agents again: after an agent is
@@ -446,10 +448,15 @@ type AgentView struct {
 	SkillRouter string `json:"skillRouter,omitempty"`
 	// How is the way it is given its skills, link or copy, and HowOwn its
 	// own over the library's; MustCopy is one that can only take copies
-	// (in WSL)
-	How      string `json:"how,omitempty"`
-	HowOwn   bool   `json:"howOwn,omitempty"`
-	MustCopy bool   `json:"mustCopy,omitempty"`
+	// (in WSL, Claude Desktop, LiveAgent). CopyWhy is why it gets copies
+	// without asking for them (copyWhy): desktop, liveagent, wsl,
+	// junction, or shared with CopyWith, the agents given copies that read
+	// the very same folder
+	How      string   `json:"how,omitempty"`
+	HowOwn   bool     `json:"howOwn,omitempty"`
+	MustCopy bool     `json:"mustCopy,omitempty"`
+	CopyWhy  string   `json:"copyWhy,omitempty"`
+	CopyWith []string `json:"copyWith,omitempty"`
 	// Gone: not installed here any more, and listed only for what magpie
 	// gave it to be taken out (held); it is given nothing new
 	Gone bool `json:"gone,omitempty"`
@@ -543,7 +550,11 @@ type View struct {
 	// the agents that can take them do with them
 	Commands      []CommandView      `json:"commands"`
 	CommandAgents []CommandAgentView `json:"commandAgents"`
-	FoundServers  []Found            `json:"foundServers"`
+	// Rules are the library's rules, and RuleAgents what the agents that
+	// can take them do with them (rules.go)
+	Rules        []RuleView      `json:"rules"`
+	RuleAgents   []RuleAgentView `json:"ruleAgents"`
+	FoundServers []Found         `json:"foundServers"`
 	// Plugins are the plugins kept as one item each (plugin.go)
 	Plugins     []PluginView `json:"plugins"`
 	Skills      []SkillView  `json:"skills"`
@@ -583,6 +594,12 @@ type View struct {
 	// HubAllTools: every agent is given the router's tools whole, none on
 	// demand (settings' RouterAllTools, gateway.hubOnDemand)
 	HubAllTools bool `json:"hubAllTools"`
+	// HubFindsItself names the agents given every tool whole, as they
+	// search their tools themselves, and HubOnDemandOver how many tools an
+	// agent is given whole at most (gateway.HubFindsItself,
+	// gateway.HubOnDemandOver): the Tools on demand row says them
+	HubFindsItself  []string `json:"hubFindsItself"`
+	HubOnDemandOver int      `json:"hubOnDemandOver"`
 	// CheckDue is set when the skills from GitHub weren't checked for
 	// updates since magpie started, or not for a while: the page checks
 	// them as it shows them (#1449)
@@ -666,7 +683,15 @@ func readView(problems []Problem, glance bool) (*View, error) {
 	// the agents are found once for the whole read: finding them looks
 	// through every agent's folders, in WSL too (#1624)
 	targets, asleep := targetsAsleep(false)
-	v := &View{Agents: []AgentView{}, Servers: []ServerView{}, Skills: []SkillView{}, FoundSkills: []FoundSkill{}, Instructions: l.instructionsView(targets, asleep), Dir: Dir(), Backups: BackupDir(), CopySkills: l.CopySkills, SharedSkills: l.SharedSkills, SharedDir: sharedSkillsDir(), AutoUpdateSkills: l.AutoUpdateSkills, MCPHub: l.MCPHub, SkillRouter: l.SkillRouter, HubPath: gateway.HubMCPPath, HubNote: settings.Shared().RouterNote, HubName: gateway.HostName(), HubAllTools: settings.Shared().RouterAllTools, Partial: glance}
+	v := &View{Agents: []AgentView{}, Servers: []ServerView{}, Skills: []SkillView{}, FoundSkills: []FoundSkill{}, Instructions: l.instructionsView(targets, asleep), Dir: Dir(), Backups: BackupDir(), CopySkills: l.CopySkills, SharedSkills: l.SharedSkills, SharedDir: sharedSkillsDir(), AutoUpdateSkills: l.AutoUpdateSkills, MCPHub: l.MCPHub, SkillRouter: l.SkillRouter, HubPath: gateway.HubMCPPath, HubNote: settings.Shared().RouterNote, HubName: gateway.HostName(), HubAllTools: settings.Shared().RouterAllTools, HubFindsItself: hubFindsItself(), HubOnDemandOver: gateway.HubOnDemandOver, Partial: glance}
+	// each agent's skills folder as it really is, links followed: the
+	// agents reading the same one get copies together (copyWhy)
+	skillsAt := map[*Target]string{}
+	for _, t := range targets {
+		if t.Skills != "" {
+			skillsAt[t] = realDir(t.Skills)
+		}
+	}
 	for _, t := range targets {
 		av := AgentView{ID: t.Agent.ID, Name: t.Agent.Name, Icon: t.Agent.Icon, Instructions: t.Instructions, Skills: t.Skills,
 			SkillsAlso: t.SkillsAlso, Note: t.Note, MCPVia: t.MCPVia, ProjectSkills: ProjectSkillsDir(t.Agent.ID), ProjectMCP: ProjectMCPFile(t.Agent.ID), ProjectSubagents: ProjectSubagentsDir(t.Agent.ID),
@@ -676,7 +701,14 @@ func readView(problems []Problem, glance bool) (*View, error) {
 		if t.Skills != "" {
 			_, av.HowOwn = l.SkillHow[t.Agent.ID]
 			av.How, av.MustCopy = l.howOf(t.Agent.ID), t.Copy || t.Desktop != nil
-			if av.MustCopy {
+			var sharers []*Target
+			for _, o := range targets {
+				if o != t && o.Skills != "" && skillsAt[o] == skillsAt[t] {
+					sharers = append(sharers, o)
+				}
+			}
+			av.CopyWhy, av.CopyWith = l.copyWhy(t, sharers)
+			if av.MustCopy || av.CopyWhy == copyShared {
 				av.How = HowCopy
 			}
 			if l.SkillRouter {
@@ -769,6 +801,7 @@ func readView(problems []Problem, glance bool) (*View, error) {
 	v.Env, v.EnvAgents = l.envView(append(slices.Clone(targets), gone...), of)
 	v.Subagents, v.SubagentAgents = l.subagentsView(targets, asleep, of)
 	v.Commands, v.CommandAgents = l.commandsView(targets, asleep, of)
+	v.Rules, v.RuleAgents = l.rulesView(targets, asleep, of)
 	v.Plugins = l.pluginsView()
 	tr := &tracer{}
 	for _, s := range l.Skills {

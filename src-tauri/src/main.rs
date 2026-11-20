@@ -1,9 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// groups.rs 的大 json! 测试字面量需要（engine-rust 测试构建）
+#![recursion_limit = "256"]
 
 mod acp;
 mod acp_catalog;
 mod agent_registry;
 mod agent_update;
+mod antigravity_login;
+mod antigravity_support;
 mod app_paths;
 mod browser;
 mod chief;
@@ -24,6 +28,12 @@ mod dock_support;
 mod drag_text;
 mod dsh_bridge;
 mod engine;
+// 引擎 Rust 化（T6，feature `engine-rust`）：进程内网关模块——engine.rs 在
+// feature 开启时起 httpd 线程 + 直调 cli 动词。默认构建不编译（magpie 子进程
+// 形态零变化）；开发/合同套件二进制 marionette-engine 经 #[path] 独立挂载，
+// 不受这行影响。
+#[cfg(engine_rust_active)]
+mod engine_gateway;
 mod git_service;
 mod grok_dialect;
 mod handoff;
@@ -315,6 +325,10 @@ fn main() {
         .setup(|app| {
             use tauri::Manager;
             spawn_main_thread_watchdog(app.handle().clone());
+            // Antigravity（agy_acp_server）的 per-launch scratch：清掉上次
+            // 崩溃留下的 %TEMP% 重定向目录（>24h 视为孤儿；新鲜的不碰，
+            // 可能还属于交接过来的会话）。
+            antigravity_support::sweep_stale_scratch();
             // Chief（远程首席助理）：启动恢复（失联任务标 interrupted）+
             // 心跳线程。mode=off 时心跳第一行即返回，零开销。
             chief::commands::bootstrap_chief(app.handle());
@@ -678,6 +692,8 @@ fn main() {
             commands::write_transcript,
             commands::load_transcript,
             commands::probe_agent_auth,
+            commands::antigravity_scan_leaked_temp,
+            commands::antigravity_reclaim_leaked_temp,
             commands::memory_get,
             commands::memory_set_enabled,
             commands::memory_add,
@@ -696,6 +712,7 @@ fn main() {
             commands::set_stream_interests,
             commands::read_image_data_url,
             commands::save_pasted_image,
+            commands::clipboard_files,
             commands::cancel_acp_session,
             commands::stop_acp_session,
             commands::trim_session_working_set,
@@ -755,6 +772,8 @@ fn main() {
             commands::engine_stop,
             commands::engine_check_update,
             commands::engine_update,
+            commands::engine_preference_get,
+            commands::engine_preference_set,
             commands::engine_restore_factory,
             commands::get_proxy_config,
             commands::set_proxy_config,

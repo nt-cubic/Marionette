@@ -27,6 +27,7 @@ mod cache;
 mod claude;
 mod codex;
 mod composition;
+mod antigravity;
 mod dsh;
 mod facts;
 mod grok;
@@ -187,6 +188,7 @@ pub(crate) struct SourceRoots {
     pub dsh_sessions: Option<std::path::PathBuf>,
     pub opencode_db: Option<std::path::PathBuf>,
     pub zcode_db: Option<std::path::PathBuf>,
+    pub antigravity_conversations: Option<std::path::PathBuf>,
 }
 
 fn now_ms() -> i64 {
@@ -250,6 +252,7 @@ pub fn scan(force: bool) -> BackfillReport {
         dsh_sessions: dsh::discover_root(),
         opencode_db: opencode::discover_db(),
         zcode_db: zcode::discover_db(),
+        antigravity_conversations: antigravity::discover_root(),
     };
     scan_with_roots(&roots, force)
 }
@@ -297,6 +300,11 @@ pub(crate) fn scan_with_roots(roots: &SourceRoots, force: bool) -> BackfillRepor
         let db = roots.zcode_db.clone();
         outcomes.push(run_isolated(zcode::AGENT, || {
             zcode::scan(db.as_deref(), &mut cache, force, keep_from_ms)
+        }));
+    }
+    if let Some(root) = roots.antigravity_conversations.clone() {
+        outcomes.push(run_isolated(antigravity::AGENT, || {
+            antigravity::scan(&root, &mut cache, force, keep_from_ms)
         }));
     }
 

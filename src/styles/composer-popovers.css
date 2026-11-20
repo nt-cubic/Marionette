@@ -413,6 +413,53 @@
   gap: 6px;
 }
 
+/* 引擎形态切换（逃生口）：两行单选，视觉语言与面板其余 row 一致。 */
+.engine-panel__pref {
+  display: grid;
+  gap: 4px;
+}
+
+.engine-panel__pref-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: 11.5px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.engine-panel__pref-row:disabled {
+  cursor: default;
+  opacity: 0.75;
+}
+
+.engine-panel__pref-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong, var(--border));
+  flex: none;
+}
+
+.engine-panel__pref-dot[data-on="true"] {
+  background: var(--accent, var(--text));
+  border-color: var(--accent, var(--text));
+}
+
+.engine-panel__pref-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.engine-panel__pref-label small {
+  color: var(--text-muted);
+}
+
 .engine-panel__section-head {
   display: flex;
   align-items: center;

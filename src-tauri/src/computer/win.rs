@@ -128,6 +128,125 @@ pub fn clipboard_read_text() -> Option<String> {
     }
 }
 
+/// File-list clipboard read (CF_HDROP — an Explorer copy puts its files
+/// here). The real paths, empty when no files are on the clipboard.
+pub fn clipboard_file_paths() -> Vec<String> {
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+    };
+    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+    const CF_HDROP: u32 = 15;
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return Vec::new();
+        }
+        let result = (|| {
+            if IsClipboardFormatAvailable(CF_HDROP) == 0 {
+                return Vec::new();
+            }
+            let handle: HANDLE = GetClipboardData(CF_HDROP);
+            if handle.is_null() {
+                return Vec::new();
+            }
+            let lock = GlobalLock(handle);
+            if lock.is_null() {
+                return Vec::new();
+            }
+            let size = GlobalSize(handle);
+            let bytes = std::slice::from_raw_parts(lock as *const u8, size);
+            let paths = parse_dropfiles(bytes);
+            GlobalUnlock(handle);
+            paths
+        })();
+        CloseClipboard();
+        result
+    }
+}
+
+/// A CF_HDROP payload is a 20-byte DROPFILES header — `pFiles` (u32 LE) the
+/// offset of the file list, `fWide` (i32 LE) at byte 16 — followed by the
+/// list: NUL-terminated strings, wide or narrow per `fWide`, ending with an
+/// extra NUL. Parsed by hand: DragQueryFileW would pull in the whole Shell
+/// feature for twenty lines of pointer math.
+fn parse_dropfiles(bytes: &[u8]) -> Vec<String> {
+    if bytes.len() < 20 {
+        return Vec::new();
+    }
+    let p_files = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+    let wide = i32::from_le_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]) != 0;
+    if p_files == 0 || p_files >= bytes.len() {
+        return Vec::new();
+    }
+    let list = &bytes[p_files..];
+    let mut paths = Vec::new();
+    if wide {
+        let units: Vec<u16> = list
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        for part in units.split(|&u| u == 0) {
+            if part.is_empty() {
+                break; // the extra NUL ends the list
+            }
+            paths.push(String::from_utf16_lossy(part));
+        }
+    } else {
+        for part in list.split(|&b| b == 0) {
+            if part.is_empty() {
+                break;
+            }
+            paths.push(String::from_utf8_lossy(part).into_owned());
+        }
+    }
+    paths
+}
+
+#[cfg(test)]
+mod dropfiles_tests {
+    use super::parse_dropfiles;
+
+    /// A real CF_HDROP global: 20-byte header (pFiles=20, fWide=1) + the
+    /// wide NUL-terminated list, closed by an extra NUL.
+    fn hdrop(paths: &[&str]) -> Vec<u8> {
+        let mut out = vec![0u8; 20];
+        out[0..4].copy_from_slice(&20u32.to_le_bytes());
+        out[16..20].copy_from_slice(&1i32.to_le_bytes());
+        for p in paths {
+            for u in p.encode_utf16() {
+                out.extend_from_slice(&u.to_le_bytes());
+            }
+            out.extend_from_slice(&0u16.to_le_bytes());
+        }
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn reads_wide_and_narrow_lists() {
+        let got = parse_dropfiles(&hdrop(&[
+            "D:\\docs\\需求.md",
+            "D:\\with space.txt",
+        ]));
+        assert_eq!(got, vec!["D:\\docs\\需求.md", "D:\\with space.txt"]);
+
+        let mut narrow = vec![0u8; 20];
+        narrow[0..4].copy_from_slice(&20u32.to_le_bytes());
+        narrow.extend_from_slice(b"a.txt\0b.txt\0\0");
+        assert_eq!(parse_dropfiles(&narrow), vec!["a.txt", "b.txt"]);
+    }
+
+    #[test]
+    fn refuses_short_and_malformed_payloads() {
+        assert!(parse_dropfiles(&[]).is_empty());
+        assert!(parse_dropfiles(&[0u8; 10]).is_empty());
+        // pFiles beyond the payload / zero.
+        let mut bad = vec![0u8; 40];
+        bad[0..4].copy_from_slice(&999u32.to_le_bytes());
+        assert!(parse_dropfiles(&bad).is_empty());
+    }
+}
+
 /// Text clipboard write; returns the new sequence number.
 pub fn clipboard_write_text(text: &str) -> Option<u32> {
     use windows_sys::Win32::Foundation::HANDLE;

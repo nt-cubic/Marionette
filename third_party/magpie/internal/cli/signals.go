@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/sessions"
@@ -18,8 +19,8 @@ import (
 // endProbesOnSignal: the probes magpie asks a CLI with lead a session of
 // their own (proc.ProbeContext), so Ctrl+C in the terminal, the terminal
 // closing or a service manager's SIGTERM reach magpie and not them, and
-// magpie ending on the signal left them to init. They are ended first, and
-// magpie then dies of the signal. A command that waits on Ctrl+C itself
+// magpie ending on the signal left them to init. An owned gateway drains
+// and saves its sessions, probes end, and magpie then dies of the signal. A command that waits on Ctrl+C itself
 // (interruptContext) is left to finish its own way, its probes ended all the
 // same; the app and the TUI, which quit on SIGINT and SIGTERM their own way,
 // take those back (ownSignals). A signal magpie was started ignoring (nohup,
@@ -41,23 +42,38 @@ func endProbesOnSignal() {
 			// asked before the probes are ended, which can take a moment
 			// the command may spend finishing, and stop asking
 			handled := s == os.Interrupt && interrupts.Load() > 0
-			proc.EndProbes()
 			if !handled {
-				provider.FlushServed() // a gateway's last answers, noted and not yet written
-				gateway.FlushSticks()  // and who answered which conversation
-				// and the session index, or the next start reads every
-				// file a scan read since the last save again
-				savedWithin(sessionsSaved, saveOnSignal)
-				die(s)
+				finishSignalGateway(s)
+			} else {
+				proc.EndProbes()
 			}
 		}
 	}(onSignal)
+}
+
+func finishSignalGateway(s os.Signal) {
+	g := exitGateway.Swap(nil)
+	if g != nil {
+		defer close(g.done)
+		g.stop()
+	}
+	proc.EndProbes()
+	provider.FlushServed() // a gateway's last answers, noted and not yet written
+	gateway.FlushSticks()  // and who answered which conversation
+	// and the session index, or the next start reads every
+	// file a scan read since the last save again
+	savedWithin(sessionsSaved, saveOnSignal)
+	die(s)
 }
 
 // saveOnSignal bounds how long a signal waits for the session index to be
 // written: a long history's takes a second or two, and a signal is asked to
 // end magpie now.
 var saveOnSignal = 5 * time.Second
+
+// hostsOnSignal bounds how long a signal waits for the plugin hosts to
+// end: past the 15s EndHosts lets a host renewing a sign-in finish.
+var hostsOnSignal = 20 * time.Second
 
 // sessionsSaved is sessions.Saved; a var so tests can hold it.
 var sessionsSaved = sessions.Saved
@@ -85,6 +101,10 @@ var (
 // oneself (Windows), it exits as a shell reports such a process. A var so
 // tests can see what a signal would do.
 var die = func(s os.Signal) {
+	// the plugin hosts it started end with it, as at any exit (#7146):
+	// one renewing a sign-in is given the time EndHosts gives it, and
+	// one past that is killed with what it started
+	savedWithin(plugin.EndHosts, hostsOnSignal)
 	raise(s)
 	code := 1
 	if n, ok := s.(syscall.Signal); ok {

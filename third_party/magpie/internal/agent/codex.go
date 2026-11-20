@@ -276,6 +276,8 @@ func codexIn(at place) *Agent {
 	// where 127.0.0.1 is the distro's own, so the user points it at
 	// Windows as WSL sees it, or a forward of theirs (#816); magpie keeps
 	// that address, checks against it and writes it again
+	// onHere: this machine's Codex, before base names its kept gateway
+	onHere := at.spell == nil && at.base == nil
 	if at.spell == nil && at.base == nil {
 		at.base = func() string { return codexKeptGateway(path) }
 	}
@@ -1397,17 +1399,58 @@ func codexIn(at place) *Agent {
 	// api: the user wants magpie as Codex's provider even while Codex is
 	// signed in to ChatGPT
 	api := func() bool { return stashShared()[at.key("codex.login")] == "api" }
-	// out reports whether the Codex app holds the ChatGPT account Codex is
-	// signed in to (codexUsedUp), for magpie to become Codex's provider
-	// while it does (#540): never with the sign-in kept on ChatGPT
-	// (chatgpt), where the user would rather the Codex app wait for the
-	// account than leave its ChatGPT state, and never for the account the
-	// user keeps Codex signed in to (codexSignInKept): the takeover has the
-	// app read no account and show "magpie" for the one they picked
-	// (davezfr on X: account 1 out of its allowance and its credits,
-	// picked in Codex's sign-in, showed "magpie"; account 2 showed itself)
-	out := func() bool {
-		return stashShared()[at.key("codex.login")] != "chatgpt" && codexUsedUp() && !codexSignInKept()
+	// outOn reports whether the Codex app holds the ChatGPT account Codex
+	// is signed in to (codexUsedUp), for magpie to become Codex's provider
+	// on model m while it does (#540): never with the sign-in kept on
+	// ChatGPT (chatgpt), where the user would rather the Codex app wait for
+	// the account than leave its ChatGPT state. On the account the user
+	// keeps Codex signed in to (codexSignInKept) only for a model of
+	// magpie's: on one of Codex's own the takeover has the app read no
+	// account and show "magpie" for the one they picked (davezfr on X:
+	// account 1 out of its allowance and its credits, picked in Codex's
+	// sign-in, showed "magpie"; account 2 showed itself), but on magpie's
+	// the app greys Send for it till the account's reset, a Claude model
+	// with room included (Yuzhou__Zhang on X, a routing group of Claude
+	// accounts, after a5e3972a7). Keeping the sign-in on an account says
+	// which account, not that magpie's models wait for it; Always ChatGPT
+	// is the setting for that. One of Codex's own that the takeover put
+	// on magpie (codex.out_own, as magpie serves it or its stand-in) is
+	// still Codex's own here.
+	outOn := func(m string) bool {
+		if stashShared()[at.key("codex.login")] == "chatgpt" || !codexUsedUp() {
+			return false
+		}
+		own := stashShared()[at.key("codex.out_own")]
+		standsIn := own != "" && (codexOwnOf(m) == own || m == stashShared()[at.key("codex.out_stand")])
+		return isMagpie(m) && !standsIn || !codexSignInKept()
+	}
+	// out is outOn for the model Codex is set to
+	out := func() bool { return outOn(get("model")) }
+	// outStays: the takeover's end (the account has room again, at its
+	// reset, or is one the user keeps Codex on) waits while a Codex has a
+	// chat on magpie open, unless the Codex app's app-server is restarted
+	// for it. The app keeps the app-server the takeover started (#4550,
+	// Restart the Codex app to follow off by default) and its chats with
+	// it, each holding its lock, so bringBack can't move them, and with
+	// config.toml back on OpenAI every send in one was refused: "This chat
+	// uses magpie, but your current provider is OpenAI. Switch to magpie
+	// to continue" (milianxinqi on X: "用的好好的，codex 突然就弹这个了").
+	// magpie serves those chats on the account with room meanwhile, and
+	// the app shows no account on that app-server either way. Once the
+	// chats are let go (the app restarted or quit, the chat closed)
+	// codexThreadsLater asks for the Sync that ends it, and bringBack
+	// moves them where Codex is then. The takeover turned off by hand
+	// (Always ChatGPT) restarts the app-server, moving its chats, and
+	// ends at once.
+	outStays := func() bool {
+		if at.spell != nil || stashShared()[at.key("codex.login")] == "chatgpt" || codexAppFollows() {
+			return false
+		}
+		if !codexHeldOnMagpie(dir) {
+			return false
+		}
+		codexThreadsLater(dir, magpieID)
+		return true
 	}
 	dropBase := func() error {
 		forget(at.key("codex.failover"))
@@ -1833,7 +1876,7 @@ func codexIn(at place) *Agent {
 			p := get("model_provider")
 			ours := asProvider() || p == "" || p == "openai" || isCCSwitchMirror(p)
 			chatgpt := !api() && chatGPT()
-			if chatgpt && !out() && ours {
+			if chatgpt && !outOn(v) && ours {
 				forget(at.key("codex.out"))
 				if err := dropProvider(); err != nil {
 					return err
@@ -2198,6 +2241,12 @@ func codexIn(at place) *Agent {
 			}
 			// put back before #540's way back, which would take
 			// codex/<model> for a magpie model picked beside the sign-in
+			// the takeover ends below once the account has room, unless a
+			// Codex still has a chat on magpie open (outStays)
+			ending := asProvider() && stashShared()[at.key("codex.out")] == "1" && !out()
+			if ending && outStays() {
+				ending = false
+			}
 			if own := stashShared()[at.key("codex.out_own")]; own != "" {
 				m := get("model")
 				switch {
@@ -2206,7 +2255,7 @@ func codexIn(at place) *Agent {
 					// moved since (another model picked, magpie API, a
 					// disconnect): that stands
 					forget(at.key("codex.out_own"), at.key("codex.out_stand"))
-				case !out():
+				case ending:
 					// back beside the sign-in on the one picked, as Join
 					// leaves it: Codex's own sign-in, magpie's models joined
 					forget(at.key("codex.out_own"), at.key("codex.out"), at.key("codex.out_stand"))
@@ -2234,7 +2283,7 @@ func codexIn(at place) *Agent {
 				switch {
 				case viaBase() && !asProvider() && out():
 					return set(m)
-				case asProvider() && stashShared()[at.key("codex.out")] == "1" && !out():
+				case ending:
 					return set(m)
 				}
 			}
@@ -2597,6 +2646,17 @@ func codexIn(at place) *Agent {
 	// yet is managed there (switching then left config.toml's wiring behind,
 	// and Codex on its own list; kakzyanaba on X)
 	a.Fields = append(a.Fields, codexScopeField(at, func() bool { return a.Wired() || a.Routed() || a.FailingOver() }))
+	// the footer's quota (codex_statusline.go), taken out with magpie
+	statusField := codexStatusField(at, path, onHere)
+	a.Fields = append(a.Fields, statusField)
+	if unwire := a.Unwire; unwire != nil {
+		a.Unwire = func() error {
+			if err := unwire(); err != nil {
+				return err
+			}
+			return statusField.Set("")
+		}
+	}
 	// this machine's Codex: the address its config keeps is tried (Drift),
 	// and moved to WSL's new one when that changed (#1013)
 	if at.spell == nil {
@@ -3108,6 +3168,28 @@ var codexUsedUp = func() bool {
 // codexSignInKept reports whether Codex is signed in to the account the
 // user keeps it on (provider.CodexSignInKept). A var so tests can say.
 var codexSignInKept = provider.CodexSignInKept
+
+// codexAppFollows reports whether magpie restarts the Codex app's
+// app-server for a change of Codex's route it makes by itself
+// (provider.CodexRestartsApp), moving the chats the app has open onto the
+// new provider first. A var so tests can say.
+var codexAppFollows = provider.CodexRestartsApp
+
+// codexHeldOnMagpie says whether a Codex holds open, or wrote to this
+// minute, a thread of the Codex home dir on magpie that Codex resumes on
+// the provider config.toml names: T3 Code's own (t3CodexRunsIn) stay on
+// magpie whatever it names, and are left out.
+func codexHeldOnMagpie(dir string) bool {
+	var skip func(string) bool
+	if user, _ := homes(); t3CodexRunsIn(user, dir) {
+		by, ok := sessions.CodexThreadsBy(dir, magpieID)
+		skip = func(id string) bool {
+			t, found := by[id]
+			return ok && found && t3Started(t.Originator)
+		}
+	}
+	return sessions.CodexThreadsBusyOnBut(dir, magpieID, skip)
+}
 
 // codexFailover reports whether Codex is signed in to a ChatGPT account
 // with more of its accounts on in magpie, behind it, and the user hasn't

@@ -400,23 +400,39 @@ func autoSearcher() (provider.Provider, string, bool) {
 func autoSearcherReady() (provider.Provider, string, bool, bool) {
 	var best provider.Provider
 	var model string
-	top, bestReady := -1, false
+	top, bestReady, have := 0, false, false
+	// the provider the pick is held to goes before every other of its
+	// readiness (heldPick, auto_picks.go): one added later, a Claude
+	// account's first of all, doesn't take the searches over
+	held, heldServes := heldPick(slotSearcher), false
 	for _, p := range provider.All() {
 		r := searchRank(p)
-		if r < 0 || !p.On() || (bestReady && r >= top) {
+		if r < 0 || !p.On() {
+			continue
+		}
+		if held != "" && p.ID == held {
+			r = -1
+		}
+		if have && bestReady && r >= top {
 			continue
 		}
 		m, ready := searcherReady(p)
-		if m == "" || top >= 0 && (bestReady && !ready || ready == bestReady && r >= top) {
+		if m != "" && r == -1 {
+			heldServes = true
+		}
+		if m == "" || have && (bestReady && !ready || ready == bestReady && r >= top) {
 			continue
 		}
 		if codexSearches(p) {
 			// by the backend's search, which spends no model's tokens
 			m = codexSearchModel
 		}
-		best, model, top, bestReady = p, m, r, ready
+		best, model, top, bestReady, have = p, m, r, ready, true
 	}
-	return best, model, bestReady, top >= 0
+	if have {
+		settlePick(slotSearcher, held, heldServes, best.ID)
+	}
+	return best, model, bestReady, have
 }
 
 // Why the searcher Settings names isn't used, and magpie picks one itself.
@@ -821,7 +837,7 @@ func (s *Server) webSearch(ctx context.Context, query string) (string, []Hit, er
 var errNoSearcher = errors.New("no provider that can search the web, nor a search API, is set up in magpie")
 
 // errSearchOff is a search asked of magpie while plugins/search is off.
-var errSearchOff = errors.New("magpie's web search is off: turn the Web search plugin on in magpie's Settings → Plugins")
+var errSearchOff = errors.New("magpie's web search is off: turn Web search on in magpie's Plugins › Built-in")
 
 // searchServed is whether plugins/search serves magpie's web search here
 // (the gateway's tool point, gwtool): off, magpie neither offers its
@@ -920,9 +936,9 @@ func (s *Server) modelSearch(ctx context.Context, query string) (string, []Hit, 
 			case errors.Is(first, errCantServe):
 				return "", nil, fmt.Errorf("%w (no other provider could search in its place)", err)
 			case len(settings.Load().SearcherThen) > 0:
-				return "", nil, fmt.Errorf("%w (the searchers picked in Settings › Web search, in their order: no other provider searches in their place)", err)
+				return "", nil, fmt.Errorf("%w (the searchers picked in Settings › Models › Web search, in their order: no other provider searches in their place)", err)
 			}
-			return "", nil, fmt.Errorf("%w (the searcher picked in Settings › Web search: no other provider searches in its place)", err)
+			return "", nil, fmt.Errorf("%w (the searcher picked in Settings › Models › Web search: no other provider searches in its place)", err)
 		}
 		return said, hits, nil
 	}

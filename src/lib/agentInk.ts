@@ -19,6 +19,7 @@ const INK_VAR: Record<string, string> = {
   "web-deepseek": "--agent-deepseek",
   opencode: "--agent-opencode",
   gemini: "--agent-gemini",
+  antigravity: "--agent-gemini",
 };
 
 /** `var(--agent-…)` for an agent id; unknown and custom agents share the neutral ink. */
@@ -37,6 +38,7 @@ const DISPLAY_NAME: Record<string, string> = {
   opencode: "OpenCode",
   pi: "Pi",
   "web-chatgpt": "ChatGPT",
+  antigravity: "Antigravity",
 };
 
 /** Short name for places that only carry an agent id (handoff events); falls back to the id. */

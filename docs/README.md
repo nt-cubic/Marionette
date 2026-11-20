@@ -21,6 +21,14 @@
 | [`guides/i18n-guide.md`](./guides/i18n-guide.md) | **i18n 规范**：中英双语的词典/`ts!` 用法、术语表、探测串双语并集红线与验收命令（2026-10-30 落地） |
 | [`guides/model-library.md`](./guides/model-library.md) | **模型与来源（现行行为）**：模型共享浮层「模型与来源 · 显示和排序」——按来源/账号区分模型、直连/原生/引擎入口的合并规则（同名不作去重依据） |
 
+## manual/ — 按域开发手册
+
+| 位置 | 性质 |
+|---|---|
+| [`manual/README.md`](./manual/README.md) | 手册目录与维护规则 |
+| [`manual/engine-gateway.md`](./manual/engine-gateway.md) | **默认进程内引擎**：模块地图、合同面、配置/账本边界、验证命令与已知缺口 |
+| [`manual/build-release.md`](./manual/build-release.md) | 构建、双 SKU 回退、便携版、安装与发布流程 |
+
 ## pitfalls/ — 踩坑·案例·审计
 
 | 位置 | 性质 |
@@ -43,9 +51,12 @@
 | [`research/research-browse-ux.md`](./research/research-browse-ux.md) | **调研（2026-11-17）**：anomalyco/browse 用户体验对标——后台 Agent 标签、ON/RUN/WAIT、页内 handoff、标签归属/清理、失败 nextStep 与 Marionette 元素批注/细粒度授权/Composer 一体化的差异；含 P0–P2 体验路线和不照搬清单 |
 | [`research/research-council-convergence-hallucination.md`](./research/research-council-convergence-hallucination.md) | **调研（2026-11-02）**：圆桌的收敛与幻觉治理——现状审计（辩论确实已实现、star 拓扑、已有防护清单）+ 两个断点（`Rebuttal` 死通道、`PlanStep` 无来源字段）+ 文献结论（轮次收益止于 2 轮、收敛到一致≠正确、共识放大幻觉、LLM 引用捏造率 78–90%） |
 | [`research/research-context-transparency.md`](./research/research-context-transparency.md) | **调研（2026-11-06）**：上下文透明化——dsh-context 级洞察的通用化路径。四层采集架构（ACP 在线/ingest 盖戳/原生日志提取器/密度估算）、per-agent 数据源矩阵（grok 本机库最富：系统提示词+工具定义+官方成本 ticks 全落盘；claude/codex/dsh/opencode 各有四桶用量；本机实证）、ACP usage_update 已 stable、现状缺口与 P0–P3 分阶段落地 |
+| [`research/rust-engine-full-survey.md`](./research/rust-engine-full-survey.md) | **引擎审计（2026-11-19）**：Magpie 全能力与 Marionette 消费面的逐项调查、Rust 覆盖/差距、测试与体积证据 |
+| [`research/rust-engine-dialect-audit.md`](./research/rust-engine-dialect-audit.md) | **协议方言审计（2026-11-19）**：三协议真实 Agent 链路的缺口、优先级与抓包待定项 |
 | [`research/research-bigfatfishwife.md`](./research/research-bigfatfishwife.md) | **调研（2026-11-17 二轮全量）**：BigFatFishWife / dsh-room 的 README/产品结构、数据模型、任务执行、审批边界、通知、分层记忆、UI 与运维机制拆解——含精确参数、源码证据、适配映射、当前员工实现对账摘要、验证结果和明确不借清单 |
 | [`research/telegram-chief/README.md`](./research/telegram-chief/README.md) | **调研 / 方案（2026-11-15）**：Grok Bot 式 Telegram 远程首席助理——固定 Chief 会话、自然语言调度项目 / Agent / Provider、Host 控制 MCP、worker 任务账本、审批与恢复；含竞品对比、安全边界与 M0–M3 施工计划 |
 | [`research/ego-lite/README.md`](./research/ego-lite/README.md) | **调研 + 移植方案（2026-11-17）**：ego-lite v2.2.1 的源码/许可证边界、TaskSpace/Page/ref/wait/error 机制、Marionette master 差距、文件级复用地图与 M0–M5 路线；扩展目录还覆盖动作可见化、hard stop、Page 生命周期、popup/download/file、运行时卫生、站点经验与 benchmark。结论：闭源内核不可搬；优先借稳定 ref、typed batch、wait/dialog、错误语义和测试资产 |
+| [`research/research-antigravity.md`](./research/research-antigravity.md) | **调研（2026-11-19）**：Google Antigravity 的 `agy_acp_server` 接入——产品面（Gemini CLI 合流）、认证全景（oauth-personal 免费档/settings.json/env 防串档）、无浏览器登录机制、Windows PyInstaller 1.17GB %TEMP% 泄漏与 scratch 红线、capability/wire 差异、SQLite+protobuf 轨迹解析，全部对照 codeg v0.46.0 实现带 文件:行号 证据；12 条坑清单。接入方案见 [`plans/plan-antigravity.md`](./plans/plan-antigravity.md) |
 
 ## plans/ — 设计·实施方案
 
@@ -55,12 +66,15 @@
 | [`plans/plan-edge-dock.md`](./plans/plan-edge-dock.md) | 贴边停靠设计稿（阶段 0–3 已落地，现行行为以 `CURRENT.md`「贴边停靠」与 `AGENTS.md` 红线为准；文内记了与实现的偏差）。**悬浮球计划已废弃并入本计划**（原件 [`archive/plan-orb-assistant.md`](./archive/plan-orb-assistant.md)） |
 | [`plans/plan-codeg-borrow.md`](./plans/plan-codeg-borrow.md) | **路线图（2026-10-25）**：从 Codeg 借什么、什么不借——对照现状（代理层/跨 agent handoff/12 parser/registry 安装/Ctrl K 搜索已对齐）分 P0 速赢→P1 对话流骨架→P2 数据与能力分发→P3 协作与远程→P4 按需，含明确不做清单、依赖关系与工程纪律 |
 | [`plans/plan-browser-computer-use.md`](./plans/plan-browser-computer-use.md) | **实施案（2026-10-31 定稿）**：浏览器共享 + Computer Use 两批全量方案——child webview（wry resize-subclass 坑）、vendor aria 引擎、localhost HTTP MCP（每会话 token，zcode 通吃）、授权与对话权限模式吻合（agent 自开页自动读/Control 走权限卡）、CU 的 cua-driver 按需下载 + helper 单二进制 + 按键白名单。批次 1（文档标签页）已落地，行为见 `CURRENT.md` |
-| [`plans/plan-browser-workspace.md`](./plans/plan-browser-workspace.md) | **实施方案（2026-11-17，Phase 1–4 已落地）**：Codeg 对齐的 `SurfaceWorkspace`——Agent 对话 + Browser/Document/Memo content surface。复用 renderConversation/Composer 与 child WebView2 bounds，不改 session-only SplitWorkspace；含后台 tab、dev server probe、handoff、共同标签、会话切绑和冷启动恢复 |
+| [`plans/plan-browser-workspace.md`](./plans/plan-browser-workspace.md) | **历史实施方案（2026-11-17，Phase 1–4）**：Browser/Document/Memo 后来已并入统一分屏树窗格标签，`SurfaceWorkspace` 退役；现行行为见 `CURRENT.md`。文中后台 tab、dev server probe、handoff、child WebView2 bounds 等细节仍有效 |
 | [`plans/plan-browser-scope.md`](./plans/plan-browser-scope.md) | **产品边界（2026-11-17）**：Marionette 只做内置 WebView2 开发工作区；不做 Chrome/Edge 扩展、relay、外部 MCP 或个人浏览器连接器。用户需要这类能力时自行使用 browse |
 | [`plans/plan-council-convergence-guardrails.md`](./plans/plan-council-convergence-guardrails.md) | **实施方案（草案）**：P0 接线 Rebuttal / 综合三段式+强制溯源 / 收益衰减提前终止（Jaccard 纯字符串）→ P1 确定性符号核验 / isolation guard / 置信度加权 → P2 构造反命题 / ABSTAIN；含明确不做与分批验收口径 |
 | [`plans/plan-plugin-layer.md`](./plans/plan-plugin-layer.md) | **设计稿（2026-11-05 落地）**：共通插件层——安装一次全 agent 生效。业界对标（codeg 扇出写回 1 万行教训/Zed 直传缺口/mcpd·MCPHub 同型验证/ACP v2 条款）、url 型代理架构（stdio 子进程托管 + http 中继凭据不出主进程）、红线与落地偏差记录 |
 | [`plans/plan-employee-mode.md`](./plans/plan-employee-mode.md) | **实现对账 + 设计稿（2026-11-17 工作树）**：员工模式已施工 E1 主体，E2/E3 部分、E4 待办；逐项记录员工注册表、侧栏 roster、状态投影、任务/worker、记忆/承诺/通知/Telegram 的真实行为，含注册表级全局暂停、Proposed 任务预留竞态修复、只读硬门禁、Computer Use 项目策略、持久通知预算、自动 task journal/proposal accept-reject、稳定 staffId 路由和单 chat Telegram 限制 |
 | [`plans/plan-engine-contract.md`](./plans/plan-engine-contract.md) | **引擎合同（2026-11-17 M1 落地）**：Marionette ↔ magpie 种子的合同清单——合同面、红线与验证套件 `scripts/verify-engine-contract.mts`；`scripts/upstream-watch.mts` 按它盯上游 magpie |
+| [`plans/plan-engine-product-scope.md`](./plans/plan-engine-product-scope.md) | **引擎产品边界（2026-11-19 已落地）**：从 Marionette 用户旅程定义必须做、按需做和明确不做的能力；区分“核心路径可用”与“完整 Magpie 兼容”，并记录 Rust 默认切换的数据安全、Agent 矩阵与发布门槛处理结果 |
+| [`plans/plan-engine-rust.md`](./plans/plan-engine-rust.md) | **Rust 引擎演进账本**：T0–T15、真 key 对账、方言批次、收尾与转正记录；现行行为以 `CURRENT.md` 和产品边界稿为准 |
+| [`plans/plan-antigravity.md`](./plans/plan-antigravity.md) | **M0–M3 全部落地（2026-11-19）**：接入 Google Antigravity（`agy_acp_server`）——M0 真机核查；M1 最小可用（settings 同步/scratch 隔离/探测防执行/授权 URL 通知卡）；M2 自动安装+升级链（sha256/required_siblings/系统 tar 解压）；M3 usage 回填+历史导入（prost 子集，真库 oracle 验证）+存量 %TEMP% 回收。唯一未做：无头贴回登录（Windows 桌面不需要）。事实与实测在 [`research/research-antigravity.md`](./research/research-antigravity.md) |
 | [`plans/split-workspace.md`](./plans/split-workspace.md) | 早期分屏设计稿（已落地，现行行为以 `CURRENT.md`「多窗口」为准） |
 | [`plans/telegram-bridge.md`](./plans/telegram-bridge.md) | Telegram 远程桥——MVP 已实现（通知/回复/远程批准/配对）；设计、调研与实现差异记录 |
 

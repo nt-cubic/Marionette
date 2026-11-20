@@ -32,6 +32,7 @@ import {
   listAgentCommands,
   listCustomAgents,
   pickFiles,
+  readClipboardFiles,
   readImageDataUrl,
   removeCustomAgent,
   savePastedImage,
@@ -41,6 +42,7 @@ import {
   type BridgeModelsResult,
   type PreflightResult,
 } from "../lib/api";
+import { pairPastedFilesWithPaths, snapshotPasteImageFiles } from "../lib/pastedFiles";
 import {
   bridgePresetFor,
   getBridgeModels,
@@ -269,6 +271,10 @@ type ComposerProps = {
    * absent = auto), double-click the handle returns to auto.
    */
   docked?: boolean;
+  /** People-facing employee conversation: hide agent workbench controls. */
+  staffMode?: boolean;
+  staffName?: string | null;
+  staffTitle?: string | null;
   /**
    * Fired after the draft (+ image attachments) was saved into the memo box
    * so the App can bump the memo count/revision for an open MemoBox.
@@ -643,6 +649,9 @@ export function Composer({
   isFocused = true,
   onEmptyActivate,
   docked = false,
+  staffMode = false,
+  staffName = null,
+  staffTitle = null,
   onMemoSaved,
   contextUsed = null,
   contextSize = null,
@@ -2087,8 +2096,11 @@ export function Composer({
   };
 
   /**
-   * Clipboard paste: screenshots / "Copy Image" → temp file → image pills.
-   * Plain text (and non-image files without a path we can use) keep the default paste.
+   * Clipboard paste:
+   * - Explorer copy → pair the pasted `File`s (name+size, no path) with the
+   *   OS clipboard's CF_HDROP entries and attach by real path, as a drop is.
+   * - Screenshots / "Copy Image" (no file behind them) → temp file → pills.
+   * - Plain text keeps the default paste.
    */
   const onComposerPaste = useCallback(
     (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
@@ -2100,16 +2112,26 @@ export function Composer({
         (item) => item.kind === "file" && item.type.startsWith("image/"),
       );
 
+      // DataTransferItem is event-scoped in WebView2. Capture the bitmap File
+      // now: waiting for the CF_HDROP lookup below can otherwise leave only
+      // an expired item whose getAsFile() returns null.
+      const pastedImageFiles = snapshotPasteImageFiles(imageItems);
+
       // Also pick up FileList entries that look like images (Explorer copy + paste).
-      const fileListImages = Array.from(dt.files ?? []).filter(
+      const pastedFiles = Array.from(dt.files ?? []);
+      const fileListImages = pastedFiles.filter(
         (f) =>
           (f.type && f.type.startsWith("image/")) ||
           isImagePath(f.name) ||
           isImagePath((f as File & { path?: string }).path ?? ""),
       );
 
-      const hasImagePayload = imageItems.length > 0 || fileListImages.length > 0;
-      if (!hasImagePayload) return; // text paste → default
+      const hasImagePayload = pastedImageFiles.length > 0 || fileListImages.length > 0;
+      // Any pasted File may have a real file behind it (Explorer copy); the
+      // path pairing needs the desktop clipboard.
+      const wantsFileAttach =
+        isTauriRuntime() && pastedFiles.length > 0 && imageItems.length === 0;
+      if (!hasImagePayload && !wantsFileAttach) return; // text paste → default
 
       event.preventDefault();
 
@@ -2145,9 +2167,41 @@ export function Composer({
             }
           };
 
-          if (imageItems.length > 0) {
-            for (const item of imageItems) {
-              await absorbFile(item.getAsFile());
+          // 1) Explorer copy: pair each pasted File with its OS clipboard
+          //    entry and attach by the real path, as a drop does (also for
+          //    images — the real path beats a byte copy). Rest has no file
+          //    behind it: screenshots materialize as below, nothing else does.
+          if (pastedFiles.length > 0) {
+            const entries = await readClipboardFiles();
+            if (entries.length > 0) {
+              const paired = pairPastedFilesWithPaths(pastedFiles, entries);
+              for (const p of paired.paths) {
+                const key = p.toLowerCase();
+                if (!seen.has(key)) {
+                  seen.add(key);
+                  paths.push(p);
+                }
+              }
+              for (const file of paired.rest) {
+                if (
+                  (file.type && file.type.startsWith("image/")) ||
+                  isImagePath(file.name)
+                ) {
+                  await absorbFile(file);
+                }
+              }
+              if (paths.length > 0) {
+                insertDroppedPaths(paths);
+                return;
+              }
+            }
+          }
+
+          // 2) Bitmap paste without a file behind it.
+          if (!hasImagePayload) return;
+          if (pastedImageFiles.length > 0) {
+            for (const file of pastedImageFiles) {
+              await absorbFile(file);
             }
           } else {
             for (const file of fileListImages) {
@@ -2827,7 +2881,7 @@ export function Composer({
     if (!slashToken) return [] as AvailableCommand[];
     return filterSlashCommands(slashCatalog, slashToken.query);
   }, [slashCatalog, slashToken]);
-  const showSlashMenu = slashMatches.length > 0 && slashToken != null;
+  const showSlashMenu = !staffMode && slashMatches.length > 0 && slashToken != null;
 
   // ── @ delegate autocomplete (line-start only; only when agent prefix matches) ──
   const [delegateIndex, setDelegateIndex] = useState(0);
@@ -2852,7 +2906,8 @@ export function Composer({
     if (!delegateToken) return [] as DelegateCandidate[];
     return filterDelegateCandidates(agents, installedAgentIds, delegateToken, recentModelIds);
   }, [agents, installedAgentIds, delegateToken, recentModelIds]);
-  const showDelegateMenu = delegateMatches.length > 0 && delegateToken != null && !showSlashMenu;
+  const showDelegateMenu =
+    !staffMode && delegateMatches.length > 0 && delegateToken != null && !showSlashMenu;
 
   useEffect(() => {
     if (!showDelegateMenu && menu !== "agent") return;
@@ -2960,6 +3015,7 @@ export function Composer({
         hasModes ? "has-mode" : "",
         docked ? "is-docked" : "",
         compactToolbar ? "is-compact" : "",
+        staffMode ? "is-staff-chat" : "",
         dockFixedHeight != null ? "is-dock-fixed" : "",
       ]
         .filter(Boolean)
@@ -3152,7 +3208,9 @@ export function Composer({
           placeholder={
             isWarming && !composingRef.current
               ? t("v2composer.warming")
-              : t("v2composer.placeholder", { agent: agent.label })
+              : staffMode
+                ? t("staff.chatPlaceholder", { name: staffName || agent.label })
+                : t("v2composer.placeholder", { agent: agent.label })
           }
           rows={docked ? 2 : isTall ? 10 : 2}
           value={draft}
@@ -3283,7 +3341,7 @@ export function Composer({
             // P2-UX-1: Tab cycles mode (OpenCode-like). Shift+Tab reverse.
             if (event.key === "Tab" && !event.altKey && !event.metaKey && !event.ctrlKey) {
               if (composingRef.current) return;
-              if (!hasModes) return; // allow default focus move when no modes
+              if (!hasModes || staffMode) return; // allow default focus move when no modes
               event.preventDefault();
               cycleMode(event.shiftKey ? -1 : 1);
               return;
@@ -3340,8 +3398,17 @@ export function Composer({
             >
               <Plus size={14} />
             </button>
+            {staffMode && (
+              <div className="staff-chat-composer__identity" aria-live="polite">
+                <strong>{staffName || agent.label}</strong>
+                {staffTitle ? <span>{staffTitle}</span> : null}
+                <span className="staff-chat-composer__status">
+                  {isBusy ? t("staff.chatWorking") : t("staff.chatOnline")}
+                </span>
+              </div>
+            )}
             <button
-              className="pill-action pill-action--icon composer-tool"
+              className="pill-action pill-action--icon composer-tool composer-tool--memo"
               type="button"
               title={t("composer.saveToMemoTitle")}
               aria-label={t("composer.saveToMemo")}
@@ -3583,7 +3650,7 @@ export function Composer({
             {/* ── Model + Effort selector ─────────────────────────────── */}
             {/* Always show when caps exist (even empty for add-key prompt), or has effort */}
             {(hasModels || hasEffort || showKeyPrompt) && (
-              <div className="composer-menu-anchor" ref={modelMenuAnchorRef}>
+              <div className="composer-menu-anchor composer-menu-anchor--model" ref={modelMenuAnchorRef}>
                 <button
                   className="composer-select composer-select--model"
                   type="button"
@@ -3920,7 +3987,7 @@ export function Composer({
             )}
 
             {/* ── Agent switcher ──────────────────────────────────────── */}
-            <div className="composer-menu-anchor">
+            <div className="composer-menu-anchor composer-menu-anchor--agent">
               <button
                 className={
                   currentHasUpdate

@@ -601,27 +601,36 @@ function routingPage(part) {
   // 100 ms or would have it write over 10,000 tok/s, as it came in one
   // burst at its end (usage.DecodeWindow, #731: a whole Gemini tool call,
   // 8264 tokens 1 ms before the end, read 8,264,000 tok/s)
-  // A reply that reasoned counts its answer, its output less the
-  // reasoning, from its first text (usage.DecodeOf, tony on Discord):
-  // the reasoning was written before the stream showed any, OpenAI's
-  // encrypted and its summary sent when done, and counting it read
-  // gpt-6.1-sol at 163 tok/s. The reply's reasoning is its served try's.
+  // A reply counts all its output, reasoning and tool calls included,
+  // from its first output of any kind, its first content or its first
+  // sign of reasoning (usage.DecodeOf, Archivemylife on X: reasoning and
+  // tools are tokens too). One that reasoned with no sign of when in its
+  // stream counts its answer, its output less the reasoning, from its
+  // first text (tony on Discord), and none with no text. The reply's
+  // reasoning is its served try's.
   // A reply held back and let go in a burst at its end tells no speed
   // (usage.DecodeOf, John on Discord: Kimi Code at 2,237 tok/s): its
-  // content came in under a quarter of its window (flow), or its answer
-  // at over 20 times the pace its reasoning came before its first text, or
-  // it came in under a second after a wait four times longer
+  // answer's content came in under a quarter of its tail (flow), or its
+  // answer at over 20 times the pace its reasoning came before its first
+  // text, or it came in under a second after a wait four times longer
   // (pluviophile714 on Discord: gpt-6.1-sol, 392 tokens 0.25 s after an
   // 8.2 s first token, read 1,539 tok/s; usage.HeldWindowMs).
   function decodeOf(r, ms, ttft, firstText, flow = r.flow, firstReasoning = r.firstReasoning, reasoningHidden = r.reasoningHidden) {
-    if (reasoningHidden && !(firstText > 0)) return null;
-    const think = reasoningOf(r), visible = think > 0 && !(firstText > 0) && firstReasoning >= ttft && flow > 0 && think <= r.out;
-    const n = think > 0 && !visible ? r.out - think : r.out, from = visible ? firstReasoning : think > 0 ? firstText : ttft;
-    const w = ms - from;
-    if (!(n > 0 && ttft > 0 && from > 0 && w >= 100 && n * 1000 <= 10000 * w)) return null;
-    if (flow > 0 && flow * 4 < w) return null;
-    if (w < 1000 && from > 4 * w) return null;
-    if (think > 0 && firstText > 0 && n * (firstText - ttft) > 20 * think * w) return null;
+    if (reasoningHidden && !(firstText > 0) && !(firstReasoning > 0)) return null;
+    if (!(ttft > 0)) return null;
+    const think = reasoningOf(r) > 0 ? reasoningOf(r) : 0, fr = firstReasoning > 0 ? firstReasoning : 0, ft = firstText > 0 ? firstText : 0;
+    const from = think && ft ? ft : ttft, tail = ms - from;
+    let n = r.out, start = ttft;
+    if (think && !fr) {
+      if (!ft) return null;
+      n = r.out - think, start = ft;
+    } else if (think > r.out) return null;
+    else if (fr && fr < ttft) start = fr;
+    const w = ms - start;
+    if (!(n > 0 && w >= 100 && n * 1000 <= 10000 * w)) return null;
+    if (flow > 0 && flow * 4 < tail) return null;
+    if (w < 1000 && start > 4 * w) return null;
+    if (think && ft && (r.out - think) * (ft - ttft) > 20 * think * tail) return null;
     return { n, w };
   }
   const reasoningOf = (r) => r.reasoning ?? (r.usage?.length ? r.usage[r.usage.length - 1].reasoning || 0 : 0);
@@ -702,9 +711,9 @@ function routingPage(part) {
       ttft: ["ttft", "First token", r.done && r.ttft ? took(r.ttft) : "—", t("First token")],
       tokens: ["tokens", "Tokens", r.tokens ? tokens(r.tokens) : "—", tokenBreakdown([r])],
       cache: ["cache-hit", "Cache", prompt ? hitPct(read / prompt) : "—",
-        t("Cache hit rate") + ": " + t("The share of the prompt read from the cache")],
+        tipLines(hitTip(read, prompt), t("Cache hit rate") + ": " + t("The share of the prompt read from the cache"))],
       speed: ["speed", "Speed", speed ? speed.text : "—", speed?.title ||
-        t("Output tokens a second after the first, over the streamed replies") + ". " + t("A reply that reasoned counts only its answer, from its first text: the reasoning was written before the stream showed it") + ". " + t("No answer text: speed includes reasoning only when visible reasoning streamed; hidden reasoning has no speed")],
+        t("All output tokens the vendor counted, reasoning and tool calls included, a second from the first output to the end, over the streamed replies") + ". " + t("A reply that reasoned with no sign in its stream of when counts only its answer, from its first text")],
       cost: ["cost", "Cost", routeCost(r), [r.priced ? costNote() : routeCredits([r]) ? "" : t("No known price or token counts for this request"), routeCredits([r]) ? creditsNote() : ""].filter(Boolean).join("\n")],
     };
     return visibleMetrics.map((key) => values[key]).filter((metric) => metric[2] !== "—");
@@ -778,7 +787,7 @@ function routingPage(part) {
     drain: ["Until used up", "Until used up: one answers everything until its quota is used up; then the next, which keeps them even after the one before renews."],
     // the unit that goes round is the user's message (Wing8Aqua on X)
     rotate: ["In turn", "In turn: each message you send goes to the next account, round the list; the agent's tool calls for it stay on the same one. With Stays on Session, a whole conversation stays on one instead."],
-    usage: ["Least used", "Least used first: the account with the most of its allowance left goes first; a key by the tokens magpie sent it lately."],
+    usage: ["Least used first", "Least used first: the account with the most of its allowance left goes first; a key by the tokens magpie sent it lately."],
     pace: ["Use before expiry", "Use before expiry: the account with the most left per hour until it is lost goes first — at its reset, or, when credits in it expire sooner, by those that expire first; an account with five hours and no week by what its five hours have left per hour. One at 90% or more waits until the others can't answer; a key by the tokens magpie sent it lately."],
     manual: ["Manual", "Manual: every request goes to the model picked on the group's card, over its own accounts or keys."],
     // a provider's keys or a subscription's accounts by weight (#841,
@@ -816,10 +825,21 @@ function routingPage(part) {
   // a script's key read "Python-urllib"). srcOf is the stage's node for
   // it: each key's its own, two keys' scripts saying one User-Agent too.
   // Never the key's secret: a route carries its id and name alone.
+  // An agent magpie knows keeps its name beside the key's, as Usage's
+  // rows read ("DimCode · Server"): DimCode calling a Docker magpie by a
+  // key named "Magpie" read as that alone (Yayoi_no_yume on X).
   function callerName(r) {
     const k = r.callerKey && (callerKeys.find((x) => x.id === r.callerKey)?.name || r.callerKeyName);
-    return k || agentName(r.agent);
+    if (!k) return agentName(r.agent);
+    const ag = agentOf(r.agent);
+    return ag?.name && ag.name !== k ? `${ag.name} · ${k}` : k;
   }
+  // callerLines head a caller's tooltip: its name, then its agent's when
+  // the name doesn't say it already
+  const callerLines = (r) => {
+    const c = callerName(r), a = agentName(r.agent);
+    return c === a || c.startsWith(a + " · ") ? [c] : [c, a];
+  };
   const srcOf = (r) => r.callerKey ? r.agent + "\u0001" + r.callerKey : r.agent;
   // userShown is an account of provider as the user named it in magpie
   // (provider.AccountNames, #1515), else as its plugin's usage names it
@@ -1588,6 +1608,8 @@ function routingPage(part) {
         const b = el("b"), m = value && /^([\d.,]+) (\S.*)$/.exec(value);
         if (m) b.append(m[1], el("small", "", " " + m[2]));
         else b.textContent = value || "—";
+        // a hit rate's exact share on hover
+        if (value && label === "Cache") f.title = hitTip(read, prompt);
         f.append(b, el("span", "", t(label)));
         box.append(f);
       }
@@ -2919,7 +2941,7 @@ function routingPage(part) {
       const fs = foldersOf([...new Set([...going, ...rs.filter((x) => srcOf(x) === id)])].sort((x, y) => x.id - y.id));
       // told again every second (countdown): only what changed is written
       setText(a.sub, fs.length > 1 ? fs.map(lastLevel).join(", ") : r.model);
-      const tip = [...new Set([callerName(r), agentName(r.agent)]), r.model, ...fs.map((f) => t("Folder") + ": " + f)].join("\n");
+      const tip = [...callerLines(r), r.model, ...fs.map((f) => t("Folder") + ": " + f)].join("\n");
       if (a.node.title !== tip) a.node.title = tip;
     }
     // the account sets, the latest of each
@@ -4448,9 +4470,9 @@ function routingPage(part) {
       const meta = [count];
       const coverage = (n) => t("Based on {n} of {total} completed requests", { n, total: total.completed });
       if (g.key && visibleMetrics.includes("cache") && total.prompt) meta.push(metricElement(["cache-hit", "Avg. cache", hitPct(total.read / total.prompt),
-        t("Total cache reads divided by total prompt tokens; larger prompts carry more weight") + "\n" + coverage(total.cached)]));
+        tipLines(hitTip(total.read, total.prompt), t("Total cache reads divided by total prompt tokens; larger prompts carry more weight"), coverage(total.cached))]));
       if (g.key && visibleMetrics.includes("speed") && total.decodeMs) meta.push(metricElement(["speed", "Avg. speed", t("{n} tok/s", { n: Math.round(total.decodeOut * 1000 / total.decodeMs) }),
-        tipLines(t("Total output tokens divided by the time from each reply's first token to its end; the wait for the first token, and replies without usable timing, are left out") + ". " + t("A reply that reasoned counts only its answer, from its first text: the reasoning was written before the stream showed it") + ". " + t("No answer text: speed includes reasoning only when visible reasoning streamed; hidden reasoning has no speed"),
+        tipLines(t("Total output tokens divided by the time from each reply's first token to its end; the wait for the first token, and replies without usable timing, are left out") + ". " + t("Reasoning and tool calls count too, from the first output; a reply that reasoned with no sign in its stream of when counts only its answer, from its first text"),
           total.wholeMs ? t("Over each request's whole time, the wait for the first token and the reasoning counted: {n} tok/s", { n: Math.round(total.wholeOut * 1000 / total.wholeMs) }) : "", coverage(total.timed))]));
       const metaSig = JSON.stringify([bits, tokenHelp, meta.map((e) => [e.textContent, e.title])]);
       if (x.meta.dataset.sig !== metaSig) { x.meta.replaceChildren(...meta); x.meta.dataset.sig = metaSig; }
@@ -6331,7 +6353,7 @@ function routingPage(part) {
   };
   window.routingGroupsHome();
   if (gHome()) byWidth(gHome(), { max520: (w) => w <= 520 });
-  const ROUTE_OPTS = [["", "Smart"], ["order", "In order"], ["drain", "Until used up"], ["rotate", "In turn"], ["usage", "Least used"], ["pace", "Use before expiry"], ["free", "Free first"], ["fast", "Speed first"]];
+  const ROUTE_OPTS = [["", "Smart"], ["order", "In order"], ["drain", "Until used up"], ["rotate", "In turn"], ["usage", "Least used first"], ["pace", "Use before expiry"], ["free", "Free first"], ["fast", "Speed first"]];
   // a group may also be routed by hand: every request to the member the
   // user picks on its card (provider.Manual, #317) — a provider's keys can't
   // and by its members' weights, as a provider's keys are (#1910)
@@ -8458,7 +8480,7 @@ function routingPage(part) {
     const ctxHint = el("div", "hint"), ctxW = el("div", "ctx-wrap");
     const ctxIn = keys(input(d.context > 0 ? ctxShort(d.context).toLowerCase() : "", t("e.g. 200k")));
     ctxIn.classList.add("ctx-in");
-    ctxIn.setAttribute("aria-label", t("Context"));
+    ctxIn.setAttribute("aria-label", t("Context window"));
     ctxHint.id = "groupContextHint";
     ctxIn.setAttribute("aria-describedby", ctxHint.id);
     const ctxOf = (id) => groups.models.find((x) => x.id === id)?.context || infoOf(id)?.context || 0;
@@ -8496,21 +8518,30 @@ function routingPage(part) {
       if (n > 0) d.context = n;
       drawCtx();
     };
-    advIn.append(el("label", "", t("Context")), ctxW);
+    advIn.append(el("label", "", t("Context window")), ctxW);
     drawCtx();
     // where agents compact in this group (NovaStudiosss on X): the size
     // here, else the smallest member's, as a provider's model sets it
     const cmpIn = keys(input(d.compact > 0 ? ctxShort(d.compact).toLowerCase() : "", t("Default")));
     cmpIn.classList.add("cmp-in");
     cmpIn.setAttribute("aria-label", t("Compact at"));
+    const cmpHint = el("div", "hint"), cmpW = el("div");
+    cmpHint.id = "groupCompactHint";
+    cmpHint.hidden = true;
+    cmpIn.setAttribute("aria-describedby", cmpHint.id);
+    let cmpErr = "";
     cmpIn.oninput = () => {
       const v = cmpIn.value.trim().toLowerCase().replace(/_/g, ""), m = v.match(/^(\d+(?:\.\d+)?)\s*([km]?)$/);
       const n = m ? Math.round(+m[1] * (m[2] === "k" ? 1e3 : m[2] === "m" ? 1e6 : 1)) : 0;
-      cmpIn.setAttribute("aria-invalid", String(!!v && !(n > 0)));
+      cmpErr = !v || n > 0 ? "" : t("{v} is not a length of tokens like 200k or 1m", { v: cmpIn.value.trim() });
+      cmpIn.setAttribute("aria-invalid", String(!!cmpErr));
+      cmpHint.textContent = cmpErr;
+      cmpHint.hidden = !cmpErr;
       if (!v) d.compact = 0;
       else if (n > 0) d.compact = n;
     };
-    advIn.append(el("label", "", t("Compact at")), cmpIn);
+    cmpW.append(cmpIn, cmpHint);
+    advIn.append(el("label", "", t("Compact at")), cmpW);
     const aHint = el("div", "hint", t(AFF_HINT[d.affinity] || AFF_HINT[""]));
     const aw = el("div");
     aw.append(segs(AFF_OPTS.map(([id, n]) => [id, t(n)]), d.affinity, (v) => { d.affinity = v; aHint.textContent = t(AFF_HINT[v] || AFF_HINT[""]); drawFig(); }), aHint);
@@ -9345,6 +9376,9 @@ function routingPage(part) {
     const saveBtn = el("button", "text primary", t(g ? "Save" : "Add"));
     const save = () => {
       if (addPattern() === null) return adv.open = true, pin.focus({ preventScroll: true }); // typed, not added: it is meant
+      // a box under Advanced that doesn't read keeps its last good value: never saved as if it did
+      const bad = [[firstErr, firstIn], [ctxErr, ctxIn], [cmpErr, cmpIn]].find(([e]) => e);
+      if (bad) { adv.open = true; bad[1].focus({ preventScroll: true }); return status(bad[0], "warn"); }
       if (!d.members.length && !d.match.length) { addBtn.focus({ preventScroll: true }); return status(t("A group needs a model in it"), "warn"); }
       d.rules.forEach((r) => { r.intent = (r.intent || "").trim(); });
       // hours: both times, or none and no days; days alone are all day
@@ -9601,7 +9635,7 @@ function routingPage(part) {
       n.node.style.setProperty("--agent", hueOf(id));
       n.wire.style.setProperty("--agent", hueOf(id));
       n.node.replaceChildren(icon(ag?.icon || "generic"), el("span", "ps-name", callerName(r)));
-      n.node.title = [...new Set([callerName(r), agentName(r.agent)]), ...foldersOf(recent.filter((x) => srcOf(x) === id).slice(0, 20).reverse()).map((f) => t("Folder") + ": " + f)].join("\n");
+      n.node.title = [...callerLines(r), ...foldersOf(recent.filter((x) => srcOf(x) === id).slice(0, 20).reverse()).map((f) => t("Folder") + ": " + f)].join("\n");
       return n.node;
     }));
     pTo.replaceChildren(...pDst.map((k) => {

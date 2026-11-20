@@ -19,6 +19,7 @@ const MAX_SOURCE_REF_BYTES: usize = 8 * 1024;
 static LEDGER_LOCK: Mutex<()> = Mutex::new(());
 static ROOT_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
+#[cfg(test)]
 pub fn set_root_override_for_tests(path: Option<PathBuf>) {
     if let Ok(mut slot) = ROOT_OVERRIDE.lock() {
         *slot = path;
@@ -179,6 +180,9 @@ impl Default for CommitmentLedger {
     }
 }
 
+// 生命周期 facade 全套（due/open/complete/cancel/expire…）尚未接线；
+// 接上消费点后删除本属性（惯例同 credentials.rs）。
+#[allow(dead_code)]
 impl CommitmentLedger {
     pub fn new() -> Self {
         Self::default()
@@ -492,6 +496,7 @@ fn save_unlocked(ledger: &CommitmentLedger) -> Result<(), String> {
     crate::storage::write_atomic(&path, &body)
 }
 
+#[allow(dead_code)]
 pub fn save(ledger: &CommitmentLedger) -> Result<(), String> {
     let _guard = LEDGER_LOCK
         .lock()
@@ -515,10 +520,12 @@ pub fn due(now: u64) -> Vec<Commitment> {
     load().due(now)
 }
 
+#[allow(dead_code)]
 pub fn due_for_staff(staff_id: &str, now: u64) -> Vec<Commitment> {
     load().due_for_staff(staff_id, now)
 }
 
+#[allow(dead_code)]
 pub fn open() -> Vec<Commitment> {
     load().open()
 }
@@ -531,14 +538,17 @@ pub fn mark_due(now: u64) -> Result<Vec<Commitment>, String> {
     with_ledger(|ledger| Ok(ledger.mark_due(now)))
 }
 
+#[allow(dead_code)]
 pub fn complete(commitment_id: &str, now: u64) -> Result<Commitment, String> {
     with_ledger(|ledger| ledger.complete(commitment_id, now))
 }
 
+#[allow(dead_code)]
 pub fn cancel(commitment_id: &str, now: u64) -> Result<Commitment, String> {
     with_ledger(|ledger| ledger.cancel(commitment_id, now))
 }
 
+#[allow(dead_code)]
 pub fn expire(commitment_id: &str, now: u64) -> Result<Commitment, String> {
     with_ledger(|ledger| ledger.expire(commitment_id, now))
 }

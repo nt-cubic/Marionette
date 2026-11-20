@@ -5,8 +5,8 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
 
 ## 常用命令
 
-- 启动开发版：`npm run tauri dev`（或 `start-marionette.bat`）
-- 构建便携版：`tools\build-portable.bat`（内置引擎，产物 `release\<版本号>\Marionette.exe`，按版本分目录，运行中的旧版不会挡住新构建。**同版本号在跑时** canonical 被锁 → 自动降级写成 `release\<版本号>\Marionette (N).exe` 并算成功，`current-build.txt`/快捷方式不动（发布只认 canonical `Marionette.exe`，别拿 `(N)` 去发））。默认会先 `import-magpie.ps1` 拉上游 latest 稳定版进 `third_party/magpie`（`SKIP_MAGPIE_IMPORT=1` 跳过；`MAGPIE_TAG=v…` 钉版本）。用户侧也可在「模型共享」里单独更新 magpie。发布：`tools\publish-release.bat`（会把根目录 `install.ps1` 一并作为 Release 资产上传）
+- 启动开发版：`npm run tauri dev`（或 `start-marionette.bat`；默认 `engine-rust` 进程内引擎）
+- 构建便携版：`tools\build-portable.bat`（默认 `engine-rust`，产物 `release\<版本号>\Marionette.exe`，按版本分目录，运行中的旧版不会挡住新构建。**同版本号在跑时** canonical 被锁 → 自动降级写成 `release\<版本号>\Marionette (N).exe` 并算成功，`current-build.txt`/快捷方式不动（发布只认 canonical `Marionette.exe`，别拿 `(N)` 去发））。一个发布周期的回退：`MARIONETTE_ENGINE=magpie` 构建 embedded magpie；此时才走 `import-magpie.ps1`/`SKIP_MAGPIE_IMPORT=1`/`MAGPIE_TAG=v…`。发布：`tools\publish-release.bat`（会把根目录 `install.ps1` 一并作为 Release 资产上传）
 - 安装成正式应用：仓库根 `install.ps1` 是最终用户的一行版（`irm https://github.com/nt-cubic/Marionette/releases/latest/download/install.ps1 | iex`：从 Release 下 exe → `%LOCALAPPDATA%\Programs\Marionette` + 开始菜单快捷方式 + 用户 PATH，免管理员，重跑即升级，`-Uninstall` 卸载）；本地开发装法用 `tools\install-app.ps1`（拷 `release\current-build.txt` 指向的产物，两份逻辑保持同步）
 - 前端构建：`npm run build`（`tsc && vite build`）
 - Rust 检查：`cargo check`（在 `src-tauri/` 下）
@@ -176,10 +176,12 @@ Marionette 是一个 Windows 本地多 Agent CLI 图形壳（Tauri 2 + React + A
 标签行隐藏、body min-width 放开）。分屏在 dock 态禁用（提示解除贴边），整页在收回时自动关。
 **普通窗口的收纳盒是标签页不是全屏覆盖**（2026-10-25 改）：入口仍在左侧栏「聊天」栏目正上方
 （`ProjectShelf.tsx` 的 `.shelf-memo-entry`），点开后 `SessionTabs` 尾部出现一枚 `is-memo`
-伪标签（App 的 `memoOpen`=标签存在 / `memoActive`=选中；`SessionTabs` 的 `memoTab` prop），
-中栏只切换对话流那一列（`App.tsx` 的 `.memo-tab-page` 覆盖 `renderConversation`/SplitWorkspace，
+伪标签（标签存在于 `PaneLeaf.tabIds`，`memoActive` 从聚焦窗格的 `activeTabId` 派生；
+`SessionTabs` 的 `memoTab` prop），单格中栏只切换对话流那一列（`App.tsx` 的
+`.memo-tab-page` 覆盖 `renderConversation`，标题栏仍是正常标签栏，
 无 composer 行；左右侧栏照常可见）。选中收纳盒时对话标签去掉 `is-active`（当前会话 id 仍记着，点回去即切回）；选中任一对话标签只取消收纳盒选中（标签保留），× 或 Esc 才关标签；
-分屏态伪标签渲染在 titlebar 的 fill 前，页面同样覆盖整个中栏。`MemoBox` 组件不再有 `showClose`
+只有真实多格才进入每格独立标签栏；收纳盒标签只出现在拥有它的那个窗格里。
+`MemoBox` 组件不再有 `showClose`
 （标题与关闭都在挂载点的铬里：贴边窄条的返回 / 普通窗口的标签 ×）。
 聊天内容上方不放收纳盒或「能力与上下文」工具栏，分屏也不重复添加入口。
 `.center-workspace` 与 `.session-pane__body` 都是「对话 1fr | composer auto」两行；
@@ -242,7 +244,8 @@ thought / tool / command / search 等泳道与时间条），**下方默认关�
 
 MarkdownBody 之上的懒加载富文本（公式/代码高亮/流程图/生成式卡片）。库件在 `5adf569` 入库、本次接线；改前先过这几条：
 
-- **分流顺序**：`MarkdownBody` 先跑 `richMarkdown.ts::scanRichFeatures`（纯字符串扫描，围栏状态机与 micromark 同口径——info string 按**首 token** 小写比对）→ `mathPack.ts::useMathPack` 懒载 remark-math + rehype-katex（`singleDollarTextMath:false`，单 `$` 恒字面）→ `MdPre` 按 code 子元素 className 的语言路由：`mermaid` → `MdMermaid`、`spec` → `SpecCard`、其余 → `MdCodeBlock`（shiki 200ms 防抖 + 120 块缓存，虚拟列表重挂载不重高亮）。
+- **分流顺序**：`MarkdownBody` 先跑 `richMarkdown.ts::scanRichFeatures`（纯字符串扫描，围栏状态机与 micromark 同口径——info string 按**首 token** 小写比对；围栏外的守卫式 `$x^2$` 候选（`inlineDollarMath.ts::hasInlineDollarMathCandidate`）也算数学提示，裸 `$` 金额仍不算）→ `mathPack.ts::useMathPack` 懒载 remark-math + rehype-katex（`singleDollarTextMath:false`，裸 `$` 恒字面）→ `MdPre` 按 code 子元素 className 的语言路由：`mermaid` → `MdMermaid`、`spec` → `SpecCard`、其余 → `MdCodeBlock`（shiki 200ms 防抖 + 120 块缓存，虚拟列表重挂载不重高亮）。
+- **守卫式单美元行内公式（2026-11-09，移植 codeg inline-dollar-math）**：`inlineDollarMath.ts::normalizeInlineDollarMath` 在 `normalizeMathDelimiters` **之后**跑——紧贴、同行、像 TeX 的 `$…$`（`$x^2$`、`$E=mc^2$`、`$f(x)$`、纯字母符号）重写成 `$$…$$` 行内；货币对（`$5 to $10`）、shell 展开（`$HOME`/`${…}`/`$(…)`）、代码/行内代码/原始 HTML（mdast 按位屏蔽，含流式未闭围栏）、display 围栏内部、读不懂的一律保持字面。改守卫条件 = 先跑 `verify-inline-dollar.mts`（57 项，两个字面场景是刻意保护面）。
 - **math 归一化别动围栏内**：`normalizeMathDelimiters` 只在围栏外做两件事——`\[..\]`→`$$..$$`，**整行只有一对 `$$..$$`**（body 无 `$`）的转成多行 block 形式。后者是因为 micromark 的 math **flow**（display）要求 `$$` 后接行尾，单行 `$$E=mc^2$$` 原本只解析成段落内 text math（inline）。prose 里嵌着的 `$$..$$` 保持 inline。先跑 `prepareMarkdownForRender` 再归一化（修好围栏才判得准）。
 - **hooks 顺序红线**：`MarkdownBody` 的 hooks（scan/useMemo/useMathPack）必须在 `if (!text) return null` **之前**——text 在空/非空间翻转时早退会打断 hook 链。
 - **spec 卡片（生成式 UI）**：`SpecCard.tsx` 渲染 `specSchema.ts` 校验过的 card/table/steps/chart；chart 是零依赖手绘（bar=flex 条、line=SVG polyline、pie=stroke-dasharray 圆环），系列色走 `.md-spec__series-N` 自定义属性（主题 token 派生，深浅主题免费）。actions 按钮**只派发** `SPEC_ACTION_EVENT`（`marionette:spec-action`，detail=prompt 字符串），`App.tsx` 监听后 `prefillComposer`（只预填不自动发）。解析三道防护（JSON 容错/原型污染+深度/形状+尺寸上限）+ React 错误边界兜渲染异常；流式未完 JSON 安静显示「等待数据完整」+ 源码。
@@ -473,6 +476,27 @@ icacls D:\Apps\Marionette /setintegritylevel (OI)(CI)Medium
 **产品侧兜底（已加）：** 启动时 `app_paths::ensure_global_dir_writable()` 会写探测文件，失败则走
 `data_dir_gate::prompt_and_exit()` 弹原生对话框并 `exit(1)`，不再出现「静默 exit(0)」；
 单实例锁只有真被占用（Windows 32/33 共享冲突）才交接，权限类错误会记一条 `[shell] warn` 后照常启动。
+
+## Google Antigravity agent（2026-11-19，M0–M3 落地）
+
+现行行为见 `docs/CURRENT.md`「Google Antigravity agent」；事实与实测在
+`docs/research/research-antigravity.md`，方案与偏差在 `docs/plans/plan-antigravity.md`。改前先记红线：
+
+- **scratch 重定向是生存条件且只对此 agent**：Windows 构建是 PyInstaller onefile，
+  每次启动往 %TEMP% 解压 ~100MB、杀树不清——spawn 时 TMP/TEMP/TMPDIR 必须指向
+  `~/.marionette/scratch/antigravity/<sessionId>`，stop/EOF 树死回收。
+  **别把重定向扩到其它 agent**（借走 TMP 会污染用户 Git Bash 的 /tmp，codeg #1025）。
+- **探测路径永不执行 agy 二进制**：`--version` 也会整包解压（`installed_version` 的
+  `is_server_command` 守卫）；版本来自安装目录名，升级查 ACP registry + URL 模板校验。
+- **安装必须成对校验**：`agy_acp_server.exe` + `localharness_external.exe` 缺一不可
+  （"假成功"安装）；读侧缓存命中同样校验。**不加 zip crate**，解压走系统 tar.exe。
+- **GEMINI_HOME 指 `.gemini` 目录本身**（与 Gemini CLI 的 GEMINI_CLI_HOME 相反）；settings.json
+  同步单 key、strict JSON、fail-closed（server 认 Hjson，读不懂的一律不碰）。
+- **turn 边界走 prompt 响应**：不发 turn/complete 通知，但 session/prompt 响应带 stopReason+
+  usage——acp.rs 既有路径处理，**别给它接 agentReentry 兜底**（会多等 6 分钟）。
+- 回归：`cargo test --bin marionette antigravity`；真机 oracle（#[ignore]）：
+  `antigravity_oracle`（真库解析）/ `antigravity_backfill_oracle`（真库回填）/
+  `live_install_pin`（真网下载安装，测试自隔离 USERPROFILE）。
 
 ## 交付卡 / 每轮改动追踪（2026-10-23 修）
 
@@ -847,17 +871,17 @@ Marionette 前端失去响应（点新建对话、点关闭都没反应），Rus
   （标签筛选纯函数/拖拽契约/存盒入口）+ `npx tsx scripts/verify-split-workspace.mts`
   （tab 编解码/openSessionIds 过滤/纯 surface 树/恢复闸门）。
 
-## 浏览器 Workspace Surface（2026-11-17 P1–P4；2026-11-18 起为分屏树窗格标签）
+## 浏览器窗格标签（2026-11-17 P1–P4；2026-11-18 起为分屏树窗格标签）
 
 Browser / Document / Memo 不再有独立布局组件（`SurfaceWorkspace` 已删）：三者是
 分屏树里的窗格标签（`"browser"` / `"document:<路径>"` / `"memo"` 进 `PaneLeaf.tabIds`），
 点开默认在聚焦窗格内切标签，可拖拽分屏/上下分/跨窗格移动，与会话标签同一套管线。
 Dock 仍用整页浏览器，detached 会话窗不进入。改这块先记红线：
 
-- **状态模型**：`memoActive` / `browserActive` / `activeDocPath` 全部**从树派生**
+- **状态模型**：surface 的存在性与 `memoActive` / `browserActive` / `activeDocPath` 全部**从树派生**
   （聚焦窗格的 activeTabId 经 `splitTabKind` 判别），**不要重新引入平行的布尔
-  state**。`memoOpen` / `docTabs` / `browserTabs` 只管「标签存在性」（dirty 追踪、
-  徽标、标题）。`commitSplit` 焦点推送只认 session 种类（`focusedSessionTabIndex`），
+  state**。`memoOpen = openTabIds(tree).includes("memo")`；`docTabs` / `browserTabs`
+  只管标题、dirty 追踪和徽标。`commitSplit` 焦点推送只认 session 种类（`focusedSessionTabIndex`），
   surface 聚焦保持上一会话的 ACP 管道不动。
 - **标签生命周期**：Agent 可给 `browser_open_tab` 传稳定 `id`（小写 slug）；同名再次打开返回
   现有 tab。`pinned` / `chosenId` / claimed 用户 tab 不参加 idle cleanup；pinned 和 user-owned
@@ -866,11 +890,13 @@ Dock 仍用整页浏览器，detached 会话窗不进入。改这块先记红线
 - **只做内置开发浏览器**：Chrome/Edge 扩展、relay、配对、外部 MCP 浏览器连接和个人生活助手
   都不是 Marionette 范围。用户需要 Agent 使用自己的日常浏览器时自行安装 browse。产品里不加入
   “连接我的浏览器”假入口，也不探测或导入用户已安装的 browse relay/tab。底层 Agent 自己加载
-  全局 MCP 属于外部能力，不进入 SurfaceWorkspace，也不作为产品支持承诺。边界见
+  全局 MCP 属于外部能力，不进入 Browser 窗格标签，也不作为产品支持承诺。边界见
   plan-browser-scope.md。
 - **共同标签必须在原生 host 外**：顶部 Browser / Document / Memo 标签条是 DOM，
   BrowserPage 的 child WebView2 host 在它下方；不要把标签塞进 host 或让 native webview
-  覆盖标签。Browser 内部标签仍按后台 Rust 创建顺序稳定排序。
+  覆盖标签。拖任何标签时把 BrowserPage 的 `visible` 暂时置 false（child WebView 会盖住
+  DOM 幽灵/落点，也会抢 native hit test），放下或取消后恢复。Browser 内部标签仍按后台
+  Rust 创建顺序稳定排序。
 - **打开不是抢工作区授权**：`browser_open_tab` 默认 `background`，fresh tab 只有
   `display:"workspace"` 才激活 surface，而且只有用户明确要求查看/操作页面时才能传。
   Agent 自己起 localhost / dev server 不等于获得 workspace 权限，预览默认留后台。

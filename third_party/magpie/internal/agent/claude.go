@@ -373,7 +373,10 @@ const claudeReviewEnv = "CLAUDE_CODE_AUTO_MODE_SERVER"
 // (cybercaius on Discord). 2.1.304 and later turn it on there themselves;
 // "true" also keeps it on in a conversation begun without it, which
 // Claude Code otherwise holds off until it is compacted. The gateway
-// carries deferred tools to every upstream (#2660, anthropic_shapes.go).
+// carries deferred tools to Anthropic upstreams and loads them in place on
+// a Responses upstream that takes it (#2660); elsewhere it turns them away,
+// and Claude Code declares every tool for that conversation, so a load
+// doesn't cost the prompt cache (gateway/deferred_route.go).
 // One the user set is theirs.
 const claudeSearchEnv = "ENABLE_TOOL_SEARCH"
 
@@ -1085,7 +1088,9 @@ func claudeIn(at place) *Agent {
 		if n == 0 {
 			return dropCompact()
 		}
-		w := strconv.Itoa(n)
+		// Claude Code takes the variable as 1000000 at most
+		// (claudeCompactCap), and so it is written
+		w := strconv.Itoa(claudeCompactCap(n))
 		stash(map[string]string{compactKey: w})
 		if long {
 			stash(map[string]string{compactLongKey: "1"})
@@ -1423,7 +1428,7 @@ func claudeIn(at place) *Agent {
 			// the one for every model else, as the variable gave it: none
 			// on a Claude main model, which Anthropic runs to its own
 			if m, _ := tierAt(main); !claudeModel(strings.TrimSuffix(m, "[1m]")) && !provider.ClaudeGroup(strings.TrimSuffix(m, "[1m]")) {
-				def = s.Compact()
+				def = claudeCompactCap(s.Compact())
 			}
 		}
 		// the user's own top-level window is the one a model without an

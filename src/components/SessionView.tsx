@@ -40,6 +40,16 @@ import { newQuotePinId, type QuotePin } from "../lib/quoteComment";
 import { buildMessagePresentation } from "../lib/messagePresentation";
 import { buildTurnDeliveries, type TurnDeliveryUnit } from "../lib/turnDelivery";
 import { modeTone } from "../lib/modeTone";
+import {
+  isStaffChatSession,
+  isStaffDialogueEvent,
+  selectStaffChatEvents,
+  staffChatAwaitingReply,
+  staffChatIdentity,
+  staffMonogram,
+  type StaffChatEvent,
+  type StaffChatIdentity,
+} from "../lib/staffChat";
 import { diffTargetPath, isImagePath, isWorkspaceDiffPath, splitToolBody } from "../lib/toolBody";
 import {
   activityRunStartedMs,
@@ -102,6 +112,8 @@ type SessionViewProps = {
   agent: AgentConfig;
   events: SessionEvent[];
   session: Session;
+  /** People-first identity for origin="chief" employee conversations. */
+  staffIdentity?: StaffChatIdentity | null;
   /** Sticky auth / outdated-CLI warning for the active agent. */
   authBanner?: string | null;
   bannerKind?: "auth" | "upgrade";
@@ -1100,6 +1112,7 @@ export function SessionView({
   agent,
   events,
   session,
+  staffIdentity = null,
   authBanner = null,
   bannerKind = "auth",
   onSignIn,
@@ -1180,6 +1193,7 @@ export function SessionView({
             agent={agent}
             session={session}
             events={events}
+            staffIdentity={staffIdentity}
             authBanner={authBanner}
             bannerKind={bannerKind}
             onSignIn={onSignIn}
@@ -1834,10 +1848,143 @@ function ToolCallBody({
   );
 }
 
+function sameStaffChatRun(left: StaffChatEvent, right: StaffChatEvent): boolean {
+  if (!isStaffDialogueEvent(left) || !isStaffDialogueEvent(right)) return false;
+  if (left.type !== right.type) return false;
+  const leftAt = Date.parse(left.createdAt);
+  const rightAt = Date.parse(right.createdAt);
+  return !Number.isFinite(leftAt) || !Number.isFinite(rightAt) || Math.abs(rightAt - leftAt) <= 120_000;
+}
+
+function StaffChatMessage({
+  event,
+  index,
+  events,
+  staffName,
+  staffTitle,
+  scrollRootRef,
+}: {
+  event: SessionEvent;
+  index: number;
+  events: readonly StaffChatEvent[];
+  staffName: string;
+  staffTitle: string;
+  scrollRootRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  const t = useT();
+  const previous = index > 0 ? events[index - 1] : undefined;
+  const next = index + 1 < events.length ? events[index + 1] : undefined;
+  const groupedWithPrevious = Boolean(
+    previous && isStaffDialogueEvent(event) && sameStaffChatRun(previous, event),
+  );
+  const groupEndsHere = !next || !isStaffDialogueEvent(event) || !sameStaffChatRun(event, next);
+
+  if (event.type === "notice") {
+    const body = event.description.trim() || event.text.trim();
+    return (
+      <div
+        className={`staff-chat__system is-${event.severity}`}
+        role={event.severity === "error" ? "alert" : "status"}
+      >
+        {event.title.trim() && <strong>{event.title}</strong>}
+        {body && <span>{body}</span>}
+      </div>
+    );
+  }
+
+  if (
+    (event.type !== "user_message" && event.type !== "assistant_message") ||
+    !isStaffDialogueEvent(event)
+  ) {
+    return null;
+  }
+
+  const isUser = event.type === "user_message";
+  const rawBody = isUser ? stripForceWebSearchPrefix(event.text) : cleanAssistantText(event.text);
+  if (!rawBody.trim() && !(isUser && event.attachments?.length)) return null;
+
+  if (!isUser && isAssistantNotice(event.text)) {
+    return (
+      <div className="staff-chat__system is-info" role="status">
+        <span>{rawBody}</span>
+      </div>
+    );
+  }
+
+  let content: ReactNode = null;
+  if (!isUser && event.webReply) {
+    content = <WebReplyBody reply={event.webReply} text={event.text} />;
+  } else if (rawBody.trim()) {
+    content = <MarkdownBody text={rawBody} />;
+  }
+
+  return (
+    <article
+      className={`staff-chat__row${isUser ? " is-user" : " is-staff"}${groupedWithPrevious ? " is-grouped" : ""}`}
+      aria-label={
+        isUser
+          ? undefined
+          : t("staff.chatMessageFrom", { name: staffName })
+      }
+    >
+      {!isUser &&
+        (groupedWithPrevious ? (
+          <span className="staff-chat__avatar-spacer" aria-hidden />
+        ) : (
+          <span className="staff-chat__avatar" aria-hidden>
+            {staffMonogram(staffName)}
+          </span>
+        ))}
+      <div className="staff-chat__message">
+        {!isUser && !groupedWithPrevious && (
+          <header className="staff-chat__identity">
+            <strong>{staffName}</strong>
+            {staffTitle && <span>{staffTitle}</span>}
+          </header>
+        )}
+        <div className="staff-chat__bubble" {...(!isUser ? { "data-message-id": event.messageId } : {})}>
+          {isUser && event.attachments && event.attachments.length > 0 && (
+            <UserImageCard attachments={event.attachments} scrollRootRef={scrollRootRef} />
+          )}
+          {content && (isUser ? <ExpandableBody>{content}</ExpandableBody> : content)}
+        </div>
+        {groupEndsHere && (
+          <footer className="staff-chat__meta">
+            <MessageTimestamp createdAt={event.createdAt} />
+            {!isUser && rawBody.trim() && <CopyReplyButton text={rawBody} />}
+          </footer>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function StaffTypingIndicator({
+  staffName,
+}: {
+  staffName: string;
+}) {
+  const t = useT();
+  return (
+    <div className="staff-chat__row is-staff staff-chat__typing" role="status" aria-live="polite">
+      <span className="staff-chat__avatar" aria-hidden>
+        {staffMonogram(staffName)}
+      </span>
+      <div className="staff-chat__typing-bubble">
+        <span>{t("staff.chatTyping", { name: staffName })}</span>
+        <i aria-hidden />
+        <i aria-hidden />
+        <i aria-hidden />
+      </div>
+    </div>
+  );
+}
+
 function CleanPlaceholder({
   agent,
   session,
   events,
+  staffIdentity = null,
   authBanner = null,
   bannerKind = "auth",
   onSignIn,
@@ -1869,6 +2016,7 @@ function CleanPlaceholder({
   agent: AgentConfig;
   session: Session;
   events: SessionEvent[];
+  staffIdentity?: StaffChatIdentity | null;
   authBanner?: string | null;
   bannerKind?: "auth" | "upgrade";
   onSignIn?: () => void | Promise<void>;
@@ -1966,6 +2114,10 @@ function CleanPlaceholder({
     liveRunningRef.current = isRunning;
   }, [isRunning, selectionLocked]);
   const viewRunning = selectionLocked ? liveRunningRef.current : isRunning;
+  const staffChat = isStaffChatSession(session);
+  const resolvedStaff = staffIdentity ?? staffChatIdentity(session.label, agent.label);
+  const staffName = resolvedStaff.name;
+  const staffTitle = resolvedStaff.title;
 
   // Workspace file changes already live in the right-side Changed Files panel.
   // Keep them in the transcript/history data, but do not create an empty
@@ -1974,9 +2126,14 @@ function CleanPlaceholder({
     () => displayEvents.filter((event) => event.type !== "file_change"),
     [displayEvents],
   );
-  const presentationItems = useMemo(
-    () => buildMessagePresentation(visibleEvents, session.id),
+  const staffChatEvents = useMemo(
+    () => selectStaffChatEvents(visibleEvents, session.id),
     [session.id, visibleEvents],
+  );
+  const staffConversationEvents = staffChat ? staffChatEvents : visibleEvents;
+  const presentationItems = useMemo(
+    () => buildMessagePresentation(staffConversationEvents, session.id),
+    [session.id, staffConversationEvents],
   );
   /**
    * Flat render units (reply parts expanded). Consecutive thought+tool runs
@@ -2005,6 +2162,9 @@ function CleanPlaceholder({
         });
       }
     }
+    // Employee chat is a people-facing message stream. Technical traces stay
+    // in the raw transcript and the worker session, never in this rail.
+    if (staffChat) return flat as TranscriptUnit[];
     const clustered: TranscriptUnit[] = clusterActivityRuns(flat);
     const deliveries = buildTurnDeliveries(displayEvents, session.id, session.cwd, viewRunning);
     if (deliveries.length === 0) return clustered;
@@ -2022,7 +2182,15 @@ function CleanPlaceholder({
     }
     pushDue(Number.MAX_SAFE_INTEGER);
     return merged;
-  }, [presentationItems, displayEvents, session.id, session.cwd, viewRunning, visibleEvents]);
+  }, [
+    presentationItems,
+    displayEvents,
+    session.id,
+    session.cwd,
+    staffChat,
+    viewRunning,
+    visibleEvents,
+  ]);
   /**
    * Virtual window for long rails only. Short chats stay fully mounted (simpler
    * selection / stick-to-bottom). Threshold matches heavy tool-heavy sessions
@@ -2062,8 +2230,8 @@ function CleanPlaceholder({
   const [locateKey, setLocateKey] = useState<string | null>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
   const findMatches = useMemo(
-    () => findConversationMatches(displayEvents, findQuery),
-    [displayEvents, findQuery],
+    () => findConversationMatches(staffConversationEvents, findQuery),
+    [findQuery, staffConversationEvents],
   );
 
   const jumpToFindHit = useCallback(
@@ -2177,11 +2345,15 @@ function CleanPlaceholder({
 
   // After send: last card is still You → show ghost "Waiting for agent…"
   const lastVisible = visibleEvents[visibleEvents.length - 1];
+  const lastConversationEvent =
+    staffConversationEvents[staffConversationEvents.length - 1];
   const awaitingFirstChunk =
     isRunning &&
-    (!lastVisible ||
-      lastVisible.type === "user_message" ||
-      lastVisible.type === "handoff_prepared");
+    (staffChat
+      ? staffChatAwaitingReply(staffChatEvents, true)
+      : !lastVisible ||
+        lastVisible.type === "user_message" ||
+        lastVisible.type === "handoff_prepared");
 
   // StallBanner owns its own clock so transcript cards are not re-rendered every
   // 2s (that rebuild wiped browser text selection). Tool stall styling uses
@@ -2232,16 +2404,25 @@ function CleanPlaceholder({
   }, [visibleEvents]);
   const midTurn = isRunning && !awaitingFirstChunk;
   // Mount banner only while a turn is live; it returns null when healthy mid-turn.
-  const showStallBanner = isRunning;
+  const showStallBanner = isRunning && !staffChat;
 
   // Content fingerprint — only real transcript changes should pin-scroll (never a clock tick / health).
   const scrollKey = useMemo(() => {
-    const last = visibleEvents[visibleEvents.length - 1];
+    const last = staffChat ? lastConversationEvent : lastVisible;
     const lastSig = last
       ? `${last.type}:${last.createdAt}:${"text" in last ? String(last.text).length : ""}:${"status" in last ? last.status : ""}`
       : "empty";
-    return `${session.id}|c|${visibleEvents.length}|${lastSig}|wait:${awaitingFirstChunk}`;
-  }, [session.id, visibleEvents, awaitingFirstChunk]);
+    const count = staffChat ? staffConversationEvents.length : visibleEvents.length;
+    return `${session.id}|c|${count}|${lastSig}|wait:${awaitingFirstChunk}`;
+  }, [
+    awaitingFirstChunk,
+    lastConversationEvent,
+    lastVisible,
+    session.id,
+    staffChat,
+    staffConversationEvents.length,
+    visibleEvents.length,
+  ]);
 
   const prevAwaitingRef = useRef(false);
   const awaitingRef = useRef(awaitingFirstChunk);
@@ -2505,7 +2686,8 @@ function CleanPlaceholder({
     const onLocate = (ev: Event) => {
       const detail = (ev as CustomEvent<{ sessionId?: string; ref?: SeenImageRef }>).detail;
       if (!detail?.ref || detail.sessionId !== session.id) return;
-      const eventIndex = findSeenEventIndex(visibleEvents, detail.ref);
+      const locateEvents = staffChat ? staffConversationEvents : visibleEvents;
+      const eventIndex = findSeenEventIndex(locateEvents, detail.ref);
       if (eventIndex < 0) {
         showToast({ text: t("seenImages.locateMissing"), tone: "info" });
         return;
@@ -2540,12 +2722,22 @@ function CleanPlaceholder({
     };
     window.addEventListener("marionette-locate-seen", onLocate);
     return () => window.removeEventListener("marionette-locate-seen", onLocate);
-  }, [visibleEvents, renderUnits, session.id, t, useVirtual, virtual.offsetOf, writeStick]);
+  }, [
+    renderUnits,
+    session.id,
+    staffChat,
+    staffConversationEvents,
+    t,
+    useVirtual,
+    virtual.offsetOf,
+    visibleEvents,
+    writeStick,
+  ]);
 
   return (
     // Relative paths in agent text resolve against this dialog's project root.
     <LinkCwdContext.Provider value={session.cwd || null}>
-    <div className="clean-surface">
+    <div className={staffChat ? "clean-surface clean-surface--staff-chat" : "clean-surface"}>
       {agent.id === "web-chatgpt" && (
       <div className="clean-surface__tools">
           <label className="web-reply-width-control" title={t("session.webReplyWidthTitle", { n: webReplyWidthPercent })}>
@@ -2629,7 +2821,7 @@ function CleanPlaceholder({
           </button>
         </div>
       )}
-      {!atBottom && visibleEvents.length > 0 && (
+      {!atBottom && staffConversationEvents.length > 0 && (
         <button
           type="button"
           className="scroll-to-bottom"
@@ -2643,13 +2835,13 @@ function CleanPlaceholder({
       )}
       <div
         ref={listRef}
-        className={`event-list${isLongTranscript ? " is-long" : ""} scrollbar-hidden`}
+        className={`event-list${isLongTranscript ? " is-long" : ""}${staffChat ? " event-list--staff-chat" : ""} scrollbar-hidden`}
         onScroll={onListScroll}
         onWheel={onListWheelUp}
       >
         {/* Quote UI is isolated so its setState does not re-render cards (keeps selection).
             key=session.id remounts overlay state (评论 button / draft) per dialog. */}
-        {onQuotePinsChange && (
+        {!staffChat && onQuotePinsChange && (
           <QuoteOverlay
             key={session.id}
             sessionId={session.id}
@@ -2660,21 +2852,25 @@ function CleanPlaceholder({
         )}
         {/* No connect card here on purpose: warming shows as a floating pill on
             the composer, so the transcript never reflows while reconnecting. */}
-        {visibleEvents.length === 0 && (
+        {(staffChat ? staffConversationEvents.length === 0 : visibleEvents.length === 0) && (
           <div className="clean-empty" role="status">
             <p className="clean-empty__title">
               {authBanner
                 ? bannerKind === "upgrade"
                   ? t("v2transcript.emptyUpdate")
                   : t("v2transcript.emptySignIn")
-                : t("v2transcript.emptyTitle", { agent: agent.label })}
+                : staffChat
+                  ? t("staff.chatEmptyTitle", { name: staffName })
+                  : t("v2transcript.emptyTitle", { agent: agent.label })}
             </p>
             <p className="clean-empty__hint">
               {authBanner
                 ? bannerKind === "upgrade"
                   ? t("v2transcript.emptyUpdateHint")
                   : t("v2transcript.emptySignInHint", { agent: agent.label })
-                : t("v2transcript.emptyHint")}
+                : staffChat
+                  ? t("staff.chatEmptyHint", { name: staffName })
+                  : t("v2transcript.emptyHint")}
             </p>
             {authBanner && bannerKind === "upgrade" && onUpdate ? (
               <button
@@ -2705,6 +2901,23 @@ function CleanPlaceholder({
              *  trace stays one line per step. */
             compact = false,
           ) => {
+          if (
+            staffChat &&
+            (event.type === "user_message" ||
+              event.type === "assistant_message" ||
+              event.type === "notice")
+          ) {
+            return (
+              <StaffChatMessage
+                event={event}
+                index={index}
+                events={staffChatEvents}
+                staffName={staffName}
+                staffTitle={staffTitle}
+                scrollRootRef={listRef}
+              />
+            );
+          }
           // @-delegate cards: skip started if we already have a result for the same child.
           if (event.type === "subtask_started") {
             if (subtaskResults?.has(event.childSessionId)) return null;
@@ -3741,6 +3954,9 @@ function CleanPlaceholder({
             </>
           );
         })()}
+        {staffChat && isRunning && awaitingFirstChunk && (
+          <StaffTypingIndicator staffName={staffName} />
+        )}
         {showStallBanner && (
           <StallBanner
             status={session.status}
@@ -3753,7 +3969,7 @@ function CleanPlaceholder({
           />
         )}
       </div>
-      <MessageOutline events={visibleEvents} sessionId={session.id} />
+      {!staffChat && <MessageOutline events={visibleEvents} sessionId={session.id} />}
       </div>
     </div>
     </LinkCwdContext.Provider>

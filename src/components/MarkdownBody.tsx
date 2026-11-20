@@ -10,6 +10,7 @@ import { t, useT } from "../lib/i18n";
 import { isImagePath } from "../lib/toolBody";
 import { isDocPath } from "../lib/openFile";
 import { stripFileUri } from "../lib/imageAttachments";
+import { normalizeInlineDollarMath } from "../lib/inlineDollarMath";
 import { prepareMarkdownForRender } from "../lib/markdownText";
 import { useMathPack } from "../lib/mathPack";
 import { normalizeMathDelimiters, scanRichFeatures } from "../lib/richMarkdown";
@@ -464,11 +465,13 @@ function imageCaption(alt: string | undefined, src: string | undefined): string 
  *
  * Rich pipeline (research-codeg.md B1/B3/B4): a cheap scan (richMarkdown.ts)
  * decides per message whether the heavy engines are worth loading. Math adds
- * remark-math (singleDollarTextMath off — `$9.99` stays literal) plus
- * rehype-katex and rewrites LaTeX `\[ … \]` to `$$ … $$`; fenced info strings
- * route `mermaid`/`spec` to their cards, and every other fenced language gets
- * shiki highlighting once the text has been quiet. Everything degrades to the
- * plain pipeline, so a failed lazy chunk load never breaks the transcript.
+ * remark-math (singleDollarTextMath off — `$9.99` stays literal; guarded
+ * `$x^2$` pairs are rewritten to `$$` inline first, inlineDollarMath.ts)
+ * plus rehype-katex and rewrites LaTeX `\[ … \]` to `$$ … $$`; fenced info
+ * strings route `mermaid`/`spec` to their cards, and every other fenced
+ * language gets shiki highlighting once the text has been quiet. Everything
+ * degrades to the plain pipeline, so a failed lazy chunk load never breaks
+ * the transcript.
  *
  * Memoized on text/className: parent stream ticks must not rebuild the markdown
  * tree for unchanged cards — that remounts text nodes and wipes browser selection.
@@ -488,7 +491,10 @@ export const MarkdownBody = memo(function MarkdownBody({ text, className }: Mark
   }, [math]);
   const rehypePlugins = useMemo(() => (math ? [math.rehypeKatex] : []), [math]);
   const source = useMemo(
-    () => (features.math ? normalizeMathDelimiters(prepareMarkdownForRender(text)) : prepareMarkdownForRender(text)),
+    () =>
+      features.math
+        ? normalizeInlineDollarMath(normalizeMathDelimiters(prepareMarkdownForRender(text)))
+        : prepareMarkdownForRender(text),
     [text, features.math],
   );
   if (!text) return null;

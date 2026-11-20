@@ -1126,7 +1126,7 @@ fn list_models_at(
             // bridge_bind 的 ensure 链把引擎拉起，Running 后缓存失效重拉。
             let mut models = Vec::new();
             let offline = push_engine_models(&mut models);
-            let mut note = if offline && !models.is_empty() {
+            let note = if offline && !models.is_empty() {
                 Some(crate::ts!("引擎未运行 · 离线目录（选用时会自动启动引擎）", "Engine offline · cached catalog (selecting a model starts the engine)"))
             } else if models.is_empty() {
                 if offline {
@@ -1170,7 +1170,7 @@ fn list_models_at(
             let mut sources = Vec::new();
             sources.push(engine_bridge_source());
             let offline = push_engine_models(&mut models);
-            let mut note = if offline && !models.is_empty() {
+            let note = if offline && !models.is_empty() {
                 Some(crate::ts!("引擎未运行 · 离线目录（选用时会自动启动引擎）", "Engine offline · cached catalog (selecting a model starts the engine)"))
             } else if offline {
                 Some(

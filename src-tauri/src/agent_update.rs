@@ -33,6 +33,12 @@ pub struct AgentVersionInfo {
 /// Ask the CLI what it is. Best-effort: agents disagree about `--version`, and
 /// a missing answer is normal rather than an error worth surfacing loudly.
 pub fn installed_version(command: &str) -> Option<String> {
+    // Never execute the Antigravity server from probe paths: its PyInstaller
+    // onefile unpacks ~100 MB into %TEMP% before even `--version` can answer,
+    // and the probe kill leaks it (antigravity_support::is_server_command).
+    if crate::antigravity_support::is_server_command(command) {
+        return None;
+    }
     let resolved = crate::process_util::resolve_spawn_command(command).ok()?;
     let mut cmd = Command::new(&resolved.program);
     resolved.apply_to(&mut cmd);
@@ -181,6 +187,36 @@ pub fn version_info(agent: &AgentConfig, check_registry: bool) -> AgentVersionIn
             latest: None,
             update_available: false,
             note: Some(crate::ts!("内置网页聊天桥，随 Marionette 更新", "Built-in web chat bridge; updates with Marionette")),
+        };
+    }
+    // Binary agents (Antigravity): the version is the install dir name and
+    // "latest" comes from the ACP registry — never executed from probe paths
+    // (a `--version` run unpacks the whole PyInstaller archive; see
+    // antigravity_support::is_server_command).
+    if agent.install.manager == "binary" {
+        let installed = crate::antigravity_support::installed_version();
+        let (latest, note) = if check_registry {
+            match crate::antigravity_support::registry_latest() {
+                Some((version, _, _)) => (Some(version), None),
+                None => (
+                    None,
+                    Some("Could not reach the ACP registry".to_string()),
+                ),
+            }
+        } else {
+            (None, None)
+        };
+        let update_available = match (&installed, &latest) {
+            (Some(installed), Some(latest)) => is_newer(latest, installed),
+            _ => false,
+        };
+        return AgentVersionInfo {
+            id: agent.id.clone(),
+            package: None,
+            installed,
+            latest,
+            update_available,
+            note,
         };
     }
     let installed = installed_version(&agent.command);

@@ -846,7 +846,7 @@ func Restart() {
 	// the next host loads the plugins as they are now: what this magpie
 	// installed is not another magpie's change (checkList)
 	listSeen.Lock()
-	listSeen.stamp, listSeen.set = listStamp(), true
+	listSeen.stamp, listSeen.set = seenStamp(), true
 	listSeen.Unlock()
 	hostMu.Lock()
 	h := current
@@ -2213,6 +2213,12 @@ func (c *call) headRead(ctx context.Context) (head message, answer *message, err
 			return message{}, nil, err
 		}
 		if m := c.result(); m != nil {
+			// The head may have arrived with this answer after the empty
+			// queue check above. Drain it before interpreting the answer,
+			// just as when done wakes the reader below.
+			if hm, ok := c.pop(); ok {
+				return hm, m, nil
+			}
 			if m.Error != nil {
 				return message{}, m, errors.New(m.Error.Message)
 			}

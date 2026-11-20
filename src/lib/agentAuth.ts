@@ -74,6 +74,17 @@ export const AGENT_AUTH: Record<string, AgentAuthSpec> = {
       return t("auth.zcodeHint");
     },
   },
+  // Antigravity has no login CLI: the Sign in button drives the ACP
+  // `authenticate` browser flow (antigravity_login.rs); starting a session
+  // triggers the same flow automatically.
+  antigravity: {
+    probe: true,
+    login: true,
+    loginCommand: "",
+    get errorHint() {
+      return t("auth.antigravityHint");
+    },
+  },
 };
 
 export function agentAuthSpec(

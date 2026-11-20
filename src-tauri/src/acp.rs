@@ -1,3 +1,4 @@
+#[cfg(test)]
 use agent_client_protocol_schema::v1 as acp_schema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -327,6 +328,10 @@ struct AcpProcess {
     /// 最近几行 stderr（已剥 ANSI）。initialize 在进程秒退时把它们拼进
     /// 失败原因，避免 UI 只看到「stdout closed」、真因留在 dev.log。
     stderr_tail: Arc<Mutex<Vec<String>>>,
+    /// Antigravity 专属：本会话的 %TEMP% 重定向目录（agy_acp_server 的
+    /// Windows 构建是 PyInstaller onefile，每次启动解压 ~150MB 进系统
+    /// 临时目录且杀进程后永不清理）。进程树回收后删除。
+    scratch_dir: Option<std::path::PathBuf>,
 }
 
 struct PendingPermission {
@@ -457,6 +462,18 @@ impl AcpService {
 
         // Prefer global ACP bins over `npx -y …` (npx cold start can hang UI for minutes).
         // Resolve by stable id so restored sessions also stop using old repo paths.
+        // Antigravity: prefer Marionette's installed tree over a PATH copy —
+        // the installer verified the required sibling; a hand-dropped PATH
+        // entry may be a "fake success" single-file extract.
+        let (command, args) = if agent_id.as_deref() == Some(crate::antigravity_support::AGENT_ID)
+        {
+            match crate::antigravity_support::installed_entry() {
+                Some(entry) => (entry.to_string_lossy().to_string(), args),
+                None => (command, args),
+            }
+        } else {
+            (command, args)
+        };
         let (command, args) = if let Some(site) = agent_id
             .as_deref()
             .and_then(crate::web_chat_bridge::site)
@@ -1078,6 +1095,51 @@ impl AcpService {
                 ),
             }
         }
+        // Google Antigravity (agy_acp_server) host-side setup — M0 verified
+        // 2026-11-19 (docs/research/research-antigravity.md):
+        // ① session/new dies with -32000 unless settings.json carries an
+        //   auth.type → sync the free-tier default before spawn (fail-closed
+        //   on unparseable files, never blocks the launch);
+        // ② the Windows build unpacks ~150 MB into %TEMP% per launch and
+        //   never cleans up after a kill-tree → redirect TMP/TEMP/TMPDIR into
+        //   a per-session scratch dir (this agent ONLY — lending TMP to MSYS2
+        //   shells hijacks the user's Git Bash /tmp, codeg #1025).
+        let mut antigravity_scratch: Option<std::path::PathBuf> = None;
+        if agent_id.as_deref() == Some(crate::antigravity_support::AGENT_ID) {
+            match crate::antigravity_support::ensure_settings_auth_type() {
+                crate::antigravity_support::SettingsSync::WriteFailed(ref error) => {
+                    crate::debug_log::append(
+                        "acp",
+                        "warn",
+                        &session_id,
+                        "antigravity settings sync failed — server will surface auth error",
+                        Some(error),
+                    );
+                }
+                report => {
+                    crate::debug_log::append(
+                        "acp",
+                        "info",
+                        &session_id,
+                        "antigravity settings sync",
+                        Some(match report {
+                            crate::antigravity_support::SettingsSync::Written =>
+                                "auth.type=oauth-personal written to settings.json",
+                            crate::antigravity_support::SettingsSync::AlreadyCurrent =>
+                                "settings.json auth.type already current",
+                            _ => "settings.json not strict JSON — left alone",
+                        }),
+                    );
+                }
+            }
+            if let Some(scratch) = crate::antigravity_support::create_scratch(&session_id) {
+                let value = scratch.to_string_lossy().to_string();
+                child_command.env("TMP", &value);
+                child_command.env("TEMP", &value);
+                child_command.env("TMPDIR", &value);
+                antigravity_scratch = Some(scratch);
+            }
+        }
         // Route agent traffic through the user-configured proxy when enabled.
         // The proxy client (Clash, v2ray, ...) decides rule-vs-global routing;
         // we only hand it the exit address. Loopback stays direct so local MCP
@@ -1202,6 +1264,9 @@ impl AcpService {
             #[cfg(target_os = "windows")]
             job,
             stderr_tail: Arc::clone(&stderr_tail),
+            // Antigravity per-launch scratch (TMP/TEMP redirect target);
+            // deleted at both teardown points once the process tree is gone.
+            scratch_dir: antigravity_scratch.take(),
         });
         sessions.insert(session_id.clone(), Arc::clone(&process));
         drop(sessions);
@@ -1248,7 +1313,17 @@ impl AcpService {
         let stderr_app = app.clone();
         let stderr_session = session_id.clone();
         let stderr_tail_reader = Arc::clone(&stderr_tail);
-        thread::spawn(move || read_stderr(stderr_app, stderr_session, stderr, stderr_tail_reader));
+        let stderr_watch_auth_url =
+            agent_id.as_deref() == Some(crate::antigravity_support::AGENT_ID);
+        thread::spawn(move || {
+            read_stderr(
+                stderr_app,
+                stderr_session,
+                stderr,
+                stderr_tail_reader,
+                stderr_watch_auth_url,
+            )
+        });
 
         emit_acp_event(
             &app,
@@ -2749,6 +2824,12 @@ impl AcpService {
             if let Some(job) = process.job.as_ref() {
                 job.terminate();
             }
+            // Antigravity: the tree is gone — its %TEMP% redirect dir can go
+            // too (doing this before the kill would race the bootloader's
+            // own unpacking into a deleted directory).
+            if let Some(scratch) = process.scratch_dir.as_ref() {
+                crate::antigravity_support::cleanup_scratch(scratch);
+            }
         }
         self.terminals.clear_session(session_id);
         // Universal-plugin children belong to the session, not the agent
@@ -3841,6 +3922,11 @@ fn read_stdout(
     if let Some(job) = process.job.as_ref() {
         job.terminate();
     }
+    // Antigravity: agent died on its own (stop() never ran) — same teardown
+    // for the scratch dir.
+    if let Some(scratch) = process.scratch_dir.as_ref() {
+        crate::antigravity_support::cleanup_scratch(scratch);
+    }
     if process.intentional_stop.load(Ordering::SeqCst) {
         emit_event(
             &app,
@@ -4780,8 +4866,35 @@ fn read_stderr(
     session_id: String,
     stderr: impl std::io::Read,
     tail: Arc<Mutex<Vec<String>>>,
+    watch_auth_url: bool,
 ) {
+    // Antigravity prints the Google consent URL once per pending sign-in
+    // (pipe moved between stdout/stderr across versions, hence stderr here +
+    // PYTHONUNBUFFERED for the stdout era). The server opens the default
+    // browser itself; the surfaced event is the fallback for when that did
+    // not happen (remote desktop, no default browser). First URL per process
+    // only — a retry would just re-print a fresh one.
+    let mut auth_url_emitted = false;
     for line in BufReader::new(stderr).lines().flatten() {
+        if watch_auth_url && !auth_url_emitted {
+            if let Some(url) = crate::antigravity_support::extract_auth_url(&line) {
+                auth_url_emitted = true;
+                crate::debug_log::append(
+                    "acp",
+                    "info",
+                    &session_id,
+                    "antigravity auth url surfaced",
+                    Some(url),
+                );
+                emit_event(
+                    &app,
+                    &session_id,
+                    "system",
+                    Some("antigravity/auth-url"),
+                    json!({ "url": url }),
+                );
+            }
+        }
         push_stderr_tail(&tail, &line);
         emit_event(&app, &session_id, "stderr", None, json!({ "text": line }));
     }

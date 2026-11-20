@@ -28,6 +28,7 @@ import {
   decodeMemoDrag,
   encodeMemoDrag,
   filterMemoEntries,
+  memoDefaultTitle,
   memoDragText,
   memoTagVocabulary,
   splitPinnedGroup,
@@ -37,6 +38,9 @@ import { DOCK_DROP_PATHS_EVENT, DOCK_DROP_TEXT_EVENT, dispatchDockDropText } fro
 import { isLegacyGhostProject, splitShelfChatSessions, withoutGhostProjects } from "../src/lib/sessionGroups";
 import type { MemoEntry, MemoKind } from "../src/lib/memos";
 import type { Project, Session } from "../src/lib/types";
+import { applyLocale } from "../src/lib/i18n";
+
+await applyLocale("zh-CN");
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -367,6 +371,10 @@ function session(partial: Partial<Session> & { id: string }): Session {
   );
   check("file 卡拖拽文本是路径", memoDragText(rows[2]!) === "C:\\m\\shot.png");
   check("text 卡拖拽文本是正文", memoDragText(rows[3]!) === "misc/with/slashes");
+  check(
+    "默认标题按 Unicode 字符截断",
+    memoDefaultTitle("  甲乙📦丙丁  ", 3) === "甲乙📦" && memoDefaultTitle("正文", 80) === "正文",
+  );
 
   // 输入框存盒：按钮 + hub 行 + 副本语义
   check(
@@ -382,6 +390,71 @@ function session(partial: Partial<Session> & { id: string }): Session {
       box.includes("memo-box__tag-editor") &&
       box.includes("memo-box__edit"),
   );
+  check(
+    "多选由常驻复选框驱动，不再额外放选择模式按钮",
+    box.includes("const selecting = picked.size > 0") &&
+      !box.includes('t("memo.select")') &&
+      !box.includes("setSelecting"),
+  );
+  check(
+    "卡片渐进披露：右上编辑，底部新增标签与更多，更多只收低频操作",
+    box.includes('className="memo-box__cardedit"') &&
+      box.includes("memo-box__tag memo-box__tag--add") &&
+      box.includes("memo-box__card-menu") &&
+      !box.includes("memo-box__cardacts") &&
+      box.includes("<ConfirmDialog") &&
+      box.includes('t("memo.deleteTitle")'),
+  );
+  const memoCss = readFileSync(join(here, "../src/styles/v2/memo.css"), "utf8");
+  const checkCss = memoCss.match(/\.memo-box__check\s*\{[^}]+\}/)?.[0] ?? "";
+  check(
+    "复选框清掉原生按钮 padding，勾号由网格居中",
+    checkCss.includes("padding: 0") && memoCss.includes(".memo-box__check > svg"),
+    checkCss,
+  );
+  const editCss = memoCss.match(/\.memo-box__cardedit\s*\{[^}]+\}/)?.[0] ?? "";
+  check(
+    "编辑按钮固定在卡片右上角，标签新增贴着标签行",
+    editCss.includes("position: absolute") &&
+      editCss.includes("top: 8px") &&
+      editCss.includes("right: 8px") &&
+      memoCss.includes(".memo-box__tag--add"),
+    editCss,
+  );
+  check(
+    "窄窗格多选底栏换成两行且不会溢出",
+    box.includes("memo-box__sel-summary") &&
+      box.includes("memo-box__sel-actions") &&
+      memoCss.includes("@container (max-width: 620px)") &&
+      memoCss.includes("flex: 1 0 100%"),
+  );
+
+  const app = readFileSync(join(here, "../src/app/App.tsx"), "utf8");
+  check(
+    "单窗格仍走正常标签栏，只有真实多格才进 SplitWorkspace",
+    app.includes("const workspaceSplit =") &&
+      app.includes("leafCount(splitState) > 1;") &&
+      !app.includes("leafCount(splitState) > 1 || focusedActiveTabKind"),
+  );
+  check(
+    "单格收纳盒/文档/浏览器都作为完整 tab page 渲染",
+    app.includes('className="memo-tab-page"') &&
+      app.includes('className="doc-tab-page"') &&
+      app.includes('className="browser-tab-page"') &&
+      app.includes("singlePaneDropOverlay"),
+  );
+  check(
+    "分屏时每种 surface 只出现在自己的窗格标签栏",
+    app.includes("leaf.tabIds.includes(MEMO_TAB_ID)") &&
+      app.includes("leaf.tabIds.includes(documentSurfaceTabId(tab.path))") &&
+      app.includes("leaf.tabIds.includes(BROWSER_TAB_ID)"),
+  );
+  check(
+    "拖浏览器标签时先藏 child WebView，DOM 分屏落点仍可命中和显示",
+    app.includes("visible={tabDropPreview === null}"),
+  );
+  const docPage = readFileSync(join(here, "../src/components/DocPage.tsx"), "utf8");
+  check("文档页内关闭键也经过未保存草稿守卫", docPage.includes("onClick={requestClose}"));
 }
 
 if (failures > 0) {

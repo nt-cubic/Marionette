@@ -65,8 +65,13 @@
     --line-2: #2c2c32;
     --fg: #ededf1;
     --fg-2: #b9b9c1;
-    --muted: #8b8b94;
-    --faint: #56565f;
+    /* the quiet text, a help line or a caption: 4.5:1 or better on every
+       dark ground it sits on (the page, a card, an editor, a menu), and on
+       the page over a mid-grey background image under appearance.go's
+       veil; --faint a step under --muted (CHENGJIAHEGOXIS on X: Library ›
+       MCP's project help was #56565f, 2.39:1) */
+    --muted: #9c9ca6;
+    --faint: #90909a;
     --ctl-fg: #a1a1aa;
     --accent: #a5b4fc;
     --accent-soft: #2b2c47;
@@ -90,7 +95,7 @@
 :root[data-theme="dark"] {
   --bg: #1a1a1e; --card: #232327; --card-2: #1f1f23; --pill: #2d2d33; --pill-hover: #36363d;
   --seg-track: rgba(255, 255, 255, .035); --seg-thumb: rgba(255, 255, 255, .15); --seg-edge: inset 0 .5px 0 rgba(255, 255, 255, .08), 0 1px 2px rgba(0, 0, 0, .3);
-  --line: #333339; --line-2: #2c2c32; --fg: #ededf1; --fg-2: #b9b9c1; --muted: #8b8b94; --faint: #56565f; --ctl-fg: #a1a1aa;
+  --line: #333339; --line-2: #2c2c32; --fg: #ededf1; --fg-2: #b9b9c1; --muted: #9c9ca6; --faint: #90909a; --ctl-fg: #a1a1aa;
   --accent: #a5b4fc; --accent-soft: #2b2c47; --accent-fg: #14142a; --sel: #33345a;
   --green: #6fd99b; --green-soft: #1e3a2b; --red: #f28b82; --red-soft: #45272a; --amber: #f2b544; --amber-soft: #3f3220;
   --drift: #ff9592; --drift-soft: #3b1219;
@@ -175,9 +180,9 @@ body.linux.panel { --panel-tint: var(--bg); }
 .tint-probe { display: none; background: var(--panel-tint); }
 /* on the frosted panel the surfaces are tints of the backdrop, not flat paint */
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) body.panel { --bg: #1b1c20; --card: #25262c; --card-2: #212227; --line: rgba(255, 255, 255, .07); --line-2: rgba(255, 255, 255, .06); --pill: #2e2f36; --pill-hover: #383942; --pill-line: rgba(255, 255, 255, .11); --pill-shadow: 0 1px 2px rgba(0, 0, 0, .28); --muted: #9c9ca6; --faint: #7c7c87; --card-edge: inset 0 0 0 1px rgba(255, 255, 255, .06); }
+  :root:not([data-theme="light"]) body.panel { --bg: #1b1c20; --card: #25262c; --card-2: #212227; --line: rgba(255, 255, 255, .07); --line-2: rgba(255, 255, 255, .06); --pill: #2e2f36; --pill-hover: #383942; --pill-line: rgba(255, 255, 255, .11); --pill-shadow: 0 1px 2px rgba(0, 0, 0, .28); --muted: #9c9ca6; --faint: #90909a; --card-edge: inset 0 0 0 1px rgba(255, 255, 255, .06); }
 }
-:root[data-theme="dark"] body.panel { --bg: #1b1c20; --card: #25262c; --card-2: #212227; --line: rgba(255, 255, 255, .07); --line-2: rgba(255, 255, 255, .06); --pill: #2e2f36; --pill-hover: #383942; --pill-line: rgba(255, 255, 255, .11); --pill-shadow: 0 1px 2px rgba(0, 0, 0, .28); --muted: #9c9ca6; --faint: #7c7c87; --card-edge: inset 0 0 0 1px rgba(255, 255, 255, .06); }
+:root[data-theme="dark"] body.panel { --bg: #1b1c20; --card: #25262c; --card-2: #212227; --line: rgba(255, 255, 255, .07); --line-2: rgba(255, 255, 255, .06); --pill: #2e2f36; --pill-hover: #383942; --pill-line: rgba(255, 255, 255, .11); --pill-shadow: 0 1px 2px rgba(0, 0, 0, .28); --muted: #9c9ca6; --faint: #90909a; --card-edge: inset 0 0 0 1px rgba(255, 255, 255, .06); }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) body.panel { --bg: #f2f2f5; --card: #ffffff; --card-2: #f8f8fa; --line: rgba(0, 0, 0, .07); --line-2: rgba(0, 0, 0, .06); --pill: #ffffff; --pill-hover: #f4f4f7; --skel: #eeeef2; --skel-hi: #e2e2e8; --pill-line: rgba(0, 0, 0, .12); --pill-shadow: 0 1px 1px rgba(0, 0, 0, .06); --faint: #9a9aa3; --card-edge: 0 0 0 1px rgba(0, 0, 0, .05), 0 1px 2px rgba(0, 0, 0, .04); }
 }
@@ -1631,7 +1636,8 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 /* always there, quiet until its row is pointed at (skingstyle48487: a
    button shown only on hover went unfound) */
 .led-spd-check { height: 20px; padding: 0 2px; font-size: 11px; color: var(--muted); }
-.led-spd tr:hover .led-spd-check, .led-spd-check:focus-visible { color: var(--ctl-fg); }
+.led-spd tr:hover .led-spd-check { color: var(--ctl-fg); }
+.led-spd-check:focus-visible { color: var(--ctl-fg); }
 .led-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-bottom: 8px; }
 .led-bar .grow { flex: 1; }
 .led-by { font-size: 11.5px; color: var(--muted); }
@@ -1804,6 +1810,10 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 .led-hscroll::-webkit-scrollbar-button, .led-hscroll::-webkit-scrollbar-corner { display: none; }
 .reads-note { margin-top: 12px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .reads-note p { margin: 0; }
+.reads-later { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0 0 9px; padding: 8px 12px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+.reads-later[hidden] { display: none; }
+.reads-later p { margin: 0; flex: 1 1 260px; min-width: 0; color: var(--muted); line-height: 1.45; }
+.reads-later-acts { display: flex; gap: 4px; margin-left: auto; }
 .led-none { padding: 18px 16px; color: var(--muted); text-align: center; line-height: 1.5; }
 .led-sk { padding: 11px 14px; }
 .led-sk + .led-sk { border-top: 1px solid var(--line-2); }
@@ -1814,6 +1824,8 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 .led tbody tr:hover td { background: var(--card-2, var(--pill)); }
 .led .n { text-align: right; }
 .led .faint { color: var(--faint); }
+/* a dash that says on hover why it has no figure (ohblue on X) */
+.led td.speed.faint[title], .led td.cache-hit.faint[title] { cursor: help; }
 .led .muted { color: var(--muted); }
 .led th, .led .when, .led .model-value { color: var(--fg-2); }
 #ledRoute { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
@@ -2657,7 +2669,7 @@ body .foot .status.lift { white-space: normal; overflow-wrap: anywhere; text-ove
 .effort-control input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.08); }
 .effort-control input[type="range"]:active::-webkit-slider-thumb { transform: scale(.94); }
 .effort-control input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 .5px rgba(0, 0, 0, .18), 0 1px 3px rgba(0, 0, 0, .22), 0 0 0 3px var(--accent-soft); }
-.effort-ends { display: flex; justify-content: space-between; margin-top: 5px; font-size: 10.5px; color: var(--muted); opacity: .8; }
+.effort-ends { display: flex; justify-content: space-between; margin-top: 5px; font-size: 10.5px; color: var(--muted); }
 .pop li.sel { background: var(--sel); }
 .pop li .check { color: var(--accent); display: none; margin-left: auto; flex: none; }
 .pop li.cur .check { display: inline-flex; }
@@ -3975,6 +3987,8 @@ body:not(.side-nav) #addSheet > .row-head.stuck::before { opacity: 1; box-shadow
    the longest, on one line, rather than wrap a last 址 under it (#875) */
 .editor .more .inner { display: grid; grid-template-columns: minmax(var(--ed-lab, 72px), max-content) minmax(0, 1fr); gap: 10px 14px; align-items: first baseline; padding-top: 8px; }
 .editor .more .inner label { white-space: nowrap; }
+.editor .more .inner > .adv-head { grid-column: 1 / -1; font-size: 11px; font-weight: 600; color: var(--muted); margin-top: 8px; }
+.editor .more .inner > .adv-head:first-child { margin-top: 0; }
 .editor .warnbox { grid-column: 1 / -1; font-size: 12px; line-height: 1.5; color: var(--fg); background: color-mix(in srgb, var(--amber) 12%, transparent); border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent); border-radius: 8px; padding: 8px 10px; }
 .editor .warnbox.soft { background: none; color: var(--amber); border: 0; padding: 0 0 0 var(--ed-at, 86px); }
 .editor.import .mchips .mchip { cursor: default; }
@@ -4450,7 +4464,7 @@ input.words.window-in { width: 96px; font-variant-numeric: tabular-nums; }
    sends, who the allow list lets in), a line with a button or link in
    it. A touch screen, with no hover, keeps them all. */
 @media (hover: hover) {
-  :is(#view-settings:not(.set-searching), .editor.roomy .prov-prefs) .row.pref > .who > .sub:not(.err, .bad, .say, .proxy-check, .lib-way, .image-gen-hidden, .sync-sign-in, .no-names, .pv-hits, .feat-why, .vision-not-marked, .video-gen-how, .font-note, .acts, [role="status"], #proxySub):not(#otelSessionsRow *, #allowList *, .disabled-model *) {
+  :is(#view-settings:not(.set-searching), .editor.roomy .prov-prefs) .row.pref > .who > .sub:not(.err, .bad, .say, .proxy-check, .lib-way, .image-gen-hidden, .sync-sign-in, .no-names, .pv-hits, .feat-why, .vision-not-marked, .video-gen-how, .font-note, .acts, [role="status"], #proxySub, :has(> .warn)):not(#otelSessionsRow *, #allowList *, .disabled-model *) {
     --hint: 1; position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
   }
   /* the line held out of sight stays in its row's box: placed against the
@@ -4584,7 +4598,7 @@ input.words.remote-key { width: 160px; }
 :root[data-theme="dark"] .warm-at input.at { color-scheme: dark; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .warm-at input.at { color-scheme: dark; } }
 @media (max-width: 520px) { .proxy-segs { flex-wrap: wrap; justify-content: flex-end; } }
-/* Settings → Plugins: what a plugin signs in to, or why it didn't load, said whole */
+/* Plugins page: what a plugin signs in to, or why it didn't load, said whole */
 .row.pref.plugin-row .sub, .row.pref.plugin-add .sub { white-space: normal; }
 .row.pref.plugin-row.off .name { color: var(--muted); }
 .row.pref.plugin-add .val { flex-wrap: wrap; justify-content: flex-end; }

@@ -1,0 +1,3 @@
+enc:v1:GgR9_DzB_gdgH20oOs7u-g.neT34FX5iVo-ImU5Ir-PuA.MjSlZyj19XCCqRQo80lRfc76dHaVwG-CwGYRKXA-yh7od9lr0cF06jeS8LmGa53OGaPpLK76Z1Xus78PxhdS|{"key":"abc.def","note":"sixteen-byte nonce, 49 bytes of text"}
+enc:v1:8EfgOOYLpdSSpiw2.HNs28N5fXj7r8KZ0R0ErUg.cn8PSuI8ISzz-_0rD9_3XXBqDW1aRoGj_B0164-UjivWLd_O7_ocDIzrr5liHCLID1jI|twelve-byte-nonce plain value 0123456789 abcdefghij
+enc:v1:EUItnFndTNx5xGzRmBU4uw.24GO9aPjTO87Wk2l0ulzLg.oPbI7KQ|short

@@ -77,14 +77,15 @@ import (
 )
 
 type subscriptionBridge struct {
-	mu      sync.Mutex
-	runs    map[string]*subscriptionRun // callback token → run
-	calls   map[string]*subscriptionRun // tool_use id → run
-	idle    map[string]*subscriptionRun // conversation so far (turnKey) → run
-	shelf   map[string]*savedSession    // conversation so far (turnKey) → its saved session
-	baseURL string
-	sweep   sync.Once
-	swept   sync.Map // Claude Code's project folders sweepSessions went through
+	mu       sync.Mutex
+	runs     map[string]*subscriptionRun // callback token → run
+	calls    map[string]*subscriptionRun // tool_use id → run
+	idle     map[string]*subscriptionRun // conversation so far (turnKey) → run
+	shelf    map[string]*savedSession    // conversation so far (turnKey) → its saved session
+	resuming map[*savedSession]bool      // taken off the shelf, not yet owned by a run
+	baseURL  string
+	sweep    sync.Once
+	swept    sync.Map // Claude Code's project folders sweepSessions went through
 	// lost is why each run that had a conversation ended, by that
 	// conversation (convKey), and lostCalls by the tool calls it waited
 	// on or was last handed results for, for the log of a request that
@@ -826,7 +827,7 @@ func (c claudeCLI) asRoot(env []string) []string {
 // one in WSL is handed (wslrun's Env).
 var claudeEnvVars = []string{"ENABLE_CLAUDEAI_MCP_SERVERS", "DISABLE_AUTO_COMPACT", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
 	"DISABLE_TELEMETRY", "DO_NOT_TRACK", "DISABLE_ERROR_REPORTING", "DISABLE_AUTOUPDATER", "ANTHROPIC_BETAS",
-	"CLAUDE_CODE_EXTRA_BODY", "DISABLE_PROMPT_CACHING"}
+	"CLAUDE_CODE_EXTRA_BODY", "DISABLE_PROMPT_CACHING", "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS", "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"}
 
 // env is env for a run in config directory configDir ("" for the account
 // Claude Code is signed in to): for one in WSL, what of it goes in.
@@ -2855,16 +2856,24 @@ func (b *subscriptionBridge) unshelve(req *Request, owner string) *savedSession 
 		}
 	}
 	delete(b.shelf, key)
+	if s != nil {
+		if b.resuming == nil {
+			b.resuming = make(map[*savedSession]bool)
+		}
+		b.resuming[s] = true
+	}
 	b.mu.Unlock()
 	if s == nil {
 		return nil
 	}
 	s.timer.Stop()
 	if !s.cachePrefix.accepts(req.cacheTail()) {
+		b.resumed(s)
 		s.discard()
 		return nil
 	}
 	if behind && !s.cutBehind() {
+		b.resumed(s)
 		s.discard()
 		return nil
 	}
@@ -3526,10 +3535,14 @@ func (b *subscriptionBridge) sweepSessions(dirs []string) {
 			continue
 		}
 		go func() {
+			kept, known := b.keptSessions()
+			if !known {
+				return
+			}
 			entries, _ := os.ReadDir(dir)
 			for _, e := range entries {
 				sid, ok := strings.CutSuffix(e.Name(), ".jsonl")
-				if !ok || e.IsDir() {
+				if !ok || e.IsDir() || kept[filepath.Join(dir, e.Name())] {
 					continue
 				}
 				if fi, err := e.Info(); err == nil && time.Since(fi.ModTime()) > idleLongest+time.Minute {
@@ -4188,8 +4201,31 @@ func claudeRunEnv(env []string, ttl string) []string {
 			out = append(out, k+"="+v)
 		}
 	}
+	for _, kv := range claudeToolWaitVars {
+		k, _, _ := strings.Cut(kv, "=")
+		if !slices.ContainsFunc(env, func(e string) bool { return strings.HasPrefix(e, k+"=") }) {
+			out = append(out, kv)
+		}
+	}
 	return append(out, "DISABLE_AUTOUPDATER=1", "DISABLE_ERROR_REPORTING=1")
 }
+
+// claudeToolWaitVars keep a turn's run waiting on magpie's MCP calls for as
+// long as the caller's tool takes: the caller runs them and has its own
+// timeouts. Claude Code otherwise moves a call still running after 120s to
+// the background and the model goes on without the result, so the turn's
+// reply is the model's next step, made before the result came, or a reply
+// with no calls at all, and the run keeps making calls no one is shown
+// (#6034). A call made past one still waiting on its user (Pi's
+// ask_user_question) is one no client runs, and the answer, in hand at
+// once, reached the model only when that call too was moved to the
+// background, its 120s later (FunnyPartMent on X: ~113s). Set to 0, the
+// timer is off and so is the move made to hand over a message that arrived
+// mid-call (Claude Code 2.1.316's isMcpCallMovableWithoutTimer asks the
+// same value). Claude Code also aborts a call that sent nothing for 30
+// minutes, a user's answer that took longer among them. A value set in
+// magpie's environment stays.
+var claudeToolWaitVars = []string{"CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0", "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=0"}
 
 type lockedWriter struct{ run *subscriptionRun }
 
@@ -7207,6 +7243,14 @@ func (b *subscriptionBridge) whyCallsLost(req *Request) string {
 
 func (s *Server) serveClaudeSubscription(w http.ResponseWriter, r *http.Request, from provider.Protocol, p provider.Provider, model string, body []byte, usage *Usage) (int, string) {
 	defer s.bridgeTurn()()
+	if err := awaitPredecessorSessions(r.Context()); err != nil {
+		if r.Context().Err() != nil {
+			return http.StatusServiceUnavailable, "waiting for the previous gateway to save Claude sessions: " + err.Error()
+		}
+		// what would have been resumed is replayed, as before the wait: a
+		// turn is not refused for the gateway it was handed over from
+		log.Printf("claude: going on without the previous gateway's saved sessions: %v", err)
+	}
 	owner := p.ID
 	if p.Account != nil {
 		owner += "\x00" + p.Account.User
@@ -7227,6 +7271,9 @@ func (s *Server) serveClaudeSubscription(w http.ResponseWriter, r *http.Request,
 		// a run let go past idleMost left its session for this turn, or
 		// the run whose calls another request answered first has it
 		from := s.subscription.unshelve(req, owner)
+		if from != nil {
+			defer s.subscription.resumed(from)
+		}
 		if from == nil {
 			from = req.branch
 		}
@@ -7701,6 +7748,12 @@ func bridgeFailed(name, msg string, status int) (int, string) {
 		return status, msg
 	case quotaSaid(msg):
 		return 429, msg
+	case name == "Claude Code" && claudeOffWords.MatchString(msg):
+		// the account on hold, as Claude Code says it with no status of
+		// the API's (account_on_hold): a 502 rested it a minute and asked
+		// it again; the account's own refusal, read as restricted
+		// (claudeAccountOff)
+		return http.StatusForbidden, msg
 	case unpastedSaid(name, msg):
 		// the same message fails the same way on every account and on
 		// every try: a 502 was asked again and again (ok123now on X)

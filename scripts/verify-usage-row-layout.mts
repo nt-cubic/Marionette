@@ -1,6 +1,6 @@
 /**
- * Layout check: Usage panel no longer renders Last turn / Session total.
- * Context window and cost keep their inline % / amount + meter.
+ * Layout check: the quota rail no longer renders Last turn / Session total, and
+ * session context/cost remain facts on the snapshot instead of quota rows.
  *
  * Run: npx tsx scripts/verify-usage-row-layout.mts
  */
@@ -8,7 +8,12 @@ import assert from "node:assert/strict";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ContextPanel } from "../src/components/ContextPanel";
+import { applyLocale } from "../src/lib/i18n";
 import { buildUsageSnapshot, emptySessionUsage } from "../src/lib/usage";
+
+// This layout fixture uses the English labels it asserts below; verify-all pins
+// the default verification locale to zh-CN for the other scripts.
+await applyLocale("en");
 
 const state: any = {
   ...emptySessionUsage(),
@@ -46,16 +51,6 @@ const html = renderToStaticMarkup(
   })
 );
 
-/** Isolate one usage-row chunk: from its opening tag to the next row/section. */
-function row(label: string): string {
-  const start = html.indexOf(`<span>${label}</span>`);
-  assert.ok(start > 0, `row for "${label}" not found`);
-  const rowStart = html.lastIndexOf("<div class=\"usage-row", start);
-  const next = html.indexOf("<div class=\"usage-row", start + 1);
-  assert.ok(rowStart > 0, `row div for "${label}" not found`);
-  return html.slice(rowStart, next > start ? next : html.indexOf("</section>", start));
-}
-
 let passed = 0;
 function check(name: string, fn: () => void) {
   fn();
@@ -73,16 +68,11 @@ check("Session total is not rendered", () => {
   assert.equal(snap.windows.find((w) => w.id === "session-total"), undefined);
 });
 
-check("context row keeps its inline % + meter", () => {
-  const r = row("Context window");
-  assert.match(r, /<strong>26\.5%<\/strong>/);
-  assert.match(r, /usage-meter__track/);
-});
-
-check("cost row keeps its inline value", () => {
-  const r = row("Session cost");
-  assert.match(r, /<strong/);
-  assert.doesNotMatch(r, /usage-row__detail/);
+check("context and cost stay session facts, not quota rows", () => {
+  assert.equal(html.includes("Context window"), false);
+  assert.equal(html.includes("Session cost"), false);
+  assert.equal(snap.windows.find((w) => w.id === "context")?.percentage, 26.5);
+  assert.equal(snap.windows.find((w) => w.id === "cost")?.detail, "$0.045");
 });
 
 console.log(`\n${passed} checks passed.`);

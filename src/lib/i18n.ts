@@ -39,6 +39,12 @@ export type DictKey = keyof typeof zh;
 type Params = Record<string, string | number | null | undefined>;
 
 function detectLocale(): Locale {
+  // Node-side verification scripts have no localStorage; pin their expected
+  // dictionary so the aggregate result does not depend on the machine locale.
+  const verify = (
+    globalThis as { process?: { env?: Record<string, string | undefined> } }
+  ).process?.env?.MARIONETTE_VERIFY_LOCALE;
+  if (verify && LOCALE_SET.has(verify)) return verify as Locale;
   try {
     const stored = localStorage.getItem(LANGUAGE_STORAGE_KEY);
     if (stored && LOCALE_SET.has(stored)) return stored as Locale;

@@ -80,8 +80,11 @@ pub struct RefLease {
     /// snapshot answer (`pick::generation_from_snapshot` checked the shape).
     pub token: String,
     /// `nav_epoch` at adopt time; diagnostic, not a validity check.
+    /// (读侧未接线;字段保留供诊断,消费点接上后删 allow。)
+    #[allow(dead_code)]
     pub nav_epoch: u64,
     /// Adopt time; diagnostic (why does this tab hold a ref from 2h ago?).
+    #[allow(dead_code)]
     pub created_at_ms: u64,
     /// Last time an action answered `ok` against this exact token.
     pub last_used_at_ms: u64,

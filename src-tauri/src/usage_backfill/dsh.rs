@@ -1,6 +1,9 @@
 //! deepseek (DSH) source: `~/.dsh/sessions/<encoded-cwd>/<uuid>/session.v4.jsonl.zstd`
 //! (respects `DSH_SESSION_ROOT`, then `DSH_HOME`, then `~/.dsh` — the same
-//! chain Marionette's spawn env pins, see AGENTS.md "DSH 接入").
+//! chain Marionette's spawn env pins, see AGENTS.md "DSH 接入"). A directory
+//! can hold several generations (`session.v3…` alongside `session.v4…`) while
+//! a 0.2.x write migrates a session upward; [`session_log_path`] reads only
+//! the numerically highest generation — it carries the full history.
 //!
 //! Verified against this machine's store (2026-11-09):
 //! - `native_id` = the session directory's uuid. Cross-checked with
@@ -221,8 +224,32 @@ pub(crate) fn fold_decoded(
     collector.finish(AGENT, keep_from_ms)
 }
 
+/// The newest session log in a DSH session directory: `session.v4.jsonl.zstd`
+/// today, but a directory can hold several generations while a 0.2.x write
+/// migrates an older session upward. The highest generation carries the full
+/// history, so read only it — reading both sides of a migration would
+/// double-count every turn (and pinning v4 would silently miss a future v5).
+fn session_log_path(dir: &Path) -> Option<PathBuf> {
+    let mut best: Option<(u64, PathBuf)> = None;
+    for entry in fs::read_dir(dir).ok()?.flatten() {
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else { continue };
+        let Some(num) = name
+            .strip_prefix("session.v")
+            .and_then(|rest| rest.strip_suffix(".jsonl.zstd"))
+        else {
+            continue;
+        };
+        let Ok(version) = num.parse::<u64>() else { continue };
+        if best.as_ref().map_or(true, |(v, _)| version > *v) {
+            best = Some((version, entry.path()));
+        }
+    }
+    best.map(|(_, path)| path)
+}
+
 fn parse_session_dir(dir: &Path, keep_from_ms: i64) -> Option<SessionFacts> {
-    let path = dir.join("session.v4.jsonl.zstd");
+    let path = session_log_path(dir)?;
     let native_id = dir.file_name()?.to_str()?.to_string();
     let compressed = fs::read(&path).ok()?;
     fold_decoded(&compressed, &native_id, keep_from_ms)
@@ -241,7 +268,7 @@ pub(crate) fn scan(root: &Path, cache: &mut Cache, force: bool, keep_from_ms: i6
     let mut dirs: Vec<PathBuf> = Vec::new();
     for encoded in list_dirs(root) {
         for session in list_dirs(&encoded) {
-            if session.join("session.v4.jsonl.zstd").is_file() {
+            if session_log_path(&session).is_some() {
                 dirs.push(session);
             }
         }
@@ -249,7 +276,7 @@ pub(crate) fn scan(root: &Path, cache: &mut Cache, force: bool, keep_from_ms: i6
     dirs.sort();
     outcome.files = dirs.len() as u32;
     for dir in dirs {
-        let zstd_path = dir.join("session.v4.jsonl.zstd");
+        let Some(zstd_path) = session_log_path(&dir) else { continue };
         let fp = stamp_files(&zstd_path, &[]);
         let key = format!("{AGENT}::{}", dir.to_string_lossy());
         if !force {
@@ -384,6 +411,75 @@ mod tests {
         fs::write(dir.join("session.v4.jsonl.zstd"), &compressed).unwrap();
         let facts = parse_session_dir(&dir, 0).unwrap();
         assert_eq!(facts.hours[0].requests, 2);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// A directory holding several generations reads only the highest one:
+    /// it carries the full history, so counting both sides of a migration
+    /// would double every turn. A future v5 must be picked up as-is.
+    #[test]
+    fn session_log_path_picks_the_highest_generation() {
+        let root = temp_tree("generations");
+        let dir = root.join("uuid-a");
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(session_log_path(&dir), None);
+
+        fs::write(dir.join("session.v3.jsonl.zstd"), b"").unwrap();
+        fs::write(dir.join("session.v4.jsonl.zstd"), b"").unwrap();
+        assert_eq!(
+            session_log_path(&dir).unwrap().file_name().unwrap().to_str().unwrap(),
+            "session.v4.jsonl.zstd"
+        );
+
+        fs::write(dir.join("session.v5.jsonl.zstd"), b"").unwrap();
+        assert_eq!(
+            session_log_path(&dir).unwrap().file_name().unwrap().to_str().unwrap(),
+            "session.v5.jsonl.zstd"
+        );
+
+        // Unrelated files never win, whatever their mtime or name order.
+        fs::write(dir.join("session.notes.txt"), b"").unwrap();
+        fs::write(dir.join("session.vX.jsonl.zstd"), b"").unwrap();
+        assert_eq!(
+            session_log_path(&dir).unwrap().file_name().unwrap().to_str().unwrap(),
+            "session.v5.jsonl.zstd"
+        );
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// Scan-side: a migrated v3+v4 directory yields the v4 facts once.
+    #[test]
+    fn scan_reads_only_the_migrated_successor() {
+        let root = temp_tree("scan-gen");
+        let dir = root.join("enc").join("uuid-b");
+        fs::create_dir_all(&dir).unwrap();
+        // v3 twin with a usage row of its own; must never be counted.
+        let v3 = format!(
+            "{}\n",
+            json!({"type": "assistant/message", "seq": 9, "time": 1792743240000i64,
+                   "data": {"turn": 1, "step": 1, "usage": {
+                        "inputTokens": 111, "outputTokens": 1,
+                        "cacheReadTokens": 0, "cacheWriteTokens": 0,
+                        "totalTokens": 112}}})
+        );
+        fs::write(
+            dir.join("session.v3.jsonl.zstd"),
+            zstd_raw::encode_frames(v3.as_bytes(), 10_000),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("session.v4.jsonl.zstd"),
+            zstd_raw::encode_frames(v4_lines().as_bytes(), 10_000),
+        )
+        .unwrap();
+
+        let mut cache = Cache::default();
+        let outcome = scan(&root, &mut cache, false, 0);
+        assert!(outcome.found);
+        assert_eq!(outcome.files, 1);
+        assert_eq!(outcome.sessions.len(), 1);
+        // v4 rows only: input 11915+3582 (v3's 111 is absent).
+        assert_eq!(outcome.sessions[0].hours[0].input, 11915 + 3582);
         fs::remove_dir_all(&root).ok();
     }
 

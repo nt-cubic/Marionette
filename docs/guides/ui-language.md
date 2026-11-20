@@ -160,3 +160,14 @@
 ## 回归
 
 改表面后至少：相关 `npx tsx scripts/verify-*.mts`、`npx tsc --noEmit`；圆桌 `npx tsx scripts/verify-council.mts`；收纳盒 `npx tsx scripts/verify-memo-box.mts`。
+
+
+## 员工聊天变体 (2026-11-19)
+
+origin="chief" 的员工会话使用面向人员的聊天界面，并显示简短的左/右消息，而非 agent 执行卡片。
+
+- 将消息列居中，最大宽度为 860 像素。员工消息位于左侧，用户消息位于右侧，每个气泡的宽度最多为 72%，在窄窗格中最多为 88%。
+- 为每个连续的员工组显示一个 28 像素的字母缩写头像。使用中性 12.5 像素的名称、浅色时间、3 像素的圆角、1 像素的边框，且不带阴影。
+- 隐藏thought、tool call、活动图表、model和token元数据、持续时间和送达回执。警告和错误是居中的系统行；ask和plan提示仍是内联操作卡。
+- Composer 保持附件、文本、发送以及一个静默的身份/状态行。agent、mode、model、effort和context控件保留在员工个人资料或右侧栏中。
+- worker会话使现有的技术工作台保持不变。

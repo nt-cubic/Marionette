@@ -227,7 +227,11 @@ func updateCmd(args []string) error {
 	}
 	if !update.Newer(rel.Version, version) {
 		if update.Released(version) {
-			if ch := update.Channel(); ch != "" {
+			if ch := update.Channel(); ch != "" && update.Newer(version, rel.Version) {
+				// newer than the channel's: nothing is installed until the
+				// channel passes it (realfxw on X), which "up to date" hid
+				fmt.Println("magpie", version, "is newer than the "+ch+" channel's "+rel.Version+muted.Render("; it updates once "+ch+" passes it, or now with `magpie update channel every`"))
+			} else if ch != "" {
 				fmt.Println(green.Render("✓"), "magpie", version, muted.Render("is up to date on the "+ch+" channel ("+ch+" is "+rel.Version+")"))
 			} else {
 				fmt.Println(green.Render("✓"), "magpie", version, muted.Render("is the latest"))
@@ -274,7 +278,7 @@ func updateCmd(args []string) error {
 	// the Docker image's /magpie, run as nonroot: the image is what is
 	// updated, and a replace would only fail with "permission denied"
 	if exe, err := updateExecutable(); err == nil && !update.Writable(filepath.Dir(exe)) && !updateCanElevate() && updateInContainer() {
-		return fmt.Errorf("this magpie runs in a container and can't replace itself; pull the new image (docker pull ghcr.io/yetone/magpie:latest) and recreate the container")
+		return fmt.Errorf("this magpie runs in a container and can't replace itself; pull the image of %s (docker pull %s) and recreate the container from it", rel.Version, update.Image(rel.Version))
 	}
 	// a package manager's binary (Homebrew's, pacman's magpie-bin from
 	// the AUR, a .deb's): replaced under it, the manager's database names

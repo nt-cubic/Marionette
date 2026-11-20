@@ -19,11 +19,14 @@ import {
   type EngineDownloadProgress,
   engineStop,
   engineUpdate,
+  enginePreferenceGet,
+  enginePreferenceSet,
   telegramAcceptPairing,
   telegramDismissPairing,
   telegramResetPairing,
   telegramSave,
   telegramStatus,
+  type EnginePreferenceInfo,
   type EngineStatus,
   type EngineUpdateInfo,
   type TelegramPrefs,
@@ -526,6 +529,8 @@ export function ProjectShelf({
    */
   const [engineOpen, setEngineOpen] = useState(false);
   const [engineUpdateInfo, setEngineUpdateInfo] = useState<EngineUpdateInfo | null>(null);
+  const [enginePref, setEnginePref] = useState<EnginePreferenceInfo | null>(null);
+  const [enginePrefBusy, setEnginePrefBusy] = useState<"rust" | "magpie" | null>(null);
   const [engineUpdateBusy, setEngineUpdateBusy] = useState<"check" | "update" | "restore" | null>(
     null,
   );
@@ -695,6 +700,7 @@ export function ProjectShelf({
 
   const refreshEngine = useCallback(() => {
     void engineStatus().then(setEngineState);
+    void enginePreferenceGet().then(setEnginePref);
   }, []);
   useEffect(refreshEngine, [refreshEngine]);
 
@@ -2177,6 +2183,74 @@ export function ProjectShelf({
                 {engineBusyTransient ? t("shelf.enginePreparing") : engineState?.state === "failed" ? t("shelf.engineRetryStart") : t("shelf.engineStart")}
               </button>
             )}
+          </section>
+
+          {/* Engine form (escape hatch): in-process Rust by default, magpie child as the fallback. */}
+          <section className="engine-panel__section">
+            <div className="engine-panel__section-head">
+              <span>{t("shelf.engineFormTitle")}</span>
+            </div>
+            <div className="engine-panel__pref">
+              <button
+                type="button"
+                className="engine-panel__pref-row"
+                aria-pressed={enginePref?.choice !== "magpie"}
+                disabled={enginePrefBusy !== null || (enginePref?.choice !== "magpie" && enginePref !== null)}
+                onClick={() => {
+                  setEnginePrefBusy("rust");
+                  void enginePreferenceSet("rust")
+                    .then((info) => {
+                      if (info) setEnginePref(info);
+                    })
+                    .catch(() => {})
+                    .finally(() => {
+                      setEnginePrefBusy(null);
+                      refreshEngine();
+                    });
+                }}
+              >
+                <span className="engine-panel__pref-dot" data-on={enginePref?.choice !== "magpie"} aria-hidden />
+                <span className="engine-panel__pref-label">
+                  {t("shelf.engineFormRust")}
+                  {enginePref?.running && enginePref.choice !== "magpie" && enginePref.runningVersion ? (
+                    <small> {enginePref.runningVersion}</small>
+                  ) : null}
+                </span>
+                {enginePrefBusy === "rust" ? <span className="proxy-popover__spinner" aria-hidden /> : null}
+              </button>
+              <button
+                type="button"
+                className="engine-panel__pref-row"
+                aria-pressed={enginePref?.choice === "magpie"}
+                disabled={enginePrefBusy !== null || enginePref?.choice === "magpie"}
+                onClick={() => {
+                  setEnginePrefBusy("magpie");
+                  void enginePreferenceSet("magpie")
+                    .then((info) => {
+                      if (info) setEnginePref(info);
+                    })
+                    .catch(() => {})
+                    .finally(() => {
+                      setEnginePrefBusy(null);
+                      refreshEngine();
+                      // magpie 没装时，「检查更新」会给出下载按钮。
+                      void handleEngineCheckUpdate();
+                    });
+                }}
+              >
+                <span className="engine-panel__pref-dot" data-on={enginePref?.choice === "magpie"} aria-hidden />
+                <span className="engine-panel__pref-label">
+                  {t("shelf.engineFormMagpie")}
+                  {enginePref?.magpieInstalled ? (
+                    enginePref.magpieVersion ? <small> {enginePref.magpieVersion}</small> : null
+                  ) : (
+                    <small> {t("shelf.engineFormMagpieMissing")}</small>
+                  )}
+                </span>
+                {enginePrefBusy === "magpie" ? <span className="proxy-popover__spinner" aria-hidden /> : null}
+              </button>
+            </div>
+            <p className="engine-panel__note">{t("shelf.engineFormNote")}</p>
           </section>
 
           {/* Engine version: where it stands, and how to move it. */}

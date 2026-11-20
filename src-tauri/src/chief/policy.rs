@@ -26,6 +26,7 @@ pub enum Decision {
 }
 
 impl Decision {
+    #[allow(dead_code)]
     pub fn into_value(self) -> Value {
         match self {
             Decision::Grant { .. } => json!({ "ok": true }),
@@ -104,6 +105,7 @@ pub fn validate_task_start(
 
 /// `remote_mode` 能否承载「可能写文件/跑命令」的任务。read_only 项目里
 /// Chief 仍可发起任务，worker 起在只读权限档；写预授权完全交给本地配置。
+#[allow(dead_code)]
 pub fn can_write(remote_mode: RemoteMode) -> bool {
     matches!(
         remote_mode,
@@ -113,6 +115,7 @@ pub fn can_write(remote_mode: RemoteMode) -> bool {
 
 /// `marionette_task_send` / `task_cancel` / `task_collect` 的所有权校验：
 /// 只允许本 Chief 的任务、终态任务拒绝 send、cancelled 幂等放行。
+#[allow(dead_code)]
 pub fn validate_task_access(
     task: &super::types::Task,
     chief_session_id: &str,

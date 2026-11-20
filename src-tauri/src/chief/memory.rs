@@ -30,11 +30,13 @@ pub const MAX_HISTORY_LINES: usize = 2_000;
 pub const MAX_INDEX_BYTES: u64 = 256 * 1024;
 pub const MAX_PROPOSALS_BYTES: u64 = 128 * 1024;
 pub const MAX_SOURCE_REFS: usize = 32;
+#[allow(dead_code)]
 pub const RECENT_JOURNAL_DAYS: usize = 7;
 
 static MEMORY_LOCK: Mutex<()> = Mutex::new(());
 static ROOT_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
+#[cfg(test)]
 pub fn set_root_override_for_tests(path: Option<PathBuf>) {
     if let Ok(mut slot) = ROOT_OVERRIDE.lock() {
         *slot = path;
@@ -75,6 +77,7 @@ pub struct MemorySourceRef {
 }
 
 impl MemorySourceRef {
+    #[allow(dead_code)]
     pub fn session(session_id: impl Into<String>) -> Self {
         Self {
             kind: "session".to_string(),
@@ -170,7 +173,9 @@ pub struct MemorySnapshot {
 #[derive(Debug, Clone)]
 pub struct MemoryPaths {
     pub root: PathBuf,
+    #[allow(dead_code)]
     pub pinned: PathBuf,
+    #[allow(dead_code)]
     pub state: PathBuf,
     pub history: PathBuf,
     pub journal: PathBuf,
@@ -605,6 +610,7 @@ pub fn ensure_staff_memory(staff_id: &str) -> Result<MemoryPaths, String> {
     ensure_paths_and_files_unlocked(staff_id)
 }
 
+#[cfg(test)]
 pub fn read_index(staff_id: &str) -> MemoryIndex {
     let _guard = MEMORY_LOCK
         .lock()
@@ -612,6 +618,7 @@ pub fn read_index(staff_id: &str) -> MemoryIndex {
     read_index_unlocked(staff_id)
 }
 
+#[cfg(test)]
 pub fn read_pinned(staff_id: &str) -> Result<String, String> {
     let _guard = MEMORY_LOCK
         .lock()
@@ -619,6 +626,7 @@ pub fn read_pinned(staff_id: &str) -> Result<String, String> {
     read_file_unlocked(staff_id, "pinned.md", MAX_PINNED_BYTES)
 }
 
+#[allow(dead_code)]
 pub fn read_state(staff_id: &str) -> Result<String, String> {
     let _guard = MEMORY_LOCK
         .lock()
@@ -679,6 +687,7 @@ pub fn journal_target(date: &str) -> Result<String, String> {
     Ok(format!("journal/{date}.md"))
 }
 
+#[cfg(test)]
 pub fn write_journal(staff_id: &str, date: &str, body: &str) -> Result<MemoryFileMeta, String> {
     write_journal_with_source_refs(staff_id, date, body, Vec::new())
 }
@@ -804,6 +813,7 @@ fn list_journal_dates_unlocked(staff_id: &str) -> Result<Vec<String>, String> {
     Ok(dates)
 }
 
+#[allow(dead_code)]
 pub fn read_proposals(staff_id: &str) -> Result<Vec<MemoryProposal>, String> {
     let _guard = MEMORY_LOCK
         .lock()
@@ -969,6 +979,7 @@ pub fn resolve_proposal(
     Ok(resolved)
 }
 
+#[cfg(test)]
 pub fn read_history(staff_id: &str) -> Vec<MemoryHistoryEntry> {
     let _guard = MEMORY_LOCK
         .lock()
@@ -976,6 +987,7 @@ pub fn read_history(staff_id: &str) -> Vec<MemoryHistoryEntry> {
     read_history_unlocked(staff_id)
 }
 
+#[allow(dead_code)]
 pub fn append_history(
     staff_id: &str,
     action: &str,
@@ -990,6 +1002,7 @@ pub fn append_history(
     append_history_unlocked(staff_id, action, target, summary, source_refs)
 }
 
+#[cfg(test)]
 pub fn is_tombstoned_target(staff_id: &str, target: &str) -> bool {
     let _guard = MEMORY_LOCK
         .lock()
@@ -1063,10 +1076,12 @@ pub fn forget(
     save_index_unlocked(staff_id, &mut index)
 }
 
+#[cfg(test)]
 pub fn forget_pinned(staff_id: &str, reason: &str) -> Result<(), String> {
     forget(staff_id, "pinned.md", reason, Vec::new())
 }
 
+#[cfg(test)]
 pub fn forget_state(staff_id: &str, reason: &str) -> Result<(), String> {
     forget(staff_id, "state.md", reason, Vec::new())
 }

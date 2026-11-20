@@ -23,6 +23,7 @@ import (
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/autostart"
+	"github.com/yetone/magpie/internal/ccswitchlink"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/library"
 	"github.com/yetone/magpie/internal/omarchy"
@@ -445,6 +446,7 @@ func Run(version string, showMain bool, link string) error {
 		// so do the threads.
 		OnShutdown: func() {
 			unhookNoActivate()
+			stopServing()
 			proc.EndProbes()
 			if handedOver.Load() {
 				return
@@ -551,9 +553,20 @@ func Run(version string, showMain bool, link string) error {
 	})
 	menu.AddSeparator()
 	ver := menu.Add(labels.version).SetEnabled(false)
-	restart := menu.Add(labels.restart).SetHidden(true)
+	var ready string // the version waiting for a restart; on the main thread
+	restart := menu.Add(labels.restart)
 	restart.OnClick(func(*application.Context) {
 		// the window comes back if it was open; the tray alone if not
+		if updates.json().State != "ready" {
+			// no update: magpie as it is (restart.go), its requests
+			// handed over where the gateway can be
+			go func() {
+				if restartSelfNow(false, h.MainShown(), "") {
+					leave(h.app.Quit)
+				}
+			}()
+			return
+		}
 		now := func() bool {
 			if restartToUpdate(false, h.MainShown(), "") {
 				leave(h.app.Quit)
@@ -564,7 +577,6 @@ func Run(version string, showMain bool, link string) error {
 		updates.restartAsked(now)
 	})
 	quit := menu.Add(labels.quit).OnClick(func(*application.Context) { go h.AskQuit() })
-	var ready string // the version waiting for a restart; on the main thread
 	relabel := func() {
 		l := trayMenuLabels(trayLang(settings.Shared().Lang, systemLang), version, ready, pausedNow())
 		if waiting, b := updates.waitingFor(); waiting && ready != "" {
@@ -585,7 +597,6 @@ func Run(version string, showMain bool, link string) error {
 	updates.onReady = func(v string) {
 		application.InvokeSync(func() {
 			ready = v
-			restart.SetHidden(false)
 			relabel()
 		})
 	}
@@ -765,6 +776,16 @@ func Run(version string, showMain bool, link string) error {
 	// Windows and Linux also report the start's own link as an event.
 	var skip sync.Once
 	h.app.Event.OnApplicationEvent(events.Common.ApplicationLaunchedWithUrl, func(e *application.ApplicationEvent) {
+		// a ccswitch:// link the Mac's Launch Services still sends here, from
+		// an older magpie's claim: CC Switch opens it and has its scheme back
+		if l := e.Context().URL(); ccswitchlink.Is(l) {
+			go func() {
+				if err := ccswitchlink.Forward(l); err != nil {
+					log.Println("ccswitch:// link:", err)
+				}
+			}()
+			return
+		}
 		u := ImportLink([]string{e.Context().URL()})
 		dup := false
 		if u == link {
@@ -1018,7 +1039,7 @@ func (h *host) togglePanelNow() {
 			hideWebview(h.panel)
 			return
 		}
-		_ = h.tray.PositionWindow(h.panel, 6)
+		h.placeByIcon(h.panel)
 		showWebview(h.panel).Focus()
 		h.tellPanelSide()
 		return
@@ -1027,6 +1048,14 @@ func (h *host) togglePanelNow() {
 	if h.panel.IsVisible() {
 		h.tellPanelSide()
 	}
+}
+
+// placeByIcon places the panel by the tray icon. On the Mac, Wails puts
+// the window it places at a pop-up menu's level, over a screenshot tool's
+// (zyh6036 on X), so it goes back to a menu bar extra's (setPanelLevel).
+func (h *host) placeByIcon(w *application.WebviewWindow) {
+	_ = h.tray.PositionWindow(w, 6)
+	setPanelLevel(w)
 }
 
 // tellPanelSide tells the panel, just placed, which of its edges opens the

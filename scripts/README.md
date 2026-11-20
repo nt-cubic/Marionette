@@ -13,11 +13,19 @@
 | `verify-model-library.mjs` | `node scripts/verify-model-library.mjs` | 原生/共享模型按真实来源合并、不同账号同名模型保留、provider 与模型隐藏/排序/搜索、凭据扫描返回格式兼容 |
 | `verify-bridge-routing.mts` | `npx tsx scripts/verify-bridge-routing.mts` | 跨用模型路由：绑定裸 id → agent 原生 `marionette…` wire id；OpenCode 落回 OpenRouter/缺 provider 时芯片判 stale，缓存态不误报，Claude/Codex 间接注入不误判 |
 | `verify-model-source-engine.mjs` | `node scripts/verify-model-source-engine.mjs [magpie.exe]` | 临时隔离目录与本机假接口，验证已安装引擎的自定义 provider 添加、带 tag 的模型、换钥匙、模型更新、删除；仅用假 key |
+| `verify-engine-contract.mts` | `npx tsx scripts/verify-engine-contract.mts <engine.exe>` | 进程内 Rust 引擎与 Magpie 回退共用的唯一合同尺：C1–C6 + D1–D10（三协议流式/工具/thinking/压缩/Origin/错误/断流/组转移/整数工具参数） |
+| `verify-rust-sku-e2e.mjs` | `node scripts/verify-rust-sku-e2e.mjs` | 隔离 profile + CDP 9223 驱动真实 Tauri 注册链，验证进程内网关状态、来源写盘、模型目录、Chat/SSE、额度命令；不要混 `--lang` |
+| `t13-real-key-reconcile.mjs` | `node scripts/t13-real-key-reconcile.mjs` | 使用隔离目录和用户已配置的真实来源做只读/最小生成对账；不打印 key，不碰真实 usage 台账 |
+| `upstream-watch.mts` | `npx tsx scripts/upstream-watch.mts` | 研究克隆的 Magpie 上游 diff → 合同区分级 digest；只提示需要哪些行为移植，不自动合并代码 |
 | `caps-smoke.mts` | `node scripts/caps-smoke.mts` | Composer 的能力合并：live `session/new` 数据优先、兜底表只在 live 为空时生效、档位标签不重复轴名、未知 agent 直通 |
 | `smoke-stream-merge.mts` | `npx tsx scripts/smoke-stream-merge.mts` | 流式合并：Grok Reply 逐 token、Codex Thought 不丢标点、多会话交错不串台；notice/retry 作为独立通知卡进入对话流并通过 JSONL 往返；OpenCode v2 子代理流进 Task 卡不进 Reply；OpenCode write 从 `rawInput.content` 合成 diff 并在 success note 后保留；逐字数字 `1000` 与重复字不丢；Grok `spawn_subagent` + `_x.ai/session/update` 收进并行子代理卡 |
-| `verify-memo-box.mts` | `npx tsx scripts/verify-memo-box.mts` | 收纳盒：origin `memo` 的 Chat 会话拆进侧栏「收纳盒」栏目、10-22 方案的 `~/.marionette/inbox` 幽灵项目在加载口被过滤（正/反斜杠、尾斜杠）、memoPrompt dialog/doc 预填契约、文字拖放通道（页内拖拽源 tracker 让路 + dock 区文字 DOM 事件）、单列帖子流（`groupMemosByDay` / 顶上写一条 / 四种卡，不再是 40px 文件行）、图片卡按横竖比 contain 完整显示 |
+| `verify-memo-box.mts` | `npx tsx scripts/verify-memo-box.mts` | 收纳盒：origin `memo` 的 Chat 会话拆进侧栏「收纳盒」栏目、10-22 方案的 `~/.marionette/inbox` 幽灵项目在加载口被过滤（正/反斜杠、尾斜杠）、memoPrompt dialog/doc 预填契约、文字拖放通道（页内拖拽源 tracker 让路 + dock 区文字 DOM 事件）、单列帖子流（`groupMemosByDay` / 顶上写一条 / 四种卡，不再是 40px 文件行）、图片卡按横竖比 contain 完整显示；同时钉住单格完整 tab page、真实多格才用每格标签栏、surface 标签不串格、常驻复选框多选、单一更多菜单和窄格底栏不溢出 |
 | `verify-agent-reentry.mts` | `npx tsx scripts/verify-agent-reentry.mts` | 再次进入对话（post-turn 续跑）：waiting+优雅期才武装、迟到回声/运行中/无回合边界不武装；安静收尾只封本会话尾卡（Reply→durationMs、Thought→endedAt），已封卡与他窗事件不动；zcode 真实形状回放不被粘进前一张卡 |
 | `verify-staff-status.mts` | `npx tsx scripts/verify-staff-status.mts` | 员工模式纯逻辑：waiting_user > failed/interrupted > running > thinking > idle、终态保留与 stale、任务/承诺计数、channel-neutral 通知优先级与勿扰/冷却/小时额度、项目权限 round-trip、员工行 due commitment 徽标 |
+| `verify-staff-chat.mts` | `npx tsx scripts/verify-staff-chat.mts` | 员工聊天投影逻辑：chief 会话仅保留用户、员工、决策以及警告/错误事件。 thought、tool call、activity、model 和 token 元数据保持隐藏。 输入状态和身份解析具有回归覆盖率。 |
+| `verify-exit-meaning.mts` | `npx tsx scripts/verify-exit-meaning.mts` | 命令退出码人话（移植 codeg exit-meaning）：grep/rg exit 1 无匹配、test 不成立、diff 有差异、which/ls 未找到、git grep/diff/rev-parse 分命令答案、127/126/124 命名失败、128+n 信号名；保守面（管道取尾段、`&& echo` 回退、cd setup、set -e/子壳/替换/后台/heredoc 放弃、shell 抱怨行不冒充答案）；i18n 详情文案 |
+| `verify-pasted-files.mts` | `npx tsx scripts/verify-pasted-files.mts` | 粘贴文件按真实路径附加（移植 codeg pasted-file-paths）：webview File（名字+大小）与 OS 剪贴板 CF_HDROP 条目配对、目录按名配对、同名不同文件夹一对一不串、配不上的保持顺序进 rest、中文文件名 |
+| `verify-inline-dollar.mts` | `npx tsx scripts/verify-inline-dollar.mts` | 守卫式单美元行内公式（移植 codeg inline-dollar-math）：紧贴同行 TeX 形态（`$x^2$`/`$E=mc^2$`/`$f(x)$`/字母符号）改写为 `$$` 行内；货币对/shell 展开/代码与原始 HTML/display 围栏/裸金额/跨行/未闭流式片段保持字面；幂等；scan 把围栏外候选当数学提示 |
 | `inventory-zh.mts` | `npx tsx scripts/inventory-zh.mts [--rust] [--lines] [--check]` | i18n 盘点：列出（注释以外）还有中文的源码文件与行号。`--rust` 扫 `src-tauri/src`，`--lines` 给全量行号，`--check` 前端白名单外非零即退出 1。注意：正则密集文件可能误报（正则里的引号会骗过注释剥离器），Rust 侧 `ts!` 调用点按设计保留中文 |
 | `check-locale-fragments.mjs` | `node scripts/check-locale-fragments.mjs src/locales/parts/<batch>.zh.ts …` | i18n 片段对齐快检：每个 en 片段的键必须与对应 zh 片段完全一致（缺键/多键/重复键报错）；权威校验仍是一把梭 `npx tsc --noEmit` |
 | `usage-smoke.mts` | `npx tsx scripts/usage-smoke.mts` | usage 面板解析，断言用的是真实 adapter 抓到的报文 |
@@ -28,12 +36,14 @@
 | `verify-subagent-adapters.mts` | `npx tsx scripts/verify-subagent-adapters.mts` | 各 agent 走私方式都能认成独立子代理卡：ZCode 标题是任务描述 + `_meta.claudeCode.toolName`、Codex collab `rawInput` / 无 spawn 的 `_meta.codex.subagent`、通用 spawn 动词 `delegate_task`；wait/close/goal 排除 |
 | `fork-smoke.mts` | `npx tsx scripts/fork-smoke.mts` | 分叉的切点与拷贝：按 message id（退化为文本）定位那条回复，子任务/交接卡片不带过去，事件原对象不被改 |
 | `image-path-smoke.mts` | `npx tsx scripts/image-path-smoke.mts` | 对话里图片的路径：相对路径按会话工作目录拼成绝对路径，`file://` 去协议，绝对路径原样（用的是真实转录里的路径） |
+| `verify-image-crop.mts` | `npx tsx scripts/verify-image-crop.mts` | 图片附件默认裁剪框：全图起点、四边/四角拖动、最小尺寸与越界限制、标注随裁剪重映射 |
 | `verify-usage-row-layout.mts` | `npx tsx scripts/verify-usage-row-layout.mts` | usage 行布局：不再渲染 Last turn / Session total |
 | `verify-text-pipeline.mjs` | `npm run verify:text` | 文本 / 展示管线的冒烟检查（只依赖 `markdownText.ts`，不需要整棵 import 图） |
 | `verify-rich-markdown.mts` | `npx tsx scripts/verify-rich-markdown.mts` | 富文本管线：纯字符串扫描决定 katex/shiki/mermaid/spec 是否加载（bash `$$` 不当公式、单 `$` 永远字面、首 token 路由、```` 围栏状态机）、LaTeX `\[..\]`→`$$..$$` 改写不动围栏内、```spec 卡片 schema 三道防护（JSON 容错/原型污染/深度+尺寸上限）与各 type 形状校验 |
 | `verify-browser-pick.mts` | `npx tsx scripts/verify-browser-pick.mts` | 浏览器元素批注的数据层：不可信页面声明、URL/query/hash/path 脱敏、多页面分组、元素/框选块、ref 与截图顺序、页面文本单行净化、标签拼装、页面输入屏障/可信事件/24 条上限的静态契约、双语词典对齐 |
 | `verify-browser-overlay.mts` | `npx tsx scripts/verify-browser-overlay.mts` | 原生浏览器遮挡判断：模态弹窗、相交菜单、隐藏浮层及多个浮层关闭 |
-| `verify-workspace-surface.mts` | `npx tsx scripts/verify-workspace-surface.mts` | Surface 标签 lib 层：surface tab id 编解码（`document:` 前缀往返）、共享标签顺序、fresh tab 只有 `display:"workspace"` 才抢工作区、宽度换算助手（2026-11-18 起布局规则退役，Surface 改为分屏树窗格标签——树语义由 verify-split-workspace 钉） |
+| `verify-browser-link.mts` | `npx tsx scripts/verify-browser-link.mts` | 浏览器链接路由：主窗口进应用内浏览器、无宿主时回退系统浏览器，file/javascript 不被当作浏览器链接 |
+| `verify-workspace-surface.mts` | `npx tsx scripts/verify-workspace-surface.mts` | Surface 标签 lib 层：`document:` tab id 与会话树路径编解码、fresh browser tab 只有 `display:"workspace"` 才抢工作区。旧的并排 SurfaceWorkspace / 宽度换算助手已删除，布局与拖拽语义由 `verify-split-workspace` 钉 |
 | `verify-dev-server.mts` | `npx tsx scripts/verify-dev-server.mts` | 开发服务器发现：ANSI 去除、loopback/通配地址归一化、公网与 LAN 拒绝、尾标点清理、同 origin 去重、多服务识别、默认只通知 |
 | `verify-browser-prefs.mts` | `npx tsx scripts/verify-browser-prefs.mts` | Agent tab 空闲清理偏好：默认 10 分钟、允许值、非法值回落，以及 10 → 30 → 60 → never 循环 |
 | `verify-activity-cluster.mts` | `npx tsx scripts/verify-activity-cluster.mts` | 活动折叠：thought+tool 同一集群、同类连续分组、结束后摘要为 `1 think, 2 read, 3 edit`、live 时跟当前工具 |

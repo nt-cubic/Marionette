@@ -1,155 +1,150 @@
 <p align="center">
-  <img src="docs/logo.png" width="128" alt="Marionette" />
+  <img src="docs/logo.png" alt="Marionette" width="180" />
 </p>
 
 <h1 align="center">Marionette</h1>
 
+<h3 align="center">Every model, in the environment it runs best</h3>
+
 <p align="center">
-  <strong>Agent Harness, All in One</strong><br>
-  Every model, in the environment it runs best.
+  Claude belongs in Claude Code, Grok in Grok Build, GPT in Codex, DeepSeek in DeepSeek Harness.<br>
+  You don't need one agent that does everything — you need one window where each does what it's best at.
 </p>
 
 <p align="center">
-  <a href="https://github.com/nt-cubic/Marionette/releases/latest"><img src="https://img.shields.io/github/v/release/nt-cubic/Marionette?style=flat-square&label=release" alt="release"></a>
-  <a href="https://github.com/nt-cubic/Marionette/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/nt-cubic/Marionette/ci.yml?branch=master&style=flat-square&label=CI" alt="CI"></a>
-  <a href="https://github.com/nt-cubic/Marionette/releases"><img src="https://img.shields.io/github/downloads/nt-cubic/Marionette/total?style=flat-square&label=downloads" alt="downloads"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/nt-cubic/Marionette?style=flat-square" alt="license"></a>
-  <img src="https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-blue?style=flat-square" alt="platform">
-  <img src="https://img.shields.io/badge/UI-%E4%B8%AD%E6%96%87%C2%B7English-green?style=flat-square" alt="languages">
+  Context, models, plugins and usage settle in one local place. One Windows executable, ready to run.
 </p>
 
 <p align="center">
-  <a href="README.md">简体中文</a> · <b>English</b>
+  <a href="README.md">中文</a> | <b>English</b>
 </p>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/main-dark.png">
-  <img src="docs/screenshots/main.png" alt="Marionette main window">
-</picture>
+<p align="center">
+  <a href="https://github.com/nt-cubic/Marionette/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/nt-cubic/Marionette?style=for-the-badge&logo=github&color=1B54E8&labelColor=20242D"></a>
+  <a href="https://github.com/nt-cubic/Marionette/releases"><img alt="downloads" src="https://img.shields.io/github/downloads/nt-cubic/Marionette/total?style=for-the-badge&logo=github&color=34D399&labelColor=20242D"></a>
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/github/license/nt-cubic/Marionette?style=for-the-badge&logo=opensourceinitiative&logoColor=white&color=5319E7&labelColor=20242D"></a>
+  <img alt="platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078D4?style=for-the-badge&logo=windows&labelColor=20242D">
+  <a href="docs/CURRENT.md"><img alt="docs" src="https://img.shields.io/badge/docs-read%20online-5319E7?style=for-the-badge&labelColor=20242D"></a>
+</p>
 
----
-
-Claude belongs in Claude Code, Grok in Grok Build, GPT in Codex, DeepSeek in DeepSeek Harness.
-
-You don't need one agent that does everything. You need one window where each does what it's best at.
-
-Marionette is a local multi-agent GUI shell for Windows: it starts, shows, switches and records agents — it does not implement an agent runtime. **Single file: download and run, or install with one line.**
-
-## One window, every agent
-
-OpenCode, Claude Code, Codex, Grok Build, ZCode, DeepSeek Harness, Pi — one window holds them all. Any other ACP-speaking agent joins any time via a custom-agent entry.
-
-The ChatGPT and DeepSeek web apps are in there too: log into the page once and they become two pure chat agents.
-
-- **On-demand** — nothing runs until you type
-- **Sessions as tabs**, up to a 4-pane split, different agents working side by side
-- **Ctrl K** — one palette for navigation, new sessions, window behavior, appearance, quit (see "Ctrl K palette" below)
-
-## Two side rails are the workbench
-
-Find on the left, watch on the right.
-
-- Left rail: projects, sessions, chats, the [Memo Box](#more)
-- Right rail: Plan, Todo, usage, and this turn's changes
-
-Everything sits where it belongs — no digging through the chat stream.
-
-## Give your desktop back
-
-Terminals and IDEs have owned the desktop long enough. Drag Marionette to a screen edge and it collapses into a slim strip leaving a sliver of a handle; slide it out when you need it, it tucks itself away when you don't.
-
-Agents keep running beside you: who's running, which step, which files just changed — one glance. Window closed, they keep going; only a real quit is a quit.
-
-## Ctrl K palette
-
-Press **Ctrl K** anywhere to open the command palette. Keyboard-first, it never interrupts what you are doing:
-
-- **Go to**: search sessions by name, arrow keys to pick, Enter to open
-- **New chat**: start a new session in the default folder
-- **Big picture**: Roundtable, token usage analysis and plugin management all open from here
-- **Dock / undock**: toggle the edge strip (same as the titlebar dock button)
-- **Close behavior**: choose whether the close button quits the app (default) or keeps it running in the background — window hidden, sessions and engine alive, launch again to bring it back
-- **Pinned rail**: keep the side panel from retracting while docked
-- **Appearance**: theme (dark / light / system) and language, one click each
-- **Quit**: stop every agent and the engine, then exit
-
-Tab shortcuts match the browser: **Ctrl T** new chat, **Ctrl W** close tab, **Ctrl Tab / Ctrl Shift Tab** cycle tabs, **Ctrl 1-9** jump to the Nth, **Ctrl Shift T** reopen the last closed one.
-
-## Switch the agent, keep the brain
-
-Moving from Claude to OpenCode doesn't lose the thread. Marionette generates a plain `handoff.md` — visible, editable, committable to Git. No black magic.
-
-Chats from the CLI? One click pulls them into the list, ordered by time, ready to continue.
-
-## One source, any agent
-
-Keys for OpenCode Go, DeepSeek, GLM, Kimi, OpenRouter and xAI, plus Grok and ChatGPT subscriptions, all show up in every session's model menu. Configure once, not once per agent.
-
-MCP, Skills, plugins, long-term memory — one scan, one place. A plugin installs once and works for every agent; the same tool works for each of them; your preferences follow you across switches.
-
-## Memo Box
-
-A paragraph, a link, an image, a folder — drop it in and it becomes a card, grouped by today, yesterday, and date. Text cards expand in place, image cards show at full ratio, and Ctrl+V works too.
-
-When you need them, select a few and start a new conversation — the materials land in the composer automatically. Or drag a single card straight into any session at the cursor. While docked, dropping on the upper half of the strip goes to the box.
-
-## Image annotation
-
-Paste a screenshot into the composer and the annotator opens: click to pin a point, drag to box a region, attach one sentence to each mark.
-
-The agent receives numbered marks with your notes — no more "the thing to the right of that button".
-
-## Document tabs
-
-Click a `.md` or `.txt` in the conversation and it opens inside the app — no detour to an editor. Long documents get **compare mode**: conversation on the left, document on the right, draggable divider; read on one side while the agent edits the other. In-document links navigate in place, and saving is guarded against stale-file conflicts.
-
-## Built-in browser
-
-Browser tabs open right beside the session. You browse as usual — and the agent reads the same page: it works off the page's structure tree, clicking, filling and screenshotting by element reference instead of guessing coordinates. Hand it a link and it opens the tab, reads it, and drives it on its own.
-
-## Computer Use
-
-For work beyond the browser window there's Computer Use: the agent can see the screen and drive the mouse and keyboard. Every control action goes through a permission card first; system settings and credential managers are never shareable, and keystrokes pass a whitelist.
-
-## Roundtable
-
-One topic, several models at the table: they state positions and review each other, the chair distills a plan — and nothing executes until you approve it. If a verification command turns out destructive (`git push`, `rm -rf`, …), the whole deliberation parks and waits for your ruling: never silently allowed, never silently counted as failure.
-
-## Token usage
-
-A cross-session token ledger plus an analysis page (Ctrl K → "Token usage analysis"):
-
-- **Four buckets** — fresh input, cache reads, cache writes and output, booked by day and model; list prices translate it into money (list price — not what your subscription actually charges), and the cache-hit ring shows whether the model is actually saving you money
-- **Where they went** — per-session token composition (system prompt, tool definitions, injected context, conversation) and time breakdown (which tools, which commands, which skills, how many lines changed)
-- **Work-hours heatmap** — hour × weekday, when the tokens actually burn
-- **Conversation list** — usage and cost per session, split proportionally if you switched models mid-session
-- **An honest ledger** — persisted on disk for 180 days, with read-only backfill from each agent's own session history; every metric carries its source tag (measured / estimated / derived / list price) — nothing invented
-
-## Telegram
-
-Pair a bot from @BotFather and your phone becomes the remote: finished turns, approvals waiting, errors — notifications arrive with the full text.
-
-Reply in Telegram and it lands in that session through the exact same pipeline as local input. Permission notices carry inline buttons; tap to approve. A pinned control panel shows who's running, switches the reply target, and stops tasks remotely.
-
-## More
-
-- **Parallel subagents** — each on its own, no scroll spam
-- **Edit & resend** — change a line you said before; the rest of the conversation starts over
-- **Forking** — fork a new session from any reply, history rides along
-- **Live timeline** — a swimlane time chart of where each step spent its time, folded back into a summary when the turn ends
-- **Rich rendering** — math, diagrams, and syntax highlighting, right in the stream
-- **Scheduled sends** — write it now, it fires on time
-- **Session parking** — idle sessions park after two hours; one message brings them back
-
-## Quick start
-
-**One-line install (recommended)** — installs into `%LOCALAPPDATA%\Programs\Marionette`, adds a Start menu entry and a `marionette` command on PATH. In-app updates replace it in place, no reinstall.
+If this project helps you, please **give it a star** in the top right.
 
 ```powershell
 irm https://github.com/nt-cubic/Marionette/releases/latest/download/install.ps1 | iex
 ```
 
-No admin needed. To uninstall (quit the app first):
+---
+
+## Why this exists
+
+Every coding agent is strongest on its own turf: Claude in Claude Code, Grok in Grok Build, GPT in Codex. The moment you want several at once, the cost shows up:
+
+* **More windows than desktop**: terminals, an IDE, three or four chat windows. To ask two models the same question and compare, you copy and paste by hand.
+* **Sessions scatter everywhere**: the conversation from the CLI, the half-hour edit, the run you forgot about — all unfindable. Switch agent or machine and the thread is gone.
+* **Every agent configured from scratch**: keys, subscriptions, MCP, plugins, skills, preferences — each on its own, none shared.
+* **Leaving the desk breaks it**: a long task stalls on a permission prompt, so you don't dare walk away; you come back to a button waiting to be pressed.
+
+**Marionette does not implement agents and does not try to replace them. It explores a different way to use them: gather the agents into one window, and lay their context, quotas and memory out in one place.**
+
+* **Marionette handles**: starting, showing, switching, recording, handing off — who is running, which step, which files changed, what it cost.
+* **You handle**: judgement, decisions, and walking away from the desk when you want to.
+
+---
+
+## Core features
+
+### 1. One window, every agent
+
+* **Built-in agents**: OpenCode, Claude Code, Codex, Grok Build, ZCode, DeepSeek Harness, Pi, Antigravity — whatever is installed shows up in the list, and any other ACP-speaking agent joins through the custom-agent entry.
+* **Four panes**: different agents on the same job, answers side by side; sessions are tabs, Ctrl 1–9 to switch.
+* **On demand**: nothing runs until you type; close the window and they keep running — only a real quit is a quit.
+* **Web agents too**: log into the ChatGPT or DeepSeek web app once and each becomes a plain chat agent.
+
+<p align="center">
+  <img src="docs/screenshots/main.png" alt="Marionette main window" width="90%" />
+  <br/>
+  <sub>Two agents on the same project: projects and sessions on the left, this turn's changes and quotas on the right</sub>
+</p>
+
+### 2. Hire a staff member
+
+* **Always around**: a staff member has a name, a memory and a list of projects it may touch — not a throwaway session.
+* **Delegate and report**: say what you want in one line; it opens tasks, sends workers to change code, and reports back with conclusions — its own conversation holds decisions, not tool logs.
+* **Read-only and approvals**: staff itself is read-only; writes wait for your approval, and one button halts the whole roster.
+* **Your phone stays in the loop**: finished turns, pending approvals and errors reach Telegram; reply there and it lands in that session.
+
+### 3. One source, any agent
+
+* **Keys and subscriptions shared**: keys for OpenCode Go, DeepSeek, GLM, Kimi, OpenRouter and xAI, plus Grok and ChatGPT subscriptions, appear in every session's model menu.
+* **Install once, works everywhere**: MCP, Skills, plugins and long-term memory are scanned and managed in one place; your preferences follow you across agents.
+* **Our own Rust engine**: runs in-process with no separate engine process; 6.2 MB executable, with quotas, balances and usage booked in one ledger.
+
+### 4. Switch the agent, keep the brain
+
+* **handoff.md**: switching agents produces a plain Markdown file — visible, editable, committable. No black magic.
+* **Reclaim CLI sessions**: each CLI's own history pulls into the list with one click, ordered by time, ready to continue.
+* **Fork and resend**: fork a new session from any reply; change a line you said and the rest of the conversation starts over.
+
+### 5. Roundtable: several models at one table
+
+* **Deliberate first, act later**: positions stated, cross-review, a chair distils the plan — nothing executes until you approve.
+* **Destructive commands stop it**: hit `git push` or `rm -rf` during verification and the whole deliberation parks for your ruling — never silently allowed.
+
+### 6. Token usage: an honest ledger
+
+* **Four buckets**: fresh input, cache reads, cache writes and output booked separately, by day and by model, with list prices turned into money.
+* **Where it went**: which tools, which commands, which skills, which files.
+* **Transparent provenance**: every number carries a measured / estimated / derived / list-price tag. Nothing invented.
+* **History backfill**: reads each CLI's own session store, so conversations that never went through Marionette count too.
+
+### 7. The strip at the screen edge
+
+* **Collapse to the edge**: drag it to a screen edge and it becomes a slim strip; touch it to slide out, it tucks itself away when you're done.
+* **Agents keep running**: who's running, which step, which files just changed — one glance; send work from the strip itself.
+* **Drop it in**: files, images, links and text land on the handle — the upper half goes to the Memo Box, the lower half to the composer.
+
+---
+
+## More screens
+
+<details>
+<summary><b>Click to expand: Memo Box, built-in browser, document compare, Computer Use, image annotation</b></summary>
+<br/>
+
+#### Memo Box
+A paragraph, a link, an image, a folder — drop it in and it becomes a card. Pick a few, start a conversation, and the material lands in the composer.
+
+#### Built-in browser
+Browser tabs open beside the session. The agent reads the page's structure tree and clicks, fills and screenshots by element reference — no coordinate guessing.
+
+#### Document compare
+Open a `.md` right in the app. Long documents get compare mode: read on the left, let the agent edit on the right, drag the divider as you like.
+
+#### Computer Use
+Work beyond the browser window too: the agent can see the screen and drive the mouse and keyboard. Every control action passes a permission card first, and keystrokes go through a whitelist.
+
+#### Image annotation
+Paste a screenshot into the composer and the annotator opens: click to pin a point, drag to box a region, one sentence per mark.
+
+</details>
+
+---
+
+## Quick start
+
+**One-line install (recommended)** — installs into `%LOCALAPPDATA%\Programs\Marionette`, adds a Start menu entry and a `marionette` command on PATH; in-app updates replace it in place. No admin needed.
+
+```powershell
+irm https://github.com/nt-cubic/Marionette/releases/latest/download/install.ps1 | iex
+```
+
+> **Requirements**: Windows 10 / 11 x64 with the WebView2 Runtime (preinstalled on Win11 and updated Win10).
+
+### Portable build and uninstall
+
+Or [download](https://github.com/nt-cubic/Marionette/releases/latest) `Marionette.exe` and double-click it (portable, no Start menu entry).
+
+To uninstall (quit the app first):
 
 ```powershell
 curl.exe -fsSLo install.ps1 https://github.com/nt-cubic/Marionette/releases/latest/download/install.ps1
@@ -157,10 +152,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall
 del install.ps1
 ```
 
-Or [download](https://github.com/nt-cubic/Marionette/releases/latest) `Marionette.exe` and double-click it (portable, no Start menu entry). Both require the WebView2 Runtime (preinstalled on Win11 and updated Win10).
-
-<details>
-<summary>Run from source</summary>
+### Run from source
 
 ```bash
 git clone https://github.com/nt-cubic/Marionette
@@ -168,10 +160,7 @@ cd Marionette
 npm install && npm run tauri dev
 ```
 
-</details>
-
-<details>
-<summary>Documentation map</summary>
+### Documentation
 
 | Want to know | Read |
 |---|---|
@@ -179,10 +168,10 @@ npm install && npm run tauri dev
 | Full docs index | [docs/README.md](docs/README.md) (Chinese) |
 | How to edit UI strings (i18n) | [docs/guides/i18n-guide.md](docs/guides/i18n-guide.md) (Chinese) |
 
-</details>
-
 ---
 
 ## License
 
-[MIT](LICENSE) · © 2026 nt-cubic
+Released under the [MIT License](LICENSE).
+
+If Marionette helps your daily work, please give it a **⭐ Star** on GitHub.

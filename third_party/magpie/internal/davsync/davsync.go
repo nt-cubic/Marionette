@@ -53,7 +53,7 @@ import (
 // addPlugins is backup.AddPlugins: a var so a test installs nothing.
 var addPlugins = backup.AddPlugins
 
-// removePlugin is provider.RemovePlugin, as Settings → Plugins removes one:
+// removePlugin is provider.RemovePlugin, as the Plugins page removes one:
 // a var so a test removes nothing.
 var removePlugin = func(name string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -988,6 +988,11 @@ func hashes(b backup.Bundle) map[string]string {
 		c.Commands = nil
 		lib = &c
 	}
+	if lib != nil && lib.Rules != nil && len(*lib.Rules) == 0 { // as before them, without one
+		c := *lib
+		c.Rules = nil
+		lib = &c
+	}
 	if lib != nil && lib.Hooks != nil && len(*lib.Hooks) == 0 { // as before them, without one
 		c := *lib
 		c.Hooks = nil
@@ -1066,7 +1071,7 @@ func unset(b backup.Bundle, p string) bool {
 			}
 		}
 		return len(l.MCP) == 0 && len(l.Skills) == 0 &&
-			(l.Subagents == nil || len(*l.Subagents) == 0) && (l.Commands == nil || len(*l.Commands) == 0) && (l.Hooks == nil || len(*l.Hooks) == 0) &&
+			(l.Subagents == nil || len(*l.Subagents) == 0) && (l.Commands == nil || len(*l.Commands) == 0) && (l.Rules == nil || len(*l.Rules) == 0) && (l.Hooks == nil || len(*l.Hooks) == 0) &&
 			(l.Bili == nil || strings.TrimSpace(*l.Bili) == "") && l.ClaudePlugins == nil && (l.Plugins == nil || len(*l.Plugins) == 0)
 	}
 	return false

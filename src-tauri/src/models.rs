@@ -104,6 +104,16 @@ impl AgentInstallSpec {
             note: Some(note.to_string()),
         }
     }
+
+    /// `binary` → in-app downloader fetches the vendor archive (antigravity).
+    fn binary(note: &str) -> Self {
+        Self {
+            manager: "binary".to_string(),
+            package: None,
+            requires: Vec::new(),
+            note: Some(note.to_string()),
+        }
+    }
 }
 
 fn dependency(command: &str, label: &str, package: Option<&str>) -> AgentDependency {
@@ -262,6 +272,24 @@ impl AgentConfig {
                     "zcode-acp-server",
                     vec![dependency("zcode", "ZCode CLI (Desktop install)", None)],
                 ),
+            ),
+            // Google Antigravity's first-party ACP server (`agy_acp_server`) —
+            // NOT the old `gemini` (Gemini CLI npm adapter) cut in the
+            // 2026-10-20 roster trim. Binary zip from dl.google.com (no npm);
+            // `oauth-personal` reaches the free tier with a plain Google
+            // account, settings.json/scratch/login handled host-side
+            // (antigravity_support.rs, M0 verified 2026-11-19).
+            Self::new(
+                "antigravity",
+                "Google Antigravity",
+                "agy_acp_server",
+                vec![],
+                "acp",
+                "stdin",
+                AgentInstallSpec::binary(&crate::ts!(
+                    "可一键下载安装（dl.google.com 官方 zip，约 105MB）；也可手动下载并把解压出的整个文件夹加入 PATH —— agy_acp_server.exe 与 localharness_external.exe 必须留在同一目录。Google 账号登录即有免费额度。",
+                    "One-click install (official dl.google.com zip, ~105 MB); or download manually and put the whole extracted folder on PATH — agy_acp_server.exe and localharness_external.exe must stay in the same directory. Signing in with a Google account includes the free tier."
+                )),
             ),
             Self::new(
                 "web-chatgpt",
