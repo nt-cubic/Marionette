@@ -19,7 +19,9 @@ import { linkifyChildren, useLinkMenu } from "./LinkedText";
 import { MdMermaid } from "./MdMermaid";
 import { useShikiHtml } from "./MdShikiCode";
 import { SpecCard } from "./SpecCard";
+import { SeenImageViewer } from "./seen/SeenImageViewer";
 import type { LinkTarget } from "../lib/linkTargets";
+import type { SeenImage } from "../lib/seenImages";
 
 type MarkdownBodyProps = {
   text: string;
@@ -277,7 +279,7 @@ function isAbsolutePath(value: string): boolean {
 }
 
 /**
- * Inline image — click expands it in place inside the reply.
+ * Inline image — click opens the shared full-screen image viewer.
  * Right-click opens the menu (Open with system viewer / Show in Explorer /
  * Copy path). stopPropagation so a click inside a markdown link
  * (`[![alt](img)](url)`) doesn't fire twice.
@@ -290,7 +292,8 @@ function isAbsolutePath(value: string): boolean {
 export function PreviewImage({ src, alt }: { src?: string; alt?: string }) {
   const cwd = useContext(MarkdownImageCwdContext);
   const { openMenu, primaryAction, renderMenu } = useLinkMenu();
-  const [expanded, setExpanded] = useState(false);
+  const figureRef = useRef<HTMLElement | null>(null);
+  const [viewerImage, setViewerImage] = useState<SeenImage | null>(null);
   const [loaded, setLoaded] = useState<LoadedImage | null>(null);
   const [failed, setFailed] = useState(false);
   const remote = Boolean(
@@ -310,7 +313,7 @@ export function PreviewImage({ src, alt }: { src?: string; alt?: string }) {
   const caption = imageCaption(alt, src);
 
   useEffect(() => {
-    setExpanded(false);
+    setViewerImage(null);
     if (!src || remote) {
       setLoaded(null);
       setFailed(false);
@@ -344,46 +347,50 @@ export function PreviewImage({ src, alt }: { src?: string; alt?: string }) {
     };
   }, [localPath, remote, src]);
 
-  useEffect(() => {
-    if (!expanded) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      setExpanded(false);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [expanded]);
-
   const displaySrc = remote ? localPath : loaded?.dataUrl;
   // A near-miss match means the file read is not the path in the reply.
   const shownPath = loaded?.path ?? localPath;
   const t = useT();
+  const viewerSrc = remote ? src : shownPath;
+
+  const openViewer = () => {
+    if (!viewerSrc || failed) return;
+    const at = Date.now();
+    const createdAt = new Date(at).toISOString();
+    setViewerImage({
+      key: viewerSrc,
+      src: viewerSrc,
+      name: caption,
+      via: "read",
+      at,
+      uses: 1,
+      ref: { type: "tool_call", createdAt },
+    });
+  };
 
   return (
     <>
-      <figure className={expanded ? "md-image-card is-expanded" : "md-image-card"}>
+      <figure className="md-image-card" ref={figureRef}>
         <div className="md-image-card__frame">
           {displaySrc && !failed ? (
             <img
               src={displaySrc}
               alt={caption}
               loading="lazy"
-              className={expanded ? "md-body__img is-expanded" : "md-body__img"}
+              className="md-body__img"
               title={shownPath}
               role="button"
               tabIndex={0}
-              aria-expanded={expanded}
-              aria-label={expanded ? t("md.collapseImageAria", { caption }) : t("md.enlargeImageAria", { caption })}
+              aria-label={t("md.enlargeImageAria", { caption })}
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
-                setExpanded((current) => !current);
+                openViewer();
               }}
               onKeyDown={(event) => {
                 if (event.key !== "Enter" && event.key !== " ") return;
                 event.preventDefault();
-                setExpanded((current) => !current);
+                openViewer();
               }}
               onContextMenu={(event) => {
                 if (!target) return;
@@ -435,6 +442,18 @@ export function PreviewImage({ src, alt }: { src?: string; alt?: string }) {
         )}
       </figure>
       {renderMenu()}
+      {viewerImage && (
+        <SeenImageViewer
+          images={[viewerImage]}
+          startIndex={0}
+          sourceLabel={t("md.replyImageSource")}
+          onClose={() => setViewerImage(null)}
+          onLocate={() => {
+            const node = figureRef.current;
+            if (node) node.scrollIntoView({ block: "center", behavior: "smooth" });
+          }}
+        />
+      )}
     </>
   );
 }

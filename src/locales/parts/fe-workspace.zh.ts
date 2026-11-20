@@ -27,6 +27,7 @@ export const zh = {
   "md.elidedMiddleLines": "⋯ 中间省略 {n} 行 ⋯",
   "md.commentThisLine": "评论此行",
   "md.imageFallbackAlt": "图片",
+  "md.replyImageSource": "回复中的图片",
   "md.imageReadFailed": "图片暂时无法预览",
   "md.imageReading": "正在读取图片…",
   "md.mermaidLoadFailed": "mermaid 引擎加载失败",
@@ -35,6 +36,6 @@ export const zh = {
   "md.specRenderFailed": "卡片渲染失败：{error}",
   "md.specIncomplete": "spec 卡片 · 数据未完整或格式错误",
   "md.collapseImageAria": "收起图片：{caption}",
-  "md.enlargeImageAria": "放大图片：{caption}",
+  "md.enlargeImageAria": "打开图片查看器：{caption}",
   "md.openOriginalLink": "打开原始链接",
 } as const;

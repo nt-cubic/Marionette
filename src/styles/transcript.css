@@ -2708,13 +2708,6 @@
   max-height: min(24vh, 200px);
   height: auto;
   cursor: zoom-in;
-  transition: max-width 160ms ease, max-height 160ms ease;
-}
-
-.md-body__img.is-expanded {
-  max-width: 100%;
-  max-height: 300px;
-  cursor: zoom-out;
 }
 
 .md-image-card__caption {

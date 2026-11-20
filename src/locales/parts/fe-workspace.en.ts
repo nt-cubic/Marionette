@@ -27,6 +27,7 @@ export const en = {
   "md.elidedMiddleLines": "⋯ {n} middle lines omitted ⋯",
   "md.commentThisLine": "Comment on this line",
   "md.imageFallbackAlt": "Image",
+  "md.replyImageSource": "Image in reply",
   "md.imageReadFailed": "Image preview unavailable",
   "md.imageReading": "Loading image…",
   "md.mermaidLoadFailed": "Failed to load the mermaid engine",
@@ -35,6 +36,6 @@ export const en = {
   "md.specRenderFailed": "Card failed to render: {error}",
   "md.specIncomplete": "Spec card · data incomplete or malformed",
   "md.collapseImageAria": "Collapse image: {caption}",
-  "md.enlargeImageAria": "Expand image: {caption}",
+  "md.enlargeImageAria": "Open image viewer: {caption}",
   "md.openOriginalLink": "Open original link",
 } satisfies Record<keyof typeof zh, string>;

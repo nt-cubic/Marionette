@@ -15,6 +15,9 @@ import {
 import { bridgeCatalogId, resolveImageSupport } from "../src/lib/imageSupport";
 import { imagePathKey, mergeImageAttachments } from "../src/lib/imageAttachments";
 import type { SessionEvent } from "../src/lib/types";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 let failed = 0;
 function check(name: string, ok: boolean, detail?: unknown) {
@@ -84,6 +87,21 @@ check("locate falls back to createdAt", findSeenEventIndex(events, { type: "tool
 check("locate misses cleanly", findSeenEventIndex(events, { type: "tool_call", toolCallId: "nope", createdAt: "x" }) === -1);
 
 // viewer → annotate → Composer attachment injection
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const markdownBody = readFileSync(join(repoRoot, "src/components/MarkdownBody.tsx"), "utf8");
+check(
+  "reply images open the shared full-screen viewer",
+  markdownBody.includes("<SeenImageViewer") &&
+    markdownBody.includes("images={[viewerImage]}") &&
+    markdownBody.includes('sourceLabel={t("md.replyImageSource")}'),
+);
+check(
+  "reply images no longer expand in place",
+  !markdownBody.includes("setExpanded") &&
+    !markdownBody.includes("md-body__img is-expanded") &&
+    !markdownBody.includes("aria-expanded={expanded}"),
+);
+
 check(
   "attachment path key normalises file URI / slash / case",
   imagePathKey("file:///D:/Shots/UI.png") === imagePathKey("d:\\shots\\ui.png"),

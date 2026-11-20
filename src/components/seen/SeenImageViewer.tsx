@@ -23,12 +23,14 @@ export function SeenImageViewer(props: {
   images: SeenImage[];
   startIndex: number;
   agentId?: string;
+  /** Optional source label for callers outside the right-rail image index. */
+  sourceLabel?: string;
   onClose: () => void;
   onLocate: (image: SeenImage) => void;
   /** Local files only; opens the existing annotator and then attaches to Composer. */
   onAnnotate?: (image: SeenImage) => void;
 }): JSX.Element | null {
-  const { images, startIndex, agentId, onClose, onLocate, onAnnotate } = props;
+  const { images, startIndex, agentId, sourceLabel, onClose, onLocate, onAnnotate } = props;
   const t = useT();
   const [index, setIndex] = useState(startIndex);
   const [copied, setCopied] = useState(false);
@@ -127,7 +129,7 @@ export function SeenImageViewer(props: {
         <span className="seen-viewer__n">{current + 1} / {total}</span>
         <span className="seen-viewer__src">
           <i className={image.via === "you" ? "is-you" : "is-tool"} aria-hidden="true" />
-          {t(`seenImages.via.${image.via}`)}
+          {sourceLabel ?? t(`seenImages.via.${image.via}`)}
         </span>
         <span className="seen-viewer__meta">{formatSeenTime(image.at)}</span>
         <button type="button" className="seen-viewer__x" aria-label={t("common.close")} onClick={onClose}>
