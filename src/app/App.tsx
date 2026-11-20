@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { ChevronLeft, ChevronRight, FolderOpen, Merge, UsersRound, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, memo, type CSSProperties } from "react";
+import ReactMarkdown from "react-markdown";
 import { agents, projects, sessions } from "../lib/mockData";
 import {
   collapseIntermediateAssistantAsThought,
@@ -2001,7 +2002,7 @@ function AppMain() {
           setAppUpdate(info);
           return;
         }
-        // Manual check with no update: brief status banner, auto-dismiss.
+        // Keep the result open so release notes can be read at any pace.
         const note =
           info.note ??
           `${t("app.upToDate", { version: info.currentVersion })}${
@@ -2014,9 +2015,6 @@ function AppMain() {
           updateAvailable: false,
           note,
         });
-        window.setTimeout(() => {
-          setAppUpdate((cur) => (cur && !cur.updateAvailable ? null : cur));
-        }, 4500);
       } catch (error) {
         pushDebug({
           source: "update",
@@ -11379,22 +11377,37 @@ function AppMain() {
         <ComputerShareDialog onClose={() => setComputerShareOpen(false)} />
       )}
       {appUpdate && (
-        <div className="update-banner" role="status">
-          <span>
+        <div className="update-banner" role="region" aria-label={t("app.releaseNotes")}>
+          <div className="update-banner__status" role="status">
             {appUpdate.updateAvailable
               ? `${t("app.updateNew", { version: appUpdate.latestVersion })}${
                   appUpdate.currentVersion ? t("app.updateCurrentSuffix", { version: appUpdate.currentVersion }) : ""
                 }`
               : appUpdate.note ||
                 t("app.upToDate", { version: appUpdate.currentVersion || "" }).trim()}
-          </span>
+          </div>
           {(appUpdateError || (appUpdate.updateAvailable && appUpdate.note)) && (
             <div className="update-banner__error" role="alert">
               {appUpdateError ? t("app.updateFailed", { error: appUpdateError }) : appUpdate.note}
             </div>
           )}
+          {appUpdate.latestVersion && (
+            <section className="update-banner__release">
+              <div className="update-banner__heading">{t("app.releaseNotesVersion", { version: appUpdate.latestVersion })}</div>
+              {appUpdate.notes ? (
+                <div className="update-banner__notes md-body">
+                  <ReactMarkdown components={{
+                    a: ({ href, children }) => href && /^https?:\/\//i.test(href) ? (
+                      <a href={href} onClick={(event) => { event.preventDefault(); void openExternal(href); }}>{children}</a>
+                    ) : <span>{children}</span>,
+                    img: () => null,
+                  }}>{appUpdate.notes}</ReactMarkdown>
+                </div>
+              ) : <div className="update-banner__empty">{t("app.releaseNotesEmpty")}</div>}
+            </section>
+          )}
           <div className="update-banner__actions">
-            {appUpdate.updateAvailable && appUpdate.releaseUrl && (
+            {appUpdate.releaseUrl && (
               <a
                 href={appUpdate.releaseUrl}
                 target="_blank"
