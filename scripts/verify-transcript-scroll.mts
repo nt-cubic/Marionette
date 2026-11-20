@@ -8,8 +8,13 @@ import {
   applyScrollSnap,
   applyTranscriptStickOnScroll,
   applyTranscriptStickOnWheelUp,
+  captureScrollAnchor,
   captureScrollSnap,
   isNearTranscriptBottom,
+  readTranscriptScrollSnap,
+  rememberTranscriptScrollSnap,
+  resetTranscriptScrollSnaps,
+  resolveScrollAnchorTop,
   TRANSCRIPT_NEAR_BOTTOM_PX,
   TRANSCRIPT_RESTICK_PX,
 } from "../src/lib/transcriptScroll.ts";
@@ -74,6 +79,37 @@ check("history snap restores the pixel offset", () => {
   const mode = applyScrollSnap(el, { stickToBottom: false, scrollTop: 1200 });
   assert.equal(mode, "offset");
   assert.equal(el.scrollTop, 1200);
+});
+
+check("anchor restores the visible card instead of a stale pixel offset", () => {
+  const anchor = captureScrollAnchor(
+    [
+      { index: 0, key: "u-a", top: 0 },
+      { index: 1, key: "u-b", top: 320 },
+      { index: 2, key: "u-c", top: 900 },
+    ],
+    360,
+  );
+  assert.deepEqual(anchor, { index: 1, key: "u-b", offset: 40 });
+  assert.equal(resolveScrollAnchorTop(anchor, () => 640), 680);
+  const el = { scrollTop: 0, scrollHeight: 8_000 };
+  assert.equal(applyScrollSnap(el, { stickToBottom: false, scrollTop: 1200 }, 680), "offset");
+  assert.equal(el.scrollTop, 680);
+});
+
+check("session scroll snapshots survive SessionView unmounts", () => {
+  resetTranscriptScrollSnaps();
+  rememberTranscriptScrollSnap("session-illustrated", {
+    stickToBottom: false,
+    scrollTop: 1440,
+    anchor: { index: 7, key: "u-figure", offset: 36 },
+  });
+  assert.deepEqual(readTranscriptScrollSnap("session-illustrated"), {
+    stickToBottom: false,
+    scrollTop: 1440,
+    anchor: { index: 7, key: "u-figure", offset: 36 },
+  });
+  resetTranscriptScrollSnaps();
 });
 
 check("wheel-up unsticks even inside the slack zone", () => {

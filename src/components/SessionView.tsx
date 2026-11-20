@@ -71,11 +71,17 @@ import {
   applyScrollSnap,
   applyTranscriptStickOnScroll,
   applyTranscriptStickOnWheelUp,
+  captureScrollAnchor,
   captureScrollSnap,
   distanceFromTranscriptBottom,
-  type TranscriptScrollSnap,
+  readTranscriptScrollSnap,
+  rememberTranscriptScrollSnap,
+  resolveScrollAnchorTop,
+  type TranscriptAnchorRect,
+  type TranscriptScrollAnchor,
 } from "../lib/transcriptScroll";
 import { useVirtualWindow } from "../lib/useVirtualWindow";
+import { useLatestCallback } from "../lib/useLatestCallback";
 import { isCursorOverWindow, setMergeHighlight } from "../lib/detachedWindow";
 import { useT } from "../lib/i18n";
 import { SplitBesideMenu, type OpenBesideEdge } from "./SplitBesideMenu";
@@ -1601,14 +1607,34 @@ function toggleSetKey(
   });
 }
 
+function transcriptUnitTop(list: HTMLElement, node: HTMLElement): number {
+  return node.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop;
+}
+
+function mountedTranscriptUnitRects(list: HTMLElement): TranscriptAnchorRect[] {
+  return [...list.querySelectorAll<HTMLElement>("[data-unit-index]")]
+    .map((node) => {
+      const index = Number(node.dataset.unitIndex);
+      if (!Number.isFinite(index)) return null;
+      return {
+        index,
+        ...(node.dataset.unitKey ? { key: node.dataset.unitKey } : {}),
+        top: transcriptUnitTop(list, node),
+      };
+    })
+    .filter((item): item is TranscriptAnchorRect => item != null);
+}
+
 /** Virtual row that remeasures when a nested fold changes height. */
 function VirtItem({
   index,
+  unitKey,
   measureRef,
   className,
   children,
 }: {
   index: number;
+  unitKey?: string;
   measureRef: (index: number, node: HTMLElement | null) => void;
   className?: string;
   children: ReactNode;
@@ -1624,7 +1650,12 @@ function VirtItem({
     return () => ro.disconnect();
   }, [index, measureRef]);
   return (
-    <div ref={ref} className={className ? `event-list__virt-item ${className}` : "event-list__virt-item"}>
+    <div
+      ref={ref}
+      data-unit-index={index}
+      {...(unitKey ? { "data-unit-key": unitKey } : {})}
+      className={className ? `event-list__virt-item ${className}` : "event-list__virt-item"}
+    >
       {children}
     </div>
   );
@@ -2054,6 +2085,7 @@ function CleanPlaceholder({
    */
   const pendingPrependScrollRef = useRef<{ top: number; height: number } | null>(null);
   const handleLoadOlder = useCallback(() => {
+    pendingScrollRestoreRef.current = null;
     const el = listRef.current;
     if (el) pendingPrependScrollRef.current = { top: el.scrollTop, height: el.scrollHeight };
     onLoadOlder?.();
@@ -2074,12 +2106,12 @@ function CleanPlaceholder({
     releasedStickRef.current = released;
     setAtBottom(stick);
   }, []);
-  /** Per-dialog list camera — survives tab switches in this shell. */
-  const scrollSnapsRef = useRef<Map<string, TranscriptScrollSnap>>(new Map());
-  const sessionIdRef = useRef(session.id);
-  useLayoutEffect(() => {
-    sessionIdRef.current = session.id;
-  }, [session.id]);
+  /** Tracks the active anchor restore; the snapshot map itself is module-level. */
+  const pendingScrollRestoreRef = useRef<{
+    sessionId: string;
+    anchor?: TranscriptScrollAnchor;
+    fallbackTop: number;
+  } | null>(null);
   const isRunning = session.status === "running";
 
   /**
@@ -2260,6 +2292,7 @@ function CleanPlaceholder({
       setFindHitKey(unitKey);
       const el = listRef.current;
       if (!el) return;
+      pendingScrollRestoreRef.current = null;
       if (useVirtual) {
         el.scrollTop = Math.max(0, virtual.offsetOf(unitIdx) - el.clientHeight / 4);
       } else {
@@ -2457,14 +2490,84 @@ function CleanPlaceholder({
     return () => window.cancelAnimationFrame(frame);
   }, [liveAskPromptId, livePlanPromptId, writeStick]);
 
-  const rememberScrollSnap = useCallback(() => {
+  const rememberScrollSnapFor = useCallback((sessionId: string) => {
     const el = listRef.current;
     if (!el) return;
-    scrollSnapsRef.current.set(
-      sessionIdRef.current,
-      captureScrollSnap(el, stickToBottomRef.current),
+    const anchor = captureScrollAnchor(mountedTranscriptUnitRects(el), el.scrollTop);
+    rememberTranscriptScrollSnap(
+      sessionId,
+      captureScrollSnap(el, stickToBottomRef.current, anchor),
     );
   }, []);
+  const rememberScrollSnap = useCallback(
+    () => rememberScrollSnapFor(session.id),
+    [rememberScrollSnapFor, session.id],
+  );
+
+  const resolveRestoredAnchorTop = useLatestCallback(
+    (anchor: TranscriptScrollAnchor): number | null => {
+      const el = listRef.current;
+      if (!el) return null;
+      const direct = anchor.key
+        ? el.querySelector<HTMLElement>(`[data-unit-key="${CSS.escape(anchor.key)}"]`)
+        : el.querySelector<HTMLElement>(`[data-unit-index="${anchor.index}"]`);
+      if (direct) {
+        return resolveScrollAnchorTop(anchor, () => transcriptUnitTop(el, direct)) ?? null;
+      }
+
+      let index = anchor.index;
+      if (anchor.key) {
+        const keyedIndex = renderUnits.findIndex((unit) => unit.key === anchor.key);
+        if (keyedIndex >= 0) index = keyedIndex;
+      }
+      if (!useVirtual) return null;
+
+      // Virtual rows outside the mounted window use the measured offset map.
+      // Calibrate against one mounted row so spacer gaps / the older-history
+      // button are included without duplicating the virtual list's math.
+      const probe = el.querySelector<HTMLElement>("[data-unit-index]");
+      const probeIndex = probe ? Number(probe.dataset.unitIndex) : NaN;
+      const probeDelta =
+        probe && Number.isFinite(probeIndex)
+          ? transcriptUnitTop(el, probe) - virtual.offsetOf(probeIndex)
+          : 0;
+      return (
+        resolveScrollAnchorTop(
+          anchor,
+          () => virtual.offsetOf(index) + probeDelta,
+        ) ?? null
+      );
+    },
+  );
+
+  const cancelPendingScrollRestore = useCallback(() => {
+    pendingScrollRestoreRef.current = null;
+  }, []);
+
+  const restorePendingScroll = useLatestCallback(() => {
+    const pending = pendingScrollRestoreRef.current;
+    const el = listRef.current;
+    if (!pending || pending.sessionId !== session.id || !el) return;
+    if (stickToBottomRef.current) {
+      pendingScrollRestoreRef.current = null;
+      return;
+    }
+    const top =
+      (pending.anchor ? resolveRestoredAnchorTop(pending.anchor) : null) ??
+      pending.fallbackTop;
+    const next = Math.max(0, top);
+    if (Math.abs(el.scrollTop - next) > 0.5) {
+      el.scrollTop = next;
+      lastScrollTopRef.current = el.scrollTop;
+    }
+  });
+
+  // Capture the old session against its own layout id before a tab switch (or
+  // a surface-tab unmount) swaps the transcript DOM out from under the list.
+  useLayoutEffect(() => {
+    const mountedSessionId = session.id;
+    return () => rememberScrollSnapFor(mountedSessionId);
+  }, [rememberScrollSnapFor, session.id]);
 
   // Switching dialog → restore that tab's camera. First visit / last-seen-at-tail
   // pins to the live end. Always-jump-to-tail used to fire once against 48px
@@ -2473,8 +2576,24 @@ function CleanPlaceholder({
   // selection ghosts cannot hide the next dialog's transcript until a click.
   useLayoutEffect(() => {
     const el = listRef.current;
-    const snap = scrollSnapsRef.current.get(session.id);
-    const mode = el ? applyScrollSnap(el, snap) : !snap || snap.stickToBottom ? "bottom" : "offset";
+    const snap = readTranscriptScrollSnap(session.id);
+    const anchorTop =
+      snap && !snap.stickToBottom && snap.anchor
+        ? resolveRestoredAnchorTop(snap.anchor)
+        : null;
+    const mode = el
+      ? applyScrollSnap(el, snap, anchorTop ?? undefined)
+      : !snap || snap.stickToBottom
+        ? "bottom"
+        : "offset";
+    pendingScrollRestoreRef.current =
+      mode === "offset"
+        ? {
+            sessionId: session.id,
+            anchor: snap?.anchor,
+            fallbackTop: snap?.scrollTop ?? 0,
+          }
+        : null;
     writeStick(mode === "bottom");
     if (el) lastScrollTopRef.current = el.scrollTop;
     virtual.syncFromDom();
@@ -2487,7 +2606,7 @@ function CleanPlaceholder({
     setExpandedKindKeys(new Set());
     prevAwaitingRef.current = awaitingRef.current;
     window.getSelection()?.removeAllRanges();
-  }, [session.id, virtual.syncFromDom, writeStick]);
+  }, [resolveRestoredAnchorTop, session.id, virtual.syncFromDom, writeStick]);
 
   // Freeze transcript DOM while selecting so stream ticks cannot clear the highlight.
   useEffect(() => {
@@ -2585,6 +2704,7 @@ function CleanPlaceholder({
   // 2026-11-13 只把 stick 置 false，onListScroll 仍按 80px 写回 true，
   // 布局效应再把这一格吃掉。触控板每帧几像素，永远出不了区。
   const onListWheelUp = useCallback((e: ReactWheelEvent) => {
+    pendingScrollRestoreRef.current = null;
     const next = applyTranscriptStickOnWheelUp(
       { stickToBottom: stickToBottomRef.current, released: releasedStickRef.current },
       e.deltaY,
@@ -2604,6 +2724,7 @@ function CleanPlaceholder({
   const jumpToBottom = useCallback(() => {
     const el = listRef.current;
     if (!el) return;
+    pendingScrollRestoreRef.current = null;
     writeStick(true);
     el.scrollTop = el.scrollHeight;
     lastScrollTopRef.current = el.scrollTop;
@@ -2619,10 +2740,19 @@ function CleanPlaceholder({
     if (selectionLocked) return;
     const el = listRef.current;
     if (!el) return;
-    if (!stickToBottomRef.current) return;
+    if (!stickToBottomRef.current) {
+      restorePendingScroll();
+      return;
+    }
     el.scrollTop = el.scrollHeight;
     rememberScrollSnap();
-  }, [scrollKey, selectionLocked, virtual.totalSize, rememberScrollSnap]);
+  }, [
+    scrollKey,
+    selectionLocked,
+    virtual.totalSize,
+    rememberScrollSnap,
+    restorePendingScroll,
+  ]);
 
   // Non-virtual cards (markdown / images) grow after first layout. Observe
   // children so a tail pin survives that growth the same way ClippedBody does.
@@ -2630,9 +2760,12 @@ function CleanPlaceholder({
     const el = listRef.current;
     if (!el) return;
     if (selectionLocked) return;
-    if (!stickToBottomRef.current) return;
+    if (!stickToBottomRef.current) {
+      restorePendingScroll();
+      return;
+    }
     el.scrollTop = el.scrollHeight;
-  }, [selectionLocked]);
+  }, [restorePendingScroll, selectionLocked]);
 
   useLayoutEffect(() => {
     const el = listRef.current;
@@ -2661,6 +2794,7 @@ function CleanPlaceholder({
           userMessageAnchorId(u.event) === id
       );
       if (idx < 0) return;
+      pendingScrollRestoreRef.current = null;
       writeStick(false);
       const top = useVirtual ? virtual.offsetOf(idx) - 24 : 0;
       if (useVirtual) {
@@ -2710,6 +2844,7 @@ function CleanPlaceholder({
       }
       const el = listRef.current;
       if (unitIdx < 0 || !unitKey || !el) return;
+      pendingScrollRestoreRef.current = null;
       writeStick(false);
       setLocateKey(unitKey);
       if (useVirtual) {
@@ -2838,6 +2973,9 @@ function CleanPlaceholder({
         className={`event-list${isLongTranscript ? " is-long" : ""}${staffChat ? " event-list--staff-chat" : ""} scrollbar-hidden`}
         onScroll={onListScroll}
         onWheel={onListWheelUp}
+        onPointerDown={cancelPendingScrollRestore}
+        onTouchStart={cancelPendingScrollRestore}
+        onKeyDown={cancelPendingScrollRestore}
       >
         {/* Quote UI is isolated so its setState does not re-render cards (keeps selection).
             key=session.id remounts overlay state (评论 button / draft) per dialog. */}
@@ -3905,6 +4043,7 @@ function CleanPlaceholder({
               return (
                 <div
                   key={unit.key}
+                  data-unit-index={absoluteIndex}
                   data-unit-key={unit.key}
                   className={rowClass ? `event-list__virt-item ${rowClass}` : "event-list__virt-item"}
                 >
@@ -3916,6 +4055,7 @@ function CleanPlaceholder({
               <VirtItem
                 key={unit.key}
                 index={absoluteIndex}
+                unitKey={unit.key}
                 measureRef={virtual.measureRef}
                 className={rowClass}
               >

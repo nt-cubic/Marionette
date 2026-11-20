@@ -6,9 +6,24 @@ export const TRANSCRIPT_NEAR_BOTTOM_PX = 80;
  */
 export const TRANSCRIPT_RESTICK_PX = 8;
 
+/** A visible transcript unit plus the pixel offset into that unit. */
+export type TranscriptScrollAnchor = {
+  index: number;
+  key?: string;
+  offset: number;
+};
+
+export type TranscriptAnchorRect = {
+  index: number;
+  key?: string;
+  top: number;
+};
+
 export type TranscriptScrollSnap = {
   stickToBottom: boolean;
   scrollTop: number;
+  /** Survives image/layout growth while a tab is restoring. */
+  anchor?: TranscriptScrollAnchor;
 };
 
 /** Live stick + "user just wheeled up" hold-off. */
@@ -71,11 +86,73 @@ export function applyTranscriptStickOnScroll(
 export function captureScrollSnap(
   el: { scrollTop: number; scrollHeight: number; clientHeight: number },
   stickToBottom = isNearTranscriptBottom(el),
+  anchor?: TranscriptScrollAnchor,
 ): TranscriptScrollSnap {
   return {
     stickToBottom,
     scrollTop: Math.max(0, el.scrollTop),
+    ...(anchor ? { anchor } : {}),
   };
+}
+
+/** Pick the last mounted transcript unit at or above the viewport top. */
+export function captureScrollAnchor(
+  units: readonly TranscriptAnchorRect[],
+  scrollTop: number,
+): TranscriptScrollAnchor | undefined {
+  if (units.length === 0) return undefined;
+  let anchor = units[0]!;
+  for (const unit of units) {
+    if (unit.top <= scrollTop + 0.5 && unit.top >= anchor.top) anchor = unit;
+  }
+  return {
+    index: anchor.index,
+    ...(anchor.key ? { key: anchor.key } : {}),
+    offset: scrollTop - anchor.top,
+  };
+}
+
+/** Resolve an anchor after cards above it have loaded or changed size. */
+export function resolveScrollAnchorTop(
+  anchor: TranscriptScrollAnchor | undefined,
+  topForIndex: (index: number) => number | undefined,
+): number | undefined {
+  if (!anchor) return undefined;
+  const top = topForIndex(anchor.index);
+  if (top == null || !Number.isFinite(top)) return undefined;
+  return Math.max(0, top + anchor.offset);
+}
+
+/**
+ * Session tab positions outlive the mounted SessionView. Non-session surface
+ * tabs (memo/doc/browser) unmount it, so a component-local ref used to lose
+ * the illustrated tab's camera before the user returned.
+ */
+const TRANSCRIPT_SCROLL_SNAP_LIMIT = 120;
+const transcriptScrollSnaps = new Map<string, TranscriptScrollSnap>();
+
+export function rememberTranscriptScrollSnap(
+  sessionId: string,
+  snap: TranscriptScrollSnap,
+) {
+  transcriptScrollSnaps.delete(sessionId);
+  transcriptScrollSnaps.set(sessionId, snap);
+  while (transcriptScrollSnaps.size > TRANSCRIPT_SCROLL_SNAP_LIMIT) {
+    const oldest = transcriptScrollSnaps.keys().next().value;
+    if (oldest == null) break;
+    transcriptScrollSnaps.delete(oldest);
+  }
+}
+
+export function readTranscriptScrollSnap(
+  sessionId: string,
+): TranscriptScrollSnap | undefined {
+  return transcriptScrollSnaps.get(sessionId);
+}
+
+/** Test helper â not used by the app. */
+export function resetTranscriptScrollSnaps() {
+  transcriptScrollSnaps.clear();
 }
 
 /**
@@ -85,11 +162,12 @@ export function captureScrollSnap(
 export function applyScrollSnap(
   el: { scrollTop: number; scrollHeight: number },
   snap: TranscriptScrollSnap | undefined,
+  anchorTop?: number,
 ): "bottom" | "offset" {
   if (!snap || snap.stickToBottom) {
     el.scrollTop = el.scrollHeight;
     return "bottom";
   }
-  el.scrollTop = Math.max(0, snap.scrollTop);
+  el.scrollTop = Math.max(0, anchorTop ?? snap.scrollTop);
   return "offset";
 }
