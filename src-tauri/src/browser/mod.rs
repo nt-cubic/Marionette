@@ -753,7 +753,7 @@ mod imp {
     pub fn browser_navigate_tab(app: AppHandle, tab_id: String, url: String) -> Result<(), String> {
         let url = surface::normalize_url(&url)?;
         surface::with_surface(&app, &tab_id, move |s| {
-            s.webview.load_url(&url).map_err(|e| format!("navigate: {e}"))?;
+            surface::navigate(s, &url)?;
             surface::apply_document_navigation(s, url.clone(), None);
             s.last_used_at_ms.set(surface::now_ms_pub());
             Ok::<(), String>(())

@@ -111,7 +111,7 @@ check(
   (() => {
     // Only the shipping code counts — the Rust tests legitimately quote
     // those words too, but they are inside #[cfg(test)].
-    const shipped = toolsMcp.slice(0, toolsMcp.indexOf("#[cfg(test)]"));
+    const shipped = toolsMcp.slice(0, toolsMcp.lastIndexOf("#[cfg(test)]"));
     return shipped.includes('"waits"') && shipped.includes('"batch"') && shipped.includes('HELP_WAITS') && shipped.includes('HELP_BATCH');
   })(),
 );

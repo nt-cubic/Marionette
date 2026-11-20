@@ -420,6 +420,122 @@ fn call_and_wait(webview: &ICoreWebView2, method: &str, params: &str) -> Result<
     }
 }
 
+/// Issue a CDP command without pumping the message loop, then hand control
+/// back through the event loop. Safe from the WebView2 dispatch that creates a
+/// surface; failures are diagnostic only because cache policy must never block
+/// navigation.
+fn call_then(
+    webview: &ICoreWebView2,
+    method: &str,
+    params: &str,
+    next: impl FnOnce() + 'static,
+) -> Result<(), String> {
+    let method_for_log = method.to_string();
+    let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
+        move |result, _json| {
+            if let Err(error) = result {
+                crate::debug_log::append(
+                    "browser",
+                    "warn",
+                    "",
+                    "cache policy CDP call failed",
+                    Some(&format!("{method_for_log}: {error:?}")),
+                );
+            }
+            next();
+            Ok(())
+        },
+    ));
+    let name = HSTRING::from(method);
+    let params_h = HSTRING::from(params);
+    // SAFETY: main thread, live webview; WebView2 owns the handler from here.
+    unsafe { webview.CallDevToolsProtocolMethod(&name, &params_h, &handler) }
+        .map_err(|error| format!("{method} failed: {error:?}"))
+}
+
+/// Development servers usually send no `Cache-Control`. Chromium's heuristic
+/// freshness then keeps an old module alive even after the page switches to
+/// classic scripts, producing mixed-generation errors such as
+/// `Unexpected token 'export'` followed by `loadAssets is not a function`.
+/// Disable HTTP cache per tab before every local navigation; public sites keep
+/// the ordinary cache path.
+pub fn should_bypass_http_cache(url: &str) -> bool {
+    let Ok(parsed) = Url::parse(url) else {
+        return false;
+    };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.eq_ignore_ascii_case("localhost")
+        || host.to_ascii_lowercase().ends_with(".localhost")
+    {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback() || ip.is_unspecified())
+        .unwrap_or(false)
+}
+
+/// Navigate through the one policy point used by both tab creation and the
+/// address bar. Navigation starts only after the cache policy call completes,
+/// so the first local document already skips the stale persistent cache.
+pub fn navigate(surface: &Surface, url: &str) -> Result<(), String> {
+    let webview2 = surface.webview.webview();
+    let app = surface.app.clone();
+    let tab_id = surface.id.clone();
+    let target = url.to_string();
+    let policy = call_then(
+        &webview2,
+        "Network.setCacheDisabled",
+        &json!({ "cacheDisabled": should_bypass_http_cache(url) }).to_string(),
+        move || {
+            let tab_for_job = tab_id.clone();
+            if let Err(error) = app.run_on_main_thread(move || {
+                let surface = SURFACES.with(|surfaces| {
+                    surfaces.borrow().get(&tab_for_job).cloned()
+                });
+                if let Some(surface) = surface {
+                    if let Err(error) = surface.webview.load_url(&target) {
+                        crate::debug_log::append(
+                            "browser",
+                            "warn",
+                            "",
+                            "navigate after cache policy failed",
+                            Some(&error.to_string()),
+                        );
+                    }
+                }
+            }) {
+                crate::debug_log::append(
+                    "browser",
+                    "warn",
+                    "",
+                    "cache policy continuation failed",
+                    Some(&error.to_string()),
+                );
+            }
+        },
+    );
+    if let Err(error) = policy {
+        crate::debug_log::append(
+            "browser",
+            "warn",
+            "",
+            "cache policy CDP call failed; navigating directly",
+            Some(&error),
+        );
+        surface
+            .webview
+            .load_url(url)
+            .map_err(|error| format!("navigate failed: {error}"))?;
+    }
+    Ok(())
+}
+
 /// Route one CDP event into `on_event`. The receiver stays alive as long as
 /// the surface's webview does (WebView2 owns the handler).
 fn subscribe(webview: &ICoreWebView2, key: usize, event: &str) -> Result<(), String> {
@@ -1563,6 +1679,11 @@ pub fn create_surface(
     )?;
     let id = surface.id.clone();
     register_surface(app, &surface);
+    let url = surface.url.borrow().clone();
+    if let Err(error) = navigate(&surface, &url) {
+        let _ = close_surface(app, &id);
+        return Err(error);
+    }
     Ok(id)
 }
 
@@ -1679,11 +1800,8 @@ fn build_surface(
         }),
     });
 
-    // Plain Navigate: synchronous fire, no nested pump. (The world — CDP
-    // subscriptions + document-start script — installs LAZILY at the first
-    // read; installing here pumps inside the dispatch and wedges the app
-    // webview's renderer on our tao build, 2026-11-01 bisect.)
-    surface.webview.load_url(&url).map_err(|e| format!("navigate failed: {e}"))?;
+    // Navigation starts after registration so the cache-policy continuation
+    // can find this surface through the registry.
     Ok(surface)
 }
 
@@ -1835,8 +1953,8 @@ pub fn find_surface(tab_id: &str) -> Option<Rc<Surface>> {
 mod tests {
     use super::{
         classify_nav_state, dialog_block_note_for, dialog_from_event, nav_state_fields,
-        normalize_url, parse_world_answer, url_origin, CdpLease, GrantLevel, NavStateChange,
-        PendingDialog, WorldAnswer, DIALOG_MESSAGE_MAX_CHARS,
+        normalize_url, parse_world_answer, should_bypass_http_cache, url_origin, CdpLease,
+        GrantLevel, NavStateChange, PendingDialog, WorldAnswer, DIALOG_MESSAGE_MAX_CHARS,
     };
     use serde_json::json;
 
@@ -1913,6 +2031,33 @@ mod tests {
             normalize_url("[::1]:8080").unwrap(),
             "http://127.0.0.1:8080"
         );
+    }
+
+    #[test]
+    fn local_http_origins_bypass_the_stale_cache() {
+        for url in [
+            "http://localhost:8138/Prototypes/DialogueLab/",
+            "http://127.0.0.1:8138/index.html",
+            "http://127.8.9.10/dev",
+            "http://[::1]:5173/",
+            "https://app.localhost/",
+            "http://0.0.0.0:3000/",
+        ] {
+            assert!(should_bypass_http_cache(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn public_and_non_http_urls_keep_normal_cache_policy() {
+        for url in [
+            "https://example.com/docs",
+            "http://192.168.1.20/",
+            "file:///D:/Projects/XXX/index.html",
+            "about:blank",
+            "not a url",
+        ] {
+            assert!(!should_bypass_http_cache(url), "{url}");
+        }
     }
 
     #[test]

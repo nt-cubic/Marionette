@@ -368,7 +368,15 @@ fn decode_pty_bytes(bytes: &[u8]) -> String {
 
 /// Emit complete decoded text from `pending`, leaving an incomplete trailing
 /// UTF-8 / DBCS sequence in the buffer.
-fn drain_pty_pending(pending: &mut Vec<u8>, mut emit: impl FnMut(&str)) {
+fn drain_pty_pending(pending: &mut Vec<u8>, emit: impl FnMut(&str)) {
+    drain_pty_pending_with(pending, decode_pty_bytes, emit);
+}
+
+fn drain_pty_pending_with(
+    pending: &mut Vec<u8>,
+    mut decode: impl FnMut(&[u8]) -> String,
+    mut emit: impl FnMut(&str),
+) {
     loop {
         if pending.is_empty() {
             return;
@@ -410,7 +418,7 @@ fn drain_pty_pending(pending: &mut Vec<u8>, mut emit: impl FnMut(&str)) {
                 if take == 0 {
                     return;
                 }
-                let text = decode_pty_bytes(&pending[..take]);
+                let text = decode(&pending[..take]);
                 if !text.is_empty() {
                     emit(&text);
                 }
@@ -973,7 +981,11 @@ mod tests {
         // CP932 for ファイル (the start of the Japanese "filename syntax" error).
         let mut pending = vec![0x83, 0x74, 0x83, 0x40, 0x83, 0x43];
         let mut out = String::new();
-        drain_pty_pending(&mut pending, |t| out.push_str(t));
+        drain_pty_pending_with(
+            &mut pending,
+            |bytes| crate::process_util::decode_windows_code_page(bytes, 932).unwrap_or_default(),
+            |t| out.push_str(t),
+        );
         assert!(
             out.contains("ファイ"),
             "expected CP932 ファイ, got {out:?} pending={pending:?}"
@@ -988,7 +1000,11 @@ mod tests {
         // the complete pair, not hold the trail for the next chunk.
         let mut pending = vec![0x83, 0x8B];
         let mut out = String::new();
-        drain_pty_pending(&mut pending, |t| out.push_str(t));
+        drain_pty_pending_with(
+            &mut pending,
+            |bytes| crate::process_util::decode_windows_code_page(bytes, 932).unwrap_or_default(),
+            |t| out.push_str(t),
+        );
         assert!(out.contains("ル"), "expected ル, got {out:?}");
         assert!(pending.is_empty());
     }

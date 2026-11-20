@@ -382,12 +382,15 @@ fn main() {
             if std::env::var_os("MARIONETTE_AUTO_BROWSER_TAB").is_some() {
                 let app_handle = app.handle().clone();
                 let no_activate = std::env::var_os("MARIONETTE_BROWSER_NO_ACTIVATE").is_some();
+                let url = std::env::var("MARIONETTE_AUTO_BROWSER_URL")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty());
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_secs(3));
                     use tauri::Emitter;
                     let _ = app_handle.emit(
                         "marionette-dev-open-browser",
-                        serde_json::json!({ "noActivate": no_activate }),
+                        serde_json::json!({ "noActivate": no_activate, "url": url }),
                     );
                 });
             }

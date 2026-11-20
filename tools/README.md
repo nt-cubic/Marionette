@@ -21,7 +21,7 @@
 | `probe-computer-helper.py` | 自检：对一个构建产物跑 CU helper 协议四连（Ready/未知 op 拒绝/假 configure 拒绝/stdin 关净退）。用法 `python tools/probe-computer-helper.py <Marionette.exe>` |
 | `probe-cu-e2e.py` | 自检：helper → cua-driver → list-windows 端到端（用真机已装的驱动，打印窗口清单与 grantable 标记） |
 | `capture-window.py` | PrintWindow 拍任意顶层窗（注意：GPU 合成内容在部分沙箱/虚拟 GPU 下拍不出，验证浏览器/CU 画面优先用 CDP screenshot 或 DOM 几何） |
-| 环境钩子 `MARIONETTE_AUTO_BROWSER_TAB=1` / `MARIONETTE_AUTO_CU_CHECK=1` | E2E 演练：开机自动开浏览器标签（冻死复现）/ 自动跑 CU 面板全流程（日志看 `[cu-check]`；冻死检测口径 = 数 `ui-heartbeat`，60s 一条，停跳即 JS 冻死） |
+| 环境钩子 `MARIONETTE_AUTO_BROWSER_TAB=1` (可选 `MARIONETTE_AUTO_BROWSER_URL` 指定页面) / `MARIONETTE_AUTO_CU_CHECK=1` | E2E 演练：开机自动开浏览器标签（冻死复现）/ 自动跑 CU 面板全流程（日志看 `[cu-check]`；冻死检测口径 = 数 `ui-heartbeat`，60s 一条，停跳即 JS 冻死） |
 | `demo-instance.bat` / `.ps1` | 起一个隔离的演示实例：`USERPROFILE` 与 `WEBVIEW2_USER_DATA_FOLDER` 都指向临时 profile，只看得见预置的 `demo-app`，用于截图与试用 |
 | `build-now.ps1` | 本地快捷打便携版（设 `SKIP_MAGPIE_IMPORT=1` + `NOPAUSE=1` 后转发 `build-portable.bat`）；路径基于 `$PSScriptRoot`，可从任意工作目录调用 |
 | `install-app.ps1` | 把 `release\current-build.txt` 指向的构建**装成正式应用**：拷进 `%LOCALAPPDATA%\Programs\Marionette`、建开始菜单快捷方式、目录加进用户 PATH。免管理员；重跑即升级（安装路径不变，应用内更新 `app_update.rs` 也原地替换这个 exe，快捷方式永不失效）。`-Uninstall` 卸载（保留 `~\.marionette` 用户数据）。**面向最终用户的一行版是仓库根的 `install.ps1`**（从 GitHub Release 下载 exe 而不是拷 `release\`，两者逻辑同步维护） |

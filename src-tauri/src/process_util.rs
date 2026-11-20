@@ -372,43 +372,51 @@ fn strip_extended_prefix(path: &str) -> String {
 
 #[cfg(target_os = "windows")]
 fn decode_windows_ansi(bytes: &[u8]) -> Option<String> {
-    use windows_sys::Win32::Globalization::{
-        MultiByteToWideChar, CP_ACP, CP_OEMCP, MB_ERR_INVALID_CHARS,
-    };
+    use windows_sys::Win32::Globalization::{CP_ACP, CP_OEMCP};
 
     for cp in [CP_ACP, CP_OEMCP] {
-        // First pass: measure
-        let needed = unsafe {
-            MultiByteToWideChar(
-                cp,
-                MB_ERR_INVALID_CHARS,
-                bytes.as_ptr(),
-                bytes.len() as i32,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        if needed <= 0 {
-            continue;
+        if let Some(text) = decode_windows_code_page(bytes, cp) {
+            return Some(text);
         }
-        let mut wide = vec![0u16; needed as usize];
-        let written = unsafe {
-            MultiByteToWideChar(
-                cp,
-                MB_ERR_INVALID_CHARS,
-                bytes.as_ptr(),
-                bytes.len() as i32,
-                wide.as_mut_ptr(),
-                needed,
-            )
-        };
-        if written <= 0 {
-            continue;
-        }
-        wide.truncate(written as usize);
-        return Some(String::from_utf16_lossy(&wide));
     }
     None
+}
+
+/// Decode one explicit Windows code page. Tests use this with CP932 so their
+/// result does not depend on the machine running them (for example CP936 here).
+#[cfg(target_os = "windows")]
+pub(crate) fn decode_windows_code_page(bytes: &[u8], cp: u32) -> Option<String> {
+    use windows_sys::Win32::Globalization::{MultiByteToWideChar, MB_ERR_INVALID_CHARS};
+
+    let needed = unsafe {
+        MultiByteToWideChar(
+            cp,
+            MB_ERR_INVALID_CHARS,
+            bytes.as_ptr(),
+            bytes.len() as i32,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if needed <= 0 {
+        return None;
+    }
+    let mut wide = vec![0u16; needed as usize];
+    let written = unsafe {
+        MultiByteToWideChar(
+            cp,
+            MB_ERR_INVALID_CHARS,
+            bytes.as_ptr(),
+            bytes.len() as i32,
+            wide.as_mut_ptr(),
+            needed,
+        )
+    };
+    if written <= 0 {
+        return None;
+    }
+    wide.truncate(written as usize);
+    Some(String::from_utf16_lossy(&wide))
 }
 
 /// Prefer a globally-installed ACP binary over slow `npx -y …` cold starts.
@@ -1094,7 +1102,8 @@ mod tests {
     #[test]
     fn decode_process_bytes_reads_cp932_filename_error() {
         // ファイ in CP932 — prefix of cmd.exe's "filename syntax" error.
-        let text = decode_process_bytes(&[0x83, 0x74, 0x83, 0x40, 0x83, 0x43]);
+        let text = decode_windows_code_page(&[0x83, 0x74, 0x83, 0x40, 0x83, 0x43], 932)
+            .expect("CP932 bytes decode");
         assert!(
             text.contains("ファイ"),
             "expected CP932 ファイ, got {text:?}"

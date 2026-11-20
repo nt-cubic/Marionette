@@ -1,7 +1,7 @@
 import { getSessionUpdate, getSessionUpdateKind } from "./acpTranscript";
 import type { EngineQuotaEntry } from "./api";
 import type { SessionEvent, TurnStats, UsageSnapshot, UsageWindow } from "./types";
-import { t } from "./i18n";
+import { getLocale, t } from "./i18n";
 import { ENGINE_OWN_FAMILY, quotaSlotKey } from "./quotaRail";
 
 function formatQuotaReset(iso: string): string {
@@ -532,7 +532,7 @@ function formatTurnTokens(tokens: TurnTokens | null): string | null {
 
 function formatCost(amount: number, currency: string): string {
   try {
-    return new Intl.NumberFormat(undefined, {
+    return new Intl.NumberFormat(getLocale(), {
       style: "currency",
       currency: currency || "USD",
       minimumFractionDigits: 2,

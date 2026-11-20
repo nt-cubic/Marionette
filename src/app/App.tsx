@@ -6196,12 +6196,12 @@ function AppMain() {
         }),
       );
     });
-    void listen<{ noActivate: boolean }>("marionette-dev-open-browser", (event) => {
+    void listen<{ noActivate: boolean; url?: string | null }>("marionette-dev-open-browser", (event) => {
       browserAutoOpenSuppressActivate = event.payload?.noActivate === true;
       if (!browserAutoOpenSuppressActivate) {
         activateBrowserSurface();
       }
-      void browserOpenTab("https://example.com").then((result) => {
+      void browserOpenTab(event.payload?.url || "https://example.com").then((result) => {
         if (result) {
           setActiveBrowserTabId(result.tabId);
           for (const delay of [3000, 9000]) {
