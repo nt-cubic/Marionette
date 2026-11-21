@@ -140,6 +140,10 @@ fn collect(gateway: &super::Gateway) -> Vec<Value> {
     if let Some(row) = super::grok_account::quota_row(&providers) {
         rows.push(row);
     }
+    // Antigravity 订阅（Google 登录）：同款只读行，失败安静跳过。
+    if let Some(row) = super::antigravity_account::quota_row(&providers) {
+        rows.push(row);
+    }
     rows
 }
 

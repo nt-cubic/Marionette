@@ -1445,12 +1445,16 @@
 }
 
 .context-panel .quota-dial__name {
+  /* 长来源名（Google Antigravity）换行到两行内显示完整，别省略成 "Google Ant…"。 */
   max-width: 100%;
   overflow: hidden;
   color: var(--text);
   font-size: 11.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.25;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
 }
 
 .context-panel .quota-dial.is-on .quota-dial__name {
@@ -1483,15 +1487,37 @@
   to { opacity: 1; transform: none; }
 }
 
-/* Long window names (GLM-5.3-Flash, MCP · Month) stay on one line. */
+/* Long window names wrap instead of disappearing behind an ellipsis. */
 .context-panel .quota-wr {
   grid-template-columns: minmax(38px, 64px) minmax(0, 1fr) 38px 40px;
+  height: auto;
+  min-height: 20px;
 }
 
 .context-panel .quota-wr > span:first-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+/* Antigravity has separate model families, each with its own quota windows. */
+.context-panel .quota-windows__legend {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px 40px;
+  gap: 6px;
+  padding: 0 12px 0 14px;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  text-align: right;
+}
+
+.context-panel .quota-family__name {
+  padding: 6px 12px 2px 14px;
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 16px;
+  overflow-wrap: anywhere;
 }
 
 @media (prefers-reduced-motion: reduce) {

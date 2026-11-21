@@ -103,6 +103,7 @@ import {
   type GrokTurnUsage,
   type SessionUsageState,
 } from "../lib/usage";
+import { runUsageProbe } from "../lib/usageRefresh";
 import { recordTurnUsage, appendTurnSessionRow, applyTurnGitEdits } from "../lib/usageLedger";
 import { isDeepSeekPeak } from "../lib/tokenPrices";
 import { digestTurn } from "../lib/usageDigest";
@@ -870,6 +871,10 @@ function AppMain() {
   const lastUsageRefreshAt = useRef<Record<string, number>>({});
   /** In-flight ACP bootstrap promises (lazy warm / ensure-on-send). */
   const acpBootstrapRef = useRef<Map<string, Promise<CapabilitySnapshot | null>>>(new Map());
+  /** Forward bridge for callbacks declared before `ensureAcpReady` below. */
+  const ensureAcpReadyRef = useRef<(sessionId: string) => Promise<CapabilitySnapshot | null>>(
+    async () => null
+  );
   /** Snapshot of Composer config taken at send time, used to stamp user_message events. */
   const sendMetaRef = useRef<{
     agentId?: string;
@@ -4824,19 +4829,29 @@ function AppMain() {
     // Claude’s `_claude/rateLimit` meta is not a substitute: it rides on a
     // `rate_limit_event`, which never fires while you are comfortably inside
     // your plan, so the panel would sit empty exactly when nothing is wrong.
-    // While a real turn is in flight the probe is rejected ("interrupt it
-    // first") — the own-family engine rows now back the panel up (2026-11-11).
+    // Restored dialogs arrive as exited, and an idle adapter can disappear at
+    // any point. Warm/validate ACP first; a real in-flight turn defers to its
+    // post-turn refresh instead of racing for the one-prompt wire slot.
     const limitCommand = usageLimitCommandForAgent(agent?.id);
     if (
       agent?.transport === "acp" &&
       limitCommand &&
-      active &&
-      (active.status === "running" || active.status === "waiting")
+      active
     ) {
-      probeTurnRef.current.add(sid);
       probes.push(
-        sendAcpPrompt(sid, limitCommand, [], true).catch((error) => {
-          probeTurnRef.current.delete(sid);
+        runUsageProbe({
+          status: active.status,
+          ensureReady: () => ensureAcpReadyRef.current(sid),
+          send: async () => {
+            probeTurnRef.current.add(sid);
+            try {
+              await sendAcpPrompt(sid, limitCommand, [], true);
+            } catch (error) {
+              probeTurnRef.current.delete(sid);
+              throw error;
+            }
+          },
+        }).catch((error) => {
           pushDebug({
             sessionId: sid,
             level: "warn",
@@ -6673,6 +6688,7 @@ function AppMain() {
     },
     [pushDebug, setSessionStatusById, touchActivity]
   );
+  ensureAcpReadyRef.current = ensureAcpReady;
 
   const warmAcp = useCallback((sessionId?: string) => {
     const sid = sessionId ?? currentSessionIdRef.current;

@@ -21,6 +21,7 @@ pub mod bodyprep;
 pub mod catalog;
 pub mod chattidy;
 pub mod chat;
+pub mod antigravity_account;
 pub mod claude_account;
 pub mod cli;
 pub mod codex_account;

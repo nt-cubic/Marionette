@@ -174,17 +174,24 @@ const ANTIGRAVITY_USAGE = `### Session Usage
 
 ### Quota Limits
 - **Gemini Models**
+  - **Five Hour Limit Remaining:** 100% remaining (resets Nov 21, 2026, 11:35 UTC)
   - **Weekly Limit Remaining:** 91% remaining (resets Oct 02, 2026)
 - **Claude and GPT models**
-  - **Weekly Limit Remaining:** 100% remaining`;
+  - **Five Hour Limit Remaining:** 100% remaining (resets Nov 21, 2026, 11:35 UTC)
+  - **Weekly Limit Remaining:** 100% remaining
+- **Gemini 4 Argon**
+  - **Gemini 4 Argon Weekly Limit:** 21% remaining (resets Nov 25, 2026, 08:17 UTC)`;
 
 check("remaining % becomes used % for each Antigravity quota family", () => {
   const rows = parseAntigravityUsageText(ANTIGRAVITY_USAGE);
-  assert.equal(rows.length, 2);
+  assert.equal(rows.length, 5);
   const gemini = rows.find((r) => r.id === "antigravity-gemini-weekly");
   const claude = rows.find((r) => r.id === "antigravity-claude-gpt-weekly");
+  const argon = rows.find((r) => r.id === "antigravity-gemini-4-argon-weekly");
   assert.equal(gemini?.percentage, 9, "91% remaining must render as 9% used");
   assert.equal(claude?.percentage, 0, "100% remaining must render as 0% used");
+  assert.equal(argon?.percentage, 79, "21% remaining must render as 79% used");
+  assert.equal(argon?.label, "Gemini 4 Argon \u00b7 Weekly");
   assert.match(gemini?.detail ?? "", /91% left/);
   assert.match(gemini?.detail ?? "", /resets Oct 02, 2026/);
 });

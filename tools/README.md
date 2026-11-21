@@ -18,6 +18,7 @@
 | `bump-version.ps1` | 一次改完 `package.json`、`package-lock.json`、`src-tauri\tauri.conf.json`、`Cargo.toml`、`Cargo.lock` |
 | `ensure-msvc.bat` | 检查 MSVC / Windows SDK，缺失时可经 winget 安装 |
 | `ensure-rust.bat` | 检查 Rust 工具链，缺失时可经 rustup 安装 |
+| `run-tests-msvc.bat` | 在没有全局 VS 环境的 shell 里跑 cargo 测试（先 `call` vcvars64 再转发参数到 `src-tauri` 的 `cargo test --bin marionette`）。用法：`tools\run-tests-msvc.bat <过滤词>`；真机 oracle 加 `-- --ignored --nocapture`（如 `antigravity_quota_oracle`） |
 | `probe-computer-helper.py` | 自检：对一个构建产物跑 CU helper 协议四连（Ready/未知 op 拒绝/假 configure 拒绝/stdin 关净退）。用法 `python tools/probe-computer-helper.py <Marionette.exe>` |
 | `probe-cu-e2e.py` | 自检：helper → cua-driver → list-windows 端到端（用真机已装的驱动，打印窗口清单与 grantable 标记） |
 | `capture-window.py` | PrintWindow 拍任意顶层窗（注意：GPU 合成内容在部分沙箱/虚拟 GPU 下拍不出，验证浏览器/CU 画面优先用 CDP screenshot 或 DOM 几何） |

@@ -13,7 +13,10 @@ import { readFileSync } from "node:fs";
 
 import type { EngineQuotaEntry } from "../src/lib/api";
 import { buildUsageSnapshot, emptySessionUsage } from "../src/lib/usage";
-import { buildQuotaView, isExhausted, meterTone, pctLevel, quotaSlotKey } from "../src/lib/quotaRail";
+import { buildQuotaView, compactReset, isExhausted, meterTone, pctLevel, periodLabel, quotaDisplaySections, quotaSlotKey, resetHint } from "../src/lib/quotaRail";
+import { applyLocale } from "../src/lib/i18n";
+import { parseAntigravityUsageText } from "../src/lib/usage";
+import { periodHours } from "../src/lib/quotaRail";
 import type { UsageWindow } from "../src/lib/types";
 
 let passed = 0;
@@ -33,6 +36,62 @@ ok("engine 7 days → weekly", quotaSlotKey("7 days") === "weekly");
 ok("native monthly stays monthly", quotaSlotKey("monthly") === "monthly");
 ok("per-model weekly-opus is its own slot", quotaSlotKey("weekly-opus") !== quotaSlotKey("weekly"));
 ok("MCP · Month is the mcp slot", quotaSlotKey("MCP · Month") === "mcp");
+
+// periodHours：数字贴着单位取，族名里的数字（Gemini 4 Argon）不参与时长
+console.log("periodHours unit anchoring");
+ok("5 hours → 5h", periodHours("Claude & GPT · 5 hours") === 5);
+ok("7 days → 168h", periodHours("Claude & GPT · 7 days") === 168);
+ok("family digits don't leak into the span", periodHours("Gemini 4 Argon · 7 days") === 168);
+ok("weekly → 168h", periodHours("Weekly") === 168);
+
+console.log("Antigravity model families and reset times");
+{
+  const windows = parseAntigravityUsageText(`### Quota Limits
+- **Gemini Models**
+  - **Five Hour Limit Remaining:** 100% remaining (resets Nov 21, 2026, 20:35 UTC)
+  - **Weekly Limit Remaining:** 16% remaining (resets Nov 25, 2026, 10:13 UTC)
+- **Claude and GPT models**
+  - **Five Hour Limit Remaining:** 100% remaining (resets Nov 21, 2026, 11:35 UTC)
+  - **Weekly Limit Remaining:** 49% remaining (resets Nov 25, 2026, 11:58 UTC)
+- **Gemini 4 Argon**
+  - **Gemini 4 Argon Weekly Limit:** 21% remaining (resets Nov 25, 2026, 08:17 UTC)`);
+  const view = buildQuotaView({ windows, agentLabel: "Google Antigravity", agentId: "antigravity" });
+  const sections = quotaDisplaySections(view.primary!.group.windows);
+  const family = (name: string) => sections.find((section) => section.heading === name);
+  ok("three distinct model families are shown", sections.length === 3);
+  ok("Gemini has both windows", family("Gemini")?.rows.length === 2);
+  ok("Claude & GPT retains its complete name and both windows", family("Claude & GPT")?.rows.length === 2);
+  ok("Gemini 4 Argon is not repeated in the period", family("Gemini 4 Argon")?.rows[0]?.label === "Weekly");
+  ok("all five percentages are preserved", sections.flatMap((section) => section.rows).length === 5);
+  ok("unknown or non-Antigravity labels stay intact", quotaDisplaySections([
+    { id: "engine:x:model", label: "Other · Long model", percentage: 10, detail: null, kind: "rate_limit" },
+    { id: "antigravity-unknown", label: "Unrecognized label", percentage: 10, detail: null, kind: "rate_limit" },
+  ]).every((section) => section.heading === null && section.rows[0]?.label === undefined));
+
+  await applyLocale("zh-CN");
+  ok("five-hour window is readable in Chinese", periodLabel("Five Hour") === "5 小时");
+  ok("weekly window is readable in Chinese", periodLabel("Weekly") === "7 天");
+  await applyLocale("en");
+  ok("five-hour window is readable in English", periodLabel("Five Hour") === "5 h");
+  ok("weekly window is readable in English", periodLabel("Weekly") === "7 days");
+  await applyLocale("zh-CN");
+
+  const originalZone = process.env.TZ;
+  try {
+    process.env.TZ = "Asia/Tokyo";
+    const weekly = windows.find((window) => window.id === "antigravity-gemini-4-argon-weekly")!;
+    const laterTodayUtc = windows.find((window) => window.id === "antigravity-gemini-five-hour")!;
+    ok("UTC reset is converted to the local date and time", resetHint(weekly) === "11/25 17:17");
+    ok("UTC conversion handles crossing midnight", resetHint(laterTodayUtc) === "11/22 05:35");
+    ok("future reset displays the date", compactReset(resetHint(weekly), new Date(2026, 10, 21)) === "11/25");
+    ok("today's reset displays the time", compactReset(resetHint(weekly), new Date(2026, 10, 25)) === "17:17");
+    process.env.TZ = "America/New_York";
+    ok("reset follows the user's timezone", resetHint(weekly) === "11/25 03:17");
+  } finally {
+    if (originalZone === undefined) delete process.env.TZ;
+    else process.env.TZ = originalZone;
+  }
+}
 
 // ── 夹具：网关实测形状（kept=1 读数） ─────────────────────────────────────
 const codexEntry: EngineQuotaEntry = {
@@ -128,6 +187,46 @@ console.log("null-percentage native rows claim nothing");
     [grokEntry],
   );
   ok("engine grok weekly still shown", ids(snap).includes("engine:grok:7 days"));
+}
+
+// ── 4b. Antigravity 引擎直查行（antigravity_account.rs）：窗口名带族 ──────
+console.log("Antigravity engine rows (direct quota)");
+{
+  const agyEntry: EngineQuotaEntry = {
+    provider: "antigravity",
+    name: "Google Antigravity",
+    windows: [
+      { name: "Claude & GPT · 7 days", used: 50.8, remaining: 49.2, resetsAt: "2030-01-08T11:58:35Z" },
+      { name: "Claude & GPT · 5 hours", used: 0, remaining: 100, resetsAt: "2030-01-02T13:26:27Z" },
+      { name: "Gemini · 7 days", used: 87, remaining: 13, resetsAt: "2030-01-03T10:13:00Z" },
+      { name: "Gemini · 5 hours", used: 7, remaining: 93, resetsAt: "2030-01-02T12:09:00Z" },
+      { name: "Gemini 4 Argon (High) · 7 days", used: 21, remaining: 79, resetsAt: "2030-01-08T08:17:00Z" },
+    ],
+  };
+  // 非反重力会话：全部引擎行都在（圆圈视图的数据源），两个 5 小时窗口并存
+  const snap = snapshotFor("opencode", {}, [agyEntry]);
+  const agyRows = snap.windows.filter((w) => w.id.startsWith("engine:antigravity:"));
+  ok("engine antigravity rows appear outside antigravity sessions", agyRows.length === 5);
+  ok("both 5-hour windows survive slot dedup", agyRows.filter((w) => w.label.endsWith("5 hours")).length === 2);
+  const view = buildQuotaView({ windows: snap.windows, agentLabel: "OpenCode", agentId: "opencode" });
+  const circle = view.others.find((g) => g.key === "antigravity");
+  ok("antigravity is its own circle group", circle?.name === "Google Antigravity");
+  ok("circle peak is the tightest window", circle?.peak === 87);
+
+  // 反重力会话 + 原生行在场：引擎行整行让位（原生 /usage 一次报齐全部族窗口）
+  const nativeWindows = parseAntigravityUsageText(`### Quota Limits
+- **Claude and GPT models**
+  - **Weekly Limit Remaining:** 49% remaining (resets Nov 25, 2026, 11:58 UTC)`);
+  const own = snapshotFor("antigravity", Object.fromEntries(nativeWindows.map((w) => [w.id, w])), [agyEntry]);
+  ok("engine rows yield entirely to native usage rows", !own.windows.some((w) => w.id.startsWith("engine:antigravity:")));
+  ok("native rows remain in place", own.windows.some((w) => w.id.startsWith("antigravity-")));
+
+  // 点开圆圈的明细：引擎行标签按族拆节，周期名裸列
+  const sections = quotaDisplaySections(agyRows);
+  const family = (name: string) => sections.find((sec) => sec.heading === name);
+  ok("engine labels split into three families", sections.filter((sec) => sec.heading !== null).length === 3);
+  ok("Claude & GPT family keeps both windows", family("Claude & GPT")?.rows.length === 2);
+  ok("period label is the bare length", family("Claude & GPT")?.rows[0]?.label === "7 days");
 }
 
 // ── 5. own-family 余额条目：原生全无时显示，有原生行时让位 ────────────────

@@ -49,14 +49,21 @@ function engineQuotaRows(
       }
       continue;
     }
+    // Antigravity 的原生行来自一份完整 /usage（一次报齐全部族窗口），而它的
+    // id 形状（antigravity-<族>-<周期>）与引擎槽位对不上号——按槽补位会留出
+    // 重复的周窗口。原生行存在就整行让位；codex/claude 等仍按槽补位。
+    const ownCovered = own && entry.provider === "antigravity" && nativeRateWindows.length > 0;
     const seenSlots = new Set<string>();
     for (const w of entry.windows) {
       if (w.used == null && w.remaining == null && w.resetsAt == null) continue;
       const slot = quotaSlotKey(w.name);
       // One row per slot: the engine itself can list aliases of one window.
-      if (seenSlots.has(slot)) continue;
-      seenSlots.add(slot);
-      if (own && nativeSlots.has(slot)) continue;
+      // 名字带族（"Claude & GPT · 5 hours"）的窗口按全名去重——同一引擎行里
+      // 不同族的同长度窗口（antigravity 的两个 5 小时）不互撞。
+      const seenKey = w.name.includes(" · ") ? w.name : slot;
+      if (seenSlots.has(seenKey)) continue;
+      seenSlots.add(seenKey);
+      if (own && (ownCovered || nativeSlots.has(slot))) continue;
       const parts: string[] = [];
       if (w.remaining != null) parts.push(t("usage.remainingPercent", { n: Math.round(w.remaining) }));
       if (w.resetsAt) parts.push(t("usage.resetsAt", { time: formatQuotaReset(w.resetsAt) }));
@@ -752,12 +759,16 @@ export function parseAntigravityUsageText(text: string): UsageWindow[] {
       const mode = pct[2]!.toLowerCase();
       const used = mode === "used" ? value : 100 - value;
       const resetRaw = /\bresets?\s+(.+?)(?:\)|$)/i.exec(rest)?.[1]?.trim();
-      const bucketLabel = antigravityBucketLabel(rawBucket) || "Limit";
       const groupLabel = groupName
         .replace(/\s+models?\s*$/i, "")
         .replace(/\band\b/gi, "&")
         .replace(/\s+/g, " ")
         .trim();
+      let bucketLabel = antigravityBucketLabel(rawBucket) || "Limit";
+      const groupPrefix = `${groupLabel.toLowerCase()} `;
+      if (groupLabel && bucketLabel.toLowerCase().startsWith(groupPrefix)) {
+        bucketLabel = bucketLabel.slice(groupLabel.length).trim() || "Limit";
+      }
       const idPart = `${groupLabel}-${bucketLabel}`
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "-")

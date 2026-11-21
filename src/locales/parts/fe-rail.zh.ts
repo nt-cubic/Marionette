@@ -16,6 +16,8 @@ export const zh = {
   "rail.sharedSummary": "{count} 项借给 {agent}",
   "rail.quota": "额度",
   "rail.quotaRefresh": "刷新额度",
+  "rail.quotaUsed": "已用",
+  "rail.quotaReset": "重置",
   "rail.quotaEmpty": "暂无额度数据，发一条消息或点刷新",
   "rail.quotaOwn": "订阅",
   "rail.quotaVia": "经 {agent}",

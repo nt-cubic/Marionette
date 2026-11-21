@@ -18,6 +18,8 @@ export const en = {
   "rail.sharedSummary": "{count} lent to {agent}",
   "rail.quota": "Quota",
   "rail.quotaRefresh": "Refresh quota",
+  "rail.quotaUsed": "Used",
+  "rail.quotaReset": "Reset",
   "rail.quotaEmpty": "No quota data yet — send a message or refresh",
   "rail.quotaOwn": "plan",
   "rail.quotaVia": "via {agent}",

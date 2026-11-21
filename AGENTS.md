@@ -512,9 +512,18 @@ icacls D:\Apps\Marionette /setintegritylevel (OI)(CI)Medium
   同步单 key、strict JSON、fail-closed（server 认 Hjson，读不懂的一律不碰）。
 - **turn 边界走 prompt 响应**：不发 turn/complete 通知，但 session/prompt 响应带 stopReason+
   usage——acp.rs 既有路径处理，**别给它接 agentReentry 兜底**（会多等 6 分钟）。
+- **额度行的 UA 形状决定应答里有哪些组（2026-11-21 修）**：`retrieveUserQuotaSummary` 端点按
+  User-Agent 解析 client type——magpie 的扁平形状（`antigravity/hub/…`）同 token 同 project 只回
+  3P 一组（Claude & GPT），Gemini / Gemini 4 Argon 组**整个缺失**（右栏只在反重力会话里看得齐，
+  别的 agent 下点额度缺族，就是它）；agy 自己的 aidev 结构形状（`antigravity/acp/<版本>
+  (aidev_client; …; proxy_client=antigravity/sdk)`）回齐全部组。`antigravity_account.rs` 的
+  `USER_AGENT` 必须逐字镜像 agy `useragent.build_user_agent` 的默认形状，**别改回扁平形状**；
+  mock 测试钉着 UA 断言。
 - 回归：`cargo test --bin marionette antigravity`；真机 oracle（#[ignore]）：
   `antigravity_oracle`（真库解析）/ `antigravity_backfill_oracle`（真库回填）/
-  `live_install_pin`（真网下载安装，测试自隔离 USERPROFILE）。
+  `antigravity_quota_oracle`（真账号额度，断言 aidev UA 下应答多于一个族）/
+  `live_install_pin`（真网下载安装，测试自隔离 USERPROFILE）。没有全局 VS 环境的 shell 用
+  `tools\run-tests-msvc.bat <过滤词> -- --ignored --nocapture` 跑。
 
 ## 交付卡 / 每轮改动追踪（2026-10-23 修）
 

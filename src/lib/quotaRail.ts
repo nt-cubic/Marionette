@@ -99,7 +99,8 @@ export function usagePeriod(window: UsageWindow, source: string): string {
   if (window.kind !== "rate_limit" || window.id.startsWith("engine:")) return label;
   return (
     label
-      .replace(/^(?:codex|chatgpt|claude|grok)\s+/i, "")
+      .replace(/^(?:codex|chatgpt|grok)\s+/i, "")
+      .replace(/^claude\s+(?!&)/i, "")
       .replace(/\s*limit$/i, "")
       .replace(/^(\d+)[\s-]*h(?:ours?)?$/i, (_, n: string) => `${n} hours`)
       .replace(/\s*\(([^()]+)\)\s*$/, " · $1")
@@ -110,6 +111,7 @@ export function usagePeriod(window: UsageWindow, source: string): string {
 /** Localised short name for the common window lengths; anything else stays as reported. */
 export function periodLabel(period: string): string {
   const p = period.trim();
+  if (/^five[- ]hours?$/i.test(p)) return t("rail.periodHours", { n: "5" });
   let m = /^(\d+(?:\.\d+)?)\s*[- ]?h(?:ours?)?$/i.exec(p);
   if (m) return t("rail.periodHours", { n: m[1]! });
   m = /^(\d+(?:\.\d+)?)\s*[- ]?d(?:ays?)?$/i.exec(p);
@@ -119,13 +121,60 @@ export function periodLabel(period: string): string {
   return p;
 }
 
+export type QuotaDisplaySection = {
+  heading: string | null;
+  rows: Array<{ window: UsageWindow; label?: string }>;
+};
+
+/** Keep Antigravity's separate model families together without losing any windows. */
+export function quotaDisplaySections(windows: UsageWindow[]): QuotaDisplaySection[] {
+  const sections: QuotaDisplaySection[] = [];
+  const families = new Map<string, QuotaDisplaySection>();
+  const addSection = (heading: string, period: string, window: UsageWindow) => {
+    let section = families.get(heading);
+    if (!section) {
+      section = { heading, rows: [] };
+      sections.push(section);
+      families.set(heading, section);
+    }
+    section.rows.push({ window, label: period });
+  };
+  for (const window of windows) {
+    // 引擎 antigravity 行的标签是 "<来源>  · <族> · <周期>"：按族拆节，
+    // 与原生行同一呈现（来源名进 usageSource 的组名，不进族名）。
+    if (window.id.startsWith("engine:antigravity:")) {
+      const parts = window.label.split(" · ");
+      const heading = parts.length >= 3 ? parts[1]!.trim() : "";
+      const period = parts.length >= 3 ? parts.slice(2).join(" · ").trim() : "";
+      if (!heading || !period) {
+        sections.push({ heading: null, rows: [{ window }] });
+        continue;
+      }
+      addSection(heading, period, window);
+      continue;
+    }
+    const divider = window.id.startsWith("antigravity-") ? window.label.indexOf(" · ") : -1;
+    const heading = divider >= 0 ? window.label.slice(0, divider).trim() : "";
+    const period = divider >= 0 ? window.label.slice(divider + 3).trim() : "";
+    if (!heading || !period) {
+      sections.push({ heading: null, rows: [{ window }] });
+      continue;
+    }
+    addSection(heading, period, window);
+  }
+  return sections;
+}
+
 /** Rough window length in hours for ordering; unknown keeps its place. */
 export function periodHours(period: string): number | null {
   const p = period.toLowerCase();
-  const n = Number(/(\d+(?:\.\d+)?)/.exec(p)?.[1] ?? 1);
-  if (/hour|小时/.test(p)) return n;
-  if (/day|天/.test(p)) return n * 24;
-  if (/week|周/.test(p)) return n * 24 * 7;
+  // 数字必须贴着单位取：族名自带数字（"Gemini 4 Argon · 7 days"），取
+  // 首个数字会把 7 天当成 4 天，排序错位。
+  const h = /(\d+(?:\.\d+)?)\s*(?:hours?|h\b|小时)/.exec(p);
+  if (h) return Number(h[1]);
+  const d = /(\d+(?:\.\d+)?)\s*(?:days?|d\b|天)/.exec(p);
+  if (d) return Number(d[1]) * 24;
+  if (/week|周/.test(p)) return 24 * 7;
   if (/month|月/.test(p)) return 24 * 31;
   return null;
 }
@@ -275,6 +324,21 @@ export function resetHint(window: UsageWindow | null): string | null {
     .map((s) => s.trim())
     .find((s) => /重置|resets?\b/i.test(s));
   if (!part) return null;
+  // Antigravity reports an absolute UTC time such as "Nov 25, 2026, 08:17 UTC".
+  // Convert it before shortening: otherwise a future date is reduced to just
+  // 08:17, and UTC is silently presented as the user's local clock time.
+  if (window?.id.startsWith("antigravity-")) {
+    const absolute = part.replace(/^resets?(?:\s+at)?\s+/i, "").trim();
+    if (/\b\d{4}\b/.test(absolute) && /\b(?:UTC|GMT)\b/i.test(absolute)) {
+      const local = new Date(absolute);
+      if (!Number.isNaN(local.getTime())) {
+        const hh = String(local.getHours()).padStart(2, "0");
+        const mm = String(local.getMinutes()).padStart(2, "0");
+        return `${local.getMonth() + 1}/${local.getDate()} ${hh}:${mm}`;
+      }
+      return absolute;
+    }
+  }
   // Sources word this differently ("resets 11月7日 21:09", "10/30 00:07 重置"): keep only
   // the moment, so the rail prints one short "11/7 21:09" form through rail.resetAt.
   const cn = part.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*(\d{1,2}:\d{2})?/);

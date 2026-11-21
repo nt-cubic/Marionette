@@ -11,6 +11,7 @@ import {
   pctLevel,
   periodHours,
   periodLabel,
+  quotaDisplaySections,
   resetHint,
   tightestWindow,
   usagePeriod,
@@ -31,7 +32,7 @@ type QuotaSectionProps = {
 };
 
 /** One window: period · bar · used % · when it resets (today = time only). */
-function MeterRow({ window: w, source, tight }: { window: UsageWindow; source: string; tight: boolean }) {
+function MeterRow({ window: w, source, tight, label }: { window: UsageWindow; source: string; tight: boolean; label?: string }) {
   const t = useT();
   const pct = w.percentage as number;
   const level = tight ? pctLevel(pct) : "ok";
@@ -39,7 +40,7 @@ function MeterRow({ window: w, source, tight }: { window: UsageWindow; source: s
   const reset = compactReset(full);
   return (
     <div className={`quota-wr${tight ? " is-tight" : ""} is-${level}`} title={w.detail ?? undefined}>
-      <span>{periodLabel(usagePeriod(w, source))}</span>
+      <span>{periodLabel(label ?? usagePeriod(w, source))}</span>
       <i>
         <span style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
       </i>
@@ -52,27 +53,45 @@ function MeterRow({ window: w, source, tight }: { window: UsageWindow; source: s
 }
 
 /** A balance-only window (e.g. DeepSeek ¥28.30): label · money. */
-function BalanceRow({ window: w, source }: { window: UsageWindow; source: string }) {
+function BalanceRow({ window: w, source, label }: { window: UsageWindow; source: string; label?: string }) {
   const money = windowBalance(w);
   if (!money) return null;
   return (
     <div className="quota-wr quota-wr--balance" title={w.detail ?? undefined}>
-      <span>{periodLabel(usagePeriod(w, source))}</span>
+      <span>{periodLabel(label ?? usagePeriod(w, source))}</span>
       <em>{money}</em>
     </div>
   );
 }
 
 function GroupRows({ group, tight }: { group: UsageGroup; tight: UsageWindow | null }) {
+  const t = useT();
+  const sections = quotaDisplaySections(group.windows);
+  const hasFamilies = sections.some((section) => section.heading !== null);
   return (
     <>
-      {group.windows.map((w) =>
-        w.percentage != null ? (
-          <MeterRow key={w.id} window={w} source={group.name} tight={w === tight} />
-        ) : (
-          <BalanceRow key={w.id} window={w} source={group.name} />
-        ),
+      {hasFamilies && (
+        <div className="quota-windows__legend" aria-hidden="true">
+          <span />
+          <span>{t("rail.quotaUsed")}</span>
+          <span>{t("rail.quotaReset")}</span>
+        </div>
       )}
+      {sections.map((section) => {
+        const rows = section.rows.map(({ window: w, label }) =>
+          w.percentage != null ? (
+            <MeterRow key={w.id} window={w} source={group.name} tight={w === tight} label={label} />
+          ) : (
+            <BalanceRow key={w.id} window={w} source={group.name} label={label} />
+          ),
+        );
+        return section.heading ? (
+          <div className="quota-family" key={section.rows[0]!.window.id}>
+            <div className="quota-family__name">{section.heading}</div>
+            {rows}
+          </div>
+        ) : rows;
+      })}
     </>
   );
 }
