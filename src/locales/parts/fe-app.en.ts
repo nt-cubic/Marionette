@@ -45,6 +45,7 @@ export const en = {
   "app.tgSessionMissing": "Session not found (it may have been deleted)",
   "app.tgSendFailed": "Failed to send — see the desktop app for details",
   "app.modelSyncFailed": "Could not switch to {model}. The message was not sent, preventing an unintended model charge.",
+  "app.modelAccountUnavailable": "The saved model {model} is not advertised by the agent this session (account list follows the login state). The message was not sent — pick a model in the menu or retry after a restart.",
   "app.tgChatCreateFailed": "Couldn't create it — chat session creation failed; see the desktop app for details",
   "app.tgSessionCreateFailed": "Couldn't create it — session creation failed; see the desktop app for details",
   "app.tgCreateError": "Couldn't create it: {message}",

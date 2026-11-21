@@ -60,6 +60,7 @@
 | `verify-split-workspace.mts` | `npx tsx scripts/verify-split-workspace.mts` | 分屏树：拆/并/关标签、上下拆、1\|1\|1 均分、1\|2 / 2×2、第 5 叶降级、命中测试、撕窗领养进格、屏幕坐标换算；surface 窗格标签（2026-11-18）：tab 编解码、openSessionIds/visible 只数会话、纯 surface 树合法不触发占位、恢复闸门丢 browser 保 memo/document |
 | `verify-composer-compact-toolbar.mts` | `npx tsx scripts/verify-composer-compact-toolbar.mts` | 输入框过窄时底栏芯片收成贴边同款 hub：composer 自身 ≤580px（贴边始终）、≥640px 摊开；容器查询第一帧就收、JS 回差拖分屏条不闪 |
 | `verify-composer-prefs.mts` | `npx tsx scripts/verify-composer-prefs.mts` | 磁盘偏好回放的作业寿命：caps/sessionPrefs 身份变化不得取消正在跑的恢复链（Grok `/always-approve` 是最后一步）；只有切对话、卸载、agent 进程死掉才作废；always-approve 回放仍在链内 |
+| `verify-capability-drift.mts` | `npx tsx scripts/verify-capability-drift.mts` | 偏好漂移检测：account: 前缀的模型偏好（zcode 账号枚举按 spawn 凭据浮动）不因「本 spawn 目录里没有」被清空；普通模型 id 沿用清空行为；`isAccountPrefTransientlyMissing` 是发送链 fail-closed 的唯一判定 |
 | `verify-ui-restore.mts` | `npx tsx scripts/verify-ui-restore.mts` | 冷启动恢复：旧扁平快照迁成单格、两格树还原、扣掉仍在撕窗的会话、撕窗 URL 忽略树；Document/Memo surface 恢复，旧 Browser URL/活动项永久忽略 |
 | `verify-acp-render-budget.mts` | `npx tsx scripts/verify-acp-render-budget.mts` | 渲染预算：paintSet 含 @-delegate 子会话、隐藏标签 thought 走 shadow、tool 不 defer、activate 时 flush |
 | `verify-permission-plan.mts` | `npx tsx scripts/verify-permission-plan.mts` | Claude Code ExitPlanMode：从权限请求的 `{plan}` JSON 里拆出 markdown，普通改文件权限不误判 |

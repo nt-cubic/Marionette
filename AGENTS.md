@@ -678,6 +678,26 @@ magpie 120–160MB——前两个是「运行时入场费」，调不掉，能�
   模型，任何 `set_config_option` 形状都失败时抛错并停发，不能把用户消息送到
   agent 的无关默认模型。回归：`npx tsx scripts/verify-bridge-routing.mts`。
 
+## 账号域模型偏好（2026-11-21，zcode 1113 排查批）
+
+- **`account:` 前缀的模型偏好不是普通模型 id**：zcode 的账号枚举按 spawn 时的
+  凭据可用性浮动（stderr `provider-registry: sync threw (Cannot read Desktop
+  credential configuration)` + 未应答的 `interaction/requestOfficialMcpAuthHeaders`），
+  一次重启 advertise 的目录可以比上一次少整个账号（2026-11-21 实锤：重启后
+  目录里只剩 `account:zai-individual-coding-plan\…`，Start Plan 整组消失）。
+  红线三条，全在 `capabilityDrift.ts::isAccountPrefTransientlyMissing` /
+  `detectCapabilityDrift` / `performSend`：
+  ① 漂移检测**不清** account: 前缀的模型偏好（「本 spawn 目录里没有」是瞬态
+  不是死偏好，普通 id 沿用旧清空行为）；② 发送落盘（performSend「chips are
+  this dialog's own choice」段）在已存账号偏好缺席时**跳过模型写入**——回退
+  芯片不得覆盖用户选择；③ 已存账号偏好缺席且芯片≠偏好时**发送前报错
+  fail-closed**（`app.modelAccountUnavailable`），绝不静默改用别的账号发——
+  这正是 1113「Insufficient balance」的来源（Individual 账号零余额）。
+  回归：`npx tsx scripts/verify-capability-drift.mts`。
+- Composer 的「无偏好时采纳 harness 默认并落盘」路径（restore effect 的
+  adopt 分支）只在 `hasAny == false` 走——一旦漂移清了偏好它就会把 harness
+  默认固化成磁盘偏好，①的防线就是挡住这条链的头一环。
+
 回归：`cargo test --bin marionette`（475 项）+ 真机手册（见 docs/CURRENT.md 引用的
 批次清单）：冷启动无 browser-profiles 组、空闲会话 2–3 分钟后工作集回落、挂起杀
 整树、强杀无 node/codex.exe 残留、最小化/还原白屏检查、冷会话转录 mtime 不再

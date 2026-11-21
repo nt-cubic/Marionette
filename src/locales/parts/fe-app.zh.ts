@@ -43,6 +43,7 @@ export const zh = {
   "app.tgSessionMissing": "会话不存在（可能已被删除）",
   "app.tgSendFailed": "发送失败，详情在电脑上看",
   "app.modelSyncFailed": "模型切换失败：{model}。消息没有发送，避免误用其他模型。",
+  "app.modelAccountUnavailable": "已保存的模型 {model} 这次没有被 Agent 报告（账号列表按登录态浮动）。消息没有发送——在模型菜单里重选，或重启后再试。",
   "app.tgChatCreateFailed": "没建成——聊天会话创建失败，详情在电脑上看",
   "app.tgSessionCreateFailed": "没建成——会话创建失败，详情在电脑上看",
   "app.tgCreateError": "没建成：{message}",

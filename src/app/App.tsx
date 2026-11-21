@@ -258,6 +258,7 @@ import { prettyEffortLabel, prettyModelLabel } from "../lib/modelLabel";
 import { classifyToolCall } from "../lib/turnActivity";
 import { selectTurnWorkspaceChanges, type TurnWorkspaceChange } from "../lib/turnDelivery";
 import { getLastUsedDefaults } from "../lib/recentModels";
+import { isAccountPrefTransientlyMissing } from "../lib/capabilityDrift";
 import {
   loadUiRestore,
   pickRestoredSession,
@@ -9066,9 +9067,18 @@ function AppMain() {
       // (offline catalog / last-used defaults) and never explicitly picked here.
       // Persist what is actually being sent, or the next launch restores the
       // harness defaults and the selection looks forgotten.
+      // Exception: a saved account-scoped model the live catalog does not
+      // currently advertise (zcode credential race, see the account check in
+      // the config sync above) — the chip fell back to the agent default and
+      // persisting it would rewrite the user's choice into that default
+      // forever. The chip still rides the wire; only the disk write is skipped.
       {
         const prefsPatch: SessionComposerPrefs = {};
-        if (modelId) prefsPatch.preferredModel = modelId;
+        const transientAccountPref = isAccountPrefTransientlyMissing(
+          sendRow?.preferredModel,
+          caps,
+        );
+        if (modelId && !transientAccountPref) prefsPatch.preferredModel = modelId;
         if (modeId) prefsPatch.preferredMode = modeId;
         if (effortId) prefsPatch.preferredEffortId = effortId;
         if (sendEffort != null) prefsPatch.preferredEffort = sendEffort;
@@ -9180,6 +9190,23 @@ function AppMain() {
               t("app.modelSyncFailed", { model: modelLabel || modelId }),
             );
           }
+        }
+        // Fail closed on a saved account-scoped model the agent does not
+        // advertise this spawn (zcode enumerates accounts per credential
+        // availability; 2026-11-21 a restart came up without the Start Plan
+        // account). Falling through would bill a DIFFERENT account's quota
+        // silently — the exact 1113 "insufficient balance" the user chased.
+        const savedAccountModel = sendRow?.preferredModel?.trim() || null;
+        if (
+          savedAccountModel &&
+          savedAccountModel !== modelId &&
+          isAccountPrefTransientlyMissing(savedAccountModel, liveCaps)
+        ) {
+          throw new Error(
+            t("app.modelAccountUnavailable", {
+              model: savedAccountModel,
+            }),
+          );
         }
         if (
           effortId &&

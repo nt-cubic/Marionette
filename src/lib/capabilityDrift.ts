@@ -32,7 +32,16 @@ export function detectCapabilityDrift(
   const clearedPrefs: SessionComposerPrefs = {};
 
   const model = prefs.preferredModel?.trim() || null;
-  if (model && caps.models.length > 0 && !caps.models.some((m) => m.id === model)) {
+  // Account-scoped ids (`account:<plan>\<model>`, zcode) live and die with the
+  // spawn's credential availability: a fresh ACP process enumerates only the
+  // accounts whose credentials were readable at session/new, so one spawn can
+  // advertise fewer accounts than the last (2026-11-21: a restart came up
+  // without the Start Plan account, the drift wipe rewrote the dialog onto the
+  // empty-balance Individual account and every turn 1113'd). A missing account
+  // is a transient, not a dead preference — keep it on disk so the next spawn
+  // that advertises it again restores the user's choice.
+  const accountScoped = model?.startsWith("account:") ?? false;
+  if (model && !accountScoped && caps.models.length > 0 && !caps.models.some((m) => m.id === model)) {
     issues.push({
       field: "model",
       preferred: model,
@@ -107,4 +116,22 @@ export function detectCapabilityDrift(
           ? `Saved ${bits[0]} — reset to agent default`
           : `Saved options no longer valid: ${bits.join("; ")}`,
   };
+}
+
+/**
+ * True when a saved **account-scoped** model pref (`account:…`, zcode) is not
+ * advertised by this spawn's catalog. That is a spawn-transient account drop
+ * (the agent enumerates accounts per credential availability), not a dead
+ * preference: the pref must survive on disk, the send must not silently
+ * re-point at the agent default's account, and the wire must fail closed
+ * rather than bill an account the user did not choose.
+ */
+export function isAccountPrefTransientlyMissing(
+  savedModel: string | null | undefined,
+  live: CapabilitySnapshot | null | undefined,
+): boolean {
+  const model = savedModel?.trim() || null;
+  if (!model || !model.startsWith("account:")) return false;
+  if (!live || (live.models?.length ?? 0) === 0) return false;
+  return !live.models.some((m) => m.id === model);
 }
