@@ -218,6 +218,9 @@ const USAGE_TIMEOUT: Duration = Duration::from_secs(60);
 const LIMITS_FRESH: Duration = Duration::from_secs(30 * 60);
 /// /usage 兜底的最短间隔（CLI 一次要几秒，别被轮询打爆）。
 const USAGE_BACKOFF: Duration = Duration::from_secs(5 * 60);
+/// 额度面板最多陪 /usage 等多久：壳侧读缓存只等 4s，等超了整张面板都空。
+/// 没等到的读数由后台线程写进缓存，下一次拉取就有。
+const USAGE_WAIT: Duration = Duration::from_millis(2500);
 /// CLI 在 PATH 上的查找结果缓存（where.exe 也要 fork）。
 const BINARY_TTL: Duration = Duration::from_secs(30);
 /// stderr 只留尾巴用于错误消息（Go endedBefore 的 clipTail 300 字符）。
@@ -861,6 +864,19 @@ fn build_command(program: &Program, args: &[String]) -> Command {
         c.arg("/C").arg(&program.program).args(args);
         cmd = c;
     }
+    prepare_command(cmd)
+}
+
+/// /usage 专用：**不经 `cmd /C` 拼接**——程序路径带空格时，空参数 `""` 会让
+/// cmd 把路径拆开。.cmd/.bat 交给 std 自己转义（BatBadBut 修复后的行为）。
+fn usage_command(program: &Program) -> Command {
+    let mut cmd = Command::new(&program.program);
+    cmd.args(&program.prefix).args(usage_args());
+    prepare_command(cmd)
+}
+
+/// 所有 claude 子进程共同的环境、工作目录与窗口标志。
+fn prepare_command(mut cmd: Command) -> Command {
     for k in BLOCKED_ENV {
         cmd.env_remove(k);
     }
@@ -2928,6 +2944,11 @@ fn cached_limits() -> Option<Vec<Value>> {
 
 #[cfg(test)]
 pub(crate) fn reset_for_tests() {
+    // 上一个测试没等完的 /usage 不能把读数写进下一个测试
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while USAGE_BUSY.load(Ordering::Acquire) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
     *LIMITS_CACHE.lock().unwrap_or_else(|p| p.into_inner()) = None;
     *USAGE_STATE.lock().unwrap_or_else(|p| p.into_inner()) = None;
     // 驻留池清空 + 全部 run 收尸（测试世界结束时别让 node 假 CLI 活过夜）
@@ -2953,9 +2974,8 @@ static USAGE_STATE: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
 /// 跑 `claude -p /usage`（Go claudeUsage claude_warmup.go:198：**额度也是 CLI
 /// 子进程**，从不拿 token 打 HTTP）。返回 /usage 的文本。
 fn run_usage_cli() -> Option<String> {
-    let program = claude_binary()?;
-    let args = usage_args();
-    let mut cmd = build_command(&program, &args);
+    let program = usage_program()?;
+    let mut cmd = usage_command(&program);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().ok()?;
     let stdout = child.stdout.take()?;
@@ -2989,6 +3009,47 @@ fn run_usage_cli() -> Option<String> {
         let _ = c.wait();
     }
     parse_usage_output(&buf)
+}
+
+/// /usage 用哪个程序。`where.exe` 的第一行在 npm 安装上是 sh 脚本（os error 193），
+/// 中文路径还会被解成乱码，所以走主程序注入的查找。**只给 /usage 用**（参数固定）；
+/// 对话桥不共用这套查找，要换须单独评审。
+#[cfg(not(test))]
+fn usage_program() -> Option<Program> {
+    let Some(resolve) = super::COMMAND_RESOLVER.get() else {
+        return claude_binary(); // dev bin 没有主程序可注入
+    };
+    let wanted = std::env::var("CLAUDE_BINARY")
+        .ok()
+        .filter(|path| !path.is_empty())
+        .unwrap_or_else(|| "claude".to_string());
+    resolve(&wanted).map(|(program, prefix)| Program { program, prefix })
+}
+
+#[cfg(test)]
+fn usage_program() -> Option<Program> {
+    claude_binary()
+}
+
+/// 已有一次 /usage 在跑（面板连点刷新不重复起进程）。
+static USAGE_BUSY: AtomicBool = AtomicBool::new(false);
+
+/// 后台跑一次 /usage，最多等 `USAGE_WAIT`。
+fn refresh_usage() {
+    if !USAGE_BUSY.swap(true, Ordering::AcqRel) {
+        let spawned = std::thread::Builder::new().name("claude-usage".into()).spawn(|| {
+            let text = run_usage_cli();
+            *USAGE_STATE.lock().unwrap_or_else(|p| p.into_inner()) = Some((Instant::now(), text));
+            USAGE_BUSY.store(false, Ordering::Release);
+        });
+        if spawned.is_err() {
+            USAGE_BUSY.store(false, Ordering::Release);
+        }
+    }
+    let deadline = Instant::now() + USAGE_WAIT;
+    while USAGE_BUSY.load(Ordering::Acquire) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 /// Go claudeResult（claude_warmup.go:480）：verbose json 是行/数组混合——
@@ -3226,26 +3287,25 @@ pub fn quota_row(providers: &[Provider]) -> Option<Value> {
         return None;
     }
     let account = discover()?;
-    claude_binary()?;
     let windows = match cached_limits() {
         Some(w) if !w.is_empty() => w,
         _ => {
-            // /usage 兜底（带退避）：读缓存/退避在锁内，**跑 CLI 在锁外**
-            // （一次最多 60s，别把后来者挂住）
-            let cached = {
-                let state = USAGE_STATE.lock().unwrap_or_else(|p| p.into_inner());
-                match state.as_ref() {
-                    Some((at, Some(t))) if at.elapsed() < USAGE_BACKOFF => Some(parse_usage_windows(t, now_secs())),
-                    Some((at, None)) if at.elapsed() < USAGE_BACKOFF => Some(Vec::new()), // 刚失败过：退避
-                    _ => None,
-                }
-            };
-            if let Some(windows) = cached {
-                return (!windows.is_empty()).then(|| row_of(windows, &account));
+            // /usage 兜底（带退避，成功失败都算）：**跑 CLI 在锁外、在后台**
+            // （一次最多 60s）。等不到新读数时先给上一次的。
+            let due = USAGE_STATE
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .map_or(true, |(at, _)| at.elapsed() >= USAGE_BACKOFF);
+            if due {
+                refresh_usage();
             }
-            let text = run_usage_cli();
-            let windows = text.as_deref().map(|t| parse_usage_windows(t, now_secs())).unwrap_or_default();
-            *USAGE_STATE.lock().unwrap_or_else(|p| p.into_inner()) = Some((Instant::now(), text));
+            let text = USAGE_STATE
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .and_then(|(_, text)| text.clone())?;
+            let windows = parse_usage_windows(&text, now_secs());
             if windows.is_empty() {
                 return None;
             }
@@ -4151,6 +4211,55 @@ if (mode === "usage") {
         assert_eq!(week.get("used").and_then(|u| u.as_f64()), Some(4.0));
         assert_eq!(row.get("plan").and_then(|p| p.as_str()), Some("pro"));
         std::env::remove_var("MARIONETTE_FAKE_CLAUDE_MODE");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn usage_survives_a_script_in_a_spaced_chinese_path() {
+        let (_gateway, w) = world(None, false);
+        write_credentials(&w, "pro");
+        let dir = w.dir.join("John Smith 张三");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("out.json"),
+            r#"[{"type":"result","is_error":false,"result":"Current session: 27% used\nCurrent week (all models): 3% used"}]"#,
+        )
+        .unwrap();
+        let script = dir.join("claude.cmd");
+        std::fs::write(&script, "@type \"%~dp0out.json\"\r\n").unwrap();
+        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli =
+            Some(Program { program: script.to_string_lossy().into_owned(), prefix: Vec::new() });
+
+        let row = quota_row(&[]).expect("quota row from a spaced, non-ASCII path");
+        assert_eq!(row["windows"][0]["used"], 27.0);
+        assert_eq!(row["windows"][1]["used"], 3.0);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn slow_usage_does_not_hold_the_panel_and_lands_later() {
+        let (_gateway, w) = world(None, false);
+        write_credentials(&w, "pro");
+        let script = w.dir.join("slow.js");
+        std::fs::write(
+            &script,
+            r#"setTimeout(() => console.log(JSON.stringify([{type:"result",is_error:false,result:"Current session: 42% used"}])), 4500);"#,
+        )
+        .unwrap();
+        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(Program {
+            program: find_node().expect("node on PATH"),
+            prefix: vec![script.to_string_lossy().into_owned()],
+        });
+
+        let started = Instant::now();
+        assert!(quota_row(&[]).is_none(), "还没读到");
+        assert!(started.elapsed() < Duration::from_secs(4), "不能超过壳侧 4s 的超时");
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while USAGE_BUSY.load(Ordering::Acquire) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(quota_row(&[]).expect("后台读数已落缓存")["windows"][0]["used"], 42.0);
     }
 
     #[test]

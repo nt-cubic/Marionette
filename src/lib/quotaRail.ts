@@ -293,7 +293,14 @@ export function buildQuotaView(args: {
     const source = bridgeSourceOf(modelId);
     const wanted = source ? slug(source) : "";
     const hit = wanted
-      ? groups.find((g) => g !== own && (slug(g.key) === wanted || slug(g.name) === wanted))
+      ? groups.find(
+          (g) =>
+            g !== own &&
+            (slug(g.key) === wanted ||
+              slug(g.name) === wanted ||
+              // Sources sharing one key are one row; the model may name any of them.
+              g.windows.some((w) => w.sourceAliases?.some((id) => slug(id) === wanted))),
+        )
       : undefined;
     if (hit) primary = { group: hit, own: false, unknown: false };
     else if (own) primary = { group: own, own: true, unknown: true };

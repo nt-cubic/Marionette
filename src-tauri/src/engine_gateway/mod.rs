@@ -107,6 +107,16 @@ pub fn set_config_dir(dir: PathBuf) {
     let _ = CONFIG_DIR_OVERRIDE.set(dir);
 }
 
+/// 命令名/路径 → 可以直接 spawn 的 (program, 前置参数)。主程序注入
+/// process_util 那一套查找（同 set_outbound_proxy：网关不 import 主程序模块）。
+pub type CommandResolver = fn(&str) -> Option<(String, Vec<String>)>;
+
+static COMMAND_RESOLVER: std::sync::OnceLock<CommandResolver> = std::sync::OnceLock::new();
+
+pub fn set_command_resolver(resolver: CommandResolver) {
+    let _ = COMMAND_RESOLVER.set(resolver);
+}
+
 /// 网关共享状态：provider/group 存储 + 模型目录缓存 + 字节上限学习表
 /// （provider id → 已学 cap 字节数）。
 pub struct Gateway {

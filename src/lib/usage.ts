@@ -45,6 +45,7 @@ function engineQuotaRows(
           percentage: null,
           detail: t("usage.balance", { balance: entry.balance }),
           kind: "provider",
+          sourceAliases: entry.aliases,
         });
       }
       continue;
@@ -73,6 +74,7 @@ function engineQuotaRows(
         percentage: w.used != null ? Math.max(0, Math.min(100, w.used)) : null,
         detail: parts.join(" · ") || null,
         kind: "provider",
+        sourceAliases: entry.aliases,
       });
     }
   }

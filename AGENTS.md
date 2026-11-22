@@ -1540,6 +1540,17 @@ ZCode 官方**没有** ACP（CLI 0.16.x 无 `--acp`，ACP registry 未收录）�
 - 回归：`npx tsx scripts/inventory-zh.mts --check`（前端白名单外中文清零；正则密集
   文件有已知误报）、`npx tsc --noEmit`、`cargo test`（默认 zh，旧断言原样过）。
 
+## 额度行：同钥匙合并 + Claude /usage（2026-11-22）
+
+- **去重只在 `engine_gateway/quotas.rs::merge_same_key_rows`**：同钥匙 + 同主机 + 同行形状
+  才并，被并掉的来源 id 进 `aliases`；按来源 id 找额度的界面（`quotaRail` 的 bridged
+  匹配、`ModelLibraryDialog::quotaFor`）必须连 aliases 一起认，别只比 provider。
+- **`/usage` 的程序查找走注入的 `process_util`（`set_command_resolver`）**：`where.exe`
+  第一行在 npm 安装上是 sh 脚本（os error 193）。**这套查找只给 /usage 用**：claude
+  对话桥不在这次改动范围，要换须单独评审，别顺手统一。
+- **`quotas::collect` 必须并发、单行必须限时**：壳侧 `?kept=1` 只等 4s，超时丢整张面板。
+  新增账号行照 `thread::scope` 那几条加，别串行追加。
+
 ## 远程助理 / Chief（2026-11-15，M1 垂直切片，分支 chief-m0）
 
 Telegram 远程首席助理的底层仍保留：裸文本固定进一个 Chief 会话（普通 ACP 会话，

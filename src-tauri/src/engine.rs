@@ -999,9 +999,21 @@ fn use_engine_data_dir() {
     }
 }
 
+/// 给网关的命令查找。`cmd /S /C <脚本>` 那种兜底形态改交脚本本身：std 能安全地
+/// 直接起 .cmd，而 /S 会把带空格路径的引号剥掉。
+#[cfg(engine_rust_active)]
+fn resolve_for_gateway(command: &str) -> Option<(String, Vec<String>)> {
+    let resolved = crate::process_util::resolve_spawn_command(command).ok()?;
+    if resolved.program.eq_ignore_ascii_case("cmd.exe") {
+        return Some((resolved.resolved_path, Vec::new()));
+    }
+    Some((resolved.program, resolved.prefix_args))
+}
+
 #[cfg(engine_rust_active)]
 fn spawn_serve_in_process(port: u16) -> Result<ChildHandle, String> {
     use_engine_data_dir();
+    crate::engine_gateway::set_command_resolver(resolve_for_gateway);
     // 出站代理注入：engine_gateway 不 import 主程序模块（dev bin 的 crate
     // 根不是 marionette），Marionette 的代理设置在这里喂给它。
     let proxy_config = crate::proxy::load_proxy_config();
@@ -1811,6 +1823,8 @@ pub struct EngineQuotaEntry {
     pub windows: Vec<EngineQuotaWindow>,
     /// key 余额（DeepSeek 等没有窗口、只有一笔钱）。
     pub balance: Option<String>,
+    /// 与本行同一把钥匙、已并进来的其它来源 id。
+    pub aliases: Vec<String>,
 }
 
 fn quota_items(value: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
@@ -1864,6 +1878,13 @@ fn parse_quota_json(text: &str) -> Vec<EngineQuotaEntry> {
             user: string(item, "user"),
             windows,
             balance: string(item, "balance"),
+            aliases: item
+                .get("aliases")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|id| id.as_str().map(str::to_string))
+                .collect(),
         });
     }
     out
@@ -4861,6 +4882,44 @@ mod tests {
         assert_eq!(wrapped_entries[0].windows[0].used, Some(0.0));
         assert_eq!(wrapped_entries[1].balance.as_deref(), Some("12.50"));
         assert!(wrapped_entries[1].windows.is_empty());
+        assert!(wrapped_entries[1].aliases.is_empty());
+
+        let merged = parse_quota_json(
+            r#"[{"provider":"opencode-go","windows":[],"aliases":["source-a","source-b"]}]"#,
+        );
+        assert_eq!(merged[0].aliases, vec!["source-a", "source-b"]);
+    }
+
+    /// npm 装出来的三件套（sh / .cmd / exe）+ 带空格和中文的路径：给网关的必须是 exe。
+    #[cfg(all(engine_rust_active, target_os = "windows"))]
+    #[test]
+    fn gateway_resolver_skips_the_sh_shim() {
+        let root = std::env::temp_dir().join(format!("marionette-shim-{}", std::process::id()));
+        let dir = root.join("John Smith 张三");
+        let bin = dir.join(r"node_modules\@anthropic-ai\claude-code\bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("claude.exe"), b"stub").unwrap();
+        std::fs::write(dir.join("claude"), "#!/bin/sh\n").unwrap();
+        std::fs::write(
+            dir.join("claude.cmd"),
+            "@ECHO off\r\n\"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe\"   %*\r\n",
+        )
+        .unwrap();
+
+        for entry in ["claude", "claude.cmd"] {
+            let (program, prefix) = resolve_for_gateway(dir.join(entry).to_str().unwrap()).expect("resolved");
+            assert!(program.ends_with(r"claude-code\bin\claude.exe"), "{entry} -> {program}");
+            assert!(program.contains("John Smith 张三"), "{program}");
+            assert!(prefix.is_empty());
+        }
+
+        // 解不出 exe 的包装脚本：交脚本本身，不交 cmd /S /C。
+        std::fs::write(dir.join("wrapped.cmd"), "@echo hi\r\n").unwrap();
+        let (program, prefix) = resolve_for_gateway(dir.join("wrapped.cmd").to_str().unwrap()).expect("resolved");
+        assert!(program.ends_with("wrapped.cmd"), "{program}");
+        assert!(prefix.is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 引擎绑定计数（空闲回收的「有人在用」判据）：只数 entryId=engine 的；

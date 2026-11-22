@@ -1464,6 +1464,8 @@ export type EngineQuotaEntry = {
   windows: EngineQuotaWindow[];
   /** Key balance when the vendor reports money instead of windows. */
   balance?: string | null;
+  /** Other source ids registered with the same key, merged into this row. */
+  aliases?: string[];
 };
 
 /** Subscription quotas from the engine; empty when the engine is not running.

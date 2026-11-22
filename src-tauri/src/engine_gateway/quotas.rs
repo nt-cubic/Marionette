@@ -93,8 +93,32 @@ fn collect(gateway: &super::Gateway) -> Vec<Value> {
         Ok(store) => store.providers().to_vec(),
         Err(_) => return Vec::new(),
     };
+    // 账号行与钥匙行并发读：壳侧读缓存那条路只等 4s（engine.rs LOOP_HTTP_TIMEOUT），
+    // 串行相加会超时，超时丢的是整张面板而不只是慢的那一行。
+    std::thread::scope(|scope| {
+        // Codex 订阅（ChatGPT 登录）：账号 discovery 的只读窗口行；没账号/令牌
+        // 过期/请求失败安静跳过，用户自建同名来源时让位。
+        // 多账号：每个账号一行（user=邮箱）。
+        let codex = scope.spawn(|| super::codex_account::quota_rows(&providers));
+        // Claude / Grok（SuperGrok）/ Antigravity（Google 登录）：同款只读行，
+        // 失败安静跳过。
+        let claude = scope.spawn(|| super::claude_account::quota_row(&providers));
+        let grok = scope.spawn(|| super::grok_account::quota_row(&providers));
+        let antigravity = scope.spawn(|| super::antigravity_account::quota_row(&providers));
+
+        let mut rows = merge_same_key_rows(key_rows(&providers), &providers);
+        rows.extend(codex.join().unwrap_or_default());
+        rows.extend(claude.join().ok().flatten());
+        rows.extend(grok.join().ok().flatten());
+        rows.extend(antigravity.join().ok().flatten());
+        rows
+    })
+}
+
+/// 按钥匙读的行：六家余额 + quota_extra 的套餐与余额补全。
+fn key_rows(providers: &[Provider]) -> Vec<Value> {
     let mut rows = Vec::new();
-    for provider in &providers {
+    for provider in providers {
         // 余额是 key 的钱：没 key 没得问。
         if provider.key.is_empty() {
             continue;
@@ -128,23 +152,64 @@ fn collect(gateway: &super::Gateway) -> Vec<Value> {
     // 补全来源（quota_extra）：ZCode 订阅 / 钥匙套餐（智谱 coding、OpenCode Go、
     // Kimi Code、Ollama…）/ 余额补全（Command Code、ModelScope、Ollama credits、
     // AiHubMix、自报 balanceURL、中继探测）。并发读，失败安静跳过。
-    rows.extend(super::quota_extra::collect(&providers));
-    // Codex 订阅（ChatGPT 登录）：账号 discovery 的只读窗口行；没账号/令牌
-    // 过期/请求失败安静跳过，用户自建同名来源时让位。
-    // 多账号：每个账号一行（user=邮箱）。
-    rows.extend(super::codex_account::quota_rows(&providers));
-    // Grok 订阅（SuperGrok，Grok CLI 登录）：同款只读行，失败安静跳过。
-    if let Some(row) = super::claude_account::quota_row(&providers) {
-        rows.push(row);
-    }
-    if let Some(row) = super::grok_account::quota_row(&providers) {
-        rows.push(row);
-    }
-    // Antigravity 订阅（Google 登录）：同款只读行，失败安静跳过。
-    if let Some(row) = super::antigravity_account::quota_row(&providers) {
-        rows.push(row);
-    }
+    rows.extend(super::quota_extra::collect(providers));
     rows
+}
+
+/// 同一把钥匙被登记成多个来源（预设 + 从各 CLI 配置发现的 `source-*`）时只出
+/// 一行，其余来源 id 记进 `aliases`，按来源找额度的界面仍然对得上。
+///
+/// 只并确定是同一份的：钥匙相同 + 厂商主机相同 + 行形状相同（窗口名、余额）。
+/// 不比 used / resetsAt：并发读会差一点。带 user 的行（多钥匙来源）不并。
+fn merge_same_key_rows(rows: Vec<Value>, providers: &[Provider]) -> Vec<Value> {
+    type Identity = (String, String, Vec<String>, String);
+    let field = |row: &Value, name: &str| {
+        row.get(name).and_then(Value::as_str).unwrap_or("").to_string()
+    };
+    let identity = |row: &Value| -> Option<Identity> {
+        if !field(row, "user").is_empty() {
+            return None;
+        }
+        let id = field(row, "provider");
+        let provider = providers.iter().find(|p| p.id == id && !p.key.is_empty())?;
+        let host = [&provider.chat, &provider.responses, &provider.anthropic]
+            .into_iter()
+            .map(|base| url_host(base).to_ascii_lowercase())
+            .find(|host| !host.is_empty())?;
+        let windows = row
+            .get("windows")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|window| field(window, "name"))
+            .collect();
+        Some((provider.key.clone(), host, windows, field(row, "balance")))
+    };
+
+    let mut groups: Vec<(Option<Identity>, Vec<Value>)> = Vec::new();
+    for row in rows {
+        let id = identity(&row);
+        match groups.iter_mut().find(|(seen, _)| id.is_some() && *seen == id) {
+            Some((_, members)) => members.push(row),
+            None => groups.push((id, vec![row])),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(_, mut members)| {
+            // 预设来源有正经名字（"OpenCode Go"），发现来的只有主机名。
+            let keep = members
+                .iter()
+                .position(|row| !field(row, "provider").starts_with("source-"))
+                .unwrap_or(0);
+            let mut kept = members.remove(keep);
+            let aliases: Vec<String> = members.iter().map(|row| field(row, "provider")).collect();
+            if !aliases.is_empty() {
+                kept["aliases"] = serde_json::json!(aliases);
+            }
+            kept
+        })
+        .collect()
 }
 
 /// 这个 provider 是不是 quotas.rs 自己那六家 host 来源（key_balances 据此让位）。
@@ -1005,6 +1070,78 @@ mod tests {
             ),
             Some("$5.00".to_string())
         );
+    }
+
+    #[test]
+    fn one_key_registered_three_times_is_one_quota_row() {
+        use super::super::quota_kit::testkit::{redirect, Mock, Redirects};
+        // 2026-11-22 实机形状：预设 + 两个 CLI 里发现的来源，钥匙与地址都相同。
+        let provider = |id: &str, name: &str, key: &str| {
+            serde_json::json!({
+                "id": id, "name": name, "key": key,
+                "chat": "https://opencode.ai/inference/go/openai/v1",
+                "anthropic": "https://opencode.ai/inference/go/anthropic",
+            })
+        };
+        let providers = serde_json::json!({ "providers": [
+            provider("source-a", "opencode.ai", "same"),
+            provider("opencode-go", "OpenCode Go", "same"),
+            provider("source-b", "opencode.ai", "same"),
+            provider("source-other", "opencode.ai", "another-account"),
+        ]});
+        let (gateway, _sandbox) = sandbox(&providers.to_string());
+        let mock = Mock::start();
+        mock.route(
+            "/zen/go/v1/usage",
+            200,
+            r#"{"usage":{"rolling":{"percent":10,"resetsAt":"2030-01-01T05:00:00Z"},"weekly":{"percent":4,"resetsAt":"2030-01-07T00:00:00Z"},"monthly":{"percent":2,"resetsAt":"2030-01-31T00:00:00Z"}}}"#,
+        );
+        let _redirects = Redirects::new(&[redirect("https://opencode.ai", &mock.base)]);
+
+        let rows: Vec<Value> = quota_entries(&gateway, true)
+            .into_iter()
+            .filter(|row| row["provider"].as_str().is_some_and(|id| id.starts_with("source-") || id == "opencode-go"))
+            .collect();
+        assert_eq!(rows.len(), 2, "同钥匙一行、另一把钥匙一行: {rows:?}");
+        assert_eq!(rows[0]["provider"], "opencode-go", "留预设的名字");
+        assert_eq!(rows[0]["aliases"], serde_json::json!(["source-a", "source-b"]));
+        assert_eq!(rows[1]["provider"], "source-other");
+        assert!(rows[1].get("aliases").is_none());
+    }
+
+    #[test]
+    fn merge_only_joins_rows_that_are_the_same_quota() {
+        let provider = |id: &str, chat: &str| {
+            let mut p = Provider::default();
+            p.id = id.to_string();
+            p.key = "same".to_string();
+            p.chat = chat.to_string();
+            p
+        };
+        let providers = vec![
+            provider("source-d", "https://api.deepseek.com/v1"),
+            provider("deepseek", "https://api.deepseek.com/v1"),
+            provider("ollama", "https://ollama.com/v1"),
+            provider("elsewhere", "https://relay.example/v1"),
+        ];
+        let balance = |id: &str, money: &str| serde_json::json!({"provider": id, "windows": [], "balance": money});
+        let rows = vec![
+            balance("source-d", "¥18.21"),
+            balance("deepseek", "¥18.21"),
+            // 同一来源的套餐行和余额行是两回事
+            serde_json::json!({"provider": "ollama", "windows": [{"name": "Month", "used": 100.0}]}),
+            balance("ollama", "$0.00"),
+            // 同钥匙但不是同一家
+            balance("elsewhere", "¥18.21"),
+            // 多钥匙来源（带 user）和没有钥匙的账号行都不并
+            serde_json::json!({"provider": "deepseek", "user": "key 2", "windows": [], "balance": "¥18.21"}),
+            balance("codex", "1"),
+            balance("codex", "1"),
+        ];
+        let merged = merge_same_key_rows(rows, &providers);
+        assert_eq!(merged.len(), 7, "{merged:?}");
+        assert_eq!(merged[0]["provider"], "deepseek");
+        assert_eq!(merged[0]["aliases"], serde_json::json!(["source-d"]));
     }
 
     #[test]

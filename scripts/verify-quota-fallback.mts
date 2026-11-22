@@ -265,6 +265,29 @@ console.log("primary block promotes own-family engine group");
   ok("native agent group wins primary", nativeView.primary?.group.key === "agent");
 }
 
+// ── 6b. 同一把钥匙登记了多个来源：一个圈，用其中任何一个来源都对得上 ──────
+console.log("one key registered as several sources");
+{
+  const go: EngineQuotaEntry = {
+    provider: "opencode-go",
+    name: "OpenCode Go",
+    aliases: ["source-a", "source-b"],
+    windows: [{ name: "7 days", used: 4, remaining: 96, resetsAt: "2026-11-23T00:00:00Z" }],
+  };
+  const claude: EngineQuotaEntry = {
+    provider: "claude",
+    name: "Claude subscription",
+    windows: [{ name: "5 hours", used: 27, remaining: 73 }, { name: "7 days", used: 3, remaining: 97 }],
+  };
+  const snap = snapshotFor("opencode", {}, [go, claude]);
+  const view = (modelId?: string) =>
+    buildQuotaView({ windows: snap.windows, agentLabel: "OpenCode", agentId: "opencode", modelId });
+  ok("one OpenCode Go dial", view().others.filter((g) => g.key === "opencode-go").length === 1);
+  ok("claude dial outside claude sessions", view().others.some((g) => g.key === "claude"));
+  ok("merged-away source still finds its quota", view("marionette/source-b/glm-5.3").primary?.group.key === "opencode-go");
+  ok("an unrelated source does not borrow it", view("marionette/source-zzzz/glm-5.3").primary?.group.key !== "opencode-go");
+}
+
 // ── 7. 颜色档位：唯一来源，表盘/明细行/分组底色同一口径 ──────────────────
 console.log("quota colour bands (used %)");
 {

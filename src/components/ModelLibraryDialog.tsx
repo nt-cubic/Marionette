@@ -260,7 +260,7 @@ function quotaFor(group: LibraryGroup, source: ModelSource | undefined, entries:
   add(group.label); add(source?.id); add(source?.label);
   for (const refs of Object.values(source?.nativeAccounts ?? {})) for (const ref of refs) { add(ref.provider); add(ref.label); }
   if (group.key.startsWith("engine:")) add(group.key.slice("engine:".length));
-  const entry = entries.find(e => names.has(plain(e.provider)) || names.has(plain(e.name)));
+  const entry = entries.find(e => names.has(plain(e.provider)) || names.has(plain(e.name)) || e.aliases?.some(id => names.has(plain(id))));
   if (!entry) return null;
   const windows = entry.windows.map(w => ({ w, used: usedOf(w) })).filter((x): x is { w: EngineQuotaWindow; used: number } => x.used != null).sort((a, b) => b.used - a.used);
   return { windows, balance: entry.balance?.trim() || null };

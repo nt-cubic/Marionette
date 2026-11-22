@@ -483,6 +483,8 @@ export type UsageWindow = {
   /** Extra line: token counts, % left, reset hint, formatted cost, etc. */
   detail?: string | null;
   kind?: "context" | "rate_limit" | "cost" | "provider" | "tokens";
+  /** Engine rows: other source ids that share this row's key. */
+  sourceAliases?: string[];
 };
 
 export type UsageSnapshot = {
