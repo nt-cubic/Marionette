@@ -88,6 +88,28 @@ pub fn apply_model(app: &AppHandle, session_id: &str, model: &str) {
     }
 }
 
+/// 应用推理档位（effort id；agent 不认这个档位就用它的默认——失败只记
+/// 日志，不致命，与 apply_model 同姿态：档位写不进去不该拦住任务本身）。
+pub fn apply_effort(app: &AppHandle, session_id: &str, effort: &str) {
+    let acp = acp_of(app);
+    match acp.update_session(session_id, json!({ "effortId": effort })) {
+        Ok(_) => crate::debug_log::append(
+            "chief",
+            "info",
+            session_id,
+            "effort applied",
+            Some(effort),
+        ),
+        Err(error) => crate::debug_log::append(
+            "chief",
+            "warn",
+            session_id,
+            "effort apply failed; agent default stays",
+            Some(&format!("effort={effort} error={error}")),
+        ),
+    }
+}
+
 fn find_read_only_option(options: &[crate::acp::ModeDef]) -> Option<String> {
     options.iter().find_map(|option| {
         let haystack = format!("{} {}", option.id, option.label).to_ascii_lowercase();

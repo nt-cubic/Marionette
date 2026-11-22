@@ -199,6 +199,9 @@ pub struct Task {
     pub checkpoint_base_commit: Option<String>,
     /// （第五期）存档点对应的仓库根（回滚时用；与 base 成对出现）。
     pub checkpoint_repo_root: Option<String>,
+    /// 推理档位（effort id）。None = agent 默认档（常是最高档——派活方
+    /// 应该刻意选择，见 delegation 守则的「选最小够用」纪律）。
+    pub preferred_effort: Option<String>,
 }
 
 impl Default for Task {
@@ -233,6 +236,7 @@ impl Default for Task {
             structured_output: None,
             checkpoint_base_commit: None,
             checkpoint_repo_root: None,
+            preferred_effort: None,
         }
     }
 }

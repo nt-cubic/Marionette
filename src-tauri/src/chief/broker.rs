@@ -678,6 +678,7 @@ pub(crate) fn task_card(task: &Task) -> Value {
         "hasOutputSchema": task.output_schema.is_some(),
         "structuredOutput": task.structured_output,
         "checkpointBase": task.checkpoint_base_commit,
+        "preferredEffort": task.preferred_effort,
     })
 }
 
@@ -952,6 +953,7 @@ pub fn chief_task_start(app: &AppHandle, chief_session_id: &str, args: &Value) -
         structured_output: None,
         checkpoint_base_commit: None,
         checkpoint_repo_root: None,
+        preferred_effort: None,
     };
     enum ReserveOutcome {
         Existing(Task),
@@ -1315,6 +1317,9 @@ pub(crate) fn spawn_and_watch_worker(
     .ok();
     if let Some(model) = task.model.as_deref() {
         runner::apply_model(app, &worker.id, model);
+    }
+    if let Some(effort) = task.preferred_effort.as_deref() {
+        runner::apply_effort(app, &worker.id, effort);
     }
 
     // 4) 发目标（read_only / 自我修改的边界在提示里明示；写权限仍由权限卡兜底）
