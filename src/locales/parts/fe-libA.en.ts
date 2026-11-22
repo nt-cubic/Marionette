@@ -12,6 +12,8 @@ export const en = {
   "errors.authTitle": "Sign-in required",
   "errors.commandMissingTitle": "Agent command not found",
   "errors.commandMissingHint": "Open the agent menu in the Composer — agents with a known npm package offer Install.",
+  "errors.claudeBridgeTitle": "Claude subscription bridge failed to start",
+  "errors.claudeBridgeHint": "A “Claude 订阅” shared model failed to launch the local Claude Code — the agent is not missing. Make sure Claude Code runs in a terminal, or switch to another source in Model Share.",
   "errors.timeoutTitle": "Timed out",
   "errors.timeoutHint": "Retry once, or check that the agent process is still responding.",
   "errors.modelTitle": "Model / config unsupported",

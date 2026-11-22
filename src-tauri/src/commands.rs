@@ -3442,6 +3442,14 @@ pub fn model_library_save_preferences(preferences: serde_json::Value) -> Result<
     crate::model_sources::save_preferences(preferences)
 }
 
+/// 订阅共享开关（2026-11-22 产品定案：claude/codex/grok/gemini 四族默认不
+/// 共享）。写 model-library.json 的 `subscriptionShares`，刷新 engine.rs 偏好
+/// 缓存并向运行中的网关推送执行闸——开 = 目录/拦截器即时放行，关 = 即时退场。
+#[tauri::command(async)]
+pub fn model_library_set_subscription_share(family: String, enabled: bool) -> Result<(),String> {
+    crate::engine::set_subscription_share(&family, enabled)
+}
+
 /// Bind (or unbind: `selection = None`) a session to a cross-use model.
 /// Side effects: binding records `lastUsedAt`; unbinding a grok session also
 /// removes the owned model tables (they stay advertised otherwise).

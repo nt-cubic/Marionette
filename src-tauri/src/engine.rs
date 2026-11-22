@@ -195,12 +195,16 @@ struct EngineState {
     /// 最近一次「有人需要引擎」的时刻（目录查询 / 别名同步 / 注入解析 /
     /// 注册）。空闲回收的计时基准。
     last_needed_at: Option<Instant>,
+    /// 本安装的网关 Bearer 令牌（2026-11-22 安全批；`serve-token.txt` 读出，
+    /// 引擎回收再唤醒不变）。None = magpie 子进程/复用外部实例/尚未拉起。
+    serve_token: Option<String>,
 }
 
 static STATE: Mutex<EngineState> = Mutex::new(EngineState {
     status: EngineStatus::Absent,
     child: None,
     last_needed_at: None,
+    serve_token: None,
 });
 
 fn state_lock() -> &'static Mutex<EngineState> {
@@ -915,7 +919,7 @@ fn find_free_port_from(start: u16) -> Option<u16> {
 /// `magpie serve` 拉起（S1 处方的 env 全集）。stdout/stderr 逐行进 debug_log
 /// （截断防刷屏）。engine-rust 形态下没有子进程——`exe` 只是调用链签名占位，
 /// 实际由 [`spawn_serve_in_process`] 在本进程起网关线程。
-fn spawn_serve(exe: &Path, port: u16) -> Result<ChildHandle, String> {
+fn spawn_serve(exe: &Path, port: u16, token: &str) -> Result<ChildHandle, String> {
     #[cfg(test)]
     if let Some(hook) = test_launch_hook() {
         return hook(port).map(|()| ChildHandle::Fake);
@@ -927,12 +931,39 @@ fn spawn_serve(exe: &Path, port: u16) -> Result<ChildHandle, String> {
             return spawn_serve_magpie_child(exe, port);
         }
         let _ = exe;
-        return spawn_serve_in_process(port);
+        return spawn_serve_in_process(port, token);
     }
     #[cfg(not(engine_rust_active))]
     {
+        let _ = token;
         return spawn_serve_magpie_child(exe, port);
     }
+}
+
+/// 本安装的网关 Bearer 令牌（2026-11-22 安全批）：`<engine_dir>/serve-token.txt`
+/// 读出/铸成。**每安装一枚、引擎回收再唤醒不变**——30 分钟空闲回收后端口重落
+/// 3425，令牌也不换，活会话注入的 baseURL+令牌才不至于 401。落盘失败（目录
+/// 只读等）降级为本轮内存令牌并记 warn：重启后令牌轮换，会话随应用重启重注
+/// 入，不致断流。
+fn ensure_serve_token(dir: &Path) -> String {
+    let path = dir.join("serve-token.txt");
+    if let Ok(text) = std::fs::read_to_string(&path) {
+        let text = text.trim();
+        if text.len() == 48 && text.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return text.to_string();
+        }
+    }
+    let token = crate::engine_gateway::mint_gateway_token();
+    if let Err(error) = std::fs::write(&path, &token) {
+        crate::debug_log::append(
+            "engine",
+            "warn",
+            "",
+            "serve token persist failed; using an in-memory token for this run",
+            Some(&error.to_string()),
+        );
+    }
+    token
 }
 
 /// magpie 子进程形态的拉起（S1 处方的 env 全集；stdout/stderr 进 debug_log）。
@@ -1011,9 +1042,14 @@ fn resolve_for_gateway(command: &str) -> Option<(String, Vec<String>)> {
 }
 
 #[cfg(engine_rust_active)]
-fn spawn_serve_in_process(port: u16) -> Result<ChildHandle, String> {
+fn spawn_serve_in_process(port: u16, token: &str) -> Result<ChildHandle, String> {
     use_engine_data_dir();
     crate::engine_gateway::set_command_resolver(resolve_for_gateway);
+    // 订阅共享闸随引擎启动对齐（2026-11-22：四族默认不共享，用户开了的族才放行）。
+    if lock_shares().is_none() {
+        reload_subscription_shares();
+    }
+    push_subscription_gate();
     // 出站代理注入：engine_gateway 不 import 主程序模块（dev bin 的 crate
     // 根不是 marionette），Marionette 的代理设置在这里喂给它。
     let proxy_config = crate::proxy::load_proxy_config();
@@ -1029,13 +1065,17 @@ fn spawn_serve_in_process(port: u16) -> Result<ChildHandle, String> {
     let thread_shutdown = shutdown.clone();
     let thread_exited = exited.clone();
     let gateway = std::sync::Arc::new(gateway);
+    let thread_token = token.to_string();
     let spawned = std::thread::Builder::new()
         .name("engine-gateway-httpd".to_string())
         .spawn(move || {
             // httpd 静默（GUI 进程无控制台）；失败与退出都只留 dev.log。
-            if let Err(error) =
-                crate::engine_gateway::httpd::serve_on(listener, gateway, thread_shutdown)
-            {
+            if let Err(error) = crate::engine_gateway::httpd::serve_on(
+                listener,
+                gateway,
+                thread_shutdown,
+                Some(thread_token),
+            ) {
                 crate::debug_log::append(
                     "engine",
                     "warn",
@@ -1306,6 +1346,7 @@ fn engine_healthy_at(port: u16) -> bool {
     let Ok(response) = agent
         .get(&format!("http://127.0.0.1:{port}/v1/models"))
         .set("Accept", "application/json")
+        .set("Authorization", &format!("Bearer {}", gateway_token()))
         .timeout(LOOP_HTTP_TIMEOUT)
         .call()
     else {
@@ -1915,7 +1956,7 @@ fn fetch_quota_http(port: u16, force: bool) -> Result<String, String> {
     let response = agent
         .get(&url)
         .set("Accept", "application/json")
-        .set("Authorization", &format!("Bearer {ENGINE_TOKEN}"))
+        .set("Authorization", &format!("Bearer {}", gateway_token()))
         .timeout(timeout)
         .call()
         .map_err(|e| format!("GET quotas: {e}"))?;
@@ -3047,7 +3088,7 @@ fn codex_alias_served(v1: &str, group_id: &str) -> bool {
     let url = format!("{v1}/models/group/{group_id}");
     match agent
         .get(&url)
-        .set("Authorization", &format!("Bearer {ENGINE_TOKEN}"))
+        .set("Authorization", &format!("Bearer {}", gateway_token()))
         .call()
     {
         Ok(_) => true,
@@ -3262,7 +3303,10 @@ fn serve_and_run(dir: &Path) -> Result<(), String> {
     let exe = exe_path(dir);
     let port = find_free_port_from(DEFAULT_PORT)
         .ok_or_else(|| crate::ts!("从 {DEFAULT_PORT} 起找不到空闲环回端口", "No free loopback port found from {DEFAULT_PORT}"))?;
-    let mut child = spawn_serve(&exe, port)?;
+    // Bearer 令牌先定（健康检查自己也要带；serve-token.txt 见 ensure_serve_token）。
+    let token = ensure_serve_token(dir);
+    lock_state().serve_token = Some(token.clone());
+    let mut child = spawn_serve(&exe, port, &token)?;
     let deadline = Instant::now() + HEALTH_TIMEOUT;
     loop {
         if engine_healthy_at(port) {
@@ -3449,6 +3493,19 @@ pub fn running_base() -> Option<(u16, Option<String>)> {
     }
 }
 
+/// 本安装的网关 Bearer 令牌（serve-token.txt；serve_and_run 拉起前就有值，
+/// 健康检查要用）。magpie 子进程/复用外部实例/未拉起 → None。
+pub fn running_token() -> Option<String> {
+    lock_state().serve_token.clone()
+}
+
+/// 注入与自用请求实际要带的令牌：engine-rust 自拉形态用本安装令牌；其余
+/// （magpie 子进程、复用外部实例、未拉起）回落 ENGINE_TOKEN 字面量——Go
+/// 网关回环任意 token 放行，字面量只是占位，不是机密。
+pub fn gateway_token() -> String {
+    running_token().unwrap_or_else(|| ENGINE_TOKEN.to_string())
+}
+
 /// 引擎的 `/v1` 地址（grok owned 表的 `base_url`——chat_completions 后端向
 /// base_url 拼 `/chat/completions`）。
 pub fn engine_v1_url() -> Option<String> {
@@ -3571,6 +3628,7 @@ pub fn catalog_direct() -> Vec<String> {
         catalog()
             .into_iter()
             .filter(|id| !id.starts_with("group/") && !id.starts_with("auto/"))
+            .filter(|id| subscription_catalog_visible(id))
             .collect(),
         |id| id.as_str(),
     )
@@ -3584,9 +3642,129 @@ pub fn catalog_direct_entries() -> Vec<crate::model_bridge::CatalogModelRow> {
         catalog_entries()
             .into_iter()
             .filter(|row| !row.id.starts_with("group/") && !row.id.starts_with("auto/"))
+            .filter(|row| subscription_catalog_visible(&row.id))
             .collect(),
         |row| row.id.as_str(),
     )
+}
+
+// ─── 订阅共享族（2026-11-22 产品定案：四族默认不共享）────────────────────────
+//
+// claude / codex(gpt) / grok / gemini 四族是引擎从本机 CLI 登录态自动发现的
+// 订阅来源；默认**不共享**给其他 agent（不进任何菜单/注入），用户在模型共享
+// 面板逐族开启（开启时有账号/条款警告）。deepseek 等按量/套餐来源不在此列，
+// 照旧默认可用。额度行（右栏/面板的只读展示）不受此闸影响。
+// 过滤点唯一：`catalog_direct*` 与缓存读（照 `auto/` 先例），消费点不再各滤；
+// 网关侧另有执行闸（engine_gateway::set_subscription_enabled——关 = 目录不列、
+// 拦截器让位，直连 HTTP 也不跑）。
+
+/// 四个订阅共享族（引擎 provider 前缀）。
+pub const SUBSCRIPTION_FAMILIES: [&str; 4] = ["claude", "codex", "grok", "gemini"];
+
+/// 偏好缓存：None = 未装载；`{family: true}` = 用户已开启共享。
+/// 模型库偏好（model-library.json）的 `subscriptionShares` 键，缺省 = 全关。
+static SUBSCRIPTION_SHARES: Mutex<Option<std::collections::HashMap<String, bool>>> =
+    Mutex::new(None);
+
+fn lock_shares() -> std::sync::MutexGuard<'static, Option<std::collections::HashMap<String, bool>>> {
+    SUBSCRIPTION_SHARES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// 解析偏好 JSON 里的 `subscriptionShares`（坏形状 → 空表 = 全关）。
+fn parse_subscription_shares(value: &serde_json::Value) -> std::collections::HashMap<String, bool> {
+    let mut out = std::collections::HashMap::new();
+    if let Some(map) = value.get("subscriptionShares").and_then(|v| v.as_object()) {
+        for (family, flag) in map {
+            if SUBSCRIPTION_FAMILIES.contains(&family.as_str()) {
+                out.insert(family.clone(), flag.as_bool().unwrap_or(false));
+            }
+        }
+    }
+    out
+}
+
+/// 装载/刷新偏好缓存并推送网关闸。生产从 model-library.json 读；**测试构建
+/// 完全 no-op**（绝不读真实 ~/.marionette、不碰网关闸——同进程的 gateway
+/// 单测依赖「未推送 = 全开」默认；状态由 set_subscription_shares_for_tests 布置）。
+pub fn reload_subscription_shares() {
+    #[cfg(test)]
+    {
+        return;
+    }
+    #[allow(unreachable_code)]
+    {
+        let map = crate::model_sources::load_preferences()
+            .ok()
+            .map(|value| parse_subscription_shares(&value))
+            .unwrap_or_default();
+        *lock_shares() = Some(map);
+        push_subscription_gate();
+    }
+}
+
+/// family 是否已开启共享。首次查询惰性装载（开关命令会显式刷新）。
+pub fn subscription_share_enabled(family: &str) -> bool {
+    if lock_shares().is_none() {
+        reload_subscription_shares();
+    }
+    lock_shares()
+        .as_ref()
+        .and_then(|map| map.get(family))
+        .copied()
+        .unwrap_or(false)
+}
+
+/// 目录行是否可见：非订阅族恒真；订阅族要看用户开没开。
+fn subscription_catalog_visible(id: &str) -> bool {
+    match SUBSCRIPTION_FAMILIES.iter().find(|f| id.starts_with(&format!("{}/", f))) {
+        Some(family) => subscription_share_enabled(family),
+        None => true,
+    }
+}
+
+/// 把「已开启的族」推给网关执行闸（engine_gateway::set_subscription_enabled）。
+fn push_subscription_gate() {
+    let guard = lock_shares();
+    let mut enabled: Vec<String> = Vec::new();
+    if let Some(map) = guard.as_ref() {
+        for family in SUBSCRIPTION_FAMILIES {
+            if map.get(family).copied().unwrap_or(false) {
+                enabled.push(family.to_string());
+            }
+        }
+    }
+    drop(guard);
+    crate::engine_gateway::set_subscription_enabled(enabled);
+}
+
+/// 模型共享面板的开关命令入口：族名白名单校验 → 写偏好 → 刷新缓存 →
+/// 推网关闸（运行中即时生效）。
+pub fn set_subscription_share(family: &str, enabled: bool) -> Result<(), String> {
+    if !SUBSCRIPTION_FAMILIES.contains(&family) {
+        return Err(crate::ts!(
+            "未知订阅共享族：{family}",
+            "Unknown subscription share family: {family}"
+        ));
+    }
+    let mut preferences = crate::model_sources::load_preferences()?;
+    let shares = parse_subscription_shares(&preferences);
+    if shares.get(family).copied() == Some(enabled) {
+        return Ok(());
+    }
+    let mut next = serde_json::Map::new();
+    for (name, flag) in shares {
+        next.insert(name, serde_json::Value::Bool(flag));
+    }
+    next.insert(family.to_string(), serde_json::Value::Bool(enabled));
+    preferences
+        .as_object_mut()
+        .ok_or_else(|| crate::ts!("模型显示设置格式无效", "Invalid model display preferences format"))?
+        .insert("subscriptionShares".to_string(), serde_json::Value::Object(next));
+    crate::model_sources::save_preferences(preferences)?;
+    reload_subscription_shares();
+    Ok(())
 }
 
 // ─── 引擎目录磁盘缓存（懒启动配套，2026-11-06）─────────────────────────────
@@ -3666,6 +3844,7 @@ pub fn cached_catalog_entries() -> Vec<crate::model_bridge::CatalogModelRow> {
     file.rows
         .into_iter()
         .filter(|row| !row.id.starts_with("auto/"))
+        .filter(|row| subscription_catalog_visible(&row.id))
         .collect()
 }
 
@@ -3726,6 +3905,7 @@ fn fetch_catalog() -> Vec<crate::model_bridge::CatalogModelRow> {
     let Ok(response) = agent
         .get(&format!("http://127.0.0.1:{port}/v1/models"))
         .set("Accept", "application/json")
+        .set("Authorization", &format!("Bearer {}", gateway_token()))
         .timeout(LOOP_HTTP_TIMEOUT)
         .call()
     else {
@@ -3816,9 +3996,14 @@ impl Drop for TestHandle {
                 *guard = None;
             }
         }
+        // 订阅共享偏好缓存一并复位（set_subscription_shares_for_tests 布置）。
+        *lock_shares() = None;
         let mut state = lock_state();
         state.status = EngineStatus::Absent;
         state.child = None;
+        // serve_token 一并复位：并行的 serve_and_run 测试会把真令牌写进全局
+        // STATE，model_bridge 的注入断言（期望回落 "magpie"）会被它污染。
+        state.serve_token = None;
         if let Some(cache) = CATALOG.get() {
             if let Ok(mut guard) = cache.lock() {
                 *guard = None;
@@ -3868,6 +4053,20 @@ pub(crate) fn test_running(catalog: Vec<String>) -> TestHandle {
         bridge_visible: true,
         ..Seams::default()
     })
+}
+
+/// 测试专用：直接布置订阅共享偏好缓存（None = 复位回「未装载 = 四族全关」）。
+/// 测试构建的 reload_subscription_shares 是 no-op（绝不读真实 model-library.json），
+/// 想让目录里的 claude/codex/grok/gemini 行可见就调这个。TestHandle Drop 会复位。
+#[cfg(test)]
+pub(crate) fn set_subscription_shares_for_tests(shares: Option<&[(&str, bool)]>) {
+    *lock_shares() = shares.map(|pairs| {
+        pairs
+            .iter()
+            .filter(|(family, _)| SUBSCRIPTION_FAMILIES.contains(family))
+            .map(|(family, flag)| (family.to_string(), *flag))
+            .collect()
+    });
 }
 
 /// [`test_running`] + CLI 捕获缝：别名组接线测试记录 magpie CLI 参数用。
@@ -4577,12 +4776,12 @@ mod tests {
         let _live = install_test_seams(Seams {
             dir: Some(dir.clone()),
             bridge_visible: true,
-            catalog: Some(vec!["grok/grok-4.7".into(), "glm/glm-5.3".into()]),
+            catalog: Some(vec!["vendor/grok-4.7".into(), "glm/glm-5.3".into()]),
             ..Seams::default()
         });
         let (live_ids, offline) = catalog_direct_or_cached();
         assert!(!offline);
-        assert_eq!(live_ids, vec!["grok/grok-4.7", "glm/glm-5.3"]);
+        assert_eq!(live_ids, vec!["vendor/grok-4.7", "glm/glm-5.3"]);
         assert!(
             dir.join("engine-catalog.json").exists(),
             "live 非空时应回写缓存文件"
@@ -4607,17 +4806,19 @@ mod tests {
         let _live = install_test_seams(Seams {
             dir: Some(dir.clone()),
             bridge_visible: true,
+            // 注意行族用中性 vendor 名（alpha/beta）：claude/codex/grok/gemini
+            // 前缀会先撞上订阅共享默认关过滤（见下一测试），两个特性各测各的。
             catalog: Some(vec![
                 "auto/gpt-6-luna".into(),
                 "auto/deepseek-v4-pro".into(),
                 "group/auto-grok-4-7".into(),
-                "codex/gpt-6-luna".into(),
-                "grok/grok-4.7".into(),
+                "alpha/gpt-6-luna".into(),
+                "beta/grok-4.7".into(),
             ]),
             ..Seams::default()
         });
         let ids = catalog_direct();
-        assert_eq!(ids, vec!["codex/gpt-6-luna", "grok/grok-4.7"]);
+        assert_eq!(ids, vec!["alpha/gpt-6-luna", "beta/grok-4.7"]);
         // live 回写缓存时也不带 auto。
         let (via_cache, offline) = catalog_direct_or_cached();
         assert!(!offline);
@@ -4630,7 +4831,7 @@ mod tests {
             "fetchedAt": "1",
             "rows": [
                 { "id": "auto/gpt-6-luna", "contextWindow": 0, "maxOutput": 0, "images": false },
-                { "id": "grok/grok-4.7", "contextWindow": 0, "maxOutput": 0, "images": false },
+                { "id": "beta/grok-4.7", "contextWindow": 0, "maxOutput": 0, "images": false },
             ],
         });
         fs::write(dir.join("engine-catalog.json"), cache_body.to_string()).unwrap();
@@ -4641,8 +4842,76 @@ mod tests {
         let cached = cached_catalog_entries();
         assert_eq!(
             cached.into_iter().map(|row| row.id).collect::<Vec<_>>(),
-            vec!["grok/grok-4.7".to_string()]
+            vec!["beta/grok-4.7".to_string()]
         );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 订阅共享族（2026-11-22 产品定案）：四族默认不进 catalog_direct*（live
+    /// 与缓存读两侧都剥），开启后放行；deepseek 等非订阅族不受影响。
+    #[test]
+    fn subscription_families_hidden_until_enabled() {
+        let dir = temp_dir("sub-share");
+        let _live = install_test_seams(Seams {
+            dir: Some(dir.clone()),
+            bridge_visible: true,
+            catalog: Some(vec![
+                "claude/claude-opus-5-5".into(),
+                "codex/gpt-6-luna".into(),
+                "grok/grok-4.7".into(),
+                "gemini/gemini-3-pro".into(),
+                "deepseek/deepseek-chat".into(),
+                "glm/glm-5.3".into(),
+            ]),
+            ..Seams::default()
+        });
+        // 未装载偏好（= 用户没开过）→ 四族全剥，其余照旧（deepseek 照
+        // pay_per_use_last 沉底）。
+        let ids = catalog_direct();
+        assert_eq!(ids, vec!["glm/glm-5.3", "deepseek/deepseek-chat"]);
+        // live 回写缓存（or_cached 落盘）也不带族行；引擎停着回放同样剥。
+        let (live_again, offline) = catalog_direct_or_cached();
+        assert!(!offline);
+        assert_eq!(live_again, ids);
+        drop(_live);
+        let _sleeping = install_test_seams(Seams {
+            dir: Some(dir.clone()),
+            ..Seams::default()
+        });
+        let (cached_ids, offline) = catalog_direct_or_cached();
+        assert!(offline);
+        assert_eq!(cached_ids, vec!["glm/glm-5.3", "deepseek/deepseek-chat"]);
+        // 旧缓存文件里残留的族行（上一版写下的），读出来也必须剥。
+        let cache_body = serde_json::json!({
+            "version": 1,
+            "fetchedAt": "1",
+            "rows": [
+                { "id": "claude/claude-opus-5-5", "contextWindow": 0, "maxOutput": 0, "images": false },
+                { "id": "deepseek/deepseek-chat", "contextWindow": 0, "maxOutput": 0, "images": false },
+            ],
+        });
+        fs::write(dir.join("engine-catalog.json"), cache_body.to_string()).unwrap();
+        let cached = cached_catalog_entries();
+        assert_eq!(
+            cached.into_iter().map(|row| row.id).collect::<Vec<_>>(),
+            vec!["deepseek/deepseek-chat".to_string()]
+        );
+        // 用户开启 claude + grok → 这两族回来（live 侧）。
+        drop(_sleeping);
+        let _enabled = install_test_seams(Seams {
+            dir: Some(dir.clone()),
+            bridge_visible: true,
+            catalog: Some(vec![
+                "claude/claude-opus-5-5".into(),
+                "codex/gpt-6-luna".into(),
+                "grok/grok-4.7".into(),
+                "deepseek/deepseek-chat".into(),
+            ]),
+            ..Seams::default()
+        });
+        set_subscription_shares_for_tests(Some(&[("claude", true), ("grok", true)]));
+        let ids = catalog_direct();
+        assert_eq!(ids, vec!["claude/claude-opus-5-5", "grok/grok-4.7", "deepseek/deepseek-chat"]);
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -4888,6 +5157,29 @@ mod tests {
             r#"[{"provider":"opencode-go","windows":[],"aliases":["source-a","source-b"]}]"#,
         );
         assert_eq!(merged[0].aliases, vec!["source-a", "source-b"]);
+    }
+
+    /// serve-token.txt（2026-11-22 安全批）：首跑铸造 48-hex 落盘，二跑复读
+    /// 同一枚（引擎回收再唤醒不换令牌），坏文件（截断/非 hex）重铸。
+    #[test]
+    fn serve_token_is_persistent_and_revalidated() {
+        let dir = temp_dir("serve-token");
+        let first = ensure_serve_token(&dir);
+        assert_eq!(first.len(), 48, "48 hex chars");
+        assert!(first.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_eq!(
+            fs::read_to_string(dir.join("serve-token.txt")).unwrap().trim(),
+            first,
+            "minted token must be persisted"
+        );
+        assert_eq!(ensure_serve_token(&dir), first, "second run reuses the same token");
+        fs::write(dir.join("serve-token.txt"), "not-hex-short").unwrap();
+        let second = ensure_serve_token(&dir);
+        assert_eq!(second.len(), 48);
+        assert_ne!(second, first, "corrupt token file is re-minted");
+        // 状态访问器：None 回落 ENGINE_TOKEN（magpie 形态/未拉起）。
+        assert_eq!(gateway_token(), ENGINE_TOKEN);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// npm 装出来的三件套（sh / .cmd / exe）+ 带空格和中文的路径：给网关的必须是 exe。

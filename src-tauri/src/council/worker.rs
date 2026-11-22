@@ -77,7 +77,7 @@ impl ModelClient for EngineClient {
         // (HTTP 状态,按码分类)区分,改动前缀前先看那边。
         let resp = agent
             .post(&format!("http://127.0.0.1:{port}/v1/chat/completions"))
-            .set("Authorization", &format!("Bearer {}", crate::engine::ENGINE_TOKEN))
+            .set("Authorization", &format!("Bearer {}", crate::engine::gateway_token()))
             .set("Content-Type", "application/json")
             .timeout(Duration::from_secs(self.timeout_secs))
             .send_string(&body)

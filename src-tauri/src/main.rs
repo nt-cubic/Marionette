@@ -768,6 +768,7 @@ fn main() {
             commands::model_library_set_environment,
             commands::model_library_preferences,
             commands::model_library_save_preferences,
+            commands::model_library_set_subscription_share,
             commands::bridge_bind,
             commands::bridge_get_binding,
             commands::engine_status,

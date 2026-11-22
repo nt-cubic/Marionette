@@ -559,9 +559,10 @@ fn fetch_models(account: &Account) -> Result<(Vec<VendorRow>, HashMap<String, St
 }
 
 /// `/v1/models` 的 codex 行（30s 缓存、失败 60s 退避、失败回旧缓存）。没有
-/// 账号 / 令牌过期 / 用户自有 `codex` 来源 → 空（过期时有旧缓存就继续给旧的）。
+/// 账号 / 令牌过期 / 用户自有 `codex` 来源 / 订阅共享未开启（2026-11-22 四族
+/// 默认不共享）→ 空（过期时有旧缓存就继续给旧的）。
 pub fn listed_rows(providers: &[Provider]) -> Vec<VendorRow> {
-    if providers.iter().any(|p| p.id == CODEX_ID) {
+    if providers.iter().any(|p| p.id == CODEX_ID) || !super::family_enabled(CODEX_ID) {
         return Vec::new();
     }
     let Some(account) = discover() else { return Vec::new() };
@@ -2578,6 +2579,11 @@ fn split_direct_pin(bare: &str) -> (String, Option<String>) {
 /// 否则 None（走原有路径）。三种入站协议都真转发：Responses 直通，chat /
 /// anthropic 翻成 Responses 出站、应答翻回去。
 pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> Option<Reply> {
+    // 订阅共享执行闸（2026-11-22）：codex/gpt 族没开 → 让位（listed_rows 也
+    // 不列，直连请求与未安装无异）。真实 providers 能接住的本来就走原路径。
+    if !super::family_enabled(CODEX_ID) {
+        return None;
+    }
     let parsed: Value = serde_json::from_slice(&request.body).ok()?;
     let asked = parsed.get("model")?.as_str()?.to_string();
     let (groups, providers) = {

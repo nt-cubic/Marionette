@@ -23,6 +23,14 @@ export type ModelLibraryPreferences = {
   hiddenModels: string[];
   providerOrder: string[];
   modelOrder: Record<string, string[]>;
+  /**
+   * 订阅共享开关（2026-11-22 产品定案）：claude / codex(gpt) / grok / gemini
+   * 四族**默认不共享**（键缺省 = 关），true = 用户显式开启。存
+   * model-library.json 的同名键；引擎目录（engine.rs catalog_direct*）与
+   * 网关执行闸都按它放行。开关走 setSubscriptionShare（专用命令），不进
+   * 「未保存」草稿流。
+   */
+  subscriptionShares?: Record<string, boolean>;
 };
 export type LibraryRow = {
   key: string;
@@ -59,6 +67,7 @@ function normalize(value: Partial<ModelLibraryPreferences>): ModelLibraryPrefere
   return {
     hiddenProviders: strings(value.hiddenProviders), hiddenModels: strings(value.hiddenModels), providerOrder: strings(value.providerOrder),
     modelOrder: Object.fromEntries(Object.entries(value.modelOrder ?? {}).map(([key, list]) => [key, strings(list)])),
+    subscriptionShares: Object.fromEntries(Object.entries(value.subscriptionShares ?? {}).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean")),
   };
 }
 const notify = () => subscribers.forEach(fn => fn());
@@ -95,6 +104,30 @@ export async function saveModelPreferences(next: ModelLibraryPreferences): Promi
   if (isTauriRuntime()) await invoke("model_library_save_preferences", { preferences: next });
   preferences = normalize(next); notify();
   if (isTauriRuntime()) await emit(EVENT);
+}
+
+// ─── 订阅共享族（2026-11-22 产品定案：四族默认不共享）─────────────────────────
+
+export const SUBSCRIPTION_FAMILIES = ["claude", "codex", "grok", "gemini"] as const;
+export type SubscriptionFamily = (typeof SUBSCRIPTION_FAMILIES)[number];
+
+/** 某订阅族是否已被用户开启共享（键缺省 = 关）。 */
+export function subscriptionShareEnabled(prefs: ModelLibraryPreferences, family: string): boolean {
+  return prefs.subscriptionShares?.[family] === true;
+}
+
+/**
+ * 开/关一个订阅族的共享。走专用命令（engine.rs 同步目录过滤与网关执行闸，
+ * 运行中即时生效），不进「未保存」草稿流——共享是安全决定，落盘即生效。
+ */
+export async function setSubscriptionShare(family: string, enabled: boolean): Promise<void> {
+  if (isTauriRuntime()) await invoke("model_library_set_subscription_share", { family, enabled });
+  preferences = { ...preferences, subscriptionShares: { ...preferences.subscriptionShares, [family]: enabled } };
+  notify();
+  if (isTauriRuntime()) {
+    invalidateBridgeModels();
+    await emit(EVENT);
+  }
 }
 
 export function useModelLibrary(scanOnMount = true) {
@@ -342,6 +375,7 @@ export function expandHiddenProviders(prefs: ModelLibraryPreferences, groups: Li
     modelOrder[providerKeyMap.get(key) ?? key] = rename(list);
   }
   return {
+    ...prefs,
     hiddenProviders: prefs.hiddenProviders.filter(key => groupKeys.has(key)),
     hiddenModels: [
       ...new Set([

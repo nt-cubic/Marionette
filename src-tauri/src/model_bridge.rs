@@ -482,13 +482,32 @@ fn engine_bridge_source() -> BridgeSource {
     }
 }
 
+/// 本家同族剔除（2026-11-22 产品定案）：厂商自己的 agent 会话不再看到引擎桥
+/// 的本族订阅组——本家原生模型已覆盖（Claude Code 直接用 Claude 订阅），桥组
+/// 只会造成「两个都显示」。族 ↔ 本家 agent：claude→ClaudeCode、codex→Codex、
+/// grok→GrokBuild；gemini 暂无本家 agent，不剔。
+fn home_family_of(agent: BridgeAgent) -> Option<&'static str> {
+    match agent {
+        BridgeAgent::ClaudeCode => Some("claude"),
+        BridgeAgent::Codex => Some("codex"),
+        BridgeAgent::GrokBuild => Some("grok"),
+        _ => None,
+    }
+}
+
 /// 保留引擎完整目录。显示范围和顺序统一交给模型库偏好。
 /// 懒启动配套（2026-11-06）：live 目录优先，引擎不在 Running 时回放
 /// `engine-catalog.json` 磁盘缓存——菜单的 marionette 组不再随引擎
 /// 睡眠/唤醒整组消失/插回。返回是否来自缓存（离线目录）。
-fn push_engine_models(models: &mut Vec<BridgeModel>) -> bool {
+/// `skip_family`：本家同族剔除（见 home_family_of）——只剔这一族，其余照推。
+fn push_engine_models(models: &mut Vec<BridgeModel>, skip_family: Option<&str>) -> bool {
     let (engine_ids, from_cache) = crate::engine::catalog_direct_or_cached();
     for model_id in &engine_ids {
+        if let Some(family) = skip_family {
+            if model_id.starts_with(&format!("{family}/")) {
+                continue;
+            }
+        }
         // Visibility belongs to the model library; do not silently cut off
         // models before the user can choose which ones should be shown.
         // label 剥掉注册来源的内部 id 前缀（`source-73800e…/`）——它随后会
@@ -553,7 +572,7 @@ pub fn opencode_engine_config_content(
         "options".to_string(),
         serde_json::json!({
             "baseURL": format!("http://127.0.0.1:{port}/v1"),
-            "apiKey": crate::engine::ENGINE_TOKEN,
+            "apiKey": crate::engine::gateway_token(),
         }),
     );
     let mut catalog = serde_json::Map::new();
@@ -840,7 +859,7 @@ fn zcode_marionette_provider_rule(port: u16, models: &[CatalogModelRow]) -> serd
             "group": "standard-personal",
             "access": {
                 "type": "api-key",
-                "apiKey": crate::engine::ENGINE_TOKEN,
+                "apiKey": crate::engine::gateway_token(),
             },
             "api": {
                 "type": "openai-chat-completions",
@@ -1125,7 +1144,7 @@ fn list_models_at(
             // （engine-catalog.json），菜单不再整组消失；离线选中 →
             // bridge_bind 的 ensure 链把引擎拉起，Running 后缓存失效重拉。
             let mut models = Vec::new();
-            let offline = push_engine_models(&mut models);
+            let offline = push_engine_models(&mut models, Some("codex"));
             let note = if offline && !models.is_empty() {
                 Some(crate::ts!("引擎未运行 · 离线目录（选用时会自动启动引擎）", "Engine offline · cached catalog (selecting a model starts the engine)"))
             } else if models.is_empty() {
@@ -1169,7 +1188,7 @@ fn list_models_at(
             let mut models = Vec::new();
             let mut sources = Vec::new();
             sources.push(engine_bridge_source());
-            let offline = push_engine_models(&mut models);
+            let offline = push_engine_models(&mut models, None);
             let note = if offline && !models.is_empty() {
                 Some(crate::ts!("引擎未运行 · 离线目录（选用时会自动启动引擎）", "Engine offline · cached catalog (selecting a model starts the engine)"))
             } else if offline {
@@ -1263,7 +1282,7 @@ fn list_models_at(
             //    它们可跨用，模型 id 是引擎的 `provider/model` 形态。
             if crate::engine::bridge_ready() {
                 sources.push(engine_bridge_source());
-                truncated |= push_engine_models(&mut models);
+                truncated |= push_engine_models(&mut models, home_family_of(agent));
             }
             let mut note = if sources.is_empty() {
                 Some(crate::ts!("还没有可共享的 API Key，请先在设置的凭据页添加", "No API key to share yet — add one on the Credentials page in Settings"))
@@ -2377,7 +2396,7 @@ fn grok_engine_owned_block(model_id: &str, base_url: &str, row: Option<&CatalogM
         model = toml_escape(model_id),
         name = toml_escape(&crate::ts!("翻译引擎", "Translation engine")),
         base = toml_escape(base_url),
-        key = toml_escape(crate::engine::ENGINE_TOKEN),
+        key = toml_escape(&crate::engine::gateway_token()),
         caps = caps,
         menu = menu,
     )
@@ -2927,7 +2946,7 @@ fn peek_spawn_key_at(
     // 真实订阅凭证永不进 agent 配置）。引擎是否在跑由 injection_for_agent_at
     // 判定——那边 Err 时这把钥匙根本不会被用。
     if entry_id == crate::engine::ENGINE_ENTRY_ID {
-        return Some(crate::engine::ENGINE_TOKEN.to_string());
+        return Some(crate::engine::gateway_token());
     }
     // key-plan：store 现解（错误按既有语义 flat 成 None）。
     if let Some(key) = crate::credentials::peek_secret_at(credentials_path, entry_id)
@@ -2969,7 +2988,7 @@ pub(crate) fn codex_bridge_route(selection: &BridgeSelection) -> Option<(String,
     if selection.entry_id != crate::engine::ENGINE_ENTRY_ID {
         return None;
     }
-    crate::engine::engine_v1_url().map(|base| (base, crate::engine::ENGINE_TOKEN.to_string()))
+    crate::engine::engine_v1_url().map(|base| (base, crate::engine::gateway_token()))
 }
 
 /// codex-acp 的 `CODEX_CONFIG` 是合并进 session config 的 JSON object。Codex
@@ -4044,13 +4063,16 @@ official_marketplace_auto_installed = true\n";
         );
         drop(absent);
 
-        // Running → engine 源出现，模型挂在 engine entry 上。
+        // Running → engine 源出现，模型挂在 engine entry 上。订阅共享开着
+        // （2026-11-22 默认关——测试显式开两族）。
         let _engine = crate::engine::test_running(vec![
             "grok/grok-4.7".to_string(),
             "claude/claude-opus-4-6".to_string(),
         ]);
+        crate::engine::set_subscription_shares_for_tests(Some(&[("claude", true), ("grok", true)]));
         // opencode（2026-10-17 起）与 claude/grok/codex 同款：引擎 Running 时
         // Composer 跨用段同样列出引擎源（key 型来源仍不列——宿主去重规则）。
+        // opencode 非本家：两族都看得到。
         let oc = list_models_at(&credentials, &scan, "opencode");
         assert!(
             oc.sources
@@ -4066,6 +4088,8 @@ official_marketplace_auto_installed = true\n";
             2
         );
         assert!(oc.note.is_none());
+        // Claude Code 是 claude 本家：即使共享开着，本族桥组也不出现
+        // （2026-11-22「两个都显示」修正——原生模型已覆盖，只看到 grok 桥组）。
         let result = list_models_at(&credentials, &scan, "claude-code");
         let engine_source = result
             .sources
@@ -4081,7 +4105,7 @@ official_marketplace_auto_installed = true\n";
             .filter(|m| m.entry_id == crate::engine::ENGINE_ENTRY_ID)
             .map(|m| m.model_id.as_str())
             .collect();
-        assert_eq!(ids, vec!["grok/grok-4.7", "claude/claude-opus-4-6"]);
+        assert_eq!(ids, vec!["grok/grok-4.7"]);
         assert!(result
             .models
             .iter()
@@ -4104,11 +4128,12 @@ official_marketplace_auto_installed = true\n";
         );
         assert!(!result.note.as_deref().unwrap_or_default().contains("截断"));
 
-        // 大小来源都完整保留；`group/` 路由组不进菜单。
+        // 大小来源都完整保留；`group/` 路由组不进菜单。（尾部 provider 用
+        // 中性族名 tail/——grok/ 前缀会撞订阅共享过滤与本家剔除。）
         drop(_engine_many);
         let mut mixed: Vec<String> = (0..70).map(|i| format!("p/model-{i}")).collect();
-        mixed.push("grok/grok-4.5".to_string());
-        mixed.push("grok/grok-4.6".to_string());
+        mixed.push("tail/grok-4.5".to_string());
+        mixed.push("tail/grok-4.6".to_string());
         mixed.push("group/auto-grok-4-7".to_string());
         let _engine_mixed = crate::engine::test_running(mixed);
         let result = list_models_at(&credentials, &scan, "grok-build");
@@ -4118,8 +4143,8 @@ official_marketplace_auto_installed = true\n";
             .filter(|m| m.entry_id == crate::engine::ENGINE_ENTRY_ID)
             .collect();
         assert_eq!(engine_models.len(), 72, "尾部 provider 不被别家体量砍穿");
-        assert!(engine_models.iter().any(|m| m.model_id == "grok/grok-4.5"));
-        assert!(engine_models.iter().any(|m| m.model_id == "grok/grok-4.6"));
+        assert!(engine_models.iter().any(|m| m.model_id == "tail/grok-4.5"));
+        assert!(engine_models.iter().any(|m| m.model_id == "tail/grok-4.6"));
         assert!(
             engine_models.iter().all(|m| !m.model_id.starts_with("group/")),
             "路由组不进跨用菜单"
@@ -4236,8 +4261,9 @@ official_marketplace_auto_installed = true\n";
         drop(absent);
 
         // Running：engine 源 + 引擎模型，别名 codex-acp 也归同一桶。
+        // （行族用中性名——grok/ 前缀会撞订阅共享默认关过滤。）
         let _engine = crate::engine::test_running(vec![
-            "grok/grok-4.7".to_string(),
+            "alpha/grok-4.7".to_string(),
             "kimi/k2.6".to_string(),
         ]);
         for agent in ["codex", "codex-acp"] {
@@ -4249,7 +4275,7 @@ official_marketplace_auto_installed = true\n";
                 .iter()
                 .map(|m| m.model_id.as_str())
                 .collect();
-            assert_eq!(ids, vec!["grok/grok-4.7", "kimi/k2.6"]);
+            assert_eq!(ids, vec!["alpha/grok-4.7", "kimi/k2.6"]);
             assert!(result.note.is_none(), "unexpected note: {:?}", result.note);
         }
 

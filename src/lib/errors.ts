@@ -6,6 +6,7 @@ export type AgentErrorKind =
   | "auth_transient"
   | "upgrade"
   | "command_missing"
+  | "claude_bridge"
   | "timeout"
   | "model"
   | "network"
@@ -167,6 +168,18 @@ export function classifyAgentError(
       title: t("errors.authTitle"),
       message,
       actionHint: hint,
+    };
+  }
+
+  // 订阅桥拉起 Claude Code 失败（引擎网关自己的子进程）——2026-11-22 前
+  // 被 /spawn.*failed/ 误归类成 command_missing，提示去装 Agent，纯属误导
+  // （Claude Code 明明装着，是垫片解析/路径问题）。先于通用分支拦下。
+  if (/claude bridge/i.test(message)) {
+    return {
+      kind: "claude_bridge",
+      title: t("errors.claudeBridgeTitle"),
+      message,
+      actionHint: t("errors.claudeBridgeHint"),
     };
   }
 

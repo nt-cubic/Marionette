@@ -759,7 +759,7 @@ impl AcpService {
                         child_command
                             .arg("--bundle")
                             .arg(&bundle)
-                            .env(crate::dsh_bridge::MARIONETTE_TOKEN_ENV, crate::engine::ENGINE_TOKEN);
+                            .env(crate::dsh_bridge::MARIONETTE_TOKEN_ENV, &crate::engine::gateway_token());
                         crate::debug_log::append(
                             "bridge",
                             "info",
@@ -799,7 +799,7 @@ impl AcpService {
                 match crate::model_bridge::refresh_pi_marionette_route() {
                     Ok(true) => {
                         child_command
-                            .env(crate::dsh_bridge::MARIONETTE_TOKEN_ENV, crate::engine::ENGINE_TOKEN);
+                            .env(crate::dsh_bridge::MARIONETTE_TOKEN_ENV, &crate::engine::gateway_token());
                         crate::debug_log::append(
                             "bridge",
                             "info",

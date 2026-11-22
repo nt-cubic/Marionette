@@ -73,7 +73,15 @@ fn serve() -> Result<(), String> {
     let addr = std::env::var("MAGPIE_ADDR").unwrap_or_else(|_| "127.0.0.0:0".into());
     // 默认随机端口：绑定后打印实际地址（种子同款行为，打印在 httpd::serve 里）。
     let addr = if addr.ends_with(":0") { "127.0.0.1:0".to_string() } else { addr };
-    super::httpd::serve(&addr, gateway).map_err(|e| format!("serve: {e}"))
+    // Bearer 闸（2026-11-22 安全批）：serve 只在 argv 形态可达（进程内形态
+    // engine.rs 直起 httpd 线程），这里 println 与地址行同渠道。MAGPIE_TOKEN
+    // 可钉死令牌，合同脚本用它复现。
+    let token = std::env::var("MAGPIE_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(super::mint_gateway_token);
+    println!("magpie gateway token {token}");
+    super::httpd::serve(&addr, gateway, Some(token)).map_err(|e| format!("serve: {e}"))
 }
 
 /// 装载 store → 跑动词 → **仅成功才落盘**（失败路径不写半截状态，与旧

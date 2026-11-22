@@ -4,7 +4,8 @@ import { bridgeListModels, engineQuota, type BridgeModelsResult, type EngineQuot
 import { agentInkStyle } from "../lib/agentInk";
 import { cachedCapabilitiesFor } from "../lib/capabilityCache";
 import { invalidateBridgeModels } from "../lib/bridge";
-import { configureSourceEnvironment, expandHiddenProviders, DEFAULT_MODEL_PREFERENCES, libraryGroups, ordered, refreshModelSources, rowHidden, rowKeys, saveModelPreferences, toggleRow, useModelLibrary, type LibraryGroup, type LibraryRow, type ModelLibraryPreferences, type ModelSource } from "../lib/modelLibrary";
+import { configureSourceEnvironment, expandHiddenProviders, DEFAULT_MODEL_PREFERENCES, libraryGroups, ordered, refreshModelSources, rowHidden, rowKeys, saveModelPreferences, setSubscriptionShare, subscriptionShareEnabled, SUBSCRIPTION_FAMILIES, toggleRow, useModelLibrary, type LibraryGroup, type LibraryRow, type ModelLibraryPreferences, type ModelSource, type SubscriptionFamily } from "../lib/modelLibrary";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { splitModelMeta } from "../lib/modelMenu";
 import { pctLevel } from "../lib/quotaRail";
 import { useT } from "../lib/i18n";
@@ -24,6 +25,10 @@ export function ModelLibraryDialog({ agents, onClose, onManageSources }: { agent
   const [dirty, setDirty] = useState(false);
   const [selectedKey, setSelectedKey] = useState("");
   const [filter, setFilter] = useState<RowFilter>("all");
+  // 订阅共享开关（2026-11-22）：开启前要过一次警告确认；pendingShare 记着
+  // 待确认的族。开关即时落盘（不进「未保存」草稿流）。
+  const [pendingShare, setPendingShare] = useState<string | null>(null);
+  const [shareBusy, setShareBusy] = useState(false);
   const t = useT();
   useEffect(() => { if (!dirty) setDraft(preferences); }, [preferences, dirty]);
   async function refresh() {
@@ -63,6 +68,12 @@ export function ModelLibraryDialog({ agents, onClose, onManageSources }: { agent
   }, [draft, groups]);
   const q = query.trim().toLowerCase();
   const filtered = groups.filter(g => !q || `${g.label} ${g.rows.map(r => `${r.label} ${r.modelId}`).join(" ")}`.toLowerCase().includes(q));
+  /** 订阅族的本机登录信号（引擎账号表的 provider 名；antigravity 计入 gemini 族）。 */
+  const loggedFamilies = useMemo(() => {
+    const set = new Set(accounts.map(a => a.engine));
+    if (set.has("antigravity")) set.add("gemini");
+    return set;
+  }, [accounts]);
   /** Backend warnings are generated per-locale at refresh time (engine.rs ts!):
    * match either wording so the summary stays right after a language switch. */
   const isRegisterFailedWarning = (w: string) => w.includes("注册失败") || w.includes("registration failed");
@@ -74,9 +85,22 @@ export function ModelLibraryDialog({ agents, onClose, onManageSources }: { agent
   }
   async function save() {
     setBusy(true); setError("");
-    try { await saveModelPreferences(expandHiddenProviders(draft, groups)); onClose(); }
+    try {
+      // subscriptionShares 走专用命令即时落盘，保存时以最新权威值为准——
+      // dirty 草稿可能带着开关前的旧值，别让「保存」把它写回去。
+      await saveModelPreferences({ ...expandHiddenProviders(draft, groups), subscriptionShares: preferences.subscriptionShares });
+      onClose();
+    }
     catch (e) { setError(String(e)); }
     finally { setBusy(false); }
+  }
+  async function applyShare(family: string, enabled: boolean) {
+    setShareBusy(true); setError("");
+    try {
+      await setSubscriptionShare(family, enabled);
+      await refresh();
+    } catch (e) { setError(String(e)); }
+    finally { setShareBusy(false); }
   }
   const isShown = (group: LibraryGroup, row: LibraryRow, prefs: ModelLibraryPreferences) => !prefs.hiddenProviders.includes(group.key) && !rowHidden(prefs, row);
   // Footer summary and the unsaved count both read straight off the rows, so
@@ -135,6 +159,23 @@ export function ModelLibraryDialog({ agents, onClose, onManageSources }: { agent
       <div className="model-library-dialog__body">
         <div className="model-library-dialog__sources">
           <label className="model-library-dialog__search"><Search size={13} aria-hidden /><input type="search" placeholder={t("models.searchPlaceholder")} aria-label={t("models.searchPlaceholder")} value={query} onChange={e => setQuery(e.target.value)} /></label>
+          {/* 订阅共享四族（2026-11-22 产品定案：默认不共享）。共享关着时目录里
+              没有这族的行/组，卡片必须从常量渲染——这是唯一的开启入口。 */}
+          <div className="model-library-dialog__shares">
+            <span className="model-library-dialog__shares-title">{t("models.shareFamilies")}</span>
+            {SUBSCRIPTION_FAMILIES.map(family => {
+              // 读权威 preferences 而非 draft：开关即时落盘，dirty 草稿可能是旧值。
+              const on = subscriptionShareEnabled(preferences, family);
+              const logged = loggedFamilies.has(family);
+              return <div key={family} className="model-library-dialog__share">
+                <span className="model-library-dialog__share-text">
+                  <span className="model-library-dialog__share-name">{t(FAMILY_LABEL_KEY[family])}</span>
+                  <span className={`model-library-dialog__share-sub${on ? " is-on" : logged ? "" : " is-faint"}`}>{on ? t("models.shareFamilyOn") : logged ? t("models.shareFamilyOff") : t("models.shareFamilyNoLogin")}</span>
+                </span>
+                <button type="button" role="switch" className="model-library-dialog__switch" aria-checked={on} aria-label={t("models.shareSource")} disabled={busy || shareBusy} onClick={() => { if (on) void applyShare(family, false); else setPendingShare(family); }}><i /></button>
+              </div>;
+            })}
+          </div>
           <div className="model-library-dialog__source-list">
             {filtered.length === 0 && <p className="model-library-dialog__empty">{busy ? t("models.readingCatalog") : t("models.noMatches")}</p>}
             {filtered.map(group => {
@@ -220,8 +261,25 @@ export function ModelLibraryDialog({ agents, onClose, onManageSources }: { agent
         <button type="button" className="model-library-dialog__btn model-library-dialog__btn--primary" disabled={busy} onClick={() => void save()}>{t("common.save")}</button>
       </div>
     </div>
+    {pendingShare && <ConfirmDialog
+      title={t("models.shareWarnTitle", { family: t(FAMILY_LABEL_KEY[pendingShare as SubscriptionFamily]) })}
+      description={t("models.shareWarnBody")}
+      confirmLabel={t("models.shareWarnConfirm")}
+      cancelLabel={t("models.shareWarnCancel")}
+      danger={false}
+      onConfirm={() => { const family = pendingShare; setPendingShare(null); void applyShare(family, true); }}
+      onCancel={() => setPendingShare(null)}
+    />}
   </div>;
 }
+
+/** t() 的键是字面量类型——四族名映射成静态键，别拼模板串。 */
+const FAMILY_LABEL_KEY = {
+  claude: "models.family_claude",
+  codex: "models.family_codex",
+  grok: "models.family_grok",
+  gemini: "models.family_gemini",
+} as const;
 
 /** Strip the plan suffix and punctuation so `Grok (SuperGrok)` ≡ `grok`. */
 function plain(value: string | undefined | null): string {

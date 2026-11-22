@@ -117,6 +117,74 @@ pub fn set_command_resolver(resolver: CommandResolver) {
     let _ = COMMAND_RESOLVER.set(resolver);
 }
 
+/// 铸一枚网关 Bearer 令牌（48 hex；tools_mcp::mint_token 同款形状：
+/// 计数器 nonce + nanos + pid 经 SHA-256 折叠）。2026-11-22 安全批——
+/// engine.rs 落盘到 `<engine_dir>/serve-token.txt`（每安装一枚、引擎回收
+/// 再唤醒不变），cli.rs 的 argv serve 也用它（MAGPIE_TOKEN 可钉死以便测试）。
+pub fn mint_gateway_token() -> String {
+    use sha2::{Digest, Sha256};
+    static NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nonce = NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut hasher = Sha256::new();
+    hasher.update(b"marionette-gateway-token");
+    hasher.update(nonce.to_le_bytes());
+    hasher.update(nanos.to_le_bytes());
+    hasher.update(std::process::id().to_le_bytes());
+    let digest = hasher.finalize();
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    hex[..48].to_string()
+}
+
+// ─── 订阅共享执行闸（2026-11-22 产品定案：四族默认不共享）─────────────────────
+//
+// claude / codex / grok / gemini 四族的模型**默认不进网关目录、拦截器不接**
+// （关 = 直连 HTTP 也 404，与未安装无异）。主程序把「用户已开启的族」推进来
+// （引擎启动时 + 面板开关命令时）。**未推送 = 全开**：standalone dev bin 与
+// 合同套件维持旧形状；engine.rs 的偏好过滤（catalog_direct*）才是菜单/注入
+// 层的唯一过滤点，这层只是执行闸。额度行不受此闸影响。
+
+static SUBSCRIPTION_ENABLED: std::sync::RwLock<Option<Vec<String>>> =
+    std::sync::RwLock::new(None);
+
+/// 主程序推送「已开启的族」。测试构建 no-op（同进程的网关单测依赖
+/// 「未推送 = 全开」默认；闸测试用 set_subscription_enabled_for_tests）。
+pub fn set_subscription_enabled(families: Vec<String>) {
+    #[cfg(test)]
+    {
+        let _ = families;
+    }
+    #[cfg(not(test))]
+    {
+        if let Ok(mut guard) = SUBSCRIPTION_ENABLED.write() {
+            *guard = Some(families);
+        }
+    }
+}
+
+/// 某订阅族现在放不放行（未推送 = 全开）。
+pub fn family_enabled(family: &str) -> bool {
+    match SUBSCRIPTION_ENABLED.read() {
+        Ok(guard) => match guard.as_ref() {
+            Some(list) => list.iter().any(|f| f == family),
+            None => true,
+        },
+        Err(poisoned) => poisoned.into_inner().as_ref().map_or(true, |list| list.iter().any(|f| f == family)),
+    }
+}
+
+/// 测试专用：直接布置执行闸（Some(list) = 已推送名单；None = 复位回「全开」
+/// 默认）。闸测试必须取 TEST_SANDBOX_LOCK（world() 已代取）并保证 Drop 复位。
+#[cfg(test)]
+pub(crate) fn set_subscription_enabled_for_tests(families: Option<Vec<String>>) {
+    if let Ok(mut guard) = SUBSCRIPTION_ENABLED.write() {
+        *guard = families;
+    }
+}
+
 /// 网关共享状态：provider/group 存储 + 模型目录缓存 + 字节上限学习表
 /// （provider id → 已学 cap 字节数）。
 pub struct Gateway {

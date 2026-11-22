@@ -478,9 +478,10 @@ const MODELS: [(&str, u64); 9] = [
     ("claude-haiku-5-5", 1_000_000),
 ];
 
-/// `/v1/models` 的 claude 行（有凭据 + CLI + 用户没自定义 claude 来源才有）。
+/// `/v1/models` 的 claude 行（有凭据 + CLI + 用户没自定义 claude 来源 +
+/// 订阅共享已开启才有；2026-11-22 四族默认不共享）。
 pub fn listed_rows(providers: &[Provider]) -> Vec<VendorRow> {
-    if providers.iter().any(|p| p.id == CLAUDE_ID) || !available() {
+    if providers.iter().any(|p| p.id == CLAUDE_ID) || !super::family_enabled(CLAUDE_ID) || !available() {
         return Vec::new();
     }
     MODELS
@@ -504,6 +505,18 @@ fn knows(whole: &str) -> bool {
         Some(rest) => !rest.is_empty() && !rest.contains('/'),
         None => false,
     }
+}
+
+/// 模型名进命令行前的字符集闸（见 intercept 的注入批注释）：首字符必须
+/// 字母/数字（拒绝 `-x` 旗标伪装与 `&whoami` 这类首字符元命令），其余只许
+/// `._:+-` 与字母数字。CLI 实名表（claude-opus-5-5 / sonnet / opus …）全过。
+fn model_name_safe(model: &str) -> bool {
+    let mut chars = model.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphanumeric() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '+' | '-'))
 }
 
 // =====================================================================
@@ -845,7 +858,12 @@ fn work_dir() -> PathBuf {
 }
 
 fn build_command(program: &Program, args: &[String]) -> Command {
-    let mut cmd = if program.prefix.is_empty() {
+    // 2026-11-22 注入批：不再有 `.cmd/.bat → cmd.exe /C` 重拼接——resolver 已
+    // 把 npm 垫片解包成 exe / node+cli.js（prefix 形态）；真正兜底的 .cmd 交 std
+    // 直接 spawn（BatBadBut 修复后的行为，/usage 路径同款、有带空格中文路径的
+    // 通过测试）。cmd /C 重解析正是两个坑的来源：>2 引号时 cmd 剥首尾引号
+    // （空格路径打碎），未加引号的参数按 cmd 语法切分（模型名注入）。
+    let cmd = if program.prefix.is_empty() {
         let mut c = Command::new(&program.program);
         c.args(args);
         c
@@ -855,15 +873,6 @@ fn build_command(program: &Program, args: &[String]) -> Command {
         c.args(args);
         c
     };
-    // npm 装的 claude 是 .cmd：Rust std 直 spawn .bat/.cmd 的参数转义有
-    // BatBadBut 约束（含 `"` 即 InvalidInput）——我们参数表无引号，但统一
-    // 走 cmd /C 更稳（cmd 自己处理 .cmd 文件）。
-    let lower = program.program.to_ascii_lowercase();
-    if lower.ends_with(".cmd") || lower.ends_with(".bat") {
-        let mut c = Command::new("cmd.exe");
-        c.arg("/C").arg(&program.program).args(args);
-        cmd = c;
-    }
     prepare_command(cmd)
 }
 
@@ -2974,7 +2983,7 @@ static USAGE_STATE: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
 /// 跑 `claude -p /usage`（Go claudeUsage claude_warmup.go:198：**额度也是 CLI
 /// 子进程**，从不拿 token 打 HTTP）。返回 /usage 的文本。
 fn run_usage_cli() -> Option<String> {
-    let program = usage_program()?;
+    let program = resolved_program()?;
     let mut cmd = usage_command(&program);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().ok()?;
@@ -3011,23 +3020,39 @@ fn run_usage_cli() -> Option<String> {
     parse_usage_output(&buf)
 }
 
-/// /usage 用哪个程序。`where.exe` 的第一行在 npm 安装上是 sh 脚本（os error 193），
-/// 中文路径还会被解成乱码，所以走主程序注入的查找。**只给 /usage 用**（参数固定）；
-/// 对话桥不共用这套查找，要换须单独评审。
+/// 对话桥与 /usage 共用的 CLI 查找。`where.exe` 的第一行在 npm 安装上是 sh
+/// 脚本（os error 193），中文路径还会被解成乱码，所以走主程序注入的查找
+/// （process_util 那套：候选排序 .exe>.cmd>.ps1>无扩展名 + npm 垫片解包）。
+/// 2026-11-22 注入批评审：对话桥从「只给 /usage 用」切换过来——桥的参数表
+/// 含请求方可控的模型名，搭配 intercept 的字符集校验与 build_command 的
+/// 不经 cmd /C 直起，三个坑（垫片选错 / 空格中文路径 / 模型名注入）一次关掉。
+/// 结果缓存 30s（resolver 每次要跑 where.exe，桥是逐请求调用）。
 #[cfg(not(test))]
-fn usage_program() -> Option<Program> {
-    let Some(resolve) = super::COMMAND_RESOLVER.get() else {
-        return claude_binary(); // dev bin 没有主程序可注入
+fn resolved_program() -> Option<Program> {
+    static CACHE: Mutex<Option<(Instant, Option<Program>)>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some((at, hit)) = cache.as_ref() {
+        if at.elapsed() < BINARY_TTL {
+            return hit.clone();
+        }
+    }
+    let found = match super::COMMAND_RESOLVER.get() {
+        Some(resolve) => {
+            let wanted = std::env::var("CLAUDE_BINARY")
+                .ok()
+                .filter(|path| !path.is_empty())
+                .unwrap_or_else(|| "claude".to_string());
+            resolve(&wanted).map(|(program, prefix)| Program { program, prefix })
+        }
+        // dev bin 没有主程序可注入：退 where.exe 第一行的旧查找（连带其缓存）。
+        None => claude_binary(),
     };
-    let wanted = std::env::var("CLAUDE_BINARY")
-        .ok()
-        .filter(|path| !path.is_empty())
-        .unwrap_or_else(|| "claude".to_string());
-    resolve(&wanted).map(|(program, prefix)| Program { program, prefix })
+    *cache = Some((Instant::now(), found.clone()));
+    found
 }
 
 #[cfg(test)]
-fn usage_program() -> Option<Program> {
+fn resolved_program() -> Option<Program> {
     claude_binary()
 }
 
@@ -3339,6 +3364,11 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
     if proto != Proto::Anthropic {
         return None;
     }
+    // 订阅共享执行闸（2026-11-22）：claude 族没开 → 让位（listed_rows 也不列，
+    // 直连请求与未安装无异）。真实 providers 能接住的本来就走原路径，不受影响。
+    if !super::family_enabled(CLAUDE_ID) {
+        return None;
+    }
     let parsed: Value = serde_json::from_slice(&request.body).ok()?;
     let asked = parsed.get("model")?.as_str()?.to_string();
     let (groups, providers) = {
@@ -3365,12 +3395,19 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
     // 凭据只判存在性——token 本身用不上（见 Account 注释）；plan 兼任
     // 会话键的 owner（Go 的账号身份，单账号世界取订阅类型足矣）。
     let account = discover()?;
-    let program = claude_binary()?;
+    let program = resolved_program()?;
 
     // 模型映射：`claude/<id>` → `--model <id>` 直传（Go :7262 OwnModelID）
     let model = bare.trim();
     if model.is_empty() {
         return Some(anthropic_error(400, "claude bridge: empty model name"));
+    }
+    // 2026-11-22 注入批：模型名是请求方可控、最终进 Claude Code 命令行的值。
+    // 只放行字母/数字开头、其余为字母数字或 `._:+-` 的名字（`:` 是档位后缀
+    // `claude-x:high`）；空格、引号、`&|<>^%;,` 等 cmd 元字符一律 400。防纵深：
+    // spawn 已不经 cmd /C，这里再拦一道，两道同时失效也注入不进来。
+    if !model_name_safe(model) {
+        return Some(anthropic_error(400, "claude bridge: invalid model name"));
     }
     // 档位：客户端自己要的（output_config.effort / thinking budget）优先，
     // 成员强度后缀（`claude/claude-opus-5:high`）次之（Go claudeCLIArgs 的
@@ -4167,6 +4204,81 @@ if (mode === "usage") {
         let request = Request { method: "POST".into(), path: "/v1/chat/completions".into(), headers: Vec::new(), body: serde_json::to_vec(&json!({"model":"claude/claude-sonnet-5","messages":[]})).unwrap() };
         assert!(intercept(&gateway, &request, Proto::Chat).is_none());
         assert!(intercept(&gateway, &request, Proto::Responses).is_none());
+    }
+
+    /// 2026-11-22 订阅共享执行闸：claude 族未推送进开启名单 → intercept 让位
+    /// （直连请求与未安装无异）、listed_rows 为空；推送进名单 → 照常桥接。
+    /// Drop 复位闸（其它测试依赖「未推送 = 全开」默认；world() 已取共享锁）。
+    #[test]
+    fn subscription_gate_blocks_claude_family_when_not_enabled() {
+        struct GateReset;
+        impl Drop for GateReset {
+            fn drop(&mut self) {
+                super::super::set_subscription_enabled_for_tests(None);
+            }
+        }
+        let _gate = GateReset;
+        let (gateway, w) = world(None, false);
+        write_credentials(&w, "max");
+        let cli = fake_cli(&w.dir);
+        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
+        let request = post(&messages_body("claude/claude-sonnet-5", false));
+        super::super::set_subscription_enabled_for_tests(Some(Vec::new()));
+        assert!(intercept(&gateway, &request, Proto::Anthropic).is_none(), "gated family must yield");
+        assert!(listed_rows(&[]).is_empty(), "gated family must not list");
+        super::super::set_subscription_enabled_for_tests(Some(vec!["claude".to_string()]));
+        let reply = intercept(&gateway, &request, Proto::Anthropic).expect("intercepted when enabled");
+        assert!(matches!(reply, Reply::Json { status: 200, .. }));
+        assert!(!listed_rows(&[]).is_empty(), "enabled family lists its rows");
+    }
+
+    #[test]
+    fn dangerous_model_names_are_rejected_before_spawn() {
+        let (gateway, w) = world(None, false);
+        write_credentials(&w, "max");
+        let cli = fake_cli(&w.dir);
+        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
+        // 夹带命令 / 空格 / 引号 / cmd 元字符 / 旗标伪装：一律 400，CLI 不被拉起。
+        for name in ["x&calc", "a b", "a\"b", "&whoami", "x|y", "a;b", "-flag", "%TEMP%", "a^b", "x>y"] {
+            let reply = intercept(&gateway, &post(&messages_body(&format!("claude/{name}"), false)), Proto::Anthropic)
+                .unwrap_or_else(|| panic!("{name} should be intercepted"));
+            match reply {
+                Reply::Json { status, body } => {
+                    assert_eq!(status, 400, "{name}");
+                    let text = String::from_utf8_lossy(&body).into_owned();
+                    assert!(text.contains("invalid model name"), "{name}: {text}");
+                }
+                Reply::Stream { .. } => panic!("{name}: expected a 400 json error, got a stream"),
+            }
+        }
+        // 合法名字（含档位后缀形态）不受影响：正常 200 桥接。
+        for name in ["claude-sonnet-5", "sonnet", "claude-opus-5:high"] {
+            let reply = intercept(&gateway, &post(&messages_body(&format!("claude/{name}"), false)), Proto::Anthropic)
+                .unwrap_or_else(|| panic!("{name} should be intercepted"));
+            assert!(matches!(reply, Reply::Json { status: 200, .. }), "{name}");
+        }
+    }
+
+    #[test]
+    fn build_command_never_rewraps_through_cmd() {
+        // 2026-11-22 注入批：无论解析结果是什么形态，都不允许再经
+        // `cmd.exe /C` 重拼接（那是空格路径打碎与模型名注入两个坑的来源）。
+        let args = bridge_args("claude-opus-5", None, None);
+        let cmd = build_command(
+            &Program { program: r"C:\John Smith 张三\claude.cmd".to_string(), prefix: Vec::new() },
+            &args,
+        );
+        let rendered = format!("{cmd:?}");
+        // Debug 渲染会把 `\` 转义成 `\\`，断言用不含反斜杠的子串。
+        assert!(rendered.contains("claude.cmd") && rendered.contains("张三"), "{rendered}");
+        assert!(!rendered.contains("\"cmd.exe\""), "{rendered}");
+        // node+cli.js 前缀形态照旧支持。
+        let cmd = build_command(
+            &Program { program: "node.exe".to_string(), prefix: vec![r"C:\cli.js".to_string()] },
+            &args,
+        );
+        let rendered = format!("{cmd:?}");
+        assert!(rendered.contains("node.exe") && rendered.contains("cli.js"), "{rendered}");
     }
 
     // ---------------------------------------------------------------

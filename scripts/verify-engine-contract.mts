@@ -263,15 +263,26 @@ try {
   // parse_models_catalog_rows): id, context_window|context_length|…,
   // max_output_tokens, modalities.input ∋ image.
   const gw = `http://127.0.0.1:${gatewayPort}`;
+  // Bearer 闸（2026-11-22 安全批）：rust 引擎 serve 启动时打印
+  // `magpie gateway token <48hex>`——有令牌就全程带上；Go seed 没有这行，
+  // 维持无鉴权旧形状（Go 网关回环本就任意 token 放行）。
+  let authHeaders: Record<string, string> = {};
   let rowsRaw = "";
   for (let waited = 0; waited < 20_000; waited += 300) {
+    const tokenMatch = serveLog.match(/magpie gateway token ([0-9a-f]{48})/);
+    authHeaders = tokenMatch ? { Authorization: `Bearer ${tokenMatch[1]}` } : {};
     try {
-      const res = await fetch(`${gw}/v1/models`);
+      const res = await fetch(`${gw}/v1/models`, { headers: { ...authHeaders } });
       if (res.ok) { rowsRaw = await res.text(); break; }
     } catch { /* not up yet */ }
     await new Promise((r) => setTimeout(r, 300));
   }
   assert.ok(rowsRaw, "gateway /v1/models never came up within 20s");
+  // 令牌化的引擎：无令牌请求必须 401（先于其它断言，闸不过其余免谈）。
+  if (Object.keys(authHeaders).length > 0) {
+    const bare = await fetch(`${gw}/v1/models`);
+    assert.equal(bare.status, 401, "engine must reject tokenless requests (2026-11-22 bearer gate)");
+  }
   const rows = JSON.parse(rowsRaw);
   const data: Record<string, unknown>[] = rows.data ?? rows.models;
   assert.ok(Array.isArray(data), `/v1/models shape is neither {data:[]} nor {models:[]}: ${rowsRaw.slice(0, 400)}`);
@@ -284,7 +295,7 @@ try {
 
   // C5: basic chat routing through the gateway
   const simple = await fetch(`${gw}/v1/chat/completions`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
+    method: "POST", headers: { "Content-Type": "application/json", ...authHeaders },
     body: JSON.stringify({ model: `${id}/alpha-model`, stream: false, messages: [{ role: "user", content: "hi" }] }),
   });
   const simpleBody = await simple.text();
@@ -306,7 +317,7 @@ try {
   });
   const beforeBig = chatRequests.length;
   const big = await fetch(`${gw}/v1/chat/completions`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
+    method: "POST", headers: { "Content-Type": "application/json", ...authHeaders },
     body: JSON.stringify({
       model: `${id}/alpha-model`, stream: false,
       messages: [
@@ -330,7 +341,7 @@ try {
   assert.equal(second.images, 1, `retry should have shed the two oldest images: ${second.images}`);
 
   // C3: quotas endpoint answers in the {object:"list",data:[]} / array shape
-  const quotas = await fetch(`${gw}/v1/magpie/quotas`);
+  const quotas = await fetch(`${gw}/v1/magpie/quotas`, { headers: { ...authHeaders } });
   const quotasText = await quotas.text();
   assert.equal(quotas.status, 200, `quotas endpoint missing: ${quotas.status} ${quotasText.slice(0, 200)}`);
   const quotasJson = JSON.parse(quotasText) as { data?: unknown[] } | unknown[];
@@ -340,16 +351,16 @@ try {
   // C4: group serving — the 2026-11-12 silent-degradation regression. The
   // probe must answer 200 while the group lives and 404 after group rm.
   await call(["group", "add", "grp", `models=${id}/alpha-model`, "id=alias-1", `pick=${id}/alpha-model`]);
-  const groupRes = await fetch(`${gw}/v1/models/group/alias-1`);
+  const groupRes = await fetch(`${gw}/v1/models/group/alias-1`, { headers: { ...authHeaders } });
   assert.equal(groupRes.status, 200, `served group is not announced on /v1/models/group/<id> (GateGroups/ServeGroups contract, 2026-11-12): ${groupRes.status}`);
   await call(["group", "rm", "alias-1"]);
-  const groupGone = await fetch(`${gw}/v1/models/group/alias-1`);
+  const groupGone = await fetch(`${gw}/v1/models/group/alias-1`, { headers: { ...authHeaders } });
   assert.equal(groupGone.status, 404, `removed group still announced: ${groupGone.status}`);
 
   // C5: /v1/responses (codex native) translation path — chat vendor outbound,
   // responses-shaped reply (T4).
   const responsesRes = await fetch(`${gw}/v1/responses`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
+    method: "POST", headers: { "Content-Type": "application/json", ...authHeaders },
     body: JSON.stringify({
       model: `${id}/alpha-model`, stream: false, instructions: "be brief",
       input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
@@ -366,7 +377,7 @@ try {
 
   // C5: /v1/messages (anthropic) translation path (T3) — content block shape.
   const messagesRes = await fetch(`${gw}/v1/messages`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
+    method: "POST", headers: { "Content-Type": "application/json", ...authHeaders },
     body: JSON.stringify({
       model: `${id}/alpha-model`, max_tokens: 100,
       messages: [{ role: "user", content: "hi" }],
@@ -386,7 +397,7 @@ try {
   const post = (path: string, payload: unknown, headers: Record<string, string> = {}) =>
     fetch(`${gw}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...headers },
+      headers: { "Content-Type": "application/json", ...authHeaders, ...headers },
       body: typeof payload === "string" ? payload : JSON.stringify(payload),
     });
   const readSse = async (res: Response): Promise<{ events: string[]; done: boolean }> => {
@@ -544,18 +555,18 @@ try {
   // zstd only, anything else 400).
   {
     const gzBody = gzipSync(Buffer.from(JSON.stringify({ model: `${id}/alpha-model`, stream: false, messages: [{ role: "user", content: "compressed hi" }] })));
-    const gz = await fetch(`${gw}/v1/chat/completions`, { method: "POST", headers: { "Content-Type": "application/json", "Content-Encoding": "gzip" }, body: gzBody });
+    const gz = await fetch(`${gw}/v1/chat/completions`, { method: "POST", headers: { "Content-Type": "application/json", "Content-Encoding": "gzip", ...authHeaders }, body: gzBody });
     const gzText = await gz.text();
     assert.equal(gz.status, 200, `gzip body was not decoded: ${gz.status} ${gzText.slice(0, 200)}`);
     assert.ok(gzText.includes("fixture-ok"), `gzip round trip lost content: ${gzText.slice(0, 200)}`);
 
     const payload = Buffer.from(JSON.stringify({ model: `${id}/alpha-model`, stream: false, messages: [{ role: "user", content: "zstd hi" }] }));
-    const zs = await fetch(`${gw}/v1/chat/completions`, { method: "POST", headers: { "Content-Type": "application/json", "Content-Encoding": "zstd" }, body: zstdRawFrame(payload) });
+    const zs = await fetch(`${gw}/v1/chat/completions`, { method: "POST", headers: { "Content-Type": "application/json", "Content-Encoding": "zstd", ...authHeaders }, body: zstdRawFrame(payload) });
     const zsText = await zs.text();
     assert.equal(zs.status, 200, `zstd body was not decoded: ${zs.status} ${zsText.slice(0, 200)}`);
     assert.ok(zsText.includes("fixture-ok"), `zstd round trip lost content: ${zsText.slice(0, 200)}`);
 
-    const bad = await fetch(`${gw}/v1/chat/completions`, { method: "POST", headers: { "Content-Type": "application/json", "Content-Encoding": "br" }, body: Buffer.from("{}") });
+    const bad = await fetch(`${gw}/v1/chat/completions`, { method: "POST", headers: { "Content-Type": "application/json", "Content-Encoding": "br", ...authHeaders }, body: Buffer.from("{}") });
     assert.ok(bad.status === 400 || bad.status === 415, `unknown encoding should be refused, got ${bad.status}`);
   }
 

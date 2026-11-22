@@ -15,6 +15,8 @@ export const zh = {
   "errors.authTitle": "需要登录",
   "errors.commandMissingTitle": "找不到 Agent 命令",
   "errors.commandMissingHint": "打开 Composer 里的 agent 菜单 — 有已知 npm 包的可点 Install。",
+  "errors.claudeBridgeTitle": "Claude 订阅桥启动失败",
+  "errors.claudeBridgeHint": "是「Claude 订阅」共享模型在拉起本机 Claude Code 时出错，不是没装 Agent。确认 Claude Code 能在终端里运行，或到模型共享里换用其它来源的模型。",
   "errors.timeoutTitle": "超时",
   "errors.timeoutHint": "重试一次，或确认 agent 进程仍在响应。",
   "errors.modelTitle": "模型 / 配置不支持",

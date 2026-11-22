@@ -84,11 +84,12 @@ impl Reply {
 
 /// 在 `addr` 上监听并逐连接开线程（argv/合同套件形态：进程由外部杀，
 /// 没有停止钮——`serve_on` 的 shutdown 传一个永不置位的标志）。
-pub fn serve(addr: &str, gateway: std::sync::Arc<Gateway>) -> Result<(), String> {
+/// `token`：Bearer 闸（2026-11-22 安全批）；None = 不鉴权（仅测试用）。
+pub fn serve(addr: &str, gateway: std::sync::Arc<Gateway>, token: Option<String>) -> Result<(), String> {
     let listener = TcpListener::bind(addr).map_err(|e| format!("bind {addr}: {e}"))?;
     let bound = listener.local_addr().map_err(|e| e.to_string())?;
     println!("magpie gateway on http://{}", bound);
-    serve_on(listener, gateway, Arc::new(AtomicBool::new(false)))
+    serve_on(listener, gateway, Arc::new(AtomicBool::new(false)), token)
 }
 
 /// 进程内形态（engine.rs T6 接线）：接管一个**已绑定**的 listener——
@@ -101,6 +102,7 @@ pub fn serve_on(
     listener: TcpListener,
     gateway: std::sync::Arc<Gateway>,
     shutdown: Arc<AtomicBool>,
+    token: Option<String>,
 ) -> Result<(), String> {
     listener
         .set_nonblocking(true)
@@ -130,8 +132,9 @@ pub fn serve_on(
                 }
                 let gw = gateway.clone();
                 let live = live.clone();
+                let token = token.clone();
                 std::thread::spawn(move || {
-                    let _ = handle(stream, &gw);
+                    let _ = handle(stream, &gw, token.as_deref());
                     live.fetch_sub(1, Ordering::AcqRel);
                 });
             }
@@ -150,7 +153,7 @@ pub fn serve_on(
     Ok(())
 }
 
-fn handle(stream: TcpStream, gateway: &Gateway) -> std::io::Result<()> {
+fn handle(stream: TcpStream, gateway: &Gateway, token: Option<&str>) -> std::io::Result<()> {
     // 读超时只罩请求行与头（头读完后解除）；写超时罩整个应答。
     let _ = stream.set_read_timeout(Some(HEADER_READ_TIMEOUT));
     let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
@@ -170,6 +173,19 @@ fn handle(stream: TcpStream, gateway: &Gateway) -> std::io::Result<()> {
         }
         super::cors::Verdict::Refuse(message) => {
             return write_reply(&mut stream, guard_error(&head.path, 403, &message), &[]);
+        }
+    }
+    // Bearer 闸（2026-11-22 安全批）：环回上任何本地进程 / 浏览器插件都打得
+    // 进来，网关曾零鉴权（S1「任意 token 放行」废止）。除 preflight（CORS
+    // 规范不带凭证，上面已经回了 204）外，所有请求都要带
+    // `Authorization: Bearer <本安装令牌>`；缺失/错误一律 401，且在读体之前。
+    if let Some(expected) = token {
+        if !bearer_ok(&head.headers, expected) {
+            return write_reply(
+                &mut stream,
+                guard_error(&head.path, 401, "engine bearer token missing or wrong"),
+                &[],
+            );
         }
     }
     // 头读完：体不限时（大体 + 慢客户端合法），解除读超时。
@@ -244,6 +260,30 @@ pub fn note_upstream(response: &ureq::Response) {
 /// 路由层自己加一个应答头（如 `X-Magpie-Left-Out`），随本次应答写出。
 pub fn note_header(name: &str, value: &str) {
     PASSTHROUGH.with(|p| p.borrow_mut().push((name.to_string(), value.to_string())));
+}
+
+/// Bearer 闸（见 handle）：`Authorization: Bearer <token>` 对不对。
+fn bearer_ok(headers: &[(String, String)], expected: &str) -> bool {
+    let Some(value) = headers
+        .iter()
+        .find(|(k, _)| k == "authorization")
+        .map(|(_, v)| v.trim())
+    else {
+        return false;
+    };
+    let Some(token) = value.strip_prefix("Bearer ").map(str::trim_start) else {
+        return false;
+    };
+    constant_time_eq(token.as_bytes(), expected.as_bytes())
+}
+
+/// 长度不同的先比长度再折叠异或——环回令牌不是高价值机密，但比较仍取
+/// 常数时间形状，不做 `==` 的早退（教学式计时侧道就别留了）。
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// 网关自己的拒绝应答，按入站方言说话（anthropic 端点给 anthropic 形状，
@@ -739,7 +779,7 @@ mod tests {
             let shutdown = Arc::new(AtomicBool::new(false));
             let flag = shutdown.clone();
             let gw = gateway.clone();
-            let server = std::thread::spawn(move || serve_on(listener, gw, flag));
+            let server = std::thread::spawn(move || serve_on(listener, gw, flag, None));
             // 停止前应答一次 /v1/models（空 store → {"object":"list","data":[]}）。
             let mut c = TcpStream::connect(addr).unwrap();
             c.write_all(b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
@@ -932,6 +972,14 @@ mod tests {
 
     /// 沙箱网关 + 真 serve_on：在回调里对 addr 发原始请求。
     fn with_live_gateway(f: impl FnOnce(std::net::SocketAddr) + std::panic::UnwindSafe) {
+        with_live_gateway_opt(None, |addr, _| f(addr));
+    }
+
+    /// 同 `with_live_gateway`，但可挂 Bearer 闸（f 拿到 (addr, token)）。
+    fn with_live_gateway_opt(
+        token: Option<String>,
+        f: impl FnOnce(std::net::SocketAddr, &str) + std::panic::UnwindSafe,
+    ) {
         let _lock = crate::engine_gateway::TEST_SANDBOX_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
@@ -946,14 +994,15 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let prior_xdg = std::env::var("XDG_CONFIG_HOME").ok();
         std::env::set_var("XDG_CONFIG_HOME", &dir);
+        let token_for_cb = token.clone().unwrap_or_default();
         let result = std::panic::catch_unwind(move || {
             let gateway = std::sync::Arc::new(Gateway::open().expect("gateway"));
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
             let addr = listener.local_addr().unwrap();
             let shutdown = Arc::new(AtomicBool::new(false));
             let flag = shutdown.clone();
-            let server = std::thread::spawn(move || serve_on(listener, gateway, flag));
-            f(addr);
+            let server = std::thread::spawn(move || serve_on(listener, gateway, flag, token));
+            f(addr, &token_for_cb);
             shutdown.store(true, Ordering::Release);
             let _ = server.join();
         });
@@ -1030,6 +1079,55 @@ mod tests {
                 b"OPTIONS /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n\
                   Origin: https://evil.example\r\nAccess-Control-Request-Method: POST\r\n\r\n",
             );
+            assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
+        });
+    }
+
+    /// 2026-11-22 安全批：Bearer 闸——无令牌/错令牌一律 401（先于读体），
+    /// 对令牌照常服务；preflight 仍然免令牌（CORS 规范不带凭证）；
+    /// CORS 与令牌各管各的（外站 origin 拿着对令牌也 403）。
+    #[test]
+    fn live_bearer_gate_blocks_tokenless_and_serves_holders() {
+        with_live_gateway_opt(Some("test-gateway-token-48hex".to_string()), |addr, token| {
+            for (method, path) in [
+                ("GET", "/v1/models"),
+                ("GET", "/v1/magpie/quotas"),
+                ("POST", "/v1/chat/completions"),
+                ("POST", "/v1/responses"),
+                ("POST", "/v1/messages"),
+            ] {
+                // 缺 Authorization 头
+                let req = format!(
+                    "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\n{{}}"
+                );
+                let reply = raw_exchange(addr, req.as_bytes());
+                assert!(reply.starts_with("HTTP/1.1 401"), "{method} {path}: {reply}");
+                assert!(reply.contains("authentication_error"), "{reply}");
+                // 错令牌同罪
+                let req = format!(
+                    "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer magpie\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\n{{}}"
+                );
+                let reply = raw_exchange(addr, req.as_bytes());
+                assert!(reply.starts_with("HTTP/1.1 401"), "{method} {path}: {reply}");
+            }
+            // 对令牌：照常 200。
+            let req = format!(
+                "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+            );
+            let reply = raw_exchange(addr, req.as_bytes());
+            assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+            // preflight 免令牌（CORS 规范）。
+            let reply = raw_exchange(
+                addr,
+                b"OPTIONS /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+                  Origin: app://obsidian.md\r\nAccess-Control-Request-Method: POST\r\n\r\n",
+            );
+            assert!(reply.starts_with("HTTP/1.1 204"), "{reply}");
+            // 外站 origin 即使带着对令牌也 403：CORS 判定在前。
+            let req = format!(
+                "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://evil.example\r\nAuthorization: Bearer {token}\r\n\r\n"
+            );
+            let reply = raw_exchange(addr, req.as_bytes());
             assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
         });
     }

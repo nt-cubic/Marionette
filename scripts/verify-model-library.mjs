@@ -124,4 +124,17 @@ assert.ok(opencodeMenu.some(g => g.label === "OpenCode"), "unrelated providers o
 // Engine down: the owner group has no rows, and the copy is the only route left.
 const engineDown = libraryGroups("opencode", copilotNative, { models: [], note: null }, [], {}, chatgptAccounts);
 assert.ok(engineDown.some(g => g.rows.some(r => r.native?.id === "openai/gpt-6.1-sol")), "without the engine the copied sign-in still reaches the account");
-console.log("Model library: source identity, native/shared selection, visibility, ordering, search and credential scan contract passed.");
+
+// Subscription share families (2026-11-22): absent key = off for all four;
+// explicit true enables; expandHiddenProviders must carry the key through a
+// save cycle instead of dropping it (dropping it would silently re-disable).
+const { subscriptionShareEnabled, SUBSCRIPTION_FAMILIES } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`);
+assert.deepEqual([...SUBSCRIPTION_FAMILIES], ["claude", "codex", "grok", "gemini"]);
+for (const family of SUBSCRIPTION_FAMILIES) {
+  assert.equal(subscriptionShareEnabled(DEFAULT_MODEL_PREFERENCES, family), false, `${family}: absent key = not shared`);
+}
+assert.equal(subscriptionShareEnabled({ ...DEFAULT_MODEL_PREFERENCES, subscriptionShares: { claude: true, codex: "yes" } }, "claude"), true);
+assert.equal(subscriptionShareEnabled({ ...DEFAULT_MODEL_PREFERENCES, subscriptionShares: { claude: true, codex: "yes" } }, "codex"), false, "non-boolean values never count as enabled");
+const carried = expandHiddenProviders({ ...DEFAULT_MODEL_PREFERENCES, subscriptionShares: { grok: true } }, custom);
+assert.deepEqual(carried.subscriptionShares, { grok: true }, "expandHiddenProviders preserves subscriptionShares on save");
+console.log("Model library: source identity, native/shared selection, visibility, ordering, search, credential scan and subscription shares contract passed.");

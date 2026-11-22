@@ -678,6 +678,63 @@ magpie 120–160MB——前两个是「运行时入场费」，调不掉，能�
   模型，任何 `set_config_option` 形状都失败时抛错并停发，不能把用户消息送到
   agent 的无关默认模型。回归：`npx tsx scripts/verify-bridge-routing.mts`。
 
+## 中转安全批（2026-11-22：桥解析 / 模型名注入 / 网关令牌 / 订阅共享默认关）
+
+朋友（CC 里选「Claude 订阅」桥模型）实锤的四个问题一批修掉。改这块前先记红线：
+
+- **Claude 桥的 CLI 解析与 spawn 形状是一套三件**：`engine_gateway/claude_account.rs`
+  的 `resolved_program()`（对话桥与 /usage 共用）走主程序注入的
+  `COMMAND_RESOLVER`（engine.rs `resolve_for_gateway` 包 process_util：
+  .exe > .cmd > .ps1 > 无扩展名排序、npm 垫片解包成 exe / node+cli.js、
+  空格与中文路径安全），30s TTL 缓存；`build_command` **绝不再走
+  `cmd.exe /C` 重拼接**——`.cmd` 兜底交 std 直接 spawn（BatBadBut 修复后
+  行为，参数表无引号）。旧病根：`where.exe` 第一行是 npm 的无扩展名 sh
+  垫片（Windows 打不开→「找不到 Claude，请安装」误报）；`cmd /C` 重解析
+  既会剥空格路径的首尾引号、又给模型名注入开了口子。
+- **模型名进命令行前过字符集闸**：intercept 的 `model_name_safe`
+  （首字符字母/数字，其余只许 `._:+-`）——空格、引号、`&|<>^%;,` 一律 400
+  `claude bridge: invalid model name`。effort 已白名单、`--resume` 已有
+  `sid_ok`；**新加任何请求方可控、要进子进程命令行的参数，先配同款校验**。
+- **网关 Bearer 令牌**：`engine.rs::ensure_serve_token` 落
+  `~/.marionette/engine/serve-token.txt`（48 hex，**每安装一枚、引擎回收再
+  唤醒不变**——端口重落 3425 令牌也不换，活会话注入不失效；坏文件重铸，
+  落盘失败降级本轮内存令牌）。httpd 在 cors judge 之后、读体之前校验
+  `Authorization: Bearer`（401，`bearer_ok` 常数时间比较；OPTIONS preflight
+  免令牌——CORS 规范不带凭证）。**消费点一律 `engine::gateway_token()`**
+  （magpie 子进程/复用外部实例回落字面量 `ENGINE_TOKEN="magpie"`，Go 网关
+  回环任意 token 放行，字面量只是占位）：engine.rs 健康/目录/额度拉取、
+  model_bridge 全部注入点（opencode/zcode/grok TOML/claude env/codex
+  providers-set）、acp.rs `MARIONETTE_API_KEY`、council worker。**新加
+  HTTP 消费点必须带头**。argv serve（dev bin）打印 `magpie gateway token
+  <hex>`（`MAGPIE_TOKEN` 可钉死），`verify-engine-contract.mts` 解析该行并
+  断言无令牌 401；Go seed 无此行 → 契约套件两种引擎都跑得过。
+- **订阅共享四族默认关（2026-11-22 产品定案）**：claude / codex(gpt) /
+  grok / gemini 是引擎自动发现的订阅来源，**默认不共享到其他 agent**；
+  deepseek 等按量来源不在此列、照旧默认可用；额度行（只读展示）不受影响。
+  三层一致：① 菜单/注入 = `engine.rs catalog_direct_entries` +
+  `cached_catalog_entries` 读侧剥关闭族（**唯一过滤点**，照 `auto/` 先例，
+  消费点不得各滤）；② 网关执行闸 = `engine_gateway::set_subscription_enabled`
+  （engine.rs 启动时与开关命令时推送；**未推送 = 全开**——standalone dev
+  bin 与契约套件维持旧形状；claude/codex/grok 三个账号模块的 listed_rows
+  与 intercept 都尊重它，关 = 直连请求也与未安装无异）；③ 本家剔除 =
+  `model_bridge::push_engine_models(skip_family)`（claude→ClaudeCode、
+  codex→Codex、grok→GrokBuild——本家会话原生模型已覆盖，桥组永不出现，
+  「两个都显示」是错的）。偏好 = model-library.json 的 `subscriptionShares`
+  键（**缺省 = 关**，存量用户升级即关）；命令
+  `model_library_set_subscription_share(family, enabled)` 即时生效；前端
+  `ModelLibraryDialog` 左栏「订阅共享」常量卡片是唯一开启入口（共享关着时
+  目录里没有该族行/组），**开启前过 ConfirmDialog 警告**（账号/条款风险）。
+- **测试红线**：engine.rs `reload_subscription_shares` 测试构建 no-op
+  （绝不读真实 model-library.json、不推网关闸）；布置用
+  `set_subscription_shares_for_tests`（TestHandle Drop 复位）。网关闸测试用
+  `engine_gateway::set_subscription_enabled_for_tests`（取
+  TEST_SANDBOX_LOCK + Drop 复位回「全开」）。引擎/桥测试里的目录行用中性
+  族名（alpha/beta/tail…）——claude/codex/grok/gemini 前缀会撞共享过滤。
+- 回归：`cargo test --bin marionette`（claude_account 危险模型名 400 /
+  build_command 不经 cmd / 闸开合 / httpd 401 / 目录族过滤 live+缓存 /
+  serve-token 往返）+ `npx tsx scripts/verify-engine-contract.mts <exe>`
+  （令牌化契约）+ `verify-model-library`（subscriptionShares 归一/保持）。
+
 ## 账号域模型偏好（2026-11-21，zcode 1113 排查批）
 
 - **`account:` 前缀的模型偏好不是普通模型 id**：zcode 的账号枚举按 spawn 时的
