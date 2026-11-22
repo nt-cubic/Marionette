@@ -153,17 +153,27 @@ function SettledAsk({
       </div>
       <div className="stream-prompt__qa">
         {event.questions.map((q, i) => {
-          const picked =
-            event.answers?.find((a) => a.question === q.question)?.selected ??
-            event.answers?.[i]?.selected ??
-            [];
+          const answer =
+            event.answers?.find((a) => a.question === q.question) ?? event.answers?.[i];
+          const picked = answer?.selected ?? [];
+          const typed = answer?.typed?.trim() ?? "";
+          const note = answer?.note?.trim() ?? "";
+          const text = [...picked, typed]
+            .filter((s) => s.length > 0)
+            .join(t("turn.nameSeparator"));
           return (
             <div key={`${i}:${q.question.slice(0, 48)}`} className="stream-prompt__q">
               <p className="stream-prompt__qtext">{q.question}</p>
-              {picked.length > 0 ? (
-                <p className="stream-prompt__atext">{picked.join(t("turn.nameSeparator"))}</p>
+              {text ? (
+                <p className="stream-prompt__atext">{text}</p>
               ) : event.status === "declined" ? (
                 <p className="stream-prompt__atext">{t("stream.letAgentDecide")}</p>
+              ) : null}
+              {note ? (
+                <p className="stream-prompt__atext">
+                  {t("ask.noteLabel")}
+                  {note}
+                </p>
               ) : null}
             </div>
           );

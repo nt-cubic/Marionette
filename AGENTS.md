@@ -240,6 +240,28 @@ thought / tool / command / search 等泳道与时间条），**下方默认关�
 收尾，否则组标题会只剩工具那几秒。实时最后一帧与冻结图的 span 起止必须一致。
 回归：`npx tsx scripts/verify-activity-cluster.mts`。
 
+## 问答卡能力（2026-11-22，per-agent 通道）
+
+问答卡只有两个来源：Grok `x.ai/ask_user_question` + ACP `elicitation/create`（form）。
+卡片形态**从 schema 推导**，勿按 agent 名字写死；完整矩阵与真机探针见
+`docs/research/research-ask-card-channels.md`。改这块先记五条：
+
+- **「其他」/「补充」是两件事**：其他 = 自由文本**替代**答案（Grok 任意串、Codex
+  `_meta.codex.isOther`、`{id}_custom`/`_other`/`__other` 伴生）；补充 = **独立附注**
+  （Codex `{id}_note`、Claude 单选 `_custom` 有 pick 时进 `annotations[q].notes`）。
+  OpenCode / ZCode / DSH 只有一个自由文本槽，不显示补充。
+- **Codex 的 `_note` 必须当伴生字段**（`_meta.codex.role="user_note"`，撞名会生成
+  `_note1/_note2`，归属按 `questionId`）。漏了它，`_note` 会变成第二个必答题。
+- **哨兵不渲染**：Codex `None of the above`、ZCode `__skip__` 在 `parse_form_questions`
+  里就丢掉（只选 Codex 哨兵不写字 = 空答案）。
+- **「其他」只写伴生字段**，不写主字段：同时写会让 Claude 重复答案、多选读成 `"x, x"`。
+  纯文本题写主字段；Codex 的「其他」走哨兵 + `_note`。
+- **Grok**：`answers` 收 `StringOrVec` → 多选发**数组**；任何字符串都是 `typed`；
+  `annotations[q].notes` 是原生补充（`preview` 可省，别发空串）。
+
+回归：`cargo test --bin marionette elicitation`（Codex note 不是第二题、Claude pick+notes、
+ZCode 哨兵）+ `npx tsc --noEmit`。Antigravity 的 `ask_question` 仍走权限卡（桥未接）。
+
 ## 桌面通知（任务栏红/黄条，2026-11-20 修）
 
 `src/lib/desktopNotify.ts`：离开时闪任务栏 + 黄色（Paused，回复/待办）或红色（Error，失败/卡住）

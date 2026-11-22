@@ -361,9 +361,18 @@ export type SessionEvent =
         header?: string;
         multiSelect?: boolean;
         options: Array<{ label: string; description?: string }>;
+        /** Free-text replacement answer slot (「其他」). */
+        other?: boolean;
+        /** Separate note slot (「补充」). */
+        note?: boolean;
       }>;
       status: "pending" | "answered" | "declined" | "timeout";
-      answers?: Array<{ question: string; selected: string[] }>;
+      answers?: Array<{
+        question: string;
+        selected: string[];
+        typed?: string;
+        note?: string;
+      }>;
       createdAt: string;
       answeredAt?: string;
     };

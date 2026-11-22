@@ -12,6 +12,17 @@ export type AskQuestionItem = {
   header?: string;
   multiSelect?: boolean;
   options: AskQuestionOption[];
+  /**
+   * Whether this question has a free-text answer that *replaces* the options
+   * (「其他」). Decided by the agent's own declaration; absent = infer from
+   * `options` (Grok's `x.ai/ask_user_question` always allows a typed answer).
+   */
+  other?: boolean;
+  /**
+   * Whether this question has a separate note channel (「补充」): Codex's
+   * `_note`, or Claude's `_custom` on a single-select question.
+   */
+  note?: boolean;
 };
 
 export type AskQuestionPrompt = {
@@ -25,6 +36,10 @@ export type AskQuestionPrompt = {
 export type AskQuestionAnswer = {
   question: string;
   selected: string[];
+  /** 「其他」：替代选项的自由文本答案。 */
+  typed?: string;
+  /** 「补充」：附加在答案旁边的一句说明。 */
+  note?: string;
 };
 
 type AskQuestionCardProps = {
@@ -41,20 +56,39 @@ function splitRecommended(label: string): { text: string; recommended: boolean }
   return text ? { text, recommended: true } : { text: label, recommended: false };
 }
 
+function hasOptions(q: AskQuestionItem): boolean {
+  return q.options.length > 0;
+}
+
+/** 「其他」可用：有 wire 上的自由文本槽（纯文本题天然可用）。 */
+function otherAllowed(q: AskQuestionItem): boolean {
+  return q.other ?? hasOptions(q);
+}
+
+/** 「补充」可用：有独立的附注槽。 */
+function noteAllowed(q: AskQuestionItem): boolean {
+  return q.note === true;
+}
+
 function questionCanProceed(
   q: AskQuestionItem,
   selected: string[],
   other: string,
 ): boolean {
-  const multi = Boolean(q.multiSelect);
-  if (other.trim()) return true;
-  if (multi) return selected.length > 0;
+  if (!hasOptions(q)) return other.trim().length > 0;
+  if (otherAllowed(q) && other.trim()) return true;
+  if (q.multiSelect) return selected.length > 0;
   return selected.length === 1;
 }
 
 /**
  * Full-width composer replacement: all questions + options visible at once.
  * Compact rows (todo-list density) so many choices fit without a wizard.
+ *
+ * Per-question capabilities come from the agent's schema: 「其他」 replaces the
+ * selection, 「补充」 rides beside it, and a question without options is just a
+ * text input. Single-select can be cleared by clicking the pick again — a
+ * mistaken pick must not be a one-way door.
  */
 export function AskQuestionCard({
   prompt,
@@ -67,6 +101,7 @@ export function AskQuestionCard({
   const total = questions.length;
   const [picks, setPicks] = useState<string[][]>(() => questions.map(() => []));
   const [otherText, setOtherText] = useState<string[]>(() => questions.map(() => ""));
+  const [noteText, setNoteText] = useState<string[]>(() => questions.map(() => ""));
   const t = useT();
 
   const questionsRef = useRef(questions);
@@ -74,6 +109,7 @@ export function AskQuestionCard({
   useEffect(() => {
     setPicks(questionsRef.current.map(() => []));
     setOtherText(questionsRef.current.map(() => ""));
+    setNoteText(questionsRef.current.map(() => ""));
   }, [prompt.requestId]); // only reset on new request
 
   const allReady = useMemo(() => {
@@ -90,20 +126,58 @@ export function AskQuestionCard({
       if (multi) {
         next[qi] = row.includes(label) ? row.filter((x) => x !== label) : [...row, label];
       } else {
-        next[qi] = [label];
+        // Radio semantics, except a second click clears the choice.
+        next[qi] = row.includes(label) ? [] : [label];
       }
+      return next;
+    });
+    // Picking an option and typing 「其他」 are mutually exclusive.
+    setOtherText((prev) => {
+      if (!(prev[qi] ?? "").trim()) return prev;
+      const next = [...prev];
+      next[qi] = "";
+      return next;
+    });
+  }, []);
+
+  const changeOther = useCallback((qi: number, value: string) => {
+    setOtherText((prev) => {
+      const next = [...prev];
+      next[qi] = value;
+      return next;
+    });
+    // 「其他」 replaces the answer: clear any picked option while it has text.
+    if (value.trim()) {
+      setPicks((prev) => {
+        if ((prev[qi] ?? []).length === 0) return prev;
+        const next = prev.map((row) => [...row]);
+        next[qi] = [];
+        return next;
+      });
+    }
+  }, []);
+
+  const changeNote = useCallback((qi: number, value: string) => {
+    setNoteText((prev) => {
+      const next = [...prev];
+      next[qi] = value;
       return next;
     });
   }, []);
 
   const buildAnswers = useCallback((): AskQuestionAnswer[] => {
     return questions.map((q, i) => {
-      const sel = [...(picks[i] ?? [])];
-      const o = (otherText[i] ?? "").trim();
-      if (o) sel.push(o);
-      return { question: q.question, selected: sel };
+      const typed = (otherText[i] ?? "").trim();
+      const note = (noteText[i] ?? "").trim();
+      const answer: AskQuestionAnswer = {
+        question: q.question,
+        selected: [...(picks[i] ?? [])],
+      };
+      if (typed) answer.typed = typed;
+      if (note && noteAllowed(q)) answer.note = note;
+      return answer;
     });
-  }, [questions, picks, otherText]);
+  }, [questions, picks, otherText, noteText]);
 
   const submit = useCallback(() => {
     if (!allReady || busy) return;
@@ -154,6 +228,7 @@ export function AskQuestionCard({
           const multi = Boolean(q.multiSelect);
           const selected = picks[qi] ?? [];
           const other = otherText[qi] ?? "";
+          const note = noteText[qi] ?? "";
           const ready = questionCanProceed(q, selected, other);
           return (
             <section
@@ -173,65 +248,89 @@ export function AskQuestionCard({
                 </div>
               </div>
 
-              <ul className="ask-card__options" role={multi ? "group" : "radiogroup"}>
-                {q.options.map((opt) => {
-                  const { text, recommended } = splitRecommended(opt.label);
-                  const on = selected.includes(opt.label);
-                  return (
-                    <li key={opt.label}>
-                      <button
-                        type="button"
-                        className={on ? "ask-card__option is-selected" : "ask-card__option"}
-                        disabled={busy}
-                        aria-pressed={on}
-                        onClick={() => toggle(qi, opt.label, multi)}
-                      >
-                        <span
-                          className={
-                            multi
-                              ? on
-                                ? "ask-card__mark ask-card__mark--check is-on"
-                                : "ask-card__mark ask-card__mark--check"
-                              : on
-                                ? "ask-card__mark ask-card__mark--radio is-on"
-                                : "ask-card__mark ask-card__mark--radio"
-                          }
-                          aria-hidden
-                        />
-                        <span className="ask-card__option-main">
-                          <span className="ask-card__option-label">
-                            {text}
-                            {recommended ? (
-                              <em className="ask-card__rec">{t("ask.recommendedBadge")}</em>
+              {hasOptions(q) ? (
+                <ul className="ask-card__options" role={multi ? "group" : "radiogroup"}>
+                  {q.options.map((opt) => {
+                    const { text, recommended } = splitRecommended(opt.label);
+                    const on = selected.includes(opt.label);
+                    return (
+                      <li key={opt.label}>
+                        <button
+                          type="button"
+                          className={on ? "ask-card__option is-selected" : "ask-card__option"}
+                          disabled={busy}
+                          aria-pressed={on}
+                          onClick={() => toggle(qi, opt.label, multi)}
+                        >
+                          <span
+                            className={
+                              multi
+                                ? on
+                                  ? "ask-card__mark ask-card__mark--check is-on"
+                                  : "ask-card__mark ask-card__mark--check"
+                                : on
+                                  ? "ask-card__mark ask-card__mark--radio is-on"
+                                  : "ask-card__mark ask-card__mark--radio"
+                            }
+                            aria-hidden
+                          />
+                          <span className="ask-card__option-main">
+                            <span className="ask-card__option-label">
+                              {text}
+                              {recommended ? (
+                                <em className="ask-card__rec">{t("ask.recommendedBadge")}</em>
+                              ) : null}
+                            </span>
+                            {opt.description ? (
+                              <span className="ask-card__option-desc">{opt.description}</span>
                             ) : null}
                           </span>
-                          {opt.description ? (
-                            <span className="ask-card__option-desc">{opt.description}</span>
-                          ) : null}
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : null}
 
-              <label className="ask-card__other">
-                <span>{t("ask.other")}</span>
-                <input
-                  type="text"
-                  value={other}
-                  disabled={busy}
-                  placeholder={t("ask.otherPlaceholder")}
-                  onChange={(e) => {
-                    const value = e.target.value;
-                    setOtherText((prev) => {
-                      const next = [...prev];
-                      next[qi] = value;
-                      return next;
-                    });
-                  }}
-                />
-              </label>
+              {hasOptions(q) ? (
+                <>
+                  {otherAllowed(q) ? (
+                    <label className="ask-card__other">
+                      <span>{t("ask.other")}</span>
+                      <input
+                        type="text"
+                        value={other}
+                        disabled={busy}
+                        placeholder={t("ask.otherPlaceholder")}
+                        onChange={(e) => changeOther(qi, e.target.value)}
+                      />
+                    </label>
+                  ) : null}
+                  {noteAllowed(q) ? (
+                    <label className="ask-card__other ask-card__note">
+                      <span>{t("ask.note")}</span>
+                      <input
+                        type="text"
+                        value={note}
+                        disabled={busy}
+                        placeholder={t("ask.notePlaceholder")}
+                        onChange={(e) => changeNote(qi, e.target.value)}
+                      />
+                    </label>
+                  ) : null}
+                </>
+              ) : (
+                <label className="ask-card__other">
+                  <span>{t("ask.answer")}</span>
+                  <input
+                    type="text"
+                    value={other}
+                    disabled={busy}
+                    placeholder={t("ask.answerPlaceholder")}
+                    onChange={(e) => changeOther(qi, e.target.value)}
+                  />
+                </label>
+              )}
             </section>
           );
         })}

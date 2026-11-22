@@ -14,6 +14,12 @@ const MAX_QUESTIONS: usize = 8;
 const MAX_OPTIONS: usize = 16;
 const MAX_TEXT: usize = 4096;
 pub const DECLINE_OPTION_ID: &str = "decline";
+/// Codex sends this sentinel option (`isOther` questions) to say "the real
+/// answer is in the `_note` field". It is not a choice: selecting it alone
+/// yields an empty answer in codex-acp's own `userInputAnswerText`.
+const CODEX_OTHER_OPTION: &str = "None of the above";
+/// ZCode injects this sentinel into single-select enums ("Skip this question").
+const SKIP_OPTION_VALUE: &str = "__skip__";
 
 #[derive(Debug, Clone)]
 pub struct ElicitationChoice {
@@ -37,8 +43,17 @@ pub struct ElicitationField {
     pub kind: FieldKind,
     /// Display label → wire value (const).
     pub value_by_label: HashMap<String, String>,
-    /// OpenCode `{id}_custom` (or Codex `{id}_other`) free-text companion.
+    /// OpenCode `{id}_custom` (or Codex/DSH/ZCode `{id}__other` / `{id}_other`)
+    /// free-text companion: the "other" (replacement) answer.
     pub custom_id: Option<String>,
+    /// Codex `{id}_note` ("Additional answer or note"): a real note channel
+    /// that rides *beside* a pick instead of replacing it.
+    pub note_id: Option<String>,
+    /// Whether the UI should offer "other" (a free-text replacement answer).
+    pub other_allowed: bool,
+    /// Whether the UI should offer a separate "note" (codex `_note`, or
+    /// Claude's `_custom` when a pick is also present).
+    pub note_allowed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +109,34 @@ fn is_other_companion(id: &str) -> bool {
     id.ends_with("__other") || id.ends_with("_other") || id.ends_with("_custom")
 }
 
+fn codex_meta(prop: &Value) -> Option<&Value> {
+    prop.get("_meta").and_then(|m| m.get("codex"))
+}
+
+/// Owner question of a Codex note companion.
+///
+/// `codex-acp` names it `{questionId}_note` and appends a counter when the id
+/// is already taken (`_note1`, `_note2`), so the suffix alone is not enough.
+/// The authoritative mapping lives in `_meta.codex.questionId`; the suffix is
+/// only a fallback for adapters that omit the meta block.
+fn note_owner(id: &str, prop: &Value, props: &Map<String, Value>) -> Option<String> {
+    if let Some(owner) = codex_meta(prop)
+        .and_then(|c| c.get("questionId"))
+        .and_then(Value::as_str)
+    {
+        if props.contains_key(owner) {
+            return Some(owner.to_string());
+        }
+    }
+    let idx = id.rfind("_note")?;
+    let (base, tail) = id.split_at(idx);
+    let tail = &tail["_note".len()..];
+    if (tail.is_empty() || tail.chars().all(|c| c.is_ascii_digit())) && props.contains_key(base) {
+        return Some(base.to_string());
+    }
+    None
+}
+
 fn elicitation_mode_type(mode: &Value) -> &str {
     if let Some(s) = mode.as_str() {
         return s;
@@ -141,7 +184,15 @@ fn companion_id_for(id: &str, props: &Map<String, Value>) -> Option<String> {
 }
 
 /// Classify form elicitation params into permission-style or ask-style plan.
-pub fn classify_elicitation(raw: &Value) -> Result<ElicitationPlan, String> {
+///
+/// `claude_like` is true for the Claude Code adapter: its per-question
+/// `_custom` field is a *note* when an option is also picked (and the answer
+/// only when nothing was picked). Other adapters use the same suffix as a
+/// plain "other" replacement, so the distinction cannot come from the schema.
+pub fn classify_elicitation(
+    raw: &Value,
+    claude_like: bool,
+) -> Result<ElicitationPlan, String> {
     let mode = raw
         .get("mode")
         .ok_or_else(|| "elicitation missing mode".to_string())?;
@@ -167,7 +218,13 @@ pub fn classify_elicitation(raw: &Value) -> Result<ElicitationPlan, String> {
         )));
     }
 
-    let questions = parse_form_questions(mode, raw, message.clone(), tool_call_id.clone());
+    let questions = parse_form_questions(
+        mode,
+        raw,
+        message.clone(),
+        tool_call_id.clone(),
+        claude_like,
+    );
     if questions.specs.is_empty() {
         return Ok(ElicitationPlan::Approval(ElicitationApproval {
             message,
@@ -350,12 +407,25 @@ fn parse_form_questions(
     raw: &Value,
     message: String,
     tool_call_id: Option<String>,
+    claude_like: bool,
 ) -> ElicitationQuestions {
     let props = requested_schema(mode, raw)
         .and_then(|s| s.get("properties"))
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
+
+    // Companions are not questions: they carry the free-text channels of the
+    // question they belong to. `_note` (Codex) used to fall through and became
+    // a second, mandatory question ("Additional answer or note").
+    let mut note_by_owner: HashMap<String, String> = HashMap::new();
+    let mut note_ids: HashSet<String> = HashSet::new();
+    for (id, prop) in &props {
+        if let Some(owner) = note_owner(id, prop, &props) {
+            note_by_owner.entry(owner).or_insert_with(|| id.clone());
+            note_ids.insert(id.clone());
+        }
+    }
 
     let mut specs = Vec::new();
     let mut fields = Vec::new();
@@ -364,7 +434,7 @@ fn parse_form_questions(
         if specs.len() >= MAX_QUESTIONS {
             break;
         }
-        if is_other_companion(id) {
+        if is_other_companion(id) || note_ids.contains(id) {
             continue;
         }
         let prop_type = prop
@@ -422,12 +492,22 @@ fn parse_form_questions(
             .unwrap_or_else(|| id.clone());
         let question = clip(&question, MAX_TEXT);
 
+        let note_id = note_by_owner.get(id).cloned();
         let mut options = Vec::new();
         let mut value_by_label = HashMap::new();
         let mut seen = HashSet::new();
         for c in &choices {
             if options.len() >= MAX_OPTIONS {
                 break;
+            }
+            // Sentinels are protocol control values, not choices: ZCode's
+            // "__skip__" and Codex's "None of the above" must never render as
+            // ordinary options (picking the latter alone means "no answer").
+            if c.value == SKIP_OPTION_VALUE {
+                continue;
+            }
+            if c.label == CODEX_OTHER_OPTION && note_id.is_some() {
+                continue;
             }
             let label = clip(&c.label, MAX_TEXT);
             if label.is_empty() || !seen.insert(label.clone()) {
@@ -437,16 +517,33 @@ fn parse_form_questions(
             options.push((label, clip(&c.description, MAX_TEXT)));
         }
 
-        // Free-text only fields: still one question with empty options (Other path in UI).
-        // If no options and not free-text-ish, still emit so user can type Other.
+        let has_options = !options.is_empty();
+        let custom_id = companion_id_for(id, &props);
+        let is_other_flag = codex_meta(prop)
+            .and_then(|c| c.get("isOther"))
+            .and_then(Value::as_bool);
+        // Free text must have a wire slot: Codex declares it with
+        // `_meta.codex.isOther`, companion-style adapters carry it as a field,
+        // and an option-less field is a plain text input by definition.
+        let other_allowed = if has_options {
+            custom_id.is_some() || is_other_flag == Some(true)
+        } else {
+            true
+        };
+        // A note is either Codex's dedicated `_note` field, or Claude's
+        // `_custom` on a single-select question (there the adapter turns it
+        // into `annotations[q].notes` when a pick is also present).
+        let note_allowed =
+            note_id.is_some() || (claude_like && !multi_select && custom_id.is_some());
+
+        // Free-text only fields: still one question with empty options (the
+        // answer field itself is the free text).
         let header = title
             .as_deref()
             .map(|h| clip(h, 32))
             .unwrap_or_else(|| clip(&question, 32));
 
-        let _is_secret = prop
-            .get("_meta")
-            .and_then(|m| m.get("codex"))
+        let _is_secret = codex_meta(prop)
             .and_then(|c| c.get("isSecret"))
             .and_then(Value::as_bool)
             .unwrap_or(false);
@@ -462,8 +559,26 @@ fn parse_form_questions(
             id: id.clone(),
             kind,
             value_by_label,
-            custom_id: companion_id_for(id, &props),
+            custom_id,
+            note_id,
+            other_allowed,
+            note_allowed,
         });
+    }
+
+    // Claude's single-question form puts the real question in `message` and only
+    // a short header (or nothing) on the field — the card would otherwise show
+    // the internal id `question_0`. Do it on the spec so the answer lookup back
+    // from the UI (which echoes this text) still matches.
+    if specs.len() == 1 && !message.is_empty() {
+        if let Some(s) = specs.first_mut() {
+            if s.question == s.id || s.question == s.header {
+                s.question = message.clone();
+                if s.header == s.id {
+                    s.header = clip(&message, 32);
+                }
+            }
+        }
     }
 
     ElicitationQuestions {
@@ -498,7 +613,20 @@ pub fn build_approval_response(approval: &ElicitationApproval, option_id: &str) 
     json!({ "action": "accept" })
 }
 
-/// Build Accept response from UI ask answers `[{ question, selected: string[] }]`.
+/// Build Accept response from UI ask answers
+/// `[{ question, selected: string[], typed?: string, note?: string }]`.
+///
+/// 「其他」(typed) replaces the answer; 「补充」(note) rides beside it. Each
+/// protocol has its own slots:
+/// - Codex: `{id}_note` is a real note field, and typed answers are sent as the
+///   `None of the above` sentinel + note text (codex-acp's own mapping).
+/// - Claude: `_custom` is the answer when nothing is picked and
+///   `annotations[q].notes` when an option is picked — one field, two meanings.
+/// - OpenCode / ZCode / DSH: `_custom` / `_other` / `__other` is a replacement
+///   answer; there is no note slot, so a note is never sent.
+/// - Free text answers go to the companion field only (writing both the main
+///   field and the companion made Claude duplicate the answer and multi-selects
+///   read "x, x").
 pub fn build_questions_response(
     questions: &ElicitationQuestions,
     answers: &Value,
@@ -538,44 +666,129 @@ pub fn build_questions_response(
             continue;
         };
         let field = &questions.fields[idx];
+
         let mut known = Vec::new();
-        let mut custom_parts = Vec::new();
+        let mut legacy_custom = Vec::new();
         for label in &selected {
             if let Some(v) = field.value_by_label.get(label) {
                 known.push(v.clone());
             } else if !label.trim().is_empty() {
-                custom_parts.push(label.clone());
+                legacy_custom.push(label.clone());
             }
         }
-        let mapped = if known.is_empty() {
-            custom_parts.clone()
-        } else {
-            known
+        // Older clients (and the Telegram buttons) only send `selected`; an
+        // unknown label there is a typed answer.
+        let typed = item
+            .get("typed")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                if legacy_custom.is_empty() {
+                    None
+                } else {
+                    Some(legacy_custom.join(", "))
+                }
+            });
+        let note = item
+            .get("note")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+
+        let codex_note = field.note_id.is_some();
+        let claude_note = field.note_allowed && field.custom_id.is_some();
+        let merge_note = |t: &str| match &note {
+            Some(n) => format!("{t}\n\n{n}"),
+            None => t.to_string(),
         };
 
-        let value = match field.kind {
-            FieldKind::Text => mapped.into_iter().next().map(Value::String),
-            FieldKind::MultiSelect => Some(Value::Array(
-                mapped.into_iter().map(Value::String).collect(),
-            )),
-            FieldKind::Boolean => mapped.first().and_then(|v| parse_bool(v)).map(Value::Bool),
-            FieldKind::Number => mapped
-                .first()
-                .and_then(|v| v.trim().parse::<f64>().ok())
-                .filter(|f| f.is_finite())
-                .and_then(|f| serde_json::Number::from_f64(f).map(Value::Number)),
-            FieldKind::Integer => mapped
-                .first()
-                .and_then(|v| v.trim().parse::<i64>().ok())
-                .map(|i| Value::Number(i.into())),
-        };
-        if let Some(v) = value {
+        let mut main: Option<Value> = None;
+        let mut custom_out: Option<String> = None;
+        let mut note_out: Option<String> = None;
+
+        match field.kind {
+            FieldKind::MultiSelect => {
+                if let Some(t) = &typed {
+                    main = Some(Value::Array(Vec::new()));
+                    if field.custom_id.is_some() {
+                        custom_out = Some(t.clone());
+                    } else if codex_note {
+                        note_out = Some(merge_note(t));
+                    } else {
+                        main = Some(Value::Array(vec![Value::String(t.clone())]));
+                    }
+                } else if !known.is_empty() {
+                    main = Some(Value::Array(
+                        known.iter().cloned().map(Value::String).collect(),
+                    ));
+                    if codex_note {
+                        note_out = note.clone();
+                    }
+                }
+            }
+            FieldKind::Text => {
+                if let Some(t) = &typed {
+                    if codex_note {
+                        main = Some(Value::String(CODEX_OTHER_OPTION.to_string()));
+                        note_out = Some(merge_note(t));
+                    } else if claude_note {
+                        main = Some(Value::String(t.clone()));
+                        note_out = note.clone();
+                    } else if field.custom_id.is_some() {
+                        custom_out = Some(t.clone());
+                    } else {
+                        main = Some(Value::String(t.clone()));
+                    }
+                } else if let Some(v) = known.first() {
+                    main = Some(Value::String(v.clone()));
+                    if codex_note || claude_note {
+                        note_out = note.clone();
+                    }
+                }
+            }
+            FieldKind::Boolean => {
+                let raw = known.first().or(typed.as_ref());
+                if let Some(v) = raw.and_then(|v| parse_bool(v)) {
+                    main = Some(Value::Bool(v));
+                }
+            }
+            FieldKind::Number => {
+                let raw = known.first().or(typed.as_ref());
+                if let Some(f) = raw
+                    .and_then(|v| v.trim().parse::<f64>().ok())
+                    .filter(|f| f.is_finite())
+                {
+                    if let Some(n) = serde_json::Number::from_f64(f) {
+                        main = Some(Value::Number(n));
+                    }
+                }
+            }
+            FieldKind::Integer => {
+                let raw = known.first().or(typed.as_ref());
+                if let Some(i) = raw.and_then(|v| v.trim().parse::<i64>().ok()) {
+                    main = Some(Value::Number(i.into()));
+                }
+            }
+        }
+
+        if let Some(v) = main {
             content.insert(field.id.clone(), v);
         }
-        if let Some(cid) = &field.custom_id {
-            let custom = custom_parts.join(", ");
-            if !custom.trim().is_empty() {
-                content.insert(cid.clone(), Value::String(custom));
+        if let Some(t) = custom_out {
+            if let Some(cid) = &field.custom_id {
+                content.insert(cid.clone(), Value::String(t));
+            }
+        }
+        if let Some(n) = note_out {
+            if let Some(nid) = &field.note_id {
+                content.insert(nid.clone(), Value::String(n));
+            } else if claude_note {
+                if let Some(cid) = &field.custom_id {
+                    content.insert(cid.clone(), Value::String(n));
+                }
             }
         }
     }
@@ -595,11 +808,15 @@ fn parse_bool(v: &str) -> Option<bool> {
 }
 
 /// UI questions array for `question/prompt`.
+///
+/// Carries the agent-declared free-text capabilities (`other` / `note`) so the
+/// card can render the right shape per question instead of guessing per agent.
 pub fn questions_for_ui(q: &ElicitationQuestions) -> Value {
     let arr: Vec<Value> = q
         .specs
         .iter()
-        .map(|s| {
+        .zip(q.fields.iter())
+        .map(|(s, f)| {
             let options: Vec<Value> = s
                 .options
                 .iter()
@@ -617,6 +834,8 @@ pub fn questions_for_ui(q: &ElicitationQuestions) -> Value {
                 "header": s.header,
                 "multiSelect": s.multi_select,
                 "options": options,
+                "other": f.other_allowed,
+                "note": f.note_allowed,
             })
         })
         .collect();
@@ -659,6 +878,9 @@ pub fn questions_to_stored(q: &ElicitationQuestions) -> Value {
                 },
                 "valueByLabel": map,
                 "customId": f.custom_id,
+                "noteId": f.note_id,
+                "otherAllowed": f.other_allowed,
+                "noteAllowed": f.note_allowed,
             })
         })
         .collect();
@@ -748,6 +970,20 @@ pub fn questions_from_stored(v: &Value) -> Option<ElicitationQuestions> {
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .filter(|s| !s.is_empty()),
+            note_id: f
+                .get("noteId")
+                .or_else(|| f.get("note_id"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .filter(|s| !s.is_empty()),
+            other_allowed: f
+                .get("otherAllowed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            note_allowed: f
+                .get("noteAllowed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         });
     }
     Some(ElicitationQuestions {
@@ -822,7 +1058,7 @@ mod tests {
                 "requestedSchema": { "type": "object", "properties": {} }
             }
         });
-        let plan = classify_elicitation(&raw).unwrap();
+        let plan = classify_elicitation(&raw, false).unwrap();
         match plan {
             ElicitationPlan::Approval(a) => {
                 assert!(a.options.iter().any(|o| o.option_id == "accept"));
@@ -855,7 +1091,7 @@ mod tests {
                 "scope": { "type": "session", "toolCallId": "call-1" }
             }
         });
-        let plan = classify_elicitation(&raw).unwrap();
+        let plan = classify_elicitation(&raw, false).unwrap();
         match plan {
             ElicitationPlan::Questions(q) => {
                 assert_eq!(q.specs.len(), 1);
@@ -893,7 +1129,7 @@ mod tests {
             },
             "_meta": { "codex_approval_kind": "mcp_tool_call" }
         });
-        let plan = classify_elicitation(&raw).unwrap();
+        let plan = classify_elicitation(&raw, false).unwrap();
         match plan {
             ElicitationPlan::Approval(a) => {
                 assert!(a.persist_in_content);
@@ -943,7 +1179,7 @@ mod tests {
                 "required": []
             }
         });
-        let plan = classify_elicitation(&raw).unwrap();
+        let plan = classify_elicitation(&raw, false).unwrap();
         match plan {
             ElicitationPlan::Questions(q) => {
                 assert_eq!(
@@ -957,6 +1193,8 @@ mod tests {
                 assert_eq!(q.specs[0].options.len(), 2);
                 assert_eq!(q.specs[0].options[0].1, "我 kill 掉卡住的 Unity 进程");
                 assert_eq!(q.fields[0].custom_id.as_deref(), Some("q0_custom"));
+                assert!(q.fields[0].other_allowed);
+                assert!(!q.fields[0].note_allowed);
 
                 let picked = build_questions_response(
                     &q,
@@ -970,16 +1208,19 @@ mod tests {
                 assert_eq!(picked["content"]["q0"], "你来重启（推荐）");
                 assert!(picked["content"].get("q0_custom").is_none());
 
+                // 「其他」只写伴生字段：同时写主字段会让 Claude 重复答案、
+                // 多选读成 "x, x"。
                 let typed = build_questions_response(
                     &q,
                     &json!([{
                         "question": q.specs[0].question,
-                        "selected": ["先等等，我自己看一眼"]
+                        "selected": [],
+                        "typed": "先等等，我自己看一眼"
                     }]),
                     false,
                 );
                 assert_eq!(typed["action"], "accept");
-                assert_eq!(typed["content"]["q0"], "先等等，我自己看一眼");
+                assert!(typed["content"].get("q0").is_none());
                 assert_eq!(typed["content"]["q0_custom"], "先等等，我自己看一眼");
             }
             other => panic!("expected questions, got {other:?}"),
@@ -1008,7 +1249,7 @@ mod tests {
                 }
             }
         });
-        let plan = classify_elicitation(&raw).unwrap();
+        let plan = classify_elicitation(&raw, false).unwrap();
         match plan {
             ElicitationPlan::Questions(q) => {
                 assert!(q.specs[0].multi_select);
@@ -1031,7 +1272,233 @@ mod tests {
             "message": "Open this",
             "url": "https://example.com"
         });
-        let err = classify_elicitation(&raw).unwrap_err();
+        let err = classify_elicitation(&raw, false).unwrap_err();
         assert!(err.contains("url"));
+    }
+
+    /// Codex `isOther` question: `None of the above` is a sentinel, and the
+    /// `_note` companion is a note channel (it used to become a second,
+    /// mandatory question).
+    #[test]
+    fn codex_note_companion_is_not_a_question() {
+        let raw = json!({
+            "mode": "form",
+            "message": "Codex needs your input to continue.",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "q0": {
+                        "type": "string",
+                        "title": "Proceed?",
+                        "description": "What should I do?",
+                        "_meta": { "codex": { "isOther": true, "isSecret": false } },
+                        "oneOf": [
+                            { "const": "A", "title": "Option A" },
+                            {
+                                "const": "None of the above",
+                                "title": "None of the above",
+                                "description": "Provide a different answer in the note field."
+                            }
+                        ]
+                    },
+                    "q0_note": {
+                        "type": "string",
+                        "title": "Additional answer or note",
+                        "_meta": { "codex": { "questionId": "q0", "role": "user_note" } }
+                    }
+                }
+            }
+        });
+        let plan = classify_elicitation(&raw, false).unwrap();
+        match plan {
+            ElicitationPlan::Questions(q) => {
+                assert_eq!(q.specs.len(), 1, "note companion must not be a question");
+                assert_eq!(q.specs[0].options.len(), 1, "sentinel must be hidden");
+                assert_eq!(q.fields[0].note_id.as_deref(), Some("q0_note"));
+                assert!(q.fields[0].other_allowed);
+                assert!(q.fields[0].note_allowed);
+
+                // 其他 → sentinel + note text (codex-acp's own mapping).
+                let typed = build_questions_response(
+                    &q,
+                    &json!([{
+                        "question": q.specs[0].question,
+                        "selected": [],
+                        "typed": "我自己来"
+                    }]),
+                    false,
+                );
+                assert_eq!(typed["content"]["q0"], "None of the above");
+                assert_eq!(typed["content"]["q0_note"], "我自己来");
+
+                // 选项 + 补充 → pick + note.
+                let picked = build_questions_response(
+                    &q,
+                    &json!([{
+                        "question": q.specs[0].question,
+                        "selected": ["Option A"],
+                        "note": "还有一件事"
+                    }]),
+                    false,
+                );
+                assert_eq!(picked["content"]["q0"], "A");
+                assert_eq!(picked["content"]["q0_note"], "还有一件事");
+
+                let ui = questions_for_ui(&q);
+                assert_eq!(ui[0]["other"], json!(true));
+                assert_eq!(ui[0]["note"], json!(true));
+                assert_eq!(ui[0]["options"].as_array().unwrap().len(), 1);
+                // Codex single-question message is generic — the field's own
+                // description must win.
+                assert_eq!(ui[0]["question"], "What should I do?");
+            }
+            other => panic!("expected questions, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn codex_is_other_false_hides_free_text() {
+        let raw = json!({
+            "mode": "form",
+            "message": "Pick",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "q0": {
+                        "type": "string",
+                        "description": "Pick one",
+                        "_meta": { "codex": { "isOther": false } },
+                        "oneOf": [{ "const": "A", "title": "A" }]
+                    }
+                }
+            }
+        });
+        match classify_elicitation(&raw, false).unwrap() {
+            ElicitationPlan::Questions(q) => {
+                assert!(!q.fields[0].other_allowed);
+                assert!(!q.fields[0].note_allowed);
+            }
+            other => panic!("expected questions, got {other:?}"),
+        }
+    }
+
+    /// Claude: one `_custom` field is the answer with no pick, and
+    /// `annotations[q].notes` when a pick is present.
+    #[test]
+    fn claude_custom_is_other_or_note() {
+        let raw = json!({
+            "mode": "form",
+            "message": "Which color?",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "question_0": {
+                        "type": "string",
+                        "title": "Color",
+                        "oneOf": [
+                            { "const": "Red", "title": "Red" },
+                            { "const": "Blue", "title": "Blue" }
+                        ]
+                    },
+                    "question_0_custom": {
+                        "type": "string",
+                        "title": "Other",
+                        "description": "Type your own answer, or add a note to the option you chose above (optional)."
+                    }
+                }
+            }
+        });
+        match classify_elicitation(&raw, true).unwrap() {
+            ElicitationPlan::Questions(q) => {
+                assert!(q.fields[0].other_allowed);
+                assert!(q.fields[0].note_allowed);
+                let qtext = &q.specs[0].question;
+
+                let typed = build_questions_response(
+                    &q,
+                    &json!([{ "question": qtext, "selected": [], "typed": "Teal" }]),
+                    false,
+                );
+                assert_eq!(typed["content"]["question_0"], "Teal");
+                assert!(typed["content"].get("question_0_custom").is_none());
+
+                let noted = build_questions_response(
+                    &q,
+                    &json!([{ "question": qtext, "selected": ["Red"], "note": "偏亮" }]),
+                    false,
+                );
+                assert_eq!(noted["content"]["question_0"], "Red");
+                assert_eq!(noted["content"]["question_0_custom"], "偏亮");
+
+                let both = build_questions_response(
+                    &q,
+                    &json!([{
+                        "question": qtext,
+                        "selected": [],
+                        "typed": "Teal",
+                        "note": "偏亮"
+                    }]),
+                    false,
+                );
+                assert_eq!(both["content"]["question_0"], "Teal");
+                assert_eq!(both["content"]["question_0_custom"], "偏亮");
+
+                let ui = questions_for_ui(&q);
+                assert_eq!(ui[0]["question"], "Which color?");
+                assert_eq!(ui[0]["note"], json!(true));
+            }
+            other => panic!("expected questions, got {other:?}"),
+        }
+    }
+
+    /// ZCode injects `__skip__` into single-select enums and pairs a `_other`
+    /// free-text field with it; neither the sentinel nor the companion is a
+    /// user-visible choice.
+    #[test]
+    fn zcode_skip_and_other_companion() {
+        let raw = json!({
+            "mode": "form",
+            "message": "Pick",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "q_0": {
+                        "type": "string",
+                        "title": "Pick",
+                        "description": "Which one?",
+                        "oneOf": [
+                            { "const": "a", "title": "A" },
+                            { "const": "b", "title": "B" },
+                            { "const": "__skip__", "title": "跳过此问题" }
+                        ]
+                    },
+                    "q_0_other": {
+                        "type": "string",
+                        "title": "or type a custom value"
+                    }
+                }
+            }
+        });
+        match classify_elicitation(&raw, false).unwrap() {
+            ElicitationPlan::Questions(q) => {
+                assert_eq!(q.specs.len(), 1);
+                assert_eq!(q.specs[0].options.len(), 2, "skip sentinel must be hidden");
+                assert!(q.fields[0].other_allowed);
+                assert!(!q.fields[0].note_allowed);
+
+                let typed = build_questions_response(
+                    &q,
+                    &json!([{
+                        "question": q.specs[0].question,
+                        "selected": [],
+                        "typed": "custom"
+                    }]),
+                    false,
+                );
+                assert!(typed["content"].get("q_0").is_none());
+                assert_eq!(typed["content"]["q_0_other"], "custom");
+            }
+            other => panic!("expected questions, got {other:?}"),
+        }
     }
 }

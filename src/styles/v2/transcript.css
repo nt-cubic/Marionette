@@ -458,7 +458,9 @@
   color: var(--text-muted);
 }
 
-/* "Other" input sits flush in its hairline row — no box. */
+/* "Other" / "Note" / "Answer" inputs are real fields. A flush, borderless
+   input made the only interactive element of a text question read like a
+   caption, and focus was a full-width 1px line that looked like a divider. */
 .ask-card__other {
   padding-top: 4px;
   border-top: 1px solid var(--hairline);
@@ -468,16 +470,51 @@
 
 .ask-card__other input {
   height: 28px;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
   font-size: 12px;
 }
 
 .ask-card__other input:focus {
   outline: none;
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--accent) 50%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel-soft));
+}
+
+/* 「补充」 is secondary to 「其他」: no second hairline, a little air, muted label. */
+.ask-card__note {
+  margin-top: 4px;
+  padding-top: 0;
+  border-top: 0;
+  color: var(--text-muted);
+}
+
+/* A hovered selected row used to turn panel-soft and read *less* selected than
+   its neighbour; keep the selection tint. */
+.ask-card__option.is-selected:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* Disabled confirm must not outshine the ghost "skip" button. */
+.ask-card__btn--primary:disabled {
+  background: var(--panel-soft);
+  color: var(--text-faint);
+}
+
+/* Check marks need a tick, not just a tinted square. */
+.ask-card__mark--check.is-on {
+  box-shadow: none;
+}
+
+.ask-card__mark--check.is-on::after {
+  content: "";
+  width: 6px;
+  height: 3px;
+  border-left: 1.5px solid var(--bg);
+  border-bottom: 1.5px solid var(--bg);
+  transform: translateY(-1px) rotate(-45deg);
 }
 
 /* Settled status is text colour only — no pill. */
