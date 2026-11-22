@@ -621,6 +621,44 @@ export function parseClaudeRateLimitMeta(meta: unknown): UsageWindow[] {
 }
 
 /**
+ * `_claude/rateLimit.unifiedWindows`（claude-agent-acp 0.109.x 实测形状）：
+ * 顶层 `utilization` 不再随每条 usage_update 出现——利用率只挂在
+ * `unifiedWindows.{five_hour,seven_day,…}.utilization` 里。2026-11-22 朋友
+ * 机的诊断报告实锤：70 条事件全是这个形状、顶层 utilization 缺席，旧解析
+ * 出 `percentage: null` 被 isMeaningfulWindow 过滤 → CC 用量行整场消失。
+ */
+export function parseClaudeUnifiedWindows(meta: unknown): UsageWindow[] {
+  const root = asRecord(meta);
+  if (!root) return [];
+  const claude = asRecord(root["_claude/rateLimit"] ?? root["_claude/usage"] ?? root.claude);
+  const bucket = asRecord(claude?.unifiedWindows) ?? asRecord(root.unifiedWindows);
+  if (!bucket) return [];
+
+  const out: UsageWindow[] = [];
+  for (const key of Object.keys(bucket)) {
+    const win = asRecord(bucket[key]);
+    if (!win) continue;
+    const utilization = normalizeUtilizationPercent(asNumber(win.utilization));
+    const reset = formatResetHint(win.resets_at ?? win.resetsAt);
+    if (utilization == null && reset == null) continue;
+    const { id, label } = claudeRateLimitLabel(key);
+    const status = typeof win.status === "string" ? win.status : null;
+    const parts: string[] = [];
+    if (status && status !== "allowed") parts.push(status.replace(/_/g, " "));
+    if (reset) parts.push(reset);
+    if (win.isUsingOverage === true || win.overageInUse === true) parts.push("using overage");
+    out.push({
+      id,
+      label,
+      percentage: utilization,
+      detail: parts.length > 0 ? parts.join(" · ") : null,
+      kind: "rate_limit",
+    });
+  }
+  return out;
+}
+
+/**
  * Claude experimental getUsage shape sometimes appears nested in _meta
  * (`rate_limits.five_hour.utilization`, etc.).
  */
@@ -898,13 +936,20 @@ export function extractUsageFromAcpData(data: unknown): {
   const rateWindows = [
     ...parseClaudeRateLimitMeta(meta),
     ...parseClaudeRateLimitsBucket(meta),
+    ...parseClaudeUnifiedWindows(meta),
     // Future / vendor-specific nests
     ...parseCodexMetaRateLimits(meta),
   ];
 
-  // Dedupe by id (later wins)
+  // Dedupe by id. Later sources win, but a row carrying a percentage never
+  // yields its slot to one without (the legacy top-level row and the
+  // unifiedWindows row describe the same window; either may be the only one
+  // with a number on a given adapter version).
   const byId = new Map<string, UsageWindow>();
-  for (const w of rateWindows) byId.set(w.id, w);
+  for (const w of rateWindows) {
+    const prev = byId.get(w.id);
+    if (!prev || w.percentage != null || prev.percentage == null) byId.set(w.id, w);
+  }
 
   return {
     contextUsed,

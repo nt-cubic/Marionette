@@ -30,6 +30,7 @@
 | `check-locale-fragments.mjs` | `node scripts/check-locale-fragments.mjs src/locales/parts/<batch>.zh.ts …` | i18n 片段对齐快检：每个 en 片段的键必须与对应 zh 片段完全一致（缺键/多键/重复键报错）；权威校验仍是一把梭 `npx tsc --noEmit` |
 | `usage-smoke.mts` | `npx tsx scripts/usage-smoke.mts` | usage 面板解析，断言用的是真实 adapter 抓到的报文 |
 | `verify-quota-fallback.mts` | `npx tsx scripts/verify-quota-fallback.mts` | 额度面板 own-family 兜底、Antigravity 模型分组与本地重置时间、窗口和余额展示 |
+| `verify-claude-usage-meta.mts` | `npx tsx scripts/verify-claude-usage-meta.mts` | Claude `_claude/rateLimit` 三种载荷形状：unifiedWindows-only（claude-agent-acp 0.109.x 常态，顶层 utilization 缺席）、顶层+unified 并存、顶层-only 旧形状；合并序「有百分比的行不被无百分比的行顶掉」；claude-code 会话的右栏 own 订阅主块 |
 | `verify-usage-refresh.mts` | `npx tsx scripts/verify-usage-refresh.mts` | 冷会话刷新额度前先启动 ACP；正在运行的回合延后探针 |
 | `title-smoke.mts` | `npx tsx scripts/title-smoke.mts` | 会话标题：拒绝 Marionette 自己注入的 prompt 抬头被当成标题，修复时从转录里取用户真正打的第一句 |
 | `suspend-smoke.mts` | `npx tsx scripts/suspend-smoke.mts` | 挂起规则两套：手动 ⏸ 按钮对**任何还持有进程**的会话都可按（starting / running / waiting / error，running 时按下去直接中断），只有已挂起的不画按钮；而 2 小时空闲自动挂起仍只碰「热但空闲且没有待办」的会话（子代理/后台命令/定时发送算在运作） |
