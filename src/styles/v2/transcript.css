@@ -458,6 +458,12 @@
   color: var(--text-muted);
 }
 
+/* The card body scrolls on the right: keep 4px so the 2px focus ring on the
+   last input is not flush with the clip edge. */
+.ask-card__body {
+  padding-right: 4px;
+}
+
 /* "Other" / "Note" / "Answer" inputs are real fields. A flush, borderless
    input made the only interactive element of a text question read like a
    caption, and focus was a full-width 1px line that looked like a divider. */
@@ -503,7 +509,9 @@
   color: var(--text-faint);
 }
 
-/* Check marks need a tick, not just a tinted square. */
+/* Check marks need a tick, not just a tinted square. Chromium rounds
+   fractional border widths to 1px (1.5px never renders as 1.5), so the tick
+   is explicitly 1px — 2px would be the next real step up. */
 .ask-card__mark--check.is-on {
   box-shadow: none;
 }
@@ -512,8 +520,8 @@
   content: "";
   width: 7px;
   height: 4px;
-  border-left: 1.5px solid var(--bg);
-  border-bottom: 1.5px solid var(--bg);
+  border-left: 1px solid var(--bg);
+  border-bottom: 1px solid var(--bg);
   transform: translateY(-1px) rotate(-45deg);
 }
 
