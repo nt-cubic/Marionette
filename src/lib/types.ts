@@ -316,6 +316,11 @@ export type SessionEvent =
       modelId?: string;
       prompt: string;
       createdAt: string;
+      /** agent 自主派活（marionette_delegate_task）时为 "agent"；
+       * 用户在 composer 手动 @ 委托的历史事件没有该字段。 */
+      initiatedBy?: "agent";
+      /** agent 派活对应的任务账本 taskId（Rust 后端驱动；@ 委托没有）。 */
+      taskId?: string;
     }
   | {
       type: "subtask_result";
@@ -328,6 +333,10 @@ export type SessionEvent =
       durationMs?: number;
       error?: string;
       createdAt: string;
+      initiatedBy?: "agent";
+      taskId?: string;
+      /** （第五期）任务开始时的存档点 commit；有它才有「回滚此任务」。 */
+      checkpointBase?: string;
     }
   | {
       /**

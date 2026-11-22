@@ -22,6 +22,7 @@ mod custom_agents;
 mod web_chat_bridge;
 mod data_dir_gate;
 mod debug_log;
+mod delegation;
 mod desktop_notify;
 mod diagnostics;
 mod dock_support;
@@ -840,6 +841,9 @@ fn main() {
             browser::browser_permission_respond,
             browser::browser_handoff_respond,
             browser::set_browser_tools_enabled,
+            delegation::delegation_enabled,
+            delegation::set_delegation_enabled,
+            delegation::delegation_rollback_task,
             browser::set_session_approval,
             computer::computer_driver_status,
             computer::computer_install_driver,

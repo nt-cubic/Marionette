@@ -50,6 +50,7 @@ import { en as enFeSeenview } from "./parts/fe-seenview.en";
 import { en as enFeUv2F } from "./parts/fe-uv2f.en";
 import { en as enFeChief } from "./parts/fe-chief.en";
 import { en as enFePicker } from "./parts/fe-picker.en";
+import { en as enFeDelegate } from "./parts/fe-delegate.en";
 
 export const en = {
   ...enCommon,
@@ -98,4 +99,5 @@ export const en = {
   ...enFeSeenview,
   ...enFeUv2F,
   ...enFeChief,
+  ...enFeDelegate,
 } satisfies Record<keyof typeof zh, string>;

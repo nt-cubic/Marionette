@@ -31,7 +31,7 @@ import {
   stallBannerCopy,
 } from "../lib/activityHealth";
 import { isLiveSubagentEvent, sessionProcessAlive } from "../lib/liveSubagents";
-import { getFileDiff } from "../lib/api";
+import { delegationRollbackTask, getFileDiff } from "../lib/api";
 import { detectForceWebSearchInText, stripForceWebSearchPrefix } from "../lib/forceWebSearch";
 import { collectToolImageSrcs, fileNameFromPath } from "../lib/imageAttachments";
 import { cleanAssistantText } from "../lib/markdownText";
@@ -3059,13 +3059,17 @@ function CleanPlaceholder({
           // @-delegate cards: skip started if we already have a result for the same child.
           if (event.type === "subtask_started") {
             if (subtaskResults?.has(event.childSessionId)) return null;
+            // agent 自主派活（marionette_delegate_task）：卡片带「AI 派活」
+            // 标识、meta 换成「干完会回来汇报」、不提供前端 stop（取消走
+            // 任务账本 / 让 agent 自己 cancel）。
+            const agentInitiated = event.initiatedBy === "agent";
             const target = event.modelId
               ? `@${event.agentId}/${event.modelId}`
               : `@${event.agentId}`;
             const childStream = allEvents.filter((e) => e.sessionId === event.childSessionId);
             return (
               <div
-                className="event-card event-card--subtask is-running is-working-block"
+                className={`event-card event-card--subtask is-running is-working-block${agentInitiated ? " is-agent-initiated" : ""}`}
                 key={`subtask-${event.childSessionId}-run`}
               >
                 <div className="subtask-card__row">
@@ -3074,8 +3078,13 @@ function CleanPlaceholder({
                     {target} · {event.prompt.slice(0, 48)}
                     {event.prompt.length > 48 ? "…" : ""}
                   </span>
-                  <span className="subtask-card__meta">{t("session.subtaskRunning")}</span>
-                  {onSubtaskStop && (
+                  {agentInitiated && (
+                    <span className="subtask-card__chip">{t("session.subtaskAgentChip")}</span>
+                  )}
+                  <span className="subtask-card__meta">
+                    {agentInitiated ? t("session.subtaskAgentRunning") : t("session.subtaskRunning")}
+                  </span>
+                  {onSubtaskStop && !agentInitiated && (
                     <button
                       type="button"
                       className="pill-action subtask-card__btn"
@@ -3138,6 +3147,7 @@ function CleanPlaceholder({
             const target = modelId
               ? `@${event.agentId}/${modelId}`
               : `@${event.agentId}`;
+            const agentInitiated = event.initiatedBy === "agent";
             const ok = event.status === "done";
             const glyph = ok ? "✓" : "✕";
             const duration =
@@ -3161,6 +3171,9 @@ function CleanPlaceholder({
                     {target} · {(prompt || agentLabel).slice(0, 48)}
                     {(prompt || agentLabel).length > 48 ? "…" : ""}
                   </span>
+                  {agentInitiated && (
+                    <span className="subtask-card__chip">{t("session.subtaskAgentChip")}</span>
+                  )}
                   <span className="subtask-card__meta">
                     {ok
                       ? duration
@@ -3189,13 +3202,34 @@ function CleanPlaceholder({
                       {t("session.quote")}
                     </button>
                   )}
-                  {!ok && onSubtaskRetry && (
+                  {!ok && !agentInitiated && onSubtaskRetry && (
                     <button
                       type="button"
                       className="pill-action subtask-card__btn"
                       onClick={() => onSubtaskRetry(event.childSessionId)}
                     >
                       {t("common.retry")}
+                    </button>
+                  )}
+                  {agentInitiated && event.taskId && event.checkpointBase && (
+                    <button
+                      type="button"
+                      className="pill-action subtask-card__btn"
+                      title={t("session.subtaskRollbackHint")}
+                      onClick={() => {
+                        if (!window.confirm(t("session.subtaskRollbackConfirm"))) return;
+                        void delegationRollbackTask(event.taskId!)
+                          .then((result) => {
+                            window.alert(t("session.subtaskRollbackDone", { count: result.restored.length }));
+                          })
+                          .catch((error: unknown) => {
+                            window.alert(
+                              error instanceof Error ? error.message : String(error),
+                            );
+                          });
+                      }}
+                    >
+                      {t("session.subtaskRollback")}
                     </button>
                   )}
                 </div>

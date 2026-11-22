@@ -2810,6 +2810,19 @@
   font-size: 11px;
 }
 
+/* agent 自主派活的标识芯片（22px 芯片语言，见 docs/ui-language.md）。 */
+.subtask-card__chip {
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 3px);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
 .subtask-card__btn {
   /* visual base from .pill-action; keep flex for card row layout */
   flex: 0 0 auto;

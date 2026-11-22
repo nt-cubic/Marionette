@@ -48,7 +48,7 @@ import { useLatestCallback } from "../lib/useLatestCallback";
 import { getCachedAgentVersions } from "../lib/agentVersionCache";
 import { buildDiagnosticUiState, type DiagnosticUiState } from "../lib/diagnostics";
 import { lastCapturedUiError } from "../lib/diagnosticCapture";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, engineModelImages, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, killAcpTerminal, listAcpTerminals, listAcpTerminalOutputs, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, loadTranscriptPage, loadTranscriptWindow, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, setUiLocale, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, trimSessionWorkingSet, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, chiefTeeConsume, chiefTeeCursor, chiefTeeReplay, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, engineModelImages, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, killAcpTerminal, listAcpTerminals, listAcpTerminalOutputs, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, loadTranscriptPage, loadTranscriptWindow, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, setUiLocale, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, trimSessionWorkingSet, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, chiefTeeConsume, chiefTeeCursor, chiefTeeReplay, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID, DELEGATE_TASK_EVENT, type DelegateTaskEventPayload, delegationEnabled, setDelegationEnabled } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   DETACHED_HIDDEN_EVENT,
@@ -721,6 +721,8 @@ function AppMain() {
   const [desktopNotifyOn, setDesktopNotifyOn] = useState(() => isDesktopNotifyEnabled());
   /** Edge dock stage 0: close = retract to background instead of quitting. */
   const [autoHideOnClose, setAutoHideOnClose] = useState(() => readDockPrefs().autoHideOnClose);
+  /** AI 派活工具面开关的镜像（真相在 Rust 的 AtomicBool；这里只管 UI 与下发）。 */
+  const [delegationKitOn, setDelegationKitOn] = useState(true);
   /** Edge dock stage 1: main window is parked at a screen edge. */
   const [dockActive, setDockActive] = useState(false);
   const [dockExpanded, setDockExpanded] = useState(false);
@@ -1408,6 +1410,14 @@ function AppMain() {
   useEffect(() => {
     void syncBackgroundMode();
     return subscribeDockPrefs((prefs) => setAutoHideOnClose(prefs.autoHideOnClose));
+  }, []);
+
+  // AI 派活开关：启动时从 Rust 侧镜像一次（进程级 AtomicBool，默认开）。
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    void delegationEnabled()
+      .then((value) => setDelegationKitOn(value))
+      .catch(() => undefined);
   }, []);
 
   // Mirror the UI language to the Rust side at launch too (first-run
@@ -5305,6 +5315,28 @@ function AppMain() {
   }, []);
 
   const locale = useLocale();
+  /** AI 自主派活的任务快照（任务账本 staffId=null 的行；5s 轮询已由
+   * useStaffController 拍着，指纹去重防重渲——这里只是过滤投影）。 */
+  const agentDelegateSnapshots = useMemo(
+    () =>
+      staffController.tasks
+        .filter((task) => !task.staffId)
+        .map((task) => ({
+          taskId: task.taskId,
+          parentSessionId: task.chiefSessionId,
+          workerSessionId: task.workerSessionId ?? null,
+          agentId: task.agentId,
+          title: task.title,
+          status: task.status,
+          waitingReason: task.waitingReason ?? null,
+          retryAt: task.retryAt ?? null,
+          startedAtMs: task.createdAt,
+          updatedAtMs: task.updatedAt,
+          summary: task.lastSummary ?? null,
+        })),
+    [staffController.tasks],
+  );
+
   const backgroundTasks = useMemo(() => {
     void backgroundTick;
     const queuedSends = new Map<string, number>();
@@ -5341,6 +5373,8 @@ function AppMain() {
         });
       }
     }
+    // AI 自主派活行（staffId=null 的任务即普通会话派出的；员工任务留在
+    // 员工面板，不进这里——两处消费同一账本，各管各的族）。
     return buildBackgroundTaskRows({
       delegateMeta: delegateMetaRef.current,
       delegateQueue: delegateQueueRef.current,
@@ -5349,6 +5383,7 @@ function AppMain() {
       queuedSends,
       queuedSendLabels,
       scheduledSends,
+      agentDelegates: agentDelegateSnapshots,
       currentSessionId,
       permissionSessionId: permissionPrompt?.sessionId,
       permissionTitle: permissionPrompt?.title ?? null,
@@ -5356,7 +5391,7 @@ function AppMain() {
       planSessionId: planApproval?.sessionId,
       sessionLabels,
     });
-  }, [backgroundTick, acpTerminals, availableSessions, currentSessionId, permissionPrompt, askPrompt, planApproval, locale]);
+  }, [backgroundTick, acpTerminals, availableSessions, currentSessionId, permissionPrompt, askPrompt, planApproval, locale, agentDelegateSnapshots]);
 
   const handleKillBackgroundTerminal = useCallback((terminalId: string) => {
     void killAcpTerminal(terminalId).catch(() => undefined);
@@ -9491,6 +9526,82 @@ function AppMain() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── AI 派活卡片（marionette-delegate-event，第一期「拆门」） ──────────
+  // Rust broker 在 task.started / 终态时把任务卡发给父会话；这里折成
+  // subtask_started / subtask_result 事件塞进父会话的 rail（复用 @ 委托
+  // 的卡片渲染，带 initiatedBy:"agent" 变体）。纪律：
+  // - 只给本窗已加载的 rail 追加（shadowBySessionRef 非空）；冷会话跳过
+  //   ——唤醒文本补投时会自然进转录，不丢信息。
+  // - 同 taskId 同类卡片去重（多窗/事件重放都不会造重复卡）。
+  // - result 卡只在已有 started 卡时补（历史任务回放不凭空造卡）。
+  const delegateCardAppendRef = useRef<(payload: DelegateTaskEventPayload) => void>(() => undefined);
+  delegateCardAppendRef.current = (payload) => {
+    const parent = payload.sessionId;
+    const task = payload.task;
+    if (!parent || !task?.taskId || !task.workerSessionId) return;
+    const rail = shadowBySessionRef.current.get(parent);
+    if (!rail || rail.length === 0) return;
+    const started = payload.kind === "task.started";
+    const dup = rail.some(
+      (e) =>
+        (e.type === "subtask_started" || e.type === "subtask_result") &&
+        e.taskId === task.taskId &&
+        (started ? e.type === "subtask_started" : e.type === "subtask_result"),
+    );
+    if (dup) return;
+    const now = new Date().toISOString();
+    if (started) {
+      const card: SessionEvent = {
+        type: "subtask_started",
+        sessionId: parent,
+        childSessionId: task.workerSessionId,
+        agentId: task.agentId,
+        agentLabel: "",
+        modelId: task.model ?? undefined,
+        prompt: task.title,
+        createdAt: now,
+        initiatedBy: "agent",
+        taskId: task.taskId,
+      };
+      updateSessionEvents(parent, (current) => [...current, card], { publish: true });
+      return;
+    }
+    const hasStart = rail.some((e) => e.type === "subtask_started" && e.taskId === task.taskId);
+    if (!hasStart) return;
+    const mapped =
+      task.status === "completed" ? "done" : task.status === "cancelled" ? "cancelled" : "failed";
+    const durationMs =
+      task.updatedAt > task.createdAt ? task.updatedAt - task.createdAt : undefined;
+    const card: SessionEvent = {
+      type: "subtask_result",
+      sessionId: parent,
+      childSessionId: task.workerSessionId,
+      agentId: task.agentId,
+      status: mapped,
+      summary: task.lastSummary ?? "",
+      durationMs,
+      error: task.error ?? undefined,
+      createdAt: now,
+      initiatedBy: "agent",
+      taskId: task.taskId,
+      checkpointBase: task.checkpointBase ?? undefined,
+    };
+    updateSessionEvents(parent, (current) => [...current, card], { publish: true });
+  };
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let unlisten: (() => void) | undefined;
+    void listen<DelegateTaskEventPayload>(DELEGATE_TASK_EVENT, (event) => {
+      delegateCardAppendRef.current(event.payload);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+    // 只订阅一次；回调走 ref。主窗与 detached 窗都听——「本窗已加载该会话」
+    // 的 rail 守卫天然保证只有持有会话的窗口落卡。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Telegram 远程命令（/new 建会话、/model 切模型）：Rust 侧向导/菜单选完后
   // 发事件过来，前端走与本地完全相同的创建/偏好管线执行，再回执给 bot。
   const telegramCreateProjectSessionRef = useRef(createSessionForProject);
@@ -10894,6 +11005,20 @@ function AppMain() {
                   ? t("palette.closeBehaviorHide")
                   : t("palette.closeBehaviorExit"),
                 run: shelfStable.onToggleAutoHideClose,
+              },
+              {
+                id: "toggle-delegation",
+                label: delegationKitOn
+                  ? t("palette.delegationOn")
+                  : t("palette.delegationOff"),
+                hint: delegationKitOn
+                  ? t("palette.delegationOnHint")
+                  : t("palette.delegationOffHint"),
+                run: () => {
+                  const next = !delegationKitOn;
+                  setDelegationKitOn(next);
+                  void setDelegationEnabled(next).catch(() => undefined);
+                },
               },
               {
                 id: "quit-app",

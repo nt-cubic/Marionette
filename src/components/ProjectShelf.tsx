@@ -1492,6 +1492,9 @@ export function ProjectShelf({
             {session.origin === "chief-worker" && (
               <span className="shelf-origin-chip">{t("shelf.chiefWorkerOrigin")}</span>
             )}
+            {session.origin === "agent-worker" && (
+              <span className="shelf-origin-chip">{t("shelf.agentWorkerOrigin")}</span>
+            )}
             {chatStatus && (
               <span className={`chat-row__status is-${chatStatus.tone}`}>{chatStatus.text}</span>
             )}
@@ -1886,6 +1889,9 @@ export function ProjectShelf({
                               )}
                               {session.origin === "chief-worker" && (
                                 <span className="shelf-origin-chip">{t("shelf.chiefWorkerOrigin")}</span>
+                              )}
+                              {session.origin === "agent-worker" && (
+                                <span className="shelf-origin-chip">{t("shelf.agentWorkerOrigin")}</span>
                               )}
                               {statusWord && (
                                 <span className={`session-row__status is-${statusWord.tone}`}>

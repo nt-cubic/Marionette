@@ -187,6 +187,40 @@ fn bearer_session(request: &tiny_http::Request) -> Option<String> {
     guard.as_ref()?.get(token).cloned()
 }
 
+/// 普通会话的工具列表 = 浏览器/电脑工具 + （可见时）派活 5 件。
+/// worker 会话（chief-worker / agent-worker / delegate）不注入派活工具
+/// ——子员工不得再开子员工，tools/list 层就先挡一道。例外：
+/// marionette_submit_output 只给「带交付模板的任务的 worker」——它是
+/// worker 的交付通道，不是派活能力。
+fn merge_delegate_kit(base: Value, session_id: &str) -> Value {
+    let mut list = base.as_array().cloned().unwrap_or_default();
+    let kit_visible = SERVER
+        .get()
+        .is_some_and(|state| crate::delegation::kit_visible_for(&state.app, session_id));
+    if kit_visible {
+        list.extend(
+            crate::delegation::tool_schemas()
+                .as_array()
+                .cloned()
+                .unwrap_or_default(),
+        );
+    } else if crate::delegation::worker_has_output_schema(session_id) {
+        // worker 只拿得到 submit_output 这一件（schema 子集，单独摘出）。
+        if let Some(submit) = crate::delegation::tool_schemas()
+            .as_array()
+            .and_then(|tools| {
+                tools
+                    .iter()
+                    .find(|tool| tool.get("name").and_then(Value::as_str) == Some(crate::delegation::SUBMIT_OUTPUT))
+                    .cloned()
+            })
+        {
+            list.push(submit);
+        }
+    }
+    Value::Array(list)
+}
+
 /// `/mcp/p/<plugin-id>` → plugin id. Anything else (including the bare `/mcp`
 /// built-in route) is `None`. One path segment only; query strings ignored.
 fn plugin_route(url: &str) -> Option<&str> {
@@ -199,13 +233,28 @@ fn plugin_route(url: &str) -> Option<&str> {
     Some(id)
 }
 
+/// initialize 的 instructions：浏览器面守则 + （可见时）派活守则。
+/// 部分 agent 不展示 initialize instructions——派活守则的可靠载体是
+/// 工具 description，这里是双保险的第二载。
+fn initialize_instructions(session_id: &str) -> String {
+    let mut text = "Use browser_open_tab with display=\"workspace\" only when the user explicitly asks to see or work on a rendered web page beside this conversation. Starting a local dev server does not authorize taking the workspace: open it in the background unless the user asked for it to be visible. Keep ordinary research, reference pages, sign-in, API ports, and one-off reads in the background. For a page you will revisit, pass a short stable id such as work-mail; opening an existing id returns that tab without navigating it.".to_string();
+    let kit_visible = SERVER
+        .get()
+        .is_some_and(|state| crate::delegation::kit_visible_for(&state.app, session_id));
+    if kit_visible {
+        text.push_str("\n\n");
+        text.push_str(crate::delegation::rulebook());
+    }
+    text
+}
+
 fn route(method: &str, params: &Value, session_id: &str) -> Result<Value, Value> {
     match method {
         "initialize" => Ok(json!({
             "protocolVersion": params.get("protocolVersion").and_then(Value::as_str).unwrap_or("2024-11-05"),
             "capabilities": { "tools": {} },
             "serverInfo": { "name": "marionette-tools", "version": "1.0.0" },
-            "instructions": "Use browser_open_tab with display=\"workspace\" only when the user explicitly asks to see or work on a rendered web page beside this conversation. Starting a local dev server does not authorize taking the workspace: open it in the background unless the user asked for it to be visible. Keep ordinary research, reference pages, sign-in, API ports, and one-off reads in the background. For a page you will revisit, pass a short stable id such as work-mail; opening an existing id returns that tab without navigating it.",
+            "instructions": initialize_instructions(session_id),
         })),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({
@@ -214,7 +263,7 @@ fn route(method: &str, params: &Value, session_id: &str) -> Result<Value, Value>
                 // 工具只注入这一会话；普通会话的工具列表不出现它们）。
                 crate::chief::tools::chief_tool_schemas()
             } else {
-                tool_schemas_for_session(session_id)
+                merge_delegate_kit(tool_schemas_for_session(session_id), session_id)
             }
         })),
         "tools/call" => {
@@ -1006,6 +1055,15 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
     // worker 猜到控制工具名一样被拒。
     if crate::chief::broker::is_chief_session(session_id) {
         return crate::chief::tools::dispatch(app, session_id, name, args);
+    }
+    // AI 派活工具（普通会话专属）：拒绝在 delegation::dispatch 内部以
+    // envelope 返回值给出（深度拒绝 / 关闭 / 未找到会话都是值，不丢轮）。
+    // 注意必须排在 chief 工具守卫**之前**：marionette_agents_list /
+    // marionette_models_list 与 chief 控制面有意共享名字（只读列表，
+    // 两边各挂各的实现），chief 会话已在上面早退，走到这里的普通会话
+    // 由派活面接管这两个名字。
+    if crate::delegation::is_delegate_tool(name) {
+        return crate::delegation::dispatch(app, session_id, name, args);
     }
     if crate::chief::tools::is_chief_tool(name) {
         return Err(format!(

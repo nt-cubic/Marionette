@@ -93,6 +93,23 @@ pub fn bootstrap_chief(app: &AppHandle) {
             Some(&error),
         ),
     }
+    // 账本修剪（AI 派活开放后任务量不再只属于员工——30 天窗口 + 终态
+    // 硬顶，防 tasks.json / events.jsonl 无界增长）。
+    match store::prune_ledger(crate::delegation::TASK_RETENTION_MS) {
+        Ok(dropped) if dropped > 0 => {
+            crate::debug_log::append(
+                "chief",
+                "info",
+                "",
+                "ledger pruned",
+                Some(&format!("dropped {dropped} terminal tasks")),
+            );
+        }
+        _ => {}
+    }
+    // （第二期「可信」）唤醒收件箱跨重启：从事件账本把未送达的终态回执
+    // 重新入队——重启前「没被答的结果」不再蒸发。
+    super::broker::rebuild_wake_inbox_from_ledger();
     // 心跳（幂等）：唤醒 flush / 用户队列 / 超时 / 失联检测。
     super::broker::ensure_heartbeat(app.clone());
     let _ = &app.state::<AppState>(); // 确保 state 就绪（setup 时序自检）

@@ -806,7 +806,9 @@ pub fn telegram_notification_allowed(session_id: &str, kind: &str) -> bool {
 
 /// Telegram-specific gate for task cards. Stable `staffId` wins over the
 /// task's old chief session id so recreating a staff ACP session cannot bypass
-/// the current employee policy.
+/// the current employee policy. AI-delegated tasks (`staffId=None`, 普通会话
+/// 派活) do NOT push Telegram cards in phase 1 — the parent conversation's
+/// own notifications cover the user-facing surface.
 pub fn telegram_task_notification_allowed(task: &super::types::Task, kind: &str) -> bool {
     let profile = task
         .staff_id
@@ -814,7 +816,7 @@ pub fn telegram_task_notification_allowed(task: &super::types::Task, kind: &str)
         .and_then(profile_for_staff_id)
         .or_else(|| profile_for_session(&task.chief_session_id));
     let Some(profile) = profile else {
-        return task.staff_id.is_none();
+        return false;
     };
     telegram_notification_allowed_for_profile(&profile, kind)
 }

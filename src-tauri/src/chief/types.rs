@@ -186,6 +186,19 @@ pub struct Task {
     pub telegram_message_id: Option<i64>,
     /// 完成时的产物摘要（changed files / 测试结果行）。
     pub artifacts: Vec<String>,
+    /// （第三期）额度/限流受限时的自动重试时间点；Some = 等待重试中。
+    pub retry_at: Option<u64>,
+    /// （第三期）已自动重试次数（封顶后 Failed(retry_exhausted)）。
+    pub retry_count: u32,
+    /// （第四期）调用方附的交付模板（顶层 JSON Schema 子集）；worker 用
+    /// marionette_submit_output 按它交结果。
+    pub output_schema: Option<serde_json::Value>,
+    /// （第四期）worker 提交并通过结构校验的交付结果。
+    pub structured_output: Option<serde_json::Value>,
+    /// （第五期）存档点：任务开始时的仓库 HEAD commit（真实 git 项目才有）。
+    pub checkpoint_base_commit: Option<String>,
+    /// （第五期）存档点对应的仓库根（回滚时用；与 base 成对出现）。
+    pub checkpoint_repo_root: Option<String>,
 }
 
 impl Default for Task {
@@ -214,6 +227,12 @@ impl Default for Task {
             error: None,
             telegram_message_id: None,
             artifacts: Vec::new(),
+            retry_at: None,
+            retry_count: 0,
+            output_schema: None,
+            structured_output: None,
+            checkpoint_base_commit: None,
+            checkpoint_repo_root: None,
         }
     }
 }

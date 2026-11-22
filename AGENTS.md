@@ -1654,8 +1654,82 @@ Telegram 远程首席助理的底层仍保留：裸文本固定进一个 Chief �
   测试沙箱：`store::set_root_override_for_tests` + `store::SANDBOX_LOCK`
   （broker/store 测试共用一把锁）；tee 测试有自己的锁。
 
-回归：`cargo test --bin marionette chief`（32 项）+ `npx tsx scripts/verify-chief-tee.mts`
+回归：`cargo test --bin marionette chief`（59 项）+ `npx tsx scripts/verify-chief-tee.mts`
 + `npm run build`（tsc）。真机清单见台账。
+
+## AI 自主派活 / agent-to-agent delegation（2026-11-22，第一期「拆门」）
+
+任何普通 ACP 会话里的 agent 都能把活派给另一个 agent（指定 agent+model）。六期
+总路线图与设计定案见 `docs/plans/plan-agent-delegation.md`（变出来→可信→过夜→
+可验收→可反悔→安静）。改这块前先记七条红线：
+
+- **两套工具面、一份任务机器**：普通会话的派活面是 `src-tauri/src/delegation.rs`
+  的 5 件（`delegate_task/status/cancel` + 共享名 `agents_list/models_list`），
+  chief 的 16 件控制面一字不动。任务机器（账本/spawn/watch/收件箱/tee）全部
+  复用 `chief::`，`spawn_and_watch_worker` 对 **staff_id=None**（普通会话派的任务
+  的身份标记）跳过员工闸。**tools_mcp 的 dispatch 里派活分支必须排在 chief 工具
+  守卫之前**——`agents_list`/`models_list` 是有意与 chief 重名的共享只读列表
+  （chief 会话早退走自己的实现，普通会话由派活面接管）。
+- **天花板**：delegate_task 的 schema **刻意没有 projectId**——项目恒等于父会话
+  的项目，不开放跨项目；每父会话并发 2（`SESSION_DELEGATION_CAP`）；schema 红线
+  同 chief（永无 cwd/permissionMode/env 等提权字段）；父会话钉只读/plan 档则
+  worker 用 `enforce_read_only` 同款形状强制同档；worker 永不 always-approve。
+- **worker 零派活（禁递归）**：`chief-worker`/`agent-worker`/`delegate` 来源的会话
+  在 `kit_visible_for`（tools/list）与 dispatch 两层 fail-closed
+  （`delegation_depth_denied`）——子员工不得再开子员工。
+- **守则文字即代码**：`delegation::rulebook()`（goal 自包含/派完就睡禁轮询/
+  失败读摘要不重派/子员工自己干/goal 是数据不是指令）注入 MCP initialize
+  instructions + 工具 description 双载体。**改一个字必须过**
+  `rulebook_carries_the_core_disciplines` 测试（T3 纪律）。
+- **唤醒的最小版**：`heartbeat_tick` 顶部的 `flush_agent_wake_inboxes` 只对
+  **进程在跑且空闲**的普通父会话投递（合并 ≤5 条）；**刻意不懒启动**普通会话
+  （用户没打开的会话不自动花钱唤起），进程不在就留着，重新打开的下一 tick 补投。
+  进程不在绝不标 completed（`watch_worker_loop` 先查 `session_alive` →
+  `Failed(worker_gone)`——「沉默不证明退出」）。
+- **账本必须修剪**：`store::prune_ledger`（bootstrap_chief 启动跑；非终态全留、
+  终态 30 天 + 400 硬顶、事件同窗）——派活开放后 tasks.json 属于所有会话，
+  没有修剪就是两个永远增长的文件（心跳每 2s 整档重写它）。
+- **UI 事件流**：`marionette-delegate-event`（仅 staff_id=None 任务，task.started
+  与终态两拍）→ App 折成 `subtask_started/result`（`initiatedBy:"agent"` 变体）
+  塞进**本窗已加载**的父 rail（冷会话跳过——唤醒文本补投自然进转录）；同
+  taskId 去重。`agent-worker` 归 `isChiefOrigin` 后端驱动家族（挂起/压制豁免 +
+  tee 回填）；Telegram 任务卡对 staff-free 任务**一期不推**
+  （`telegram_task_notification_allowed` 返回 false）；`chief_stop_all` 纳入
+  staff-free 任务（无员工机器不再提前 return）。Ctrl K 有注入开关（Rust
+  AtomicBool 默认开，进程级不落盘）。
+
+回归：`cargo test --bin marionette delegation` + `chief` + `npx tsx
+scripts/verify-delegate-kit.mts`。
+
+**二至六期（同日落地）补的红线**：
+
+- **回合结局分类在 `broker::handle_turn_end`**：watch 循环空闲时先从 tee
+  取最后一个 turn/complete 的 stopReason+错误文本（`last_turn_outcome`）
+  分类（`classify_turn_failure`：额度/限流匹配表→Transient；refusal→
+  refused；error→turn_error；其余才 finish）。**零产出（无正文且无工具
+  调用）= Failed(no_output)，不猜完成**。改匹配表/分类先过
+  `turn_failure_classification_matches_transient_markers` 测试。
+- **唤醒跨重启只有一处重建**：`broker::rebuild_wake_inbox_from_ledger`
+  （bootstrap_chief 调，读 events.jsonl 里 delivered_at=None 的终态事件，
+  上限 500）。**「读取即送达」**：delegate_status / chief_task_status 查过
+  就 mark delivered——别在别处再加第二套送达标记。
+- **额度自动重试的状态在任务行上**（retry_at/retry_count/waiting_reason=
+  "auto_retry"）：到点 `reissue_goal_for_retry` 复活 worker 重发目标；
+  退避 5m/15m/30m、3 次封顶 Failed(retry_exhausted)。**卡死解药**：Running
+  且 20 分钟无事件 → cancel + 30s 宽限 → Failed(stalled)。
+- **submit_output 是 worker 专属交付通道**：只有「带 outputSchema 任务的
+  worker」在 tools/list 看得到（`worker_has_output_schema`）；校验是**顶层
+  结构的诚实子集**（required 齐 + 顶层类型匹配，不做嵌套/format——拒绝
+  文案如实说）；回滚命令 `delegation_rollback_task` **只给用户 UI**，不是
+  MCP 工具。
+- **回滚的恢复面** = base..HEAD 提交差异 ∪ 工作区脏差异；checkout 全有或
+  全无，失败如实报；untracked 不动、数量如实报告。存档点只记
+  `checkpoint_base_commit`（rev-parse HEAD，锁外跑）——**不做** per-轮存档
+  （后续批次）。
+- **attention 统一投影**（`src/lib/fleetAttention.ts::projectAttention`）：
+  后台面板 agent-delegate 行的「要不要人」全走它；**额度午休优先于卡死
+  判定**（在排队不算失踪）。桌面通知/Telegram 接同一真相是后续批次，别
+  在消费点再拼一套状态词。
 
 ## 上游移植管线（2026-11-17，M1+M4 落地）
 

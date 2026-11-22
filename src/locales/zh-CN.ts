@@ -50,6 +50,7 @@ import { zh as zhFeSeenview } from "./parts/fe-seenview.zh";
 import { zh as zhFeUv2F } from "./parts/fe-uv2f.zh";
 import { zh as zhFeChief } from "./parts/fe-chief.zh";
 import { zh as zhFePicker } from "./parts/fe-picker.zh";
+import { zh as zhFeDelegate } from "./parts/fe-delegate.zh";
 
 export const zh = {
   ...zhCommon,
@@ -98,4 +99,5 @@ export const zh = {
   ...zhFeSeenview,
   ...zhFeUv2F,
   ...zhFeChief,
+  ...zhFeDelegate,
 } as const;

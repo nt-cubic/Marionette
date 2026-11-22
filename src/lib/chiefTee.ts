@@ -68,9 +68,11 @@ export function transcriptMaxCreatedAtMs(
   return max;
 }
 
-/** 是否 Chief 家族来源（chief 会话本体 / worker）。 */
+/** 是否后端驱动家族来源（chief 会话本体 / 各类 worker）。挂起豁免、工作集
+ * 压制豁免、tee 回填都按这个家族判定——agent-worker（AI 派活的子会话）
+ * 与 chief-worker 同为后端 broker 驱动，待遇一致。 */
 export function isChiefOrigin(origin?: string | null): boolean {
-  return origin === "chief" || origin === "chief-worker";
+  return origin === "chief" || origin === "chief-worker" || origin === "agent-worker";
 }
 
 /**

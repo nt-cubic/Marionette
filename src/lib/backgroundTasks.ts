@@ -1,11 +1,13 @@
 import { t } from "./i18n";
 import { isExitAnswer, readCommandExit, signalOfExitCode } from "./exitMeaning";
+import { projectAttention } from "./fleetAttention";
 
 /**
  * 后台任务面板的数据聚合层（纯函数，无 React 依赖）。
  *
  * 来源与行类型：
  * - @-delegate 子代理（`delegateMetaRef` 未完成 + `delegateQueueRef` 排队）→ "delegate"
+ * - AI 自主派活（Rust 任务账本 staffId=null 的任务，useStaffController 轮询）→ "agent-delegate"
  * - ACP 原生嵌套子代理（Grok spawn_subagent / Claude Task / OpenCode task）→ "subagent"
  * - ACP `terminal/*` 宿主里的后台命令（Rust `list_acp_terminals`）→ "terminal"
  * - 排队发送（`pendingSendsRef`，等回合空位）→ "queued"
@@ -19,6 +21,7 @@ import { isExitAnswer, readCommandExit, signalOfExitCode } from "./exitMeaning";
 export type BackgroundTaskKind =
   | "delegate"
   | "delegate_queued"
+  | "agent-delegate"
   | "subagent"
   | "terminal"
   | "queued"
@@ -122,6 +125,29 @@ export type ScheduledSendSnapshot = {
   preview: string;
 };
 
+/** AI 自主派活的任务快照（chiefTasksListAll 里 staffId 为空的行）。 */
+export type AgentDelegateSnapshot = {
+  taskId: string;
+  parentSessionId: string;
+  workerSessionId: string | null;
+  agentId: string;
+  title: string;
+  status:
+    | "proposed"
+    | "starting"
+    | "running"
+    | "waiting_user"
+    | "completed"
+    | "failed"
+    | "cancelled"
+    | "interrupted";
+  waitingReason?: string | null;
+  retryAt?: number | null;
+  startedAtMs: number;
+  updatedAtMs: number;
+  summary?: string | null;
+};
+
 export type BuildBackgroundTasksInput = {
   delegateMeta: Map<string, DelegateMetaSnapshot>;
   delegateQueue: Map<string, DelegateQueueSnapshot[]>;
@@ -132,6 +158,8 @@ export type BuildBackgroundTasksInput = {
   queuedSends: Map<string, number>;
   queuedSendLabels: Map<string, string>;
   scheduledSends?: ScheduledSendSnapshot[];
+  /** AI 自主派活的任务（staffId=null；终态只保留最近 10 分钟的行）。 */
+  agentDelegates?: AgentDelegateSnapshot[];
   currentSessionId: string | null;
   permissionSessionId?: string | null;
   permissionTitle?: string | null;
@@ -169,6 +197,60 @@ export function buildBackgroundTaskRows(input: BuildBackgroundTasksInput): Backg
       detail: child.detail,
       startedAtMs: child.startedAtMs || now,
       fromCurrent: input.currentSessionId === child.sessionId,
+    });
+  }
+
+  // 1b) AI 自主派活（Rust 后端驱动的任务账本行）。非终态全列；终态只留
+  // 最近 10 分钟（「干完了」的行给一眼回看，不让面板变成历史清单）。
+  // 状态归约走 fleetAttention 统一投影（第六期）：「要不要人」是同一份
+  // 真相，桌面通知 / Telegram 以后接同一个函数，不再各拼各的。
+  for (const task of input.agentDelegates ?? []) {
+    const terminal = ["completed", "failed", "cancelled", "interrupted"].includes(task.status);
+    if (terminal && Date.now() - task.updatedAtMs > 10 * 60_000) continue;
+    const attention = projectAttention({
+      status: task.status,
+      waitingReason: task.waitingReason,
+      retryAt: task.retryAt,
+      lastEventAt: task.updatedAtMs,
+      now,
+    });
+    const state: BackgroundTaskState =
+      attention.category === "approval" || attention.category === "input" || attention.category === "stalled"
+        ? "attention"
+        : attention.category === "failure"
+          ? "failed"
+          : attention.category === "interruption"
+            ? "stopped"
+            : attention.category === "waiting_retry"
+              ? "queued"
+              : task.status === "completed"
+                ? "done"
+                : terminal
+                  ? "stopped"
+                  : task.status === "proposed" || task.status === "starting"
+                    ? "queued"
+                    : "running";
+    const retryInMin =
+      attention.category === "waiting_retry" && task.retryAt
+        ? Math.max(0, Math.round((task.retryAt - now) / 60_000))
+        : null;
+    rows.push({
+      key: `agent-delegate:${task.taskId}`,
+      kind: "agent-delegate",
+      state,
+      // 点击优先开 worker 会话（看它干活）；还没建 worker 时回父会话。
+      sessionId: task.workerSessionId || task.parentSessionId,
+      title: t("tasks.agentDelegateTitle", { agent: task.agentId, title: clip(task.title, 48) }),
+      detail:
+        attention.category === "waiting_retry"
+          ? t("tasks.agentDelegateRetry", { count: retryInMin ?? 0 })
+          : attention.requiresAction
+            ? t("tasks.agentDelegateAttention")
+            : task.summary
+              ? clip(task.summary, 64)
+              : undefined,
+      startedAtMs: task.startedAtMs || now,
+      fromCurrent: input.currentSessionId === task.parentSessionId,
     });
   }
 

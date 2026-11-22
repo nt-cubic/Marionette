@@ -22,6 +22,61 @@ fn sandbox_root(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn wake_inbox_rebuilds_from_undelivered_ledger_events() {
+    let guard = lock_sandbox();
+    reset_for_tests();
+    let root = sandbox_root("wakerebuild");
+    store::set_root_override_for_tests(Some(root.clone()));
+    // 两个任务：一个有未送达的 completed 事件，一个事件已送达。
+    let mut task_a = Task {
+        chief_session_id: "session_parent_a".into(),
+        status: TaskStatus::Completed,
+        ..Default::default()
+    };
+    task_a.task_id = "task_a".into();
+    let mut task_b = Task {
+        chief_session_id: "session_parent_b".into(),
+        status: TaskStatus::Failed,
+        ..Default::default()
+    };
+    task_b.task_id = "task_b".into();
+    store::with_tasks(|tasks| {
+        tasks.extend([task_a.clone(), task_b.clone()]);
+        Ok(())
+    })
+    .unwrap();
+    let now = now_ms();
+    let undelivered = crate::chief::types::TaskEvent {
+        event_id: "evt_a".into(),
+        seq: 1,
+        task_id: "task_a".into(),
+        kind: "task.completed".into(),
+        status: Some(TaskStatus::Completed),
+        summary: None,
+        delivered_at: None,
+        ts: now,
+    };
+    let delivered = crate::chief::types::TaskEvent {
+        event_id: "evt_b".into(),
+        seq: 1,
+        task_id: "task_b".into(),
+        kind: "task.failed".into(),
+        status: Some(TaskStatus::Failed),
+        summary: None,
+        delivered_at: Some(now),
+        ts: now,
+    };
+    store::append_events(&[undelivered, delivered]).unwrap();
+    rebuild_wake_inbox_from_ledger();
+    assert_eq!(pending_wake_count("session_parent_a"), 1, "未送达的事件要重建进收件箱");
+    assert_eq!(pending_wake_count("session_parent_b"), 0, "已送达的不重建");
+    store::set_root_override_for_tests(None);
+    reset_for_tests();
+    drop(guard);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
 fn bootstrap_queue_keeps_only_the_latest_prompt() {
     let guard = lock_sandbox();
     reset_for_tests();

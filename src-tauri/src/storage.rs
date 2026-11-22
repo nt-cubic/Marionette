@@ -372,7 +372,9 @@ impl StorageService {
     ) -> Result<Session, String> {
         if project_id == crate::app_paths::CHAT_PROJECT_ID {
             let cwd = crate::app_paths::current_dir()?;
-            return self.create_chat_session(agent_id, label, &cwd, None);
+            // Chat 虚拟项目回落时同样保留 origin（agent-worker 落 Chat 库时
+            // 靠它分组/角标；原先硬编码 None 会把来源标记吃掉）。
+            return self.create_chat_session(agent_id, label, &cwd, origin);
         }
         let project = self.project_by_id(project_id)?;
         let project_path = Path::new(&project.root_path);
@@ -1282,7 +1284,7 @@ impl StorageService {
         Ok(())
     }
 
-    fn project_by_id(&self, project_id: &str) -> Result<Project, String> {
+    pub(crate) fn project_by_id(&self, project_id: &str) -> Result<Project, String> {
         self.list_projects()?
             .into_iter()
             .find(|project| project.id == project_id)

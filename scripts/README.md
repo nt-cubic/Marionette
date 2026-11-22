@@ -57,6 +57,7 @@
 | `verify-session-order.mts` | `npx tsx scripts/verify-session-order.mts` | 侧栏折叠预览：置顶行和「刚完成、还没点进去」的对话不会掉进 Show more |
 | `verify-agent-errors.mts` | `npx tsx scripts/verify-agent-errors.mts` | 错误分类：Grok `auth_transient` 不当成需要登录、OpenCode 按当前模型渠道给提示、426 仍走更新 |
 | `verify-background-tasks.mts` | `npx tsx scripts/verify-background-tasks.mts` | 后台任务面板聚合：需要你置顶、跑动中次之、已结束沉底；完成/失败委托不进列表、结束终端保留退出码；key 跨重建稳定；空输入不渲染 |
+| `verify-delegate-kit.mts` | `npx tsx scripts/verify-delegate-kit.mts` | AI 自主派活（第一期拆门）：agent-delegate 行状态映射（waiting_user→需要你）/终态 10 分钟退场/点击 worker 优先；fe-delegate 片段对键集与 {agent}{title} 占位符；agent-worker 归后端驱动家族（挂起/压制豁免 + tee 回填） |
 | `verify-split-workspace.mts` | `npx tsx scripts/verify-split-workspace.mts` | 分屏树：拆/并/关标签、上下拆、1\|1\|1 均分、1\|2 / 2×2、第 5 叶降级、命中测试、撕窗领养进格、屏幕坐标换算；surface 窗格标签（2026-11-18）：tab 编解码、openSessionIds/visible 只数会话、纯 surface 树合法不触发占位、恢复闸门丢 browser 保 memo/document |
 | `verify-composer-compact-toolbar.mts` | `npx tsx scripts/verify-composer-compact-toolbar.mts` | 输入框过窄时底栏芯片收成贴边同款 hub：composer 自身 ≤580px（贴边始终）、≥640px 摊开；容器查询第一帧就收、JS 回差拖分屏条不闪 |
 | `verify-composer-prefs.mts` | `npx tsx scripts/verify-composer-prefs.mts` | 磁盘偏好回放的作业寿命：caps/sessionPrefs 身份变化不得取消正在跑的恢复链（Grok `/always-approve` 是最后一步）；只有切对话、卸载、agent 进程死掉才作废；always-approve 回放仍在链内 |

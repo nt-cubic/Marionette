@@ -404,6 +404,99 @@ fn worker_reported_model_calls(worker_session_id: &str) -> u32 {
         .min(u32::MAX as usize) as u32
 }
 
+// ── 回合结局分类（第二期「可信」+ 第三期「过夜」） ────────────────────────
+//
+// watch 循环在回合空闲时不再直接判「完成」：先从 tee 事件流里取最后一个
+// turn/complete 的 stopReason 与错误文本，分成四类——干净完成 / 额度类
+// 瞬时失败（排队自动重试）/ 拒答 / 其它错误。连同「零产出」检查一起，
+// 消灭「回合报错也被记 completed」的旧口径。
+
+/// 卡死判定：Running 且连续 STALL_MS 无任何事件（touch_worker_progress
+/// 会随流式事件 5s 节流刷新 last_event_at）。Mingle 的「20 分钟无声且
+/// 有人在等 → 干预」梯子取前两级：先 cancel，30s 宽限仍无声才判死。
+const WORKER_STALL_MS: u64 = 20 * 60 * 1000;
+const WORKER_STALL_GRACE_MS: u64 = 30 * 1000;
+/// 额度/限流类瞬时失败的重试退避（第 1/2/3 次）；超过 3 次判 retry_exhausted。
+const RETRY_BACKOFF_MS: [u64; 3] = [5 * 60 * 1000, 15 * 60 * 1000, 30 * 60 * 1000];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TurnFailureClass {
+    Clean,
+    /// 额度/限流/服务繁忙——可自愈，排队自动重试。
+    Transient,
+    Refused,
+    TurnError,
+}
+
+/// 从 tee 事件流提取最后一个 turn/complete 的 (stopReason, 错误文本)。
+/// 纯函数（broker 测试直接喂事件）。
+pub(crate) fn last_turn_outcome(events: &[Value]) -> (Option<String>, Option<String>) {
+    let mut stop_reason = None;
+    let mut error_text = None;
+    for event in events {
+        let method = event.get("method").and_then(Value::as_str).unwrap_or("");
+        if method != "turn/complete" {
+            continue;
+        }
+        let data = event.get("data").unwrap_or(&Value::Null);
+        stop_reason = data
+            .get("stopReason")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        // 错误文本的形状随 emit 点不同：data.error 可能是字符串、
+        // {message} 对象，或嵌在 data.data 里——逐层找，找到为止。
+        error_text = extract_error_text(data);
+    }
+    (stop_reason, error_text)
+}
+
+fn extract_error_text(data: &Value) -> Option<String> {
+    for holder in [data, data.get("data").unwrap_or(&Value::Null)] {
+        if holder.is_null() {
+            continue;
+        }
+        if let Some(error) = holder.get("error") {
+            if let Some(text) = error.as_str() {
+                if !text.trim().is_empty() {
+                    return Some(text.to_string());
+                }
+            } else if let Some(message) = error.get("message").and_then(Value::as_str) {
+                if !message.trim().is_empty() {
+                    return Some(message.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 额度/限流/繁忙的匹配表（小写包含）。命中即 Transient——这类失败的特点
+/// 是「等一会儿就好」，Mingle 的失败分类查表同款思路。
+pub(crate) fn classify_turn_failure(
+    stop_reason: Option<&str>,
+    error_text: Option<&str>,
+) -> TurnFailureClass {
+    let haystack = format!(
+        "{} {}",
+        stop_reason.unwrap_or(""),
+        error_text.unwrap_or("")
+    )
+    .to_ascii_lowercase();
+    const TRANSIENT_MARKERS: &[&str] = &[
+        "quota", "usage limit", "rate limit", "ratelimit", "rate_limit",
+        "429", "overloaded", "capacity", "temporarily", "try again",
+        "too many requests", "resource_exhausted",
+    ];
+    if TRANSIENT_MARKERS.iter().any(|marker| haystack.contains(marker)) {
+        return TurnFailureClass::Transient;
+    }
+    match stop_reason {
+        Some("refusal") => TurnFailureClass::Refused,
+        Some("error") => TurnFailureClass::TurnError,
+        _ => TurnFailureClass::Clean,
+    }
+}
+
 fn host_event_text(event: &TaskEvent, task: Option<&Task>) -> String {
     let mut text = format!(
         "[HOST EVENT: {}]\ntaskId: {}\nstatus: {}\n",
@@ -421,12 +514,24 @@ fn host_event_text(event: &TaskEvent, task: Option<&Task>) -> String {
         if !task.artifacts.is_empty() {
             text.push_str(&format!("artifacts: {}\n", task.artifacts.join("; ")));
         }
+        // （第四期）结构化交付：父会话直接拿到可用 JSON（截 1500 字符，
+        // 完整结果在 task.structured_output，可用 delegate_status 取）。
+        if let Some(output) = task.structured_output.as_ref() {
+            let full = output.to_string();
+            let taken: String = full.chars().take(1500).collect();
+            let preview = if full.chars().count() > 1500 {
+                format!("{taken}…（截断）")
+            } else {
+                taken
+            };
+            text.push_str(&format!("output: {preview}\n"));
+        }
     }
     text.push_str("untrustedContent: false\n");
     text
 }
 
-fn emit_event(task: &Task, kind: &str, status: TaskStatus, summary: Option<String>) -> TaskEvent {
+pub(crate) fn emit_event(task: &Task, kind: &str, status: TaskStatus, summary: Option<String>) -> TaskEvent {
     let seq = store::load_events_for_task(&task.task_id).len() as u64 + 1;
     TaskEvent {
         event_id: short_id("evt"),
@@ -550,7 +655,7 @@ fn ensure_chief_started(app: &AppHandle, chief_session_id: &str) -> Result<(), S
 
 // ── 任务卡片（envelope 里的 task 形状） ──────────────────────────────────
 
-fn task_card(task: &Task) -> Value {
+pub(crate) fn task_card(task: &Task) -> Value {
     json!({
         "taskId": task.task_id,
         "staffId": task.staff_id,
@@ -567,7 +672,42 @@ fn task_card(task: &Task) -> Value {
         "error": task.error,
         "createdAt": task.created_at,
         "updatedAt": task.updated_at,
+        // 二/三/四/五期字段（旧账无这些键，前端全按可选消费）。
+        "retryAt": task.retry_at,
+        "retryCount": task.retry_count,
+        "hasOutputSchema": task.output_schema.is_some(),
+        "structuredOutput": task.structured_output,
+        "checkpointBase": task.checkpoint_base_commit,
     })
+}
+
+/// 启动时从事件账本重建唤醒收件箱（第二期「可信」）：`delivered_at=None`
+/// 的终态事件重新入队——收件箱原先只在内存里，重启即丢，「没被答的回执」
+/// 从此跨重启存活。目标会话按 staff 档案优先、任务 chief 会话兜底
+/// （与 finalize_task 同一口径）。剪过的任务（事件已随账本修剪）自然跳过。
+pub fn rebuild_wake_inbox_from_ledger() {
+    let mut queued = 0usize;
+    for event in store::undelivered_wake_events() {
+        let Some(task) = store::find_task(&event.task_id) else { continue };
+        let target = task
+            .staff_id
+            .as_deref()
+            .and_then(staff_commands::profile_for_staff_id)
+            .map(|profile| profile.session_id)
+            .filter(|session| !session.is_empty())
+            .unwrap_or_else(|| task.chief_session_id.clone());
+        queue_wake(&target, event);
+        queued += 1;
+    }
+    if queued > 0 {
+        crate::debug_log::append(
+            "chief",
+            "info",
+            "",
+            "wake inbox rebuilt from ledger",
+            Some(&format!("{queued} undelivered events re-queued")),
+        );
+    }
 }
 
 fn task_belongs_to_session(task: &Task, chief_session_id: &str) -> bool {
@@ -806,6 +946,12 @@ pub fn chief_task_start(app: &AppHandle, chief_session_id: &str, args: &Value) -
         error: None,
         telegram_message_id: None,
         artifacts: Vec::new(),
+        retry_at: None,
+        retry_count: 0,
+        output_schema: None,
+        structured_output: None,
+        checkpoint_base_commit: None,
+        checkpoint_repo_root: None,
     };
     enum ReserveOutcome {
         Existing(Task),
@@ -966,7 +1112,7 @@ pub fn chief_task_start(app: &AppHandle, chief_session_id: &str, args: &Value) -
 }
 
 #[allow(clippy::too_many_arguments)]
-fn spawn_and_watch_worker(
+pub(crate) fn spawn_and_watch_worker(
     app: &AppHandle,
     chief_session_id: &str,
     task_id: &str,
@@ -994,6 +1140,10 @@ fn spawn_and_watch_worker(
             Some(_) => Some(("project_blocked", "项目授权已禁用，任务未启动。")),
             None => Some(("project_not_allowed", "项目授权已移除，任务未启动。")),
         },
+        // AI 派活（普通会话，staff_id=None）：没有员工档案可查，也没有
+        // 员工级的暂停/项目闸——能力天花板在 delegate_task 入口已经定死
+        // （项目=父会话项目、并发上限 2），这里直接放行。
+        None if preview.staff_id.is_none() => None,
         None => Some(("staff_missing", "员工档案不存在，任务未启动。")),
     };
     if let Some((reason, note)) = blocked {
@@ -1026,14 +1176,82 @@ fn spawn_and_watch_worker(
         Err(_) => return,
     };
 
-    // 2) 建 worker 会话行（普通项目会话，顶层可见）
+    // 1.5) 存档点（第五期「可反悔」）：真实 git 项目在 worker 动手前记
+    //      HEAD——「回滚此任务」= 把任务期间动过的 tracked 文件恢复到该
+    //      提交（untracked 不碰、如实报告）。Chat 虚拟项目没有仓库，跳过。
+    //      git 子进程跑在后台线程（storage 锁纪律：锁外跑）。
+    if task.project_id != crate::app_paths::CHAT_PROJECT_ID {
+        let repo_root = with_storage(app, |storage| {
+            storage
+                .project_by_id(&task.project_id)
+                .ok()
+                .map(|project| project.root_path)
+        });
+        if let Some(root) = repo_root {
+            let mut cmd = std::process::Command::new("git");
+            cmd.arg("-C").arg(&root).args(["rev-parse", "HEAD"]);
+            let base = crate::process_util::output_with_kill_timeout(
+                cmd,
+                std::time::Duration::from_secs(10),
+            )
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| {
+                String::from_utf8(output.stdout)
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            });
+            if let Some(commit) = base {
+                let _ = store::with_tasks(|tasks| {
+                    if let Some(task) = tasks.iter_mut().find(|t| t.task_id == task_id) {
+                        task.checkpoint_repo_root = Some(root);
+                        task.checkpoint_base_commit = Some(commit);
+                    }
+                    Ok(())
+                });
+            }
+        }
+    }
+
+    // 2) 建 worker 会话行（普通项目会话，顶层可见）。staff 任务沿用
+    //    chief-worker；AI 派活（staff_id=None）用 agent-worker——侧栏角标、
+    //    挂起豁免、tee 回填都按来源家族区分。Chat 虚拟项目的父会话派活时
+    //    worker 也落 Chat 库，cwd 跟父会话（不是进程 current_dir）。
+    let is_staff_task = task.staff_id.is_some();
+    let worker_origin = if is_staff_task { "chief-worker" } else { "agent-worker" };
+    let worker_label = format!(
+        "{}（{}）",
+        task.title,
+        if is_staff_task { "Chief 任务" } else { "AI 派活" }
+    );
     let worker = match with_storage(app, |storage| {
-        storage.create_session_with_origin(
-            &task.project_id,
-            task.agent_id.clone(),
-            format!("{}（Chief 任务）", task.title),
-            Some("chief-worker"),
-        )
+        if task.project_id == crate::app_paths::CHAT_PROJECT_ID {
+            let parent_cwd = storage
+                .find_session(chief_session_id)
+                .ok()
+                .flatten()
+                .map(|session| session.cwd)
+                .unwrap_or_default();
+            let cwd = if parent_cwd.is_empty() {
+                crate::app_paths::current_dir()?
+            } else {
+                parent_cwd
+            };
+            storage.create_chat_session(
+                task.agent_id.clone(),
+                worker_label,
+                &cwd,
+                Some(worker_origin),
+            )
+        } else {
+            storage.create_session_with_origin(
+                &task.project_id,
+                task.agent_id.clone(),
+                worker_label,
+                Some(worker_origin),
+            )
+        }
     }) {
         Ok(session) => session,
         Err(error) => {
@@ -1111,6 +1329,14 @@ fn spawn_and_watch_worker(
              最终交付 diff 与测试结果。",
         );
     }
+    // （第四期）交付模板：有 output_schema 的任务教 worker 用 submit 工具交结果。
+    if let Some(schema) = task.output_schema.as_ref() {
+        prompt.push_str(&format!(
+            "\n\n[交付方式] 完成时调用工具 marionette_submit_output 提交最终结果，\
+             内容必须是符合以下 JSON Schema 的 JSON 对象：\n{schema}\n\
+             先组织好完整结果再提交；提交被拒会带回原因，修正后可重新提交。"
+        ));
+    }
     match runner::send_prompt(app, &worker.id, &prompt) {
         Ok(_) => {}
         Err(error) => {
@@ -1148,12 +1374,14 @@ fn spawn_and_watch_worker(
         Some(format!("worker 已启动（{} · {}）", task.agent_id, worker.id)),
     );
     let _ = store::append_events(&[running_event]);
+    crate::delegation::emit_delegate_ui_event(app, &task, "task.started");
 
     // 6) 观测直到空闲 / 超时 / 被取消
     watch_worker_loop(app, chief_session_id, task_id, &worker.id, max_minutes);
 }
 
-/// 观测循环（spawn 与 resume 共用）：任务状态驱动退出 + 超时停止 + 空闲收尾。
+/// 观测循环（spawn 与 resume 共用）：任务状态驱动退出 + 超时停止 +
+/// 卡死解药 + 额度重试排程 + 回合结局分类收尾（二/三期）。
 fn watch_worker_loop(
     app: &AppHandle,
     chief_session_id: &str,
@@ -1171,6 +1399,19 @@ fn watch_worker_loop(
             | TaskStatus::Interrupted => return, // 终态已由相应路径落账
             _ => {}
         }
+        // 额度/限流重试排程（第三期）：到点就重发目标（worker 死了先复活），
+        // 没到点就安静等——这期间不算超时也不算卡死（它在午休，不在干活）。
+        if let Some(retry_at) = current.retry_at {
+            if now_ms() < retry_at {
+                std::thread::sleep(std::time::Duration::from_millis(2000));
+                continue;
+            }
+            if !reissue_goal_for_retry(app, task_id, worker_session_id) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2000));
+            continue;
+        }
         if std::time::Instant::now() >= deadline {
             runner::cancel_turn(app, worker_session_id);
             let _ = runner::wait_turn_idle_checked(app, worker_session_id, 10_000, || true);
@@ -1178,14 +1419,241 @@ fn watch_worker_loop(
                 Some("timeout"), Some(&format!("任务超过 {max_minutes} 分钟上限，已停止。")));
             return;
         }
+        // 卡死解药（第三期）：Running 且 STALL_MS 无任何事件 → 先 cancel；
+        // 宽限期仍无声 → 判 stalled（Mingle「20 分钟无声且有人在等」梯子的
+        // 前两级，第三级换进程留给 resume/重派）。
+        if current.status == TaskStatus::Running
+            && now_ms().saturating_sub(current.last_event_at) > WORKER_STALL_MS
+        {
+            runner::cancel_turn(app, worker_session_id);
+            let recovered = runner::wait_turn_idle_checked(
+                app,
+                worker_session_id,
+                WORKER_STALL_GRACE_MS,
+                || true,
+            );
+            let still_stale = store::find_task(task_id)
+                .map(|task| now_ms().saturating_sub(task.last_event_at) > WORKER_STALL_MS)
+                .unwrap_or(true);
+            if !recovered || still_stale {
+                let _ = finalize_task(
+                    app,
+                    chief_session_id,
+                    task_id,
+                    TaskStatus::Failed,
+                    Some("stalled"),
+                    Some("worker 连续 20 分钟无任何事件，已中止（卡死解药）。可重新派活或 resume。"),
+                );
+                return;
+            }
+        }
         if runner::turn_idle_now(app, worker_session_id) {
-            // 空闲即认为回合完成；worker 正文从 tee 折出。
-            // 给 tee writer 一点收尾时间再读回。
+            // 沉默不证明完成（orca 铁律）：turn_idle 对缺席进程也返回 true，
+            // 进程没了 = 失败，绝不猜「完成」。活着才走空闲收尾。
+            if !runner::session_alive(app, worker_session_id) {
+                let _ = finalize_task(
+                    app,
+                    chief_session_id,
+                    task_id,
+                    TaskStatus::Failed,
+                    Some("worker_gone"),
+                    Some("worker 进程退出，任务未完成——可重新派活。"),
+                );
+                return;
+            }
+            // 空闲即回合结束；worker 正文从 tee 折出。给 tee writer 一点
+            // 收尾时间再读回。收尾前先分类：额度类瞬时失败 → 排队重试，
+            // 本循环继续守；其余走终态收尾。
             std::thread::sleep(std::time::Duration::from_millis(600));
-            finish_completed(app, chief_session_id, task_id, worker_session_id);
+            if handle_turn_end(app, chief_session_id, task_id, worker_session_id) {
+                continue;
+            }
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(2000));
+    }
+}
+
+/// 回合结束的分类收尾。返回 true = 已排程自动重试，watch 循环继续守；
+/// false = 终态已落（或收尾失败），循环退出。
+fn handle_turn_end(
+    app: &AppHandle,
+    chief_session_id: &str,
+    task_id: &str,
+    worker_session_id: &str,
+) -> bool {
+    let events = tee::replay(worker_session_id)
+        .map(|(events, _)| events)
+        .unwrap_or_default();
+    let (stop_reason, error_text) = last_turn_outcome(&events);
+    match classify_turn_failure(stop_reason.as_deref(), error_text.as_deref()) {
+        TurnFailureClass::Transient => {
+            let scheduled = store::with_tasks(|tasks| {
+                let Some(task) = tasks.iter_mut().find(|t| t.task_id == task_id) else {
+                    return Ok(None);
+                };
+                if task.status.is_terminal() {
+                    return Ok(None);
+                }
+                let attempt = task.retry_count.saturating_add(1) as usize;
+                let Some(delay) = RETRY_BACKOFF_MS.get(attempt.saturating_sub(1)) else {
+                    return Ok(Some(0u64));
+                };
+                task.retry_count = attempt as u32;
+                task.retry_at = Some(now_ms() + delay);
+                task.waiting_reason = Some("auto_retry".to_string());
+                task.updated_at = now_ms();
+                task.last_event_at = now_ms();
+                task.last_summary = Some(format!(
+                    "额度/限流受限，{} 分钟后自动重试（第 {attempt} 次）：{}",
+                    delay / 60_000,
+                    error_text.as_deref().unwrap_or("（无错误详情）")
+                ));
+                Ok(Some(*delay))
+            })
+            .unwrap_or(None);
+            match scheduled {
+                Some(0) => {
+                    let _ = finalize_task(
+                        app,
+                        chief_session_id,
+                        task_id,
+                        TaskStatus::Failed,
+                        Some("retry_exhausted"),
+                        Some("额度/限流重试已达上限（3 次），任务停止。"),
+                    );
+                    let _ = store::with_tasks(|tasks| {
+                        if let Some(task) = tasks.iter_mut().find(|t| t.task_id == task_id) {
+                            task.retry_at = None;
+                            task.waiting_reason = None;
+                        }
+                        Ok(())
+                    });
+                    false
+                }
+                Some(_) => {
+                    let task = store::find_task(task_id);
+                    if let Some(task) = task {
+                        let event = emit_event(&task, "task.progress", task.status, task.last_summary.clone());
+                        let _ = store::append_events(&[event]);
+                        crate::delegation::emit_delegate_ui_event(app, &task, "task.progress");
+                    }
+                    true
+                }
+                None => false,
+            }
+        }
+        TurnFailureClass::Refused => {
+            let _ = finalize_task(
+                app,
+                chief_session_id,
+                task_id,
+                TaskStatus::Failed,
+                Some("refused"),
+                Some("worker 拒绝执行该任务（refusal）。"),
+            );
+            false
+        }
+        TurnFailureClass::TurnError => {
+            let _ = finalize_task(
+                app,
+                chief_session_id,
+                task_id,
+                TaskStatus::Failed,
+                Some("turn_error"),
+                Some(&format!(
+                    "worker 回合报错：{}",
+                    error_text.as_deref().unwrap_or("（无错误详情）")
+                )),
+            );
+            false
+        }
+        TurnFailureClass::Clean => {
+            finish_completed(app, chief_session_id, task_id, worker_session_id);
+            false
+        }
+    }
+}
+
+/// 重试到点：清标记、复活 worker（进程没了就 ensure_session）、重发目标。
+/// 返回 false = 任务已不在可重试状态（被取消/账本写失败），watch 退出。
+fn reissue_goal_for_retry(app: &AppHandle, task_id: &str, worker_session_id: &str) -> bool {
+    let Some(task) = store::find_task(task_id) else { return false };
+    if task.status.is_terminal() {
+        return false;
+    }
+    if !runner::session_alive(app, worker_session_id) {
+        let cwd = with_storage(app, |storage| {
+            storage
+                .find_session(worker_session_id)
+                .ok()
+                .flatten()
+                .map(|session| session.cwd)
+        });
+        let Some(cwd) = cwd else { return false };
+        if runner::ensure_session(app, worker_session_id, &task.agent_id, &cwd).is_err() {
+            let _ = finalize_task(
+                app,
+                &task.chief_session_id,
+                task_id,
+                TaskStatus::Failed,
+                Some("retry_respawn_failed"),
+                Some("额度重试时 worker 无法复活（Agent 启动失败）。"),
+            );
+            return false;
+        }
+    }
+    let cleared = store::with_tasks(|tasks| {
+        let Some(task) = tasks.iter_mut().find(|t| t.task_id == task_id) else {
+            return Ok(false);
+        };
+        if task.retry_at.is_none() || task.status.is_terminal() {
+            return Ok(false);
+        }
+        task.retry_at = None;
+        task.waiting_reason = None;
+        task.status = TaskStatus::Running;
+        task.turn_count = task.turn_count.saturating_add(1);
+        task.updated_at = now_ms();
+        task.last_event_at = now_ms();
+        task.last_summary = Some(format!("额度重试（第 {} 次）已重新下发目标。", task.retry_count));
+        Ok(true)
+    })
+    .unwrap_or(false);
+    if !cleared {
+        return false;
+    }
+    let mut prompt = format!("[HOST EVENT: task.retry]\n额度窗口已恢复，继续之前的任务「{}」。原始目标：\n{}\n", task.title, task.goal);
+    if let Some(schema) = task.output_schema.as_ref() {
+        prompt.push_str(&format!(
+            "\n交付方式不变：完成时用 marionette_submit_output 提交符合此 Schema 的对象：\n{schema}\n"
+        ));
+    }
+    match runner::send_prompt(app, worker_session_id, &prompt) {
+        Ok(_) => {
+            let task = store::find_task(task_id);
+            if let Some(task) = task {
+                let event = emit_event(&task, "task.progress", task.status, task.last_summary.clone());
+                let _ = store::append_events(&[event]);
+            }
+            true
+        }
+        Err(error) => {
+            // 发不出去：回退成等待重试（下一个退避档），不烧掉这次机会。
+            let _ = store::with_tasks(|tasks| {
+                if let Some(task) = tasks.iter_mut().find(|t| t.task_id == task_id) {
+                    let delay = RETRY_BACKOFF_MS
+                        .get(task.retry_count.saturating_sub(1) as usize)
+                        .copied()
+                        .unwrap_or(30 * 60 * 1000);
+                    task.retry_at = Some(now_ms() + delay);
+                    task.waiting_reason = Some("auto_retry".to_string());
+                    task.error = Some(error);
+                }
+                Ok(())
+            });
+            true
+        }
     }
 }
 
@@ -1216,6 +1684,19 @@ fn finish_completed(app: &AppHandle, chief_session_id: &str, task_id: &str, work
         .map(|(events, _)| events)
         .unwrap_or_default();
     let (summary, tool_calls, files, tool_failures) = summarize_worker_events(&events);
+    // 零产出检查（第二期「可信」）：既没有 assistant 正文也没有任何工具
+    // 调用的「完成」不叫完成——如实标失败，不猜。
+    if summary.is_none() && tool_calls == 0 {
+        let _ = finalize_task(
+            app,
+            chief_session_id,
+            task_id,
+            TaskStatus::Failed,
+            Some("no_output"),
+            Some("worker 回合结束但没有任何产出（无正文、无工具调用）——不猜完成。"),
+        );
+        return;
+    }
     let mut artifacts = Vec::new();
     if !files.is_empty() {
         artifacts.push(format!("触及文件：{}", files.join(", ")));
@@ -1248,7 +1729,7 @@ fn finish_completed(app: &AppHandle, chief_session_id: &str, task_id: &str, work
 }
 
 /// 任务收尾：状态转移 + 事件 + Telegram 卡 + 唤醒收件箱。幂等（终态跳过）。
-fn finalize_task(
+pub(crate) fn finalize_task(
     app: &AppHandle,
     chief_session_id: &str,
     task_id: &str,
@@ -1293,6 +1774,7 @@ fn finalize_task(
     store::append_events(&[event.clone()])?;
     record_task_journal(&task, status);
     notify(&task, kind, task.last_summary.as_deref());
+    crate::delegation::emit_delegate_ui_event(app, &task, kind);
     let wake_session_id = task
         .staff_id
         .as_deref()
@@ -1531,6 +2013,15 @@ pub fn chief_task_status(chief_session_id: &str, task_id: &str) -> Value {
     };
     if !task_belongs_to_session(&task, chief_session_id) {
         return envelope_reject("task_not_owned", "任务不属于这个 Chief。");
+    }
+    // 「读取即送达」（第二期，T3 语义）：查过就算看过，不再补唤醒。
+    let undelivered: Vec<String> = store::load_events_for_task(task_id)
+        .iter()
+        .filter(|event| event.delivered_at.is_none())
+        .map(|event| event.event_id.clone())
+        .collect();
+    if !undelivered.is_empty() {
+        let _ = store::mark_events_delivered(&undelivered, now_ms());
     }
     envelope_ok(json!({
         "task": task_card(&task),
@@ -2015,19 +2506,20 @@ pub fn chief_stop_all(app: &AppHandle) -> Result<usize, String> {
     // cannot continue after `/stop`.
     crate::computer::revoke_all();
     let config = store::load_config();
-    if staff_sessions.is_empty() {
-        if registry.legacy_migration_completed_at > 0 {
-            return Ok(0);
+    if staff_sessions.is_empty() && registry.legacy_migration_completed_at == 0 {
+        // 旧单 Chief 兼容：没有员工档案时补旧 chief 会话进过滤集。
+        // 注意不能在这里提前 return——AI 派活任务（staff_id=None）不受
+        // 员工有无影响，急停必须照扫（2026-11 第一期拆门引入）。
+        if let Some(chief_sid) = config.chief_session_id.clone() {
+            staff_sessions.insert(chief_sid);
         }
-        let Some(chief_sid) = config.chief_session_id.clone() else {
-            return Ok(0);
-        };
-        staff_sessions.insert(chief_sid);
     }
     let active: Vec<Task> = store::load_tasks()
         .into_iter()
         .filter(|task| {
-            staff_sessions.contains(&task.chief_session_id)
+            // AI 派活的任务（staff_id=None）同样归急停管——全局停就是全局停。
+            task.staff_id.is_none()
+                || staff_sessions.contains(&task.chief_session_id)
                 || task
                     .staff_id
                     .as_ref()
@@ -2370,8 +2862,79 @@ pub fn ensure_heartbeat(app: AppHandle) {
     });
 }
 
+/// AI 派活的唤醒投递（第一期最小版）：WAKE_INBOX 里凡是不属于员工/旧
+/// Chief 的会话（即普通父会话），进程**已经在跑**且空闲时合并 ≤5 条事件
+/// 成一条 host prompt 发出。刻意**不懒启动**普通会话——用户没打开的会话
+/// 不自动唤起花钱；进程不在就留着，用户重新打开的下一个 tick 自然补投。
+fn flush_agent_wake_inboxes(app: &AppHandle, covered: &HashSet<String>) {
+    let keys: Vec<String> = match wake_inbox().lock() {
+        Ok(inbox) => inbox.keys().cloned().collect(),
+        Err(_) => return,
+    };
+    for sid in keys {
+        if covered.contains(&sid) || is_chief_session(&sid) {
+            continue;
+        }
+        if !runner::session_alive(app, &sid) || !runner::turn_idle_now(app, &sid) {
+            continue;
+        }
+        let batch = wake_inbox().lock().ok().and_then(|mut inbox| {
+            let entry = inbox.get_mut(&sid)?;
+            if entry.is_empty() {
+                return None;
+            }
+            Some(entry.drain(..5.min(entry.len())).collect::<Vec<_>>())
+        });
+        let Some(events) = batch else { continue };
+        let text = events
+            .iter()
+            .map(|event| host_event_text(event, store::find_task(&event.task_id).as_ref()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        match runner::send_prompt(app, &sid, &text) {
+            Ok(_) => {
+                let ids = events.iter().map(|event| event.event_id.clone()).collect::<Vec<_>>();
+                let _ = store::mark_events_delivered(&ids, now_ms());
+            }
+            Err(error) => {
+                if let Ok(mut inbox) = wake_inbox().lock() {
+                    let entry = inbox.entry(sid.clone()).or_default();
+                    for event in events.into_iter().rev() {
+                        entry.insert(0, event);
+                    }
+                }
+                crate::debug_log::append(
+                    "delegation",
+                    "warn",
+                    &sid,
+                    "agent wake flush failed; events re-queued",
+                    Some(&error),
+                );
+            }
+        }
+    }
+}
+
 fn heartbeat_tick(app: &AppHandle) {
     let staff_registry = staff::load();
+    // AI 派活的唤醒 flush 放最前（覆盖下方所有早退路径）：员工会话由
+    // heartbeat_staff 自己 flush、旧单 Chief 会话由旧路径处理，两类都进
+    // 排除集合，避免双投。
+    {
+        let mut covered: HashSet<String> = staff_registry
+            .staff
+            .iter()
+            .map(|profile| profile.session_id.clone())
+            .filter(|session| !session.is_empty())
+            .collect();
+        let config = store::load_config();
+        if staff_registry.staff.is_empty() && config.mode == RemoteWorkMode::Chief {
+            if let Some(legacy_chief) = config.chief_session_id {
+                covered.insert(legacy_chief);
+            }
+        }
+        flush_agent_wake_inboxes(app, &covered);
+    }
     if !staff_registry.staff.is_empty() {
         let now = now_ms();
         let _ = super::commitments::mark_due(now);

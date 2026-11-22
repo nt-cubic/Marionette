@@ -221,6 +221,78 @@ pub fn mark_interrupted_on_startup() -> Result<Vec<Task>, String> {
     Ok(marked)
 }
 
+/// 任务账本修剪（启动时跑一次，bootstrap_chief 调用）。AI 派活把账本开放
+/// 给所有会话后，tasks.json / events.jsonl 不再只属于少数员工任务——
+/// 没有修剪就是两个永远增长的文件（每 2s 心跳都在整档重写 tasks.json，
+/// 越大越贵）。规则：非终态任务全留；终态任务保留 `retention` 窗口内、
+/// 且总量不超过 400；事件按同一时间窗丢弃。返回被修剪的任务数。
+pub fn prune_ledger(retention_ms: u64) -> Result<usize, String> {
+    let _guard = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let now = now_ms();
+    let tasks = load_tasks();
+    let mut kept: Vec<Task> = Vec::with_capacity(tasks.len());
+    let mut dropped = 0usize;
+    for task in tasks {
+        if !task.status.is_terminal()
+            || now.saturating_sub(task.updated_at) <= retention_ms
+        {
+            kept.push(task);
+        } else {
+            dropped += 1;
+        }
+    }
+    // 硬顶：终态任务超过 400 个时按 updated_at 新→旧保留（非终态不占额）。
+    const MAX_TERMINAL: usize = 400;
+    let terminal_count = kept.iter().filter(|t| t.status.is_terminal()).count();
+    if terminal_count > MAX_TERMINAL {
+        let mut terminal_sorted: Vec<Task> = kept
+            .iter()
+            .filter(|t| t.status.is_terminal())
+            .cloned()
+            .collect();
+        terminal_sorted.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        let survivors: std::collections::HashSet<String> = terminal_sorted
+            .into_iter()
+            .take(MAX_TERMINAL)
+            .map(|t| t.task_id)
+            .collect();
+        let before = kept.len();
+        kept.retain(|t| !t.status.is_terminal() || survivors.contains(&t.task_id));
+        dropped += before - kept.len();
+    }
+    if dropped > 0 {
+        save_tasks(&kept)?;
+    }
+    // 事件按同一时间窗修剪（重写文件；启动期单线程，无并发写者）。
+    if let Ok(path) = events_path() {
+        if path.exists() {
+            if let Ok(file) = std::fs::File::open(&path) {
+                let mut body = String::new();
+                let mut dropped_lines = 0usize;
+                for line in BufReader::new(file).lines().map_while(Result::ok) {
+                    match serde_json::from_str::<TaskEvent>(&line) {
+                        Ok(event) if now.saturating_sub(event.ts) <= retention_ms => {
+                            body.push_str(&line);
+                            body.push('\n');
+                        }
+                        Ok(_) => dropped_lines += 1,
+                        // 坏行直接丢弃（append-only JSONL 里的已知姿态）。
+                        Err(_) => dropped_lines += 1,
+                    }
+                }
+                if dropped_lines > 0 {
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent)
+                            .map_err(|e| format!("chief: mkdir failed: {e}"))?;
+                    }
+                    crate::storage::write_atomic(&path, &body)?;
+                }
+            }
+        }
+    }
+    Ok(dropped)
+}
+
 // ── events ledger ─────────────────────────────────────────────────────────
 
 /// 追加事件行（单写者锁内）。事件先落盘再谈副作用（ccteam 硬原则 3）。
@@ -248,6 +320,43 @@ pub fn append_events(events: &[TaskEvent]) -> Result<(), String> {
         .map_err(|e| format!("chief: append events failed: {e}"))?;
     file.flush().ok();
     Ok(())
+}
+
+/// 未送达的唤醒类事件（终态 + delivered_at=None）——启动时重建唤醒收件箱
+/// 用（broker::rebuild_wake_inbox_from_ledger）。坏行跳过；上限 500 条
+/// （prune 之后正常余量远小于此，防手改巨档拖慢启动）。
+pub fn undelivered_wake_events() -> Vec<TaskEvent> {
+    const WAKE_KINDS: &[&str] = &[
+        "task.completed",
+        "task.failed",
+        "task.cancelled",
+        "task.interrupted",
+    ];
+    const CAP: usize = 500;
+    let path = match events_path() {
+        Ok(path) => path,
+        Err(_) => return Vec::new(),
+    };
+    let Ok(file) = std::fs::File::open(&path) else {
+        return Vec::new();
+    };
+    let mut events = Vec::new();
+    for line in BufReader::new(file).lines() {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<TaskEvent>(&line) else {
+            continue;
+        };
+        if value.delivered_at.is_none() && WAKE_KINDS.contains(&value.kind.as_str()) {
+            events.push(value);
+            if events.len() >= CAP {
+                break;
+            }
+        }
+    }
+    events
 }
 
 /// 读某任务的事件（坏行跳过）。
@@ -510,6 +619,44 @@ mod tests {
         let path = config_path().unwrap();
         assert!(path.starts_with(&root));
         assert!(path.ends_with("config.json"));
+        set_root_override_for_tests(None);
+        drop(guard);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn prune_keeps_active_and_fresh_terminal_tasks() {
+        let guard = lock_sandbox();
+        let root = sandbox("prune");
+        set_root_override_for_tests(Some(root.clone()));
+        let mut running = sample_task("project_a");
+        running.status = TaskStatus::Running;
+        let mut fresh_done = sample_task("project_b");
+        fresh_done.status = TaskStatus::Completed;
+        // 更新时间由 now_ms() 填充——落盘前把 fresh_done 拨到现在、
+        // stale_done 拨到 40 天前。
+        let mut stale_done = sample_task("project_c");
+        stale_done.status = TaskStatus::Cancelled;
+        stale_done.updated_at = now_ms() - 40 * 24 * 3600 * 1000;
+        let stale_id = stale_done.task_id.clone();
+        let fresh_id = fresh_done.task_id.clone();
+        with_tasks(|tasks| {
+            tasks.extend([running.clone(), fresh_done, stale_done]);
+            Ok(())
+        })
+        .unwrap();
+        let dropped = prune_ledger(30 * 24 * 3600 * 1000).unwrap();
+        assert_eq!(dropped, 1);
+        let remaining: Vec<String> = load_tasks()
+            .into_iter()
+            .map(|t| t.task_id)
+            .collect();
+        assert!(!remaining.contains(&stale_id), "40 天前的终态任务应被修剪");
+        assert!(remaining.contains(&fresh_id), "新完成的终态任务保留");
+        assert!(
+            remaining.contains(&running.task_id),
+            "非终态任务无论多旧都保留"
+        );
         set_root_override_for_tests(None);
         drop(guard);
         std::fs::remove_dir_all(&root).ok();

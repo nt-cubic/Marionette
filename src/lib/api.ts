@@ -1616,6 +1616,21 @@ export type TelegramInbound = {
 
 export const TELEGRAM_INBOUND_EVENT = "telegram-remote-inbound";
 
+/**
+ * `marionette-delegate-event` 事件载荷（AI 派活的任务卡，Rust broker →
+ * 前端父会话 rail）。只有 staffId 为空（普通会话派）的任务会发这条事件；
+ * chief 任务走员工面板。kind 对齐任务账本的 TaskEvent kind。
+ */
+export type DelegateTaskEventPayload = {
+  /** 父会话（发起派活的会话）。 */
+  sessionId: string;
+  /** task.started / task.completed / task.failed / task.cancelled / task.interrupted */
+  kind: string;
+  task: ChiefTask;
+};
+
+export const DELEGATE_TASK_EVENT = "marionette-delegate-event";
+
 /** `telegram-remote-command` 事件载荷（Rust 命令面 → 前端执行 → result 回执）。 */
 export type TelegramCommand =
   | {
@@ -1912,6 +1927,12 @@ export interface ChiefTask {
   lastSummary?: string | null;
   stopReason?: string | null;
   error?: string | null;
+  /** 二至五期字段（旧账没有这些键，全按可选消费）。 */
+  retryAt?: number | null;
+  retryCount?: number;
+  hasOutputSchema?: boolean;
+  structuredOutput?: unknown | null;
+  checkpointBase?: string | null;
 }
 
 export type StaffAutonomy = "manual" | "assisted" | "autonomous";
@@ -2007,6 +2028,25 @@ export async function chiefConfigLoad(): Promise<ChiefConfig | null> {
 export async function chiefConfigSave(config: ChiefConfig): Promise<ChiefConfig | null> {
   if (!isTauriRuntime()) return null;
   return await invoke<ChiefConfig>("chief_config_save", { config });
+}
+
+/** AI 派活工具面开关（默认开；Ctrl K 面板切换，进程级不落盘）。 */
+export async function delegationEnabled(): Promise<boolean> {
+  return invoke("delegation_enabled");
+}
+
+export async function setDelegationEnabled(enabled: boolean): Promise<void> {
+  await invoke("set_delegation_enabled", { enabled });
+}
+
+/** 回滚一个 AI 派活的任务（tracked 文件恢复到任务开始时的存档点）。 */
+export async function delegationRollbackTask(taskId: string): Promise<{
+  restored: string[];
+  untracked: number;
+  base: string;
+  note: string;
+}> {
+  return invoke("delegation_rollback_task", { taskId });
 }
 
 export async function chiefTasksListAll(): Promise<ChiefTask[]> {
