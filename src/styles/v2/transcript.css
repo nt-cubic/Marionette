@@ -465,7 +465,7 @@
   padding-top: 4px;
   border-top: 1px solid var(--hairline);
   font-size: 11px;
-  color: var(--text-faint);
+  color: var(--text-muted);
 }
 
 .ask-card__other input {
@@ -479,16 +479,16 @@
 
 .ask-card__other input:focus {
   outline: none;
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  background: color-mix(in srgb, var(--accent) 6%, var(--panel-soft));
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
-/* 「补充」 is secondary to 「其他」: no second hairline, a little air, muted label. */
+/* 「补充」 is secondary to 「其他」: no second hairline, a little air, fainter label. */
 .ask-card__note {
   margin-top: 4px;
   padding-top: 0;
   border-top: 0;
-  color: var(--text-muted);
+  color: var(--text-faint);
 }
 
 /* A hovered selected row used to turn panel-soft and read *less* selected than
@@ -510,8 +510,8 @@
 
 .ask-card__mark--check.is-on::after {
   content: "";
-  width: 6px;
-  height: 3px;
+  width: 7px;
+  height: 4px;
   border-left: 1.5px solid var(--bg);
   border-bottom: 1.5px solid var(--bg);
   transform: translateY(-1px) rotate(-45deg);
