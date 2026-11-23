@@ -9,6 +9,7 @@
 | 症状 | 根因 | 修法 |
 |---|---|---|
 | USAGE 面板没有智谱行，脚注报 `No balance probe for 'zhipuai-coding-plan'` | provider_usage 只认 `glm\|zhipu\|bigmodel`，opencode 登录写的键名是 `zhipuai-coding-plan` | 已修：glm 条目别名 + match 分支补齐 |
+| 右栏额度没有 OpenCode Go 整行（之前有过） | 引擎注册的是 `opencode` 通用 Zen 钥匙，额度端点回 `403 EntitlementError: OpenCode Go subscription required`；Go 套餐钥匙在 `opencode-go` 条目里 | 已修：同一 preset 多把钥匙时名字对得上的优先（见 §2） |
 | 引擎额度里 OpenCode Go 报 `401 api_key_expired`，但 TUI 能对话 | 引擎注册的是 **auth.json 里的死钥匙**；真凭据已迁 `opencode.db` | 已修：凭据读取叠库（见 §1） |
 | 共享模型组在 DSH 里整个消失 | `cordis.patch.yml` 的 marionette 路由在上次 spawn 时因引擎 Absent 被移除 | 引擎运行时**新开一个 DSH 会话**即重建 |
 | opencode 新出的免费模型别的 agent 里看不到 | 三层缓存 + 只在 spawn 时重建（见 §5），非 bug | 新开会话；magpie 目录最长 24h 跟进 |
@@ -62,6 +63,18 @@ preset `opencode-go`（`preset_for_opencode_provider`），而 `registration_pla
 直接 200。最终规则：排序上移到凭据源层（库 active=1 → 库 NULL → auth.json 兜底），
 `reference_keys_as_presets` 保持保序不定序。教训：**对「哪把钥匙该赢」下结论前，
 先把每把候选钥匙单独打到真实端点上对照错误消息**。
+
+**2026-11-23 补记：两把都是活钥匙，但套餐归属不同。** 用户重登 opencode 后，
+`auth.json` 的 `opencode`（通用 Zen 钥匙）与 `opencode-go`（Go 套餐钥匙）都在，通用钥匙
+额度端点回 `403 {"type":"error","error":{"type":"EntitlementError","message":"OpenCode Go
+subscription required."}}`，套餐钥匙回 200（rolling/weekly/monthly）。两把都映射到 preset
+`opencode-go`，而 `opencode` 名字排序靠前抢了槽——右栏整行静默消失（额度读不到不出行）。
+现行规则：`reference_keys_as_presets` 在**同一 preset 内部**把名字对得上的 provider id
+排在别名前面（`opencode-go` 先于 `opencode`），同名组内仍保留凭据源顺序（活钥匙在
+auth 兜底前）；preset 之间的相对顺序不变。回归：
+`cargo test --bin marionette reference_keys_as_presets`（含大小写与顺序反转用例）。
+诊断记录：`GET https://opencode.ai/zen/go/v1/usage` 的 403 与 401 不同——**403 是钥匙
+没套餐、401 才是钥匙死**，别把两者混成「钥匙过期」。
 
 ## 3. OpenCode Go 额度端点的规矩
 

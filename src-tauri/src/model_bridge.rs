@@ -214,15 +214,39 @@ pub fn preset_for_opencode_provider(provider_id: &str) -> Option<&'static Provid
 /// 引擎注册用的归一化：opencode 扫描出的 (provider-id, key) → (preset-id, key)。
 /// 未映射的 provider（anthropic / openai / zai …）过滤掉 —— 它们在
 /// `magpie_provider_for_preset` 里同样无门（registry 计划只吃 preset id）。
-/// 不定序：同 preset 多把 key 时谁先谁后由凭据源层决定（opencode.db 的活
-/// 钥匙排在 auth.json 旧条目前，见 credentials::merge_opencode_key_sources），
-/// registration_plan 先到先得。
+///
+/// 顺序：preset 之间保持首次出现顺序（registration_plan 先到先得只管跨
+/// preset）；同一 preset 内部**名字对得上的 provider id 优先**，同名组内保留
+/// 来源层顺序（opencode.db 的活钥匙排在 auth.json 旧条目前，见
+/// credentials::merge_opencode_key_sources）。没有这条，`opencode`（通用 Zen
+/// 钥匙）和 `opencode-go`（Go 套餐钥匙）都映射到 preset `opencode-go`，通用
+/// 钥匙常因名字排序靠前抢槽——2026-11-23 实测：Go 钥匙查额度 200、通用钥匙
+/// 403 EntitlementError，右栏 OpenCode 整行消失。
 pub fn reference_keys_as_presets(keys: Vec<(String, String)>) -> Vec<(String, String)> {
-    keys.into_iter()
+    let mut mapped: Vec<(String, String, bool)> = keys
+        .into_iter()
         .filter_map(|(provider, key)| {
             let preset = preset_for_opencode_provider(&provider)?;
-            Some((preset.id.to_string(), key))
+            let exact = provider.trim().eq_ignore_ascii_case(preset.id);
+            Some((preset.id.to_string(), key, exact))
         })
+        .collect();
+    let mut preset_order: Vec<String> = Vec::new();
+    for (preset, _, _) in &mapped {
+        if !preset_order.iter().any(|seen| seen == preset) {
+            preset_order.push(preset.clone());
+        }
+    }
+    mapped.sort_by_key(|(preset, _, exact)| {
+        let slot = preset_order
+            .iter()
+            .position(|seen| seen == preset)
+            .unwrap_or(usize::MAX);
+        (slot, !*exact)
+    });
+    mapped
+        .into_iter()
+        .map(|(preset, key, _)| (preset, key))
         .collect()
 }
 
@@ -5215,7 +5239,7 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
     }
 
     /// 引擎注册的引用归一化：原始 provider id → preset id；未映射过滤；
-    /// 保序（同 preset 多 key 的优先序由凭据源层保证，见
+    /// preset 间保序（同 preset 多 key 的来源层优先序见
     /// credentials::tests::merge_prefers_db_live_keys）。
     #[test]
     fn reference_keys_as_presets_normalizes_for_registration() {
@@ -5235,6 +5259,53 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
             ]
         );
         assert!(reference_keys_as_presets(Vec::new()).is_empty());
+    }
+
+    /// 同一个 preset 被两把钥匙抢时，名字对得上的先占槽：`opencode`（通用
+    /// Zen 钥匙）与 `opencode-go`（Go 套餐钥匙）都映射到 preset `opencode-go`，
+    /// 通用钥匙先到会注册进引擎——它没有 Go 套餐，额度端点回 403
+    /// EntitlementError，右栏整行消失（2026-11-23 实机）。
+    #[test]
+    fn reference_keys_as_presets_prefers_exact_provider_name() {
+        let out = reference_keys_as_presets(vec![
+            ("opencode".to_string(), "zen-key".to_string()),
+            ("opencode-go".to_string(), "go-key".to_string()),
+        ]);
+        assert_eq!(
+            out,
+            vec![
+                ("opencode-go".to_string(), "go-key".to_string()),
+                ("opencode-go".to_string(), "zen-key".to_string()),
+            ]
+        );
+        // 来源层顺序反过来、大小写不同也一样（名字匹配不区分大小写）。
+        let out = reference_keys_as_presets(vec![
+            ("OPENCODE".to_string(), "zen-key".to_string()),
+            ("OpenCode-Go".to_string(), "go-key".to_string()),
+        ]);
+        assert_eq!(
+            out,
+            vec![
+                ("opencode-go".to_string(), "go-key".to_string()),
+                ("opencode-go".to_string(), "zen-key".to_string()),
+            ]
+        );
+        // 别的 preset 的相对顺序不动（glm 先出现仍排前）。
+        let out = reference_keys_as_presets(vec![
+            ("zhipuai-coding-plan".to_string(), "glm-key".to_string()),
+            ("opencode".to_string(), "zen-key".to_string()),
+            ("opencode-go".to_string(), "go-key".to_string()),
+            ("deepseek".to_string(), "ds-key".to_string()),
+        ]);
+        assert_eq!(
+            out,
+            vec![
+                ("glm".to_string(), "glm-key".to_string()),
+                ("opencode-go".to_string(), "go-key".to_string()),
+                ("opencode-go".to_string(), "zen-key".to_string()),
+                ("deepseek".to_string(), "ds-key".to_string()),
+            ]
+        );
     }
 
     /// 目录测试的串行锁：动态缓存与端点覆盖表是**模块级**全局（fn 内的
