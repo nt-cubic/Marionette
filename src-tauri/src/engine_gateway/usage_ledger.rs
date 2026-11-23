@@ -506,6 +506,9 @@ impl UsageTap {
     }
 
     /// 收口落账（幂等）：millis = 回合起点→此刻，四桶按 Option 如实。
+    /// 亚毫秒的完整回合记 1 而不是 0——回合真的发生了，0 会让用量页的
+    /// 生成时长与 `millis > 0` 断言看起来像漏记（2026-11-23：编译布局
+    /// 变化就能把假 vendor 的快路径推过这条线，别再留这个脆弱面）。
     pub(crate) fn finish(&mut self) {
         if self.done {
             return;
@@ -517,7 +520,7 @@ impl UsageTap {
             agent: self.agent.into(),
             provider: std::mem::take(&mut self.provider),
             model: std::mem::take(&mut self.model),
-            millis: self.began.elapsed().as_millis() as u64,
+            millis: self.began.elapsed().as_millis().max(1) as u64,
             status: self.status,
             rejected: false,
             session: std::mem::take(&mut self.session),
