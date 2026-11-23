@@ -21,6 +21,11 @@
 //!   `rich_message.markdown` 收原生 markdown——标题/表格/代码块由客户端渲染，
 //!   单条 32K 字符不截断），失败退 MarkdownV2 分片、再退纯文本；计划卡片
 //!   同走 MarkdownV2 + 纯文本兜底。
+//! - **回复带图**（2026-11-23）：回合内 agent 读到 / 产生的图——image 块
+//!   （含只有 base64 的截图）、工具 `locations`/`rawInput` 指向的图片文件、
+//!   末段正文里的 markdown 图片——在正文之后逐张发出（≤4 张取最近）。
+//!   收集口径对齐前端工具卡预览（`extract_update_images`），发送见
+//!   `send_image`；同样受「内容预览」偏好门控。
 //! - **会话详情视图**：置顶面板同一个 message_id 上的「第二页」——点 📄
 //!   原地切换成该会话的状态 + 最近一条回复（markdown 渲染），⬅ 返回总控；
 //!   正文受「内容预览」偏好门控（关 = 内容不出本机）。
@@ -85,6 +90,19 @@ const REPLY_CHUNK_CHARS: usize = 3300;
 const MD_CHUNK_ESCAPED_LIMIT: usize = 3400;
 /// 正文最多拆几条消息（主消息 + 续片），再长就截断提示回电脑看。
 const REPLY_MAX_MESSAGES: usize = 4;
+/// 回合推送随附的图片上限（保本轮最近的几张，更早的丢）。
+const MAX_TURN_IMAGES: usize = 4;
+/// 用户消息里自带的图（键）记几个：回合末的随附图要把它们排除——
+/// 用户刚附的截图不必再推回他手机。
+const MAX_USER_IMAGE_KEYS: usize = 16;
+/// 单张图的上传上限（Telegram `sendPhoto` 的 10 MB 硬顶；超了不发）。
+const IMAGE_MAX_BYTES: u64 = 10 * 1024 * 1024;
+/// 图片上传超时：multipart 上传 + 服务端转码比发一条文字慢得多。
+const IMAGE_HTTP_TIMEOUT_SECS: u64 = 60;
+/// caption 上限 1024 字符（按 UTF-16 码元计），留安全边界。
+const CAPTION_MAX_UNITS: usize = 1000;
+/// `send_image` 的「文件不存在」哨兵：这种图连电脑上也看不着，静默跳过。
+const IMAGE_NOT_FOUND: &str = "image file not found";
 /// bot 发出的消息 id → 会话 的路由表上限（FIFO 淘汰）。
 const MAX_ROUTES: usize = 256;
 /// 内联按钮回调上下文上限（过期按钮按下会得到「已处理/已过期」）。
@@ -318,6 +336,10 @@ struct SessionTrack {
     last_activity: Instant,
     /// 本回合 agent 文本（只要最后一段：工具调用是消息边界）。
     text: TurnText,
+    /// 本回合 agent 读到 / 产生的图（去重，保最近 MAX_TURN_IMAGES 张）。
+    images: VecDeque<TurnImage>,
+    /// 本回合用户消息里自带的图（键）：回合末的随附图要排除它们。
+    user_image_keys: Vec<String>,
     /// 最近一条已完成回合的正文缓存（面板「会话详情」视图用）。
     last_reply: String,
     /// 挂起未解的权限/ask/plan 请求数（>0 = 会话在等你）。
@@ -366,16 +388,142 @@ impl TurnText {
     }
 }
 
+/// 一张要随回合推送发出去的图（来源见 `extract_update_images`）。
+#[derive(Clone, PartialEq)]
+enum TurnImage {
+    /// 本地文件（可能是相对路径——发送前按会话 cwd 补全）。
+    Local(PathBuf),
+    /// 远程图片（http/https）：交给 Telegram 服务端自己拉。
+    Remote(String),
+    /// 内联 base64：image 块只有 `data` 没有 uri（截图 / Read 图片的
+    /// 常见形态）。存 base64 原文——解码放到发送线程，事件收口只搬字符串。
+    Bytes { data: String, mime: String },
+}
+
+impl std::fmt::Debug for TurnImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // 图片本体不进 Debug：一张截图的 base64 能把日志刷满。
+            TurnImage::Local(path) => f.debug_tuple("Local").field(path).finish(),
+            TurnImage::Remote(url) => f.debug_tuple("Remote").field(url).finish(),
+            TurnImage::Bytes { data, mime } => f
+                .debug_struct("Bytes")
+                .field("data", &format_args!("{} b64 chars", data.len()))
+                .field("mime", mime)
+                .finish(),
+        }
+    }
+}
+
+impl TurnImage {
+    /// 去重键。本地路径与前端 `imagePathKey` 同口径（分隔符归一 + 小写）。
+    fn key(&self) -> String {
+        match self {
+            TurnImage::Local(path) => {
+                format!("local:{}", path_key(&path.to_string_lossy()))
+            }
+            TurnImage::Remote(url) => format!("remote:{}", url.trim().to_lowercase()),
+            TurnImage::Bytes { data, .. } => {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                data.trim().hash(&mut hasher);
+                format!("bytes:{}", hasher.finish())
+            }
+        }
+    }
+
+    /// 相对路径按会话 cwd 补全（与前端 `resolveToolImagePath` 同口径）。
+    fn resolve(self, cwd: Option<&str>) -> Self {
+        match self {
+            TurnImage::Local(path) => TurnImage::Local(PathBuf::from(resolve_tool_image_path(
+                &path.to_string_lossy(),
+                cwd,
+            ))),
+            other => other,
+        }
+    }
+
+    /// 日志 / 失败提示里的一行描述（不含图片本体）。进 dev.log，所以不本地化。
+    fn describe(&self) -> String {
+        match self {
+            TurnImage::Local(path) => path.to_string_lossy().into_owned(),
+            TurnImage::Remote(url) => url.clone(),
+            TurnImage::Bytes { data, mime } => {
+                format!("inline {mime} · {} KB", data.len() / 1024)
+            }
+        }
+    }
+
+    /// 首选的发送方法（Bot API 方法名，multipart 字段名）。
+    fn send_as(&self) -> (&'static str, &'static str) {
+        let kind = match self {
+            TurnImage::Local(path) => path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(str::to_ascii_lowercase),
+            TurnImage::Remote(url) => image_extension(url),
+            TurnImage::Bytes { mime, .. } => Some(mime_subtype(mime)),
+        };
+        send_method_for(kind.as_deref())
+    }
+}
+
 impl SessionTrack {
     fn new() -> Self {
         Self {
             turn_started: None,
             last_activity: Instant::now(),
             text: TurnText::default(),
+            images: VecDeque::new(),
+            user_image_keys: Vec::new(),
             last_reply: String::new(),
             waiting: 0,
             probe_turn: false,
         }
+    }
+
+    /// 新回合开始：清掉上一轮的随附图，记下用户这次自带的图。
+    /// `fresh=false`（同一条用户消息的后续 chunk）：只并入新图键，
+    /// 不清——用户附件可能分散在多个 chunk 里。
+    fn begin_turn(&mut self, user_images: &[TurnImage], fresh: bool) {
+        if fresh {
+            self.images.clear();
+            self.user_image_keys.clear();
+        }
+        for image in user_images {
+            let key = image.key();
+            if self.user_image_keys.len() < MAX_USER_IMAGE_KEYS
+                && !self.user_image_keys.contains(&key)
+            {
+                self.user_image_keys.push(key);
+            }
+        }
+    }
+
+    /// 收进本轮的随附图（同一张只留一次；满了丢最旧的）。
+    fn push_images(&mut self, images: Vec<TurnImage>) {
+        for image in images {
+            let key = image.key();
+            if self.images.iter().any(|existing| existing.key() == key) {
+                continue;
+            }
+            self.images.push_back(image);
+            while self.images.len() > MAX_TURN_IMAGES {
+                self.images.pop_front();
+            }
+        }
+    }
+
+    /// 取本轮随附图（用户自带的那几张不算），取完清空。用户图键留到下个
+    /// 回合才清——同一回合的取图可能不止一次（agent re-entry 的封段），
+    /// 排除口径必须全程有效。
+    fn take_images(&mut self) -> Vec<TurnImage> {
+        let taken = std::mem::take(&mut self.images);
+        let user_keys = &self.user_image_keys;
+        taken
+            .into_iter()
+            .filter(|image| !user_keys.contains(&image.key()))
+            .collect()
     }
 
     fn state(&self) -> DashState {
@@ -673,6 +821,13 @@ enum Outbound {
         body: String,
         footer: String,
         session_id: String,
+    },
+    /// 回合推送的随附图片：排在同回合的 TurnReply 之后，逐张发出。
+    Photos {
+        session_id: String,
+        images: Vec<TurnImage>,
+        /// 首张（发出成功的那张）的 caption。
+        caption: String,
     },
     /// 前端 performSend 的回执。
     Ack {
@@ -1024,10 +1179,12 @@ fn observe_session_update(slot: &'static Telegram, session_id: &str, data: &Valu
         if kind.contains("user_message") {
             inner.last_user_session = Some(session_id.to_string());
             let track = inner.track(session_id);
-            turn_started_now = track.turn_started.is_none() || track.waiting == 0;
+            let fresh = track.turn_started.is_none() || track.waiting == 0;
+            turn_started_now = fresh;
             track.turn_started = Some(Instant::now());
             track.last_activity = Instant::now();
             track.text.reset();
+            track.begin_turn(&extract_update_images(update), fresh);
         } else {
             // 回合起点锚定在「首个活动」上：Grok 实测从不回显
             // user_message_chunk（2026-10-18 探针），只认用户回显的话这些
@@ -1043,7 +1200,8 @@ fn observe_session_update(slot: &'static Telegram, session_id: &str, data: &Valu
                 || kind.contains("plan");
             if is_agent_text {
                 let text = extract_update_text(update);
-                if !text.is_empty() {
+                let images = extract_update_images(update);
+                if !text.is_empty() || !images.is_empty() {
                     let mut started = false;
                     {
                         let track = inner.track(session_id);
@@ -1052,15 +1210,18 @@ fn observe_session_update(slot: &'static Telegram, session_id: &str, data: &Valu
                             started = true;
                         }
                         track.last_activity = Instant::now();
-                        // Web bridges can revise the complete HTML/Markdown reply.
-                        // Keep one current reply for forwarding.
-                        if update.pointer("/_meta/marionette.webReply").is_some()
-                            || update.pointer("/_meta/marionette.textSnapshot")
-                                .and_then(Value::as_bool) == Some(true)
-                        {
-                            track.text.current.clear();
+                        if !text.is_empty() {
+                            // Web bridges can revise the complete HTML/Markdown reply.
+                            // Keep one current reply for forwarding.
+                            if update.pointer("/_meta/marionette.webReply").is_some()
+                                || update.pointer("/_meta/marionette.textSnapshot")
+                                    .and_then(Value::as_bool) == Some(true)
+                            {
+                                track.text.current.clear();
+                            }
+                            track.text.append(&text);
                         }
-                        track.text.append(&text);
+                        track.push_images(images);
                     }
                     if started {
                         turn_started_now = true;
@@ -1081,6 +1242,7 @@ fn observe_session_update(slot: &'static Telegram, session_id: &str, data: &Valu
                         started = true;
                     }
                     track.last_activity = Instant::now();
+                    track.push_images(extract_update_images(update));
                 }
                 if started {
                     turn_started_now = true;
@@ -1109,7 +1271,7 @@ fn observe_turn_complete(
 
     // 无论推不推，回合状态都就地清掉（缓冲不跨回合泄漏）。
     // tail 与 started 解耦：agent 不回显 user_message 时（Grok 实测）也照样带正文。
-    let (elapsed, tail, probe) = slot
+    let (elapsed, tail, turn_images, probe) = slot
         .inner
         .lock()
         .ok()
@@ -1118,14 +1280,20 @@ fn observe_turn_complete(
             let started = track.turn_started.take();
             let probe = std::mem::take(&mut track.probe_turn);
             let tail = track.text.take_final();
+            let turn_images = track.take_images();
             // 详情视图的正文缓存：不受通知偏好影响，只在门控下出本机。
             // 探针（/status 卡片）不是回复，别拿它顶掉真实正文。
             if !probe && !tail.trim().is_empty() {
                 track.last_reply = clip(tail.trim(), LAST_REPLY_CHARS);
             }
-            Some((started.map(|t| t.elapsed()), tail, probe))
+            Some((
+                started.map(|t| t.elapsed()),
+                tail,
+                turn_images,
+                probe,
+            ))
         })
-        .unwrap_or((None, String::new(), false));
+        .unwrap_or((None, String::new(), Vec::new(), false));
     // 回合结束 = 总控面板的可见状态变化（含 cancelled：推送降噪，面板照刷）。
     schedule_dashboard(slot);
     // 探针回合（额度刷新的 /status、/usage）：面板照刷，推送全免。
@@ -1186,6 +1354,34 @@ fn observe_turn_complete(
             None,
         );
     }
+    // 随附图跟在正文后面。「内容预览」关 = 内容不出本机，图同理。
+    if live.prefs.content_preview {
+        enqueue_turn_photos(session_id, &label, turn_images, body);
+    }
+}
+
+/// 回合随附图入队：本轮收集到的图 + 末段正文里引用的 markdown 图片，
+/// 保最近 MAX_TURN_IMAGES 张。排在同回合的正文之后（队列保序）。
+fn enqueue_turn_photos(session_id: &str, label: &str, mut images: Vec<TurnImage>, body: &str) {
+    for src in markdown_image_srcs(body) {
+        // 正文里的引用只是路径 / 链接：按前端同一张扩展名表认图。
+        if let Some(image) = turn_image_from_src(&src, true) {
+            let key = image.key();
+            if !images.iter().any(|existing| existing.key() == key) {
+                images.push(image);
+            }
+        }
+    }
+    let keep_from = images.len().saturating_sub(MAX_TURN_IMAGES);
+    let images = images.split_off(keep_from);
+    if images.is_empty() {
+        return;
+    }
+    try_enqueue(Outbound::Photos {
+        session_id: session_id.to_string(),
+        images,
+        caption: format!("[{label}] 📷"),
+    });
 }
 
 /// 回合回复推送：整段正文交给发送线程——优先官方 Rich Messages 直投
@@ -1943,6 +2139,7 @@ fn sender_loop(slot: &'static Telegram, rx: std::sync::mpsc::Receiver<Outbound>)
         let mut is_dashboard = false;
         let mut dashboard_rich = false;
         let mut turn: Option<(String, String, String, String)> = None;
+        let mut photos: Option<(String, Vec<TurnImage>, String)> = None;
         match job {
             Outbound::Send {
                 text,
@@ -1972,6 +2169,15 @@ fn sender_loop(slot: &'static Telegram, rx: std::sync::mpsc::Receiver<Outbound>)
                 session_id,
             } => {
                 turn = Some((header, body, footer, session_id));
+                job_text = String::new();
+                job_keyboard = Vec::new();
+            }
+            Outbound::Photos {
+                session_id,
+                images,
+                caption,
+            } => {
+                photos = Some((session_id, images, caption));
                 job_text = String::new();
                 job_keyboard = Vec::new();
             }
@@ -2007,6 +2213,11 @@ fn sender_loop(slot: &'static Telegram, rx: std::sync::mpsc::Receiver<Outbound>)
 
         if let Some((header, body, footer, session_id)) = turn {
             deliver_turn_reply(slot, &live, &header, &body, &footer, &session_id);
+            continue;
+        }
+
+        if let Some((session_id, images, caption)) = photos {
+            deliver_turn_photos(slot, &live, &session_id, images, &caption);
             continue;
         }
 
@@ -2120,6 +2331,293 @@ fn deliver_turn_reply(
             Err(error) => log("warn", "turn reply chunk failed", Some(&error)),
         }
     }
+}
+
+/// 回合随附图的投递：逐张发出，每张的 message_id 记进路由表（在 Telegram
+/// 里回复这张图 = 路由到该会话）。正文已经在前面落地，所以图片失败不重试
+/// ——投递的底线是文字，图是增益；发不出去的几张合并成一条提示。
+fn deliver_turn_photos(
+    slot: &'static Telegram,
+    live: &LiveConfig,
+    session_id: &str,
+    images: Vec<TurnImage>,
+    caption: &str,
+) {
+    // 相对路径按会话 cwd 补全；只在真有相对路径时才去读一次 storage
+    // （锁序红线：这里没有持有 inner 锁）。
+    let is_relative = |image: &TurnImage| {
+        matches!(image, TurnImage::Local(path) if path.is_relative())
+    };
+    let cwd = if images.iter().any(is_relative) {
+        session_cwd(session_id)
+    } else {
+        None
+    };
+    let mut caption_pending = true;
+    let mut failed: Vec<(String, String)> = Vec::new();
+    for image in images {
+        if is_relative(&image) && cwd.is_none() {
+            // 不知道相对谁，别拿进程自己的 cwd 去碰运气。
+            log(
+                "info",
+                "turn image skipped — relative path without a session cwd",
+                Some(&image.describe()),
+            );
+            continue;
+        }
+        let image = image.resolve(cwd.as_deref());
+        let this_caption = if caption_pending { caption } else { "" };
+        match send_image(live, &image, this_caption) {
+            Ok(message_id) => {
+                caption_pending = false;
+                if let Some(message_id) = message_id {
+                    if let Ok(mut inner) = slot.inner.lock() {
+                        inner.remember_route(message_id, session_id);
+                    }
+                }
+            }
+            Err(error) if error == IMAGE_NOT_FOUND => {
+                log(
+                    "info",
+                    "turn image skipped — file not found",
+                    Some(&image.describe()),
+                );
+            }
+            Err(error) => {
+                log("warn", "turn image send failed", Some(&error));
+                // 传输层失败（断网 / 超时）：后面的图和提示大概率同样发不
+                // 出去，别让每张都干等一个超时、把发送线程拖住。
+                if tg_error_status(&error).is_none() {
+                    return;
+                }
+                failed.push((image.describe(), clip(&error, 120)));
+            }
+        }
+    }
+    if failed.is_empty() {
+        return;
+    }
+    let mut note = crate::ts!(
+        "📷 {} 张图没能发到 Telegram：\n",
+        "📷 {} image(s) could not be sent to Telegram:\n",
+        failed.len()
+    );
+    for (desc, reason) in &failed {
+        note.push_str("• ");
+        note.push_str(&clip(desc, 200));
+        note.push_str(&crate::ts!("（", " ("));
+        note.push_str(reason);
+        note.push_str(&crate::ts!("）\n", ")\n"));
+    }
+    enqueue_send(live, note, Vec::new(), Some(session_id.to_string()), None);
+}
+
+/// Bot API 方法与对应的 multipart / 请求字段名。
+const SEND_PHOTO: (&str, &str) = ("sendPhoto", "photo");
+const SEND_ANIMATION: (&str, &str) = ("sendAnimation", "animation");
+const SEND_DOCUMENT: (&str, &str) = ("sendDocument", "document");
+
+/// 发一张图。照片走 `sendPhoto`、GIF 走 `sendAnimation`、其余按文件
+/// `sendDocument`（见 `TurnImage::send_as`）；Telegram 拒收时退成文件再试
+/// 一次——它只认 jpg / png / webp 是照片，bmp / svg / 超大尺寸的走这条路。
+fn send_image(live: &LiveConfig, image: &TurnImage, caption: &str) -> Result<Option<i64>, String> {
+    let Some(token) = live.token.as_deref() else {
+        return Err("no token".to_string());
+    };
+    let Some(chat_id) = live.chat_id else {
+        return Err("no paired chat".to_string());
+    };
+    let caption = clip_utf16(caption.trim(), CAPTION_MAX_UNITS);
+    let timeout = Duration::from_secs(IMAGE_HTTP_TIMEOUT_SECS);
+    let attempts: Vec<(&str, &str)> = match image.send_as() {
+        SEND_DOCUMENT => vec![SEND_DOCUMENT],
+        primary => vec![primary, SEND_DOCUMENT],
+    };
+    match image {
+        TurnImage::Remote(url) => {
+            let mut last_error = String::new();
+            for &(method, field) in &attempts {
+                let mut body = json!({ "chat_id": chat_id });
+                body[field] = json!(url);
+                if !caption.is_empty() {
+                    body["caption"] = json!(caption);
+                }
+                match tg_call(token, method, &body, timeout) {
+                    Ok(value) => return Ok(message_id_of(&value)),
+                    Err(error) if rejected(&error) => last_error = error,
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(last_error)
+        }
+        TurnImage::Local(path) => {
+            let metadata = std::fs::metadata(path).map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    IMAGE_NOT_FOUND.to_string()
+                } else {
+                    format!("{}: {error}", path.display())
+                }
+            })?;
+            if metadata.len() > IMAGE_MAX_BYTES {
+                return Err(too_large(metadata.len()));
+            }
+            let data = std::fs::read(path)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            upload_image(
+                token,
+                chat_id,
+                &Upload {
+                    data: &data,
+                    filename: upload_filename(path),
+                    mime: mime_for_path(path),
+                },
+                &caption,
+                &attempts,
+                timeout,
+            )
+        }
+        TurnImage::Bytes { data, mime } => {
+            let bytes = decode_base64_image(data)?;
+            upload_image(
+                token,
+                chat_id,
+                &Upload {
+                    data: &bytes,
+                    filename: format!("image.{}", mime_extension(mime)),
+                    mime: mime.trim().to_string(),
+                },
+                &caption,
+                &attempts,
+                timeout,
+            )
+        }
+    }
+}
+
+/// 要上传的一份字节。
+struct Upload<'a> {
+    data: &'a [u8],
+    filename: String,
+    mime: String,
+}
+
+/// 同一份字节按 attempts 依次上传（被拒就换下一种发法）。
+fn upload_image(
+    token: &str,
+    chat_id: i64,
+    upload: &Upload<'_>,
+    caption: &str,
+    attempts: &[(&str, &str)],
+    timeout: Duration,
+) -> Result<Option<i64>, String> {
+    let mut fields: Vec<(&str, String)> = vec![("chat_id", chat_id.to_string())];
+    if !caption.is_empty() {
+        fields.push(("caption", caption.to_string()));
+    }
+    let mut last_error = String::new();
+    for &(method, field) in attempts {
+        let file = UploadFile {
+            field,
+            filename: upload.filename.clone(),
+            mime: upload.mime.clone(),
+            data: upload.data,
+        };
+        match tg_call_multipart(token, method, &fields, &file, timeout) {
+            Ok(value) => return Ok(message_id_of(&value)),
+            Err(error) if rejected(&error) => last_error = error,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error)
+}
+
+/// image 块的 base64 → 字节。先按长度估解码后大小，超限的不解码
+/// （别为一张发不出去的图白占内存）。
+fn decode_base64_image(data: &str) -> Result<Vec<u8>, String> {
+    use base64::{engine::general_purpose::STANDARD as B64, engine::general_purpose::STANDARD_NO_PAD as B64_NO_PAD, Engine};
+    let compact: String = data.chars().filter(|c| !c.is_whitespace()).collect();
+    let estimated = compact.len().saturating_mul(3) / 4;
+    if estimated as u64 > IMAGE_MAX_BYTES {
+        return Err(too_large(estimated as u64));
+    }
+    B64.decode(compact.as_bytes())
+        .or_else(|_| B64_NO_PAD.decode(compact.as_bytes()))
+        .map_err(|error| format!("invalid base64 image: {error}"))
+}
+
+fn too_large(bytes: u64) -> String {
+    let mb = bytes as f64 / (1024.0 * 1024.0);
+    format!("image is {mb:.1} MB, over the {} MB limit", IMAGE_MAX_BYTES / 1024 / 1024)
+}
+
+/// 上传用的文件名：只取文件名部分，去掉会让 Content-Disposition 头断行的字符。
+/// Telegram 靠扩展名辅助识别类型，所以后缀要留住。
+fn upload_filename(path: &Path) -> String {
+    let name: String = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+        .chars()
+        .map(|ch| {
+            if ch == '"' || ch == '\\' || ch.is_control() {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect();
+    if name.is_empty() {
+        "image".to_string()
+    } else {
+        name
+    }
+}
+
+fn mime_for_path(path: &Path) -> String {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("bmp") => "image/bmp",
+        Some("svg") => "image/svg+xml",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
+/// MIME 子型 → 文件扩展名（内联字节没有文件名，按类型补一个）。
+fn mime_extension(mime: &str) -> &'static str {
+    match mime_subtype(mime).as_str() {
+        "png" => "png",
+        "jpg" | "jpeg" => "jpg",
+        "gif" => "gif",
+        "webp" => "webp",
+        "bmp" => "bmp",
+        "svg" | "svg+xml" => "svg",
+        _ => "bin",
+    }
+}
+
+/// Telegram 明确拒收了这个文件（4xx；429 是限流，换发法也没用）。
+fn rejected(error: &str) -> bool {
+    matches!(tg_error_status(error), Some(code) if (400..500).contains(&code) && code != 429)
+}
+
+/// `HTTP 400 · …` 形态错误里的状态码；传输层失败 / 本地错误没有。
+fn tg_error_status(error: &str) -> Option<u16> {
+    let rest = error.strip_prefix("HTTP ")?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+fn message_id_of(value: &Value) -> Option<i64> {
+    value.pointer("/result/message_id").and_then(Value::as_i64)
 }
 
 /// Rich Messages 直投：`rich_message.markdown` 收原生 markdown。返回
@@ -3647,33 +4145,41 @@ fn tg_call(token: &str, method: &str, body: &Value, timeout: Duration) -> Result
     }
     let url = format!("{}/bot{token}/{method}", api_base());
     let agent = crate::http_client::agent_with_proxy()?;
-    let response = agent
-        .post(&url)
-        .timeout(timeout)
-        .send_json(body)
-        .map_err(|error| match error {
-            ureq::Error::Status(code, response) => {
-                // 错误体里的 description 是 400 的唯一线索（字段名、超长、
-                // markup 形状……），绝不能丢。
-                let desc = response
-                    .into_string()
-                    .ok()
-                    .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-                    .and_then(|value| {
-                        value
-                            .pointer("/description")
-                            .and_then(Value::as_str)
-                            .map(str::to_string)
-                    })
-                    .unwrap_or_default();
-                if desc.is_empty() {
-                    format!("HTTP {code} · {method}")
-                } else {
-                    format!("HTTP {code} · {method}: {desc}")
-                }
+    let response = agent.post(&url).timeout(timeout).send_json(body);
+    read_tg_response(method, response)
+}
+
+/// 统一解读 Bot API 应答：HTTP 层错误体里的 `description`、JSON 体里的
+/// `ok` 都在这一处变成 `HTTP <code> · <method>: <desc>` 形态的错误串。
+/// JSON 与 multipart 两条路共用——形状必须一致，`rejected` /
+/// `tg_error_status` 靠 `HTTP ` 前缀识别。
+fn read_tg_response(
+    method: &str,
+    response: Result<ureq::Response, ureq::Error>,
+) -> Result<Value, String> {
+    let response = response.map_err(|error| match error {
+        ureq::Error::Status(code, response) => {
+            // 错误体里的 description 是 400 的唯一线索（字段名、超长、
+            // markup 形状……），绝不能丢。
+            let desc = response
+                .into_string()
+                .ok()
+                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                .and_then(|value| {
+                    value
+                        .pointer("/description")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_default();
+            if desc.is_empty() {
+                format!("HTTP {code} · {method}")
+            } else {
+                format!("HTTP {code} · {method}: {desc}")
             }
-            other => sanitize_error(method, &other.to_string()),
-        })?;
+        }
+        other => sanitize_error(method, &other.to_string()),
+    })?;
     let status = response.status();
     let text = response
         .into_string()
@@ -3689,6 +4195,96 @@ fn tg_call(token: &str, method: &str, body: &Value, timeout: Duration) -> Result
             .unwrap_or("unknown error");
         Err(format!("HTTP {status} · {method}: {desc}"))
     }
+}
+
+/// multipart/form-data 里要上传的文件段（`field` 随发法变：photo /
+/// animation / document）。
+struct UploadFile<'a> {
+    field: &'a str,
+    filename: String,
+    mime: String,
+    data: &'a [u8],
+}
+
+/// multipart 上传（`sendPhoto` / `sendAnimation` / `sendDocument` 的文件体）。
+/// ureq 的 json 构建器发不了二进制，这里手拼 RFC 7578 的体——零新依赖。
+fn tg_call_multipart(
+    token: &str,
+    method: &str,
+    fields: &[(&str, String)],
+    file: &UploadFile<'_>,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let agent = crate::http_client::agent_with_proxy()?;
+    tg_call_multipart_via(&agent, &api_base(), token, method, fields, file, timeout)
+}
+
+/// 同上，但 agent 与 API base 由调用方给：单测用直连 agent 打回环假服务器，
+/// 不读用户的代理设置（`agent_with_proxy` 每次都读盘）。
+fn tg_call_multipart_via(
+    agent: &ureq::Agent,
+    base: &str,
+    token: &str,
+    method: &str,
+    fields: &[(&str, String)],
+    file: &UploadFile<'_>,
+    timeout: Duration,
+) -> Result<Value, String> {
+    if token.is_empty() {
+        return Err("no token".to_string());
+    }
+    let boundary = multipart_boundary();
+    let body = multipart_body(&boundary, fields, file);
+    let url = format!("{base}/bot{token}/{method}");
+    let response = agent
+        .post(&url)
+        .set(
+            "Content-Type",
+            &format!("multipart/form-data; boundary={boundary}"),
+        )
+        .timeout(timeout)
+        .send_bytes(&body);
+    read_tg_response(method, response)
+}
+
+/// 边界串：进程号 + 纳秒时间 + 调用序号。图片数据里撞上这一串的概率
+/// 当作零（Telegram 只按边界切，不校验唯一性）。
+fn multipart_boundary() -> String {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    format!(
+        "marionette-{:x}-{:x}{:08x}",
+        std::process::id(),
+        (nanos >> 32) as u64,
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// 拼一段 multipart/form-data（RFC 7578）：普通字段在前、文件段在后、
+/// 结尾边界收口。每段之间靠 `\r\n--边界\r\n` 分隔。
+fn multipart_body(boundary: &str, fields: &[(&str, String)], file: &UploadFile<'_>) -> Vec<u8> {
+    let mut body = Vec::new();
+    for (name, value) in fields {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\nContent-Type: {}\r\n\r\n",
+            file.field, file.filename, file.mime
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(file.data);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    body
 }
 
 /// `getMe`（保存设置时校验 token 用）。返回 bot 的 @用户名。
@@ -3882,6 +4478,584 @@ fn scalar_detail(value: &Value) -> String {
 }
 
 // ─── Markdown → Telegram MarkdownV2 ────────────────────────────────────────
+
+// ─── 图片（回合随附）───────────────────────────────────────────────────────
+
+/// 路径比较键（对齐前端 `samePath` / `imagePathKey`）：JSON 里转义过的双
+/// 反斜杠归一成单反斜杠，分隔符统一成 `/`，去首尾空白与尾部分隔符，小写。
+fn path_key(path: &str) -> String {
+    path.replace("\\\\", "\\")
+        .replace('\\', "/")
+        .trim()
+        .trim_end_matches('/')
+        .to_lowercase()
+}
+
+/// 路径（或 URL）的扩展名，小写；查询串 / 片段不算。
+fn image_extension(path: &str) -> Option<String> {
+    let bare = path.split(['?', '#']).next().unwrap_or("");
+    let base = bare.rsplit(['/', '\\']).next().unwrap_or("");
+    let dot = base.rfind('.')?;
+    let ext = base[dot + 1..].to_ascii_lowercase();
+    (!ext.is_empty() && ext.len() <= 8).then_some(ext)
+}
+
+/// 前端 `isImagePath` 同一张表：UI 会把哪些扩展名当图显示。
+fn is_image_path(path: &str) -> bool {
+    matches!(
+        image_extension(path).as_deref(),
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg")
+    )
+}
+
+/// MIME 的子型（`image/svg+xml` → `svg+xml`），小写。
+fn mime_subtype(mime: &str) -> String {
+    let full = mime.split(';').next().unwrap_or("").trim();
+    match full.rsplit_once('/') {
+        Some((_, subtype)) => subtype,
+        None => full,
+    }
+    .to_ascii_lowercase()
+}
+
+/// 按扩展名 / MIME 子型挑首选发法。没认出来的先按照片试——反正被拒会
+/// 退成文件；只有明确「不是照片」的类型才直接走文件。
+fn send_method_for(kind: Option<&str>) -> (&'static str, &'static str) {
+    match kind {
+        Some("gif") => SEND_ANIMATION,
+        // Telegram 照片只收 jpg/png/webp：其余图片类型按文件发更稳。
+        Some("bmp" | "svg" | "svg+xml" | "tiff" | "tif" | "avif" | "heic" | "ico" | "bin") => {
+            SEND_DOCUMENT
+        }
+        Some(_) | None => SEND_PHOTO,
+    }
+}
+
+/// 盘符路径前多出来的一个斜杠（`/D:/x` → `D:/x`）。
+fn normalize_windows_drive_path(path: &str) -> String {
+    let bytes = path.as_bytes();
+    let slashed_drive = bytes.len() >= 3
+        && bytes[0] == b'/'
+        && bytes[1].is_ascii_alphabetic()
+        && (bytes[2] == b':' || bytes[2] == b'\\');
+    if slashed_drive {
+        path[1..].to_string()
+    } else {
+        path.to_string()
+    }
+}
+
+/// 百分号解码（`a%20b.png` → `a b.png`）。解不出合法 UTF-8 的字节用替换
+/// 字符顶替，不报错——路径只是用来打开发送，不值得为它失败。
+fn percent_decode(text: &str) -> String {
+    if !text.contains('%') {
+        return text.to_string();
+    }
+    let bytes = text.as_bytes();
+    let hex = |byte: u8| (byte as char).to_digit(16);
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let mut decoded = None;
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let (Some(high), Some(low)) = (hex(bytes[index + 1]), hex(bytes[index + 2])) {
+                decoded = Some((high * 16 + low) as u8);
+            }
+        }
+        match decoded {
+            Some(byte) => {
+                out.push(byte);
+                index += 3;
+            }
+            None => {
+                out.push(bytes[index]);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn is_drive_authority(authority: &str) -> bool {
+    let bytes = authority.as_bytes();
+    bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+/// `file:///D:/x.png` / `file://localhost/C:/x` / `file://server/share/x`
+/// → 文件系统路径。对齐前端 `imageAttachments.ts::stripFileUri`：百分号
+/// 解码、盘符前的多余斜杠去掉、UNC 主机保留成 `//host/…`。
+fn strip_file_uri(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let is_file_uri = trimmed
+        .get(..5)
+        .is_some_and(|head| head.eq_ignore_ascii_case("file:"));
+    if !is_file_uri {
+        return normalize_windows_drive_path(trimmed);
+    }
+    let rest = &trimmed[5..];
+    let mut path = match rest.strip_prefix("//") {
+        Some(after_slashes) => match after_slashes.find('/') {
+            // `//host/rest`：主机是空的、localhost 或盘符 → 只是路径；其余是 UNC。
+            Some(at) => {
+                let (authority, tail) = (&after_slashes[..at], &after_slashes[at..]);
+                if is_drive_authority(authority) {
+                    format!("{authority}{tail}")
+                } else if authority.is_empty() || authority.eq_ignore_ascii_case("localhost") {
+                    tail.to_string()
+                } else {
+                    format!("//{authority}{tail}")
+                }
+            }
+            None => String::new(),
+        },
+        None => rest.to_string(),
+    };
+    path = percent_decode(&path);
+    // `file:///C|/x`：竖线写盘符的旧形态（`C|` → `C:`，后面的 `/` 保留）。
+    if let Some(drive) = path.strip_prefix('/') {
+        let bytes = drive.as_bytes();
+        if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b'|' {
+            path = format!("{}:{}", &drive[..1], &drive[2..]);
+        }
+    }
+    normalize_windows_drive_path(&path)
+}
+
+/// 相对路径按会话 cwd 补全（对齐前端 `resolveToolImagePath`）；绝对路径
+/// （盘符 / UNC / 前导 `/`）与拿不到 cwd 的原样返回。
+fn resolve_tool_image_path(path: &str, cwd: Option<&str>) -> String {
+    let value = normalize_windows_drive_path(path.trim());
+    let bytes = value.as_bytes();
+    let on_drive = bytes.len() >= 2
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && bytes
+            .get(2)
+            .is_some_and(|next| *next == b'/' || *next == b'\\');
+    if value.is_empty() || on_drive || value.starts_with("\\\\") || value.starts_with('/') {
+        return value;
+    }
+    let Some(base) = cwd.map(str::trim).filter(|base| !base.is_empty()) else {
+        return value;
+    };
+    let separator = if base.contains('\\') { '\\' } else { '/' };
+    // 只吃掉开头的 `./` / `.\`；`../` 要留着，交给文件系统解析。
+    let rest = value
+        .strip_prefix("./")
+        .or_else(|| value.strip_prefix(".\\"))
+        .unwrap_or(&value);
+    let rest = rest.trim_start_matches(['/', '\\']);
+    let rest = if separator == '\\' {
+        rest.replace('/', "\\")
+    } else {
+        rest.replace('\\', "/")
+    };
+    format!(
+        "{}{separator}{rest}",
+        base.trim_end_matches(['\\', '/'])
+    )
+}
+
+/// 一个图片引用 → 可发送的图。`require_image_ext`：本地路径必须带图片
+/// 扩展名——image 块自述是图可以免检，`locations` / 正文里的 markdown
+/// 引用只是一个路径，得按扩展名认。
+fn turn_image_from_src(raw: &str, require_image_ext: bool) -> Option<TurnImage> {
+    let trimmed = raw.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        return Some(TurnImage::Remote(trimmed.to_string()));
+    }
+    if lower.starts_with("data:") {
+        return image_from_data_url(&trimmed[5..]);
+    }
+    let path = strip_file_uri(trimmed);
+    if path.is_empty() || (require_image_ext && !is_image_path(&path)) {
+        return None;
+    }
+    Some(TurnImage::Local(PathBuf::from(path)))
+}
+
+/// `data:image/png;base64,…` → 内联字节。只认 base64——百分号编码的
+/// 那种形态没见过，不猜。
+fn image_from_data_url(url: &str) -> Option<TurnImage> {
+    let (header, payload) = url.split_once(',')?;
+    let is_base64 = header
+        .split(';')
+        .any(|part| part.trim().eq_ignore_ascii_case("base64"));
+    if !is_base64 {
+        return None;
+    }
+    let mime = header.split(';').next().unwrap_or("").trim();
+    let mime = if mime.is_empty() { "image/png" } else { mime };
+    image_from_base64(payload.trim(), mime)
+}
+
+/// base64 → 内联图，带体量闸：超限的图连 base64 都不留（十几 MB 的
+/// base64 很占内存，而它注定发不出去）。
+fn image_from_base64(data: &str, mime: &str) -> Option<TurnImage> {
+    let oversized = data.len().saturating_mul(3) / 4 > IMAGE_MAX_BYTES as usize;
+    (!data.is_empty() && !oversized).then(|| TurnImage::Bytes {
+        data: data.to_string(),
+        mime: mime.to_string(),
+    })
+}
+
+/// 一个 `session/update` 里的图，与前端工具卡预览同口径
+/// （`acpTranscript.ts` 的 `extractToolImageSrcs` / `collectToolImageSrcs`）：
+///
+/// - `content` 里嵌套的 image 块：`uri`→`url`→`path`→`filePath`→`file_path`
+///   取首个非空；都没有就取 `data`（base64）——截图 / Read 图片最常见的形态；
+/// - content 里没有图时，才收工具的 `locations[].path`（或单数 `location`）
+///   与 `rawInput` 的路径字段——只是路径，必须带图片扩展名才算。
+fn extract_update_images(update: &Value) -> Vec<TurnImage> {
+    let mut images: Vec<TurnImage> = Vec::new();
+    for field in ["content", "delta"] {
+        if let Some(node) = update.get(field) {
+            collect_image_blocks(node, &mut images);
+        }
+    }
+    // 工具路径只是兜底：Read 一张图会同时给出 base64 块和 file_path，
+    // 那是同一张，content 里已经有图就别重复收。
+    if images.is_empty() {
+        if let Some(path) = tool_image_path(update) {
+            if let Some(image) = turn_image_from_src(&path, true) {
+                images.push(image);
+            }
+        }
+    }
+    images
+}
+
+/// 递归找 image 块：数组逐项看；对象要么自己是 image 块，要么往它的
+/// `content` 里找（tool_result 包着内容数组）。
+fn collect_image_blocks(node: &Value, images: &mut Vec<TurnImage>) {
+    match node {
+        Value::Array(items) => {
+            for item in items {
+                collect_image_blocks(item, images);
+            }
+        }
+        Value::Object(block) => {
+            let is_image = block
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("image"));
+            if is_image {
+                if let Some(image) = image_block_to_turn_image(block) {
+                    let key = image.key();
+                    if !images.iter().any(|existing| existing.key() == key) {
+                        images.push(image);
+                    }
+                }
+            } else if let Some(content) = block.get("content") {
+                collect_image_blocks(content, images);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn image_block_to_turn_image(block: &serde_json::Map<String, Value>) -> Option<TurnImage> {
+    for key in ["uri", "url", "path", "filePath", "file_path"] {
+        let Some(raw) = block
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|raw| !raw.is_empty())
+        else {
+            continue;
+        };
+        if let Some(image) = turn_image_from_src(raw, false) {
+            return Some(image);
+        }
+    }
+    let data = block
+        .get("data")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("");
+    let mime = block
+        .get("mimeType")
+        .or_else(|| block.get("mime_type"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|mime| !mime.is_empty())
+        .unwrap_or("image/png");
+    image_from_base64(data, mime)
+}
+
+/// 工具在读写哪个文件：`locations[]`（或单数 `location`）优先，没有就
+/// 从 `rawInput` 里认路径（agent 没给 locations 时的兜底）。
+fn tool_image_path(update: &Value) -> Option<String> {
+    let mut first = None;
+    match update.get("locations").or_else(|| update.get("location")) {
+        Some(Value::Array(items)) => {
+            for item in items {
+                if let Some(path) = location_path(item) {
+                    first = Some(path);
+                    break;
+                }
+            }
+        }
+        Some(single) => first = location_path(single),
+        None => {}
+    }
+    first.or_else(|| {
+        update
+            .get("rawInput")
+            .or_else(|| update.get("raw_input"))
+            .and_then(path_from_raw_input)
+    })
+}
+
+fn location_path(entry: &Value) -> Option<String> {
+    let path = match entry {
+        Value::String(text) => text.trim(),
+        Value::Object(record) => record.get("path").and_then(Value::as_str)?.trim(),
+        _ => return None,
+    };
+    (!path.is_empty()).then(|| path.to_string())
+}
+
+/// `rawInput` 里的路径：JSON 字符串认 `path` / `filePath` / `file_path` /
+/// `uri` 键；裸字符串得长得像路径才算——绝不把一条 shell 命令当成路径。
+fn path_from_raw_input(raw: &Value) -> Option<String> {
+    match raw {
+        Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.starts_with('{') || trimmed.starts_with('[') {
+                let parsed = serde_json::from_str::<Value>(trimmed).ok()?;
+                return path_from_raw_input(&parsed);
+            }
+            let looks_like_path = trimmed.contains('/') || trimmed.contains('\\')
+                || (!trimmed.contains(char::is_whitespace) && has_file_extension(trimmed));
+            looks_like_path.then(|| trimmed.to_string())
+        }
+        Value::Object(record) => {
+            for key in ["path", "filePath", "file_path", "uri"] {
+                if let Some(value) = record
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    return Some(value.to_string());
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn has_file_extension(text: &str) -> bool {
+    let Some(dot) = text.rfind('.') else {
+        return false;
+    };
+    let ext = &text[dot + 1..];
+    !ext.is_empty()
+        && ext.len() <= 8
+        && ext
+            .chars()
+            .all(|ch| ch.is_alphanumeric() || ch == '_')
+}
+
+/// 回复正文里 markdown 图片的地址（`![alt](src)`），按出现顺序、不查重。
+/// 跳过围栏代码块与行内代码——教用户「图片语法这样写」的回复，不该真的
+/// 去发那张图。
+fn markdown_image_srcs(text: &str) -> Vec<String> {
+    let mut srcs = Vec::new();
+    let mut fence: Option<(char, usize)> = None;
+    for line in text.lines() {
+        match (fence_marker(line), fence) {
+            // 开栏。
+            (Some((marker, run)), None) => fence = Some((marker, run)),
+            // 闭合：同一种字符、不短于开栏、后面不带 info string。
+            (Some((marker, run)), Some((open_char, open_len)))
+                if marker == open_char && run >= open_len && line.trim_start()[run..].trim().is_empty() =>
+            {
+                fence = None;
+            }
+            // 栏内的一行（或长得像栏但不是的那行）：不看。
+            (Some(_), Some(_)) => {}
+            (None, None) => scan_inline_images(&mask_inline_code(line), &mut srcs),
+            (None, Some(_)) => {}
+        }
+    }
+    srcs
+}
+
+/// 行首的围栏（``` 或 ~~~，至少三个）：(字符, 个数)。
+fn fence_marker(line: &str) -> Option<(char, usize)> {
+    let trimmed = line.trim_start();
+    let first = trimmed.chars().next()?;
+    if first != '`' && first != '~' {
+        return None;
+    }
+    let run = trimmed.chars().take_while(|ch| *ch == first).count();
+    (run >= 3).then_some((first, run))
+}
+
+/// 把行内代码段（`…`）涂成空格——长度不变，只为了不扫到里面的 `![…]()`。
+fn mask_inline_code(line: &str) -> String {
+    if !line.contains('`') {
+        return line.to_string();
+    }
+    let chars: Vec<char> = line.chars().collect();
+    let mut masked = chars.clone();
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index] != '`' {
+            index += 1;
+            continue;
+        }
+        let open_start = index;
+        while index < chars.len() && chars[index] == '`' {
+            index += 1;
+        }
+        let ticks = index - open_start;
+        // 找下一个等长的反引号串；开串、内容、闭串一起涂掉。
+        let mut scan = index;
+        let mut close_end = None;
+        while scan < chars.len() {
+            if chars[scan] == '`' {
+                let run_start = scan;
+                while scan < chars.len() && chars[scan] == '`' {
+                    scan += 1;
+                }
+                if scan - run_start == ticks {
+                    close_end = Some(scan);
+                    break;
+                }
+            } else {
+                scan += 1;
+            }
+        }
+        match close_end {
+            Some(close_end) => {
+                masked[open_start..close_end].fill(' ');
+                index = close_end;
+            }
+            None => (),
+        }
+    }
+    masked.into_iter().collect()
+}
+
+/// 一行里的 `![alt](src)`：`alt` 里的方括号可以嵌套，`src` 可以用 `<…>`
+/// 包起来（带空格的路径）或后面跟一个 title。
+fn scan_inline_images(line: &str, srcs: &mut Vec<String>) {
+    let chars: Vec<char> = line.chars().collect();
+    let mut index = 0;
+    while index + 1 < chars.len() {
+        if chars[index] != '!' || chars[index + 1] != '[' {
+            index += 1;
+            continue;
+        }
+        let Some(alt_end) = closing_bracket(&chars, index + 2) else {
+            return;
+        };
+        if chars.get(alt_end + 1) == Some(&'(') {
+            if let Some((src, end)) = link_destination(&chars, alt_end + 2) {
+                srcs.push(src);
+                index = end;
+                continue;
+            }
+        }
+        index = alt_end + 1;
+    }
+}
+
+/// `from` 起第一个没被转义、且不闭合内层 `[` 的 `]`。
+fn closing_bracket(chars: &[char], from: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut index = from;
+    while index < chars.len() {
+        match chars[index] {
+            '\\' => index += 1,
+            '[' => depth += 1,
+            ']' => {
+                if depth == 0 {
+                    return Some(index);
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+/// `(` 之后的链接目的地：返回 (地址, 收尾 `)` 之后的位置)。
+fn link_destination(chars: &[char], from: usize) -> Option<(String, usize)> {
+    let mut index = from;
+    while index < chars.len() && chars[index].is_whitespace() {
+        index += 1;
+    }
+    let src: String = if chars.get(index) == Some(&'<') {
+        index += 1;
+        let start = index;
+        while index < chars.len() && chars[index] != '>' {
+            if chars[index] == '\\' {
+                index += 1;
+            }
+            index += 1;
+        }
+        if chars.get(index) != Some(&'>') {
+            return None;
+        }
+        let src: String = chars[start..index.min(chars.len())]
+            .iter()
+            .filter(|ch| **ch != '\\')
+            .collect();
+        index += 1;
+        src
+    } else {
+        let start = index;
+        let mut depth = 0usize;
+        while index < chars.len() {
+            let ch = chars[index];
+            if ch == '\\' {
+                index += 2;
+                continue;
+            }
+            if ch.is_whitespace() {
+                break;
+            }
+            if ch == '(' {
+                depth += 1;
+            }
+            if ch == ')' {
+                if depth == 0 {
+                    break;
+                }
+                depth -= 1;
+            }
+            index += 1;
+        }
+        chars[start..index.min(chars.len())].iter().collect()
+    };
+    if src.is_empty() {
+        return None;
+    }
+    // 之后是可选的 title 与收尾的 `)`：找到行内下一个不配对的 `)`。
+    let mut depth = 0usize;
+    while index < chars.len() {
+        match chars[index] {
+            '(' => depth += 1,
+            ')' => {
+                if depth == 0 {
+                    break;
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    Some((src, (index + 1).min(chars.len())))
+}
 
 /// MarkdownV2 实体外保留字（含转义符自身）全部加反斜杠。
 fn md_escape(text: &str) -> String {
@@ -4219,12 +5393,15 @@ fn format_duration(duration: Duration) -> String {
 struct SessionMeta {
     label: String,
     agent: String,
+    /// 会话工作目录（相对路径的随附图按它补全）；空串当没有。
+    cwd: Option<String>,
 }
 
 fn session_meta(session_id: &str) -> SessionMeta {
     let fallback = SessionMeta {
         label: clip(session_id, 24),
         agent: String::new(),
+        cwd: None,
     };
     let Some(slot) = TELEGRAM.get() else {
         return fallback;
@@ -4249,11 +5426,19 @@ fn session_meta(session_id: &str) -> SessionMeta {
         .map(|agent| clip(agent.label.trim(), 20))
         .filter(|label| !label.is_empty())
         .unwrap_or_else(|| clip(&session.agent_id, 20));
-    SessionMeta { label, agent }
+    SessionMeta {
+        label,
+        agent,
+        cwd: (!session.cwd.trim().is_empty()).then(|| session.cwd.clone()),
+    }
 }
 
 fn session_label(session_id: &str) -> String {
     session_meta(session_id).label
+}
+
+fn session_cwd(session_id: &str) -> Option<String> {
+    session_meta(session_id).cwd
 }
 
 /// /resume 清单的一行（label 已截好，agent 标签独立保留）。
@@ -5187,5 +6372,384 @@ mod tests {
         let idle = dash_row("调研", "", DashState::Idle, None, 240, false);
         let idle_text = render_session_detail(&idle, "", true);
         assert!(idle_text.contains("4分钟前有动静"), "{idle_text}");
+    }
+
+    // ─── 回复带图（2026-11-23）────────────────────────────────────────────
+
+    fn local(path: &str) -> TurnImage {
+        TurnImage::Local(PathBuf::from(path))
+    }
+
+    #[test]
+    fn strip_file_uri_mirrors_the_frontend_shapes() {
+        assert_eq!(strip_file_uri("file:///D:/a b.png"), "D:/a b.png");
+        assert_eq!(strip_file_uri("file://localhost/C:/x.png"), "C:/x.png");
+        // UNC 主机保留成 //host/…。
+        assert_eq!(strip_file_uri("file://server/share/x.png"), "//server/share/x.png");
+        // `file://D:/x`：两斜杠 + 盘符（非标准但常见）。
+        assert_eq!(strip_file_uri("file://D:/x.png"), "D:/x.png");
+        // 百分号解码。
+        assert_eq!(strip_file_uri("file:///D:/a%20b.png"), "D:/a b.png");
+        // 竖线盘符的旧形态。
+        assert_eq!(strip_file_uri("file:///C|/x.png"), "C:/x.png");
+        // 非 file: 只修盘符前导斜杠；Windows 反斜杠原样保留。
+        assert_eq!(strip_file_uri("/D:/x.png"), "D:/x.png");
+        assert_eq!(strip_file_uri("D:\\x\\y.png"), "D:\\x\\y.png");
+    }
+
+    #[test]
+    fn resolve_tool_image_path_matches_the_frontend_resolver() {
+        // 相对路径按 cwd 补全，分隔符跟随 cwd。
+        assert_eq!(
+            resolve_tool_image_path("out/a.png", Some("D:\\proj")),
+            "D:\\proj\\out\\a.png"
+        );
+        assert_eq!(
+            resolve_tool_image_path("./screenshot.png", Some("/home/u")),
+            "/home/u/screenshot.png"
+        );
+        // `../` 不吃掉——交给文件系统解析。
+        assert_eq!(
+            resolve_tool_image_path("../up.png", Some("D:\\proj\\sub")),
+            "D:\\proj\\sub\\..\\up.png"
+        );
+        // 绝对路径与没 cwd 的原样返回。
+        assert_eq!(resolve_tool_image_path("D:/abs.png", None), "D:/abs.png");
+        assert_eq!(resolve_tool_image_path("rel.png", None), "rel.png");
+        assert_eq!(resolve_tool_image_path("/nix/abs.png", None), "/nix/abs.png");
+    }
+
+    #[test]
+    fn extract_update_images_collects_blocks_locations_and_raw_input() {
+        // image 块：uri（file://）、url、只有 base64 的 data。
+        let update = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": [
+                { "type": "text", "text": "看这张 " },
+                { "type": "image", "uri": "file:///D:/shots/a.png" },
+                { "type": "image", "url": "https://example.com/b.png?x=1" },
+                { "type": "image", "mimeType": "image/png", "data": "aGVsbG8=" },
+                { "type": "image", "data": "d29ybGQ=" },
+            ]
+        });
+        let images = extract_update_images(&update);
+        assert_eq!(
+            images,
+            vec![
+                local("D:/shots/a.png"),
+                TurnImage::Remote("https://example.com/b.png?x=1".to_string()),
+                TurnImage::Bytes { data: "aGVsbG8=".to_string(), mime: "image/png".to_string() },
+                // 没有 mimeType 时补默认 image/png。
+                TurnImage::Bytes { data: "d29ybGQ=".to_string(), mime: "image/png".to_string() },
+            ]
+        );
+
+        // content 里没有图 → 工具 locations 的图片路径兜底（要带图片扩展名）。
+        let update = json!({
+            "sessionUpdate": "tool_call",
+            "content": [{ "type": "tool_call", "title": "write_image" }],
+            "locations": [{ "path": "D:/work/out/chart.png" }],
+        });
+        assert_eq!(extract_update_images(&update), vec![local("D:/work/out/chart.png")]);
+        // 非图片扩展名的 location 不收。
+        let update = json!({
+            "sessionUpdate": "tool_call",
+            "content": [{ "type": "tool_call" }],
+            "locations": [{ "path": "D:/work/src/main.rs" }],
+        });
+        assert!(extract_update_images(&update).is_empty());
+
+        // locations 缺席时 rawInput 的 JSON 路径兜底；裸字符串得像路径。
+        let update = json!({
+            "sessionUpdate": "tool_call",
+            "content": [{ "type": "tool_call" }],
+            "rawInput": "{ \"path\": \"renders\\\\shot.webp\" }",
+        });
+        assert_eq!(extract_update_images(&update), vec![local("renders\\shot.webp")]);
+        let update = json!({
+            "sessionUpdate": "tool_call",
+            "content": [{ "type": "tool_call" }],
+            "rawInput": "rm -rf /tmp/x",
+        });
+        assert!(extract_update_images(&update).is_empty());
+
+        // tool_result 的嵌套 content 里也有 image 块。
+        let update = json!({
+            "sessionUpdate": "tool_call",
+            "content": [
+                { "type": "tool_result", "content": [
+                    { "type": "image", "path": "D:/cache/frame0001.bmp" }
+                ]}
+            ]
+        });
+        assert_eq!(extract_update_images(&update), vec![local("D:/cache/frame0001.bmp")]);
+
+        // 同一张图在同一 update 里只收一次（D:\ 与 D:/ 同键）。
+        let update = json!({
+            "content": [
+                { "type": "image", "path": "D:\\dup.png" },
+                { "type": "image", "path": "D:/dup.png" },
+            ]
+        });
+        assert_eq!(extract_update_images(&update), vec![local("D:/dup.png")]);
+
+        // content 里已经有图时 locations 的同路径不重复收（Read 一张图：
+        // base64 块 + file_path 同时给）。
+        let update = json!({
+            "content": [
+                { "type": "image", "data": "aGVsbG8=", "filePath": "D:/pics/cat.jpg" },
+            ],
+            "locations": [{ "path": "D:/pics/cat.jpg" }],
+        });
+        assert_eq!(extract_update_images(&update).len(), 1);
+    }
+
+    #[test]
+    fn turn_image_from_src_routes_data_urls_and_gate_extensions() {
+        // data: URL → 内联字节（mime 保留）。
+        assert_eq!(
+            turn_image_from_src("data:image/webp;base64,AAAA", true),
+            Some(TurnImage::Bytes {
+                data: "AAAA".to_string(),
+                mime: "image/webp".to_string()
+            })
+        );
+        // base64 之外的分页符编码不认。
+        assert_eq!(turn_image_from_src("data:image/png,%%%", true), None);
+        // 引用式（require_image_ext=true）：非图片扩展名不收。
+        assert_eq!(turn_image_from_src("D:/x/main.rs", true), None);
+        assert_eq!(turn_image_from_src("D:/x/a.png", true), Some(local("D:/x/a.png")));
+        // image 块自述是图（false）：没有扩展名也收。
+        assert_eq!(turn_image_from_src("D:/temp/IMG_2048", false), Some(local("D:/temp/IMG_2048")));
+        // 体量闸：注定超限的 base64 直接不收（留足余量，别贴着整数除法边界）。
+        let huge = "A".repeat(IMAGE_MAX_BYTES as usize * 2);
+        assert_eq!(
+            turn_image_from_src(&format!("data:image/png;base64,{}", huge), true),
+            None
+        );
+    }
+
+    #[test]
+    fn session_track_images_dedupe_cap_and_user_key_exclusion() {
+        let user_bytes = TurnImage::Bytes {
+            data: "dXNlcg==".to_string(),
+            mime: "image/png".to_string(),
+        };
+        let mut track = SessionTrack::new();
+        track.begin_turn(&[local("D:/mine/from-user.png"), user_bytes.clone()], true);
+        // 同一张（分隔符差异）只留一次。
+        track.push_images(vec![local("D:/gen/shot.png"), local("D:\\gen\\shot.png")]);
+        assert_eq!(track.images.len(), 1);
+        for name in ["a1", "a2", "a3"] {
+            track.push_images(vec![local(&format!("D:/gen/{name}.png"))]);
+        }
+        // 窗口滚动：第 5 张（a4）把最旧的 shot 挤出去。
+        track.push_images(vec![local("D:/gen/a4.png")]);
+        assert_eq!(track.images.len(), 4);
+        let keys: Vec<String> = track.images.iter().map(TurnImage::key).collect();
+        assert!(!keys.contains(&local("D:/gen/shot.png").key()), "{keys:?}");
+        assert!(keys.contains(&local("D:/gen/a1.png").key()));
+        track.push_images(vec![local("D:/gen/a5.png")]);
+        // 取回时用户自带的两张（路径 + base64）不在其中。
+        let taken = track.take_images();
+        let keys: Vec<String> = taken.iter().map(TurnImage::key).collect();
+        assert_eq!(taken.len(), 4, "{keys:?}");
+        assert!(!keys.contains(&local("D:/gen/a1.png").key()), "oldest dropped");
+        assert!(keys.contains(&local("D:/gen/a2.png").key()));
+        assert!(keys.contains(&local("D:/gen/a5.png").key()));
+        // 用户自带的图即使被 agent 原样引用也不推回。
+        track.push_images(vec![local("D:/mine/from-user.png"), user_bytes.clone()]);
+        let taken = track.take_images();
+        let keys: Vec<String> = taken.iter().map(TurnImage::key).collect();
+        assert!(!keys.contains(&local("D:/mine/from-user.png").key()), "{keys:?}");
+        assert!(!keys.contains(&user_bytes.key()), "{keys:?}");
+        // 取完即清。
+        assert!(track.take_images().is_empty());
+
+        // 同一用户消息的后续 chunk：不清之前的图键。
+        let mut track = SessionTrack::new();
+        track.begin_turn(&[local("D:/mine/one.png")], true);
+        track.begin_turn(&[local("D:/mine/two.png")], false);
+        track.push_images(vec![local("D:/gen/new.png")]);
+        let taken = track.take_images();
+        assert_eq!(taken, vec![local("D:/gen/new.png")]);
+    }
+
+    #[test]
+    fn markdown_image_srcs_skip_code_and_keep_order() {
+        let text = "结果：\n\n![a](out/chart.png)\n正文 ![b <x>](https://e.com/b.jpg)\n";
+        assert_eq!(
+            markdown_image_srcs(text),
+            vec!["out/chart.png".to_string(), "https://e.com/b.jpg".to_string()]
+        );
+        // 围栏代码块里的图片语法不收；行内代码里的也不收。
+        let text = "```\n![no](fenced.png)\n```\n行内 `![no](inline.png)` 之后 ![yes](D:/ok.webp)\n";
+        assert_eq!(markdown_image_srcs(text), vec!["D:/ok.webp".to_string()]);
+        // ~~~ 围栏、info string 的 ```rs 围栏同样跳过。
+        let text = "~~~\n![no](t.png)\n~~~\n```rs\nlet x = 1;\n```\n![yes](t2.png)\n";
+        assert_eq!(markdown_image_srcs(text), vec!["t2.png".to_string()]);
+        // <带空格的路径> 与 title 形态。
+        assert_eq!(
+            markdown_image_srcs("![x](<my chart v2.png> \"标题\")"),
+            vec!["my chart v2.png".to_string()]
+        );
+        // 引用式图片（![alt][ref]）不收——那不是文件。
+        assert!(markdown_image_srcs("![alt][ref]\n\n[ref]: a.png").is_empty());
+    }
+
+    #[test]
+    fn send_method_picks_photo_animation_or_document() {
+        assert_eq!(send_method_for(Some("png")), SEND_PHOTO);
+        assert_eq!(send_method_for(Some("jpg")), SEND_PHOTO);
+        assert_eq!(send_method_for(Some("gif")), SEND_ANIMATION);
+        assert_eq!(send_method_for(Some("bmp")), SEND_DOCUMENT);
+        assert_eq!(send_method_for(Some("svg+xml")), SEND_DOCUMENT);
+        // 认不出来先按照片试（会被拒，然后退成文件）。
+        assert_eq!(send_method_for(None), SEND_PHOTO);
+        // 按图本体挑发法。
+        assert_eq!(
+            TurnImage::send_as(&local("D:/x/anim.gif")),
+            SEND_ANIMATION
+        );
+        assert_eq!(
+            TurnImage::send_as(&TurnImage::Remote("https://e.com/a.bogus".to_string())),
+            SEND_PHOTO
+        );
+    }
+
+    #[test]
+    fn multipart_body_lays_out_fields_then_file() {
+        let file = UploadFile {
+            field: "photo",
+            filename: "a b.png".to_string(),
+            mime: "image/png".to_string(),
+            data: &[0x01, 0x02, 0x03, 0xff][..],
+        };
+        let body = multipart_body(
+            "marionette-boundary",
+            &[("chat_id", "12345".to_string()), ("caption", "你好".to_string())],
+            &file,
+        );
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.starts_with("--marionette-boundary\r\n"), "{text}");
+        assert!(text.contains("Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n12345\r\n"));
+        assert!(text.contains("Content-Disposition: form-data; name=\"caption\"\r\n\r\n你好\r\n"));
+        assert!(text.contains(
+            "Content-Disposition: form-data; name=\"photo\"; filename=\"a b.png\"\r\nContent-Type: image/png\r\n\r\n"
+        ));
+        // 二进制段原样落位（不是 lossy 字符串的一部分，按字节找）。
+        assert!(body.windows(4).any(|w| w == [0x01, 0x02, 0x03, 0xff]));
+        assert!(text.ends_with("\r\n--marionette-boundary--\r\n"), "{text}");
+    }
+
+    #[test]
+    fn decode_base64_image_takes_padded_and_unpadded() {
+        assert_eq!(decode_base64_image("aGVsbG8=").unwrap(), b"hello");
+        assert_eq!(decode_base64_image("aGVsbG8").unwrap(), b"hello");
+        // 空白（chunk 里可能带换行）无碍。
+        assert_eq!(decode_base64_image("aGVs\n bG8=").unwrap(), b"hello");
+        assert!(decode_base64_image("!!!").is_err());
+        // 先估量：注定超限的不解码（返回错误而不是 OOM）。
+        let huge = "A".repeat(IMAGE_MAX_BYTES as usize * 2);
+        let error = decode_base64_image(&huge).unwrap_err();
+        assert!(error.contains("over the"), "{error}");
+    }
+
+    #[test]
+    fn tg_error_status_and_rejected_recognize_bot_api_rejections() {
+        assert_eq!(tg_error_status("HTTP 400 · sendPhoto: BAD PHOTO"), Some(400));
+        assert_eq!(tg_error_status("HTTP 429 · sendPhoto: Too Many Requests"), Some(429));
+        assert!(tg_error_status("sendPhoto: Dns: whois failed").is_none());
+        assert!(rejected("HTTP 400 · sendPhoto: BAD PHOTO"));
+        // 429 是限流不是拒收；传输层错误两个都不是。
+        assert!(!rejected("HTTP 429 · sendPhoto: Too Many Requests"));
+        assert!(!rejected("sendPhoto: Dns: whois failed"));
+    }
+
+    /// 回环假服务器收一单 multipart：请求行/头部/字段段/文件段全须验。
+    /// 直连 agent（不走 `agent_with_proxy`——它每次读用户的代理设置盘）。
+    #[test]
+    fn multipart_upload_reaches_the_wire() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+            haystack.windows(needle.len()).position(|w| w == needle)
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().expect("local addr").port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf: Vec<u8> = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let header_end = loop {
+                let read = stream.read(&mut chunk).expect("read request");
+                if read == 0 {
+                    panic!("connection closed before headers finished");
+                }
+                buf.extend_from_slice(&chunk[..read]);
+                if let Some(at) = find_subsequence(&buf, b"\r\n\r\n") {
+                    break at + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&buf[..header_end]).to_string();
+            let content_length: usize = headers
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("content-length"))
+                .and_then(|line| line.split(':').nth(1))
+                .and_then(|value| value.trim().parse().ok())
+                .expect("content-length header");
+            while buf.len() < header_end + content_length {
+                let read = stream.read(&mut chunk).expect("read body");
+                if read == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..read]);
+            }
+            let body = buf[header_end..].to_vec();
+            let payload = json!({ "ok": true, "result": { "message_id": 4242 } }).to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                payload.len()
+            );
+            stream.write_all(response.as_bytes()).expect("write response");
+            (headers, body)
+        });
+
+        let agent = ureq::AgentBuilder::new().build();
+        let file = UploadFile {
+            field: "photo",
+            filename: "chart 绘图.png".to_string(),
+            mime: "image/png".to_string(),
+            data: &[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a][..],
+        };
+        let value = tg_call_multipart_via(
+            &agent,
+            &format!("http://127.0.0.1:{port}"),
+            "secret-token",
+            "sendPhoto",
+            &[("chat_id", "12345".to_string()), ("caption", "图".to_string())],
+            &file,
+            Duration::from_secs(5),
+        )
+        .expect("multipart upload");
+        assert_eq!(message_id_of(&value), Some(4242));
+
+        let (headers, body) = server.join().expect("server thread");
+        assert!(headers.contains("POST /botsecret-token/sendPhoto"), "{headers}");
+        assert!(headers.to_ascii_lowercase().contains("multipart/form-data; boundary="));
+        let body_text = String::from_utf8_lossy(&body);
+        assert!(body_text.contains("name=\"chat_id\"\r\n\r\n12345\r\n"), "{body_text}");
+        assert!(body_text.contains("name=\"caption\"\r\n\r\n图\r\n"), "{body_text}");
+        assert!(body_text.contains("name=\"photo\"; filename=\"chart 绘图.png\"\r\nContent-Type: image/png\r\n\r\n"), "{body_text}");
+        // PNG 魔数按字节落位（没被任何编码弄脏）。
+        assert!(
+            body.windows(8).any(|w| w == [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+            "png magic bytes must ride intact"
+        );
+        // 结尾边界收口。
+        let tail = String::from_utf8_lossy(&body[body.len() - 64..]);
+        assert!(tail.contains("--\r\n"), "closing boundary, tail: {tail}");
     }
 }

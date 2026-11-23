@@ -343,6 +343,48 @@ grinev / artickc / RemoClaw 三个同类项目后收敛为共识形态，全部�
   详情渲染与隐私门控），全套 310 过；真实 token 的 sendRichMessage 端到端
   留待下次配对时确认（失败会退老路并记 `[telegram]` warn，投递不受影响）。
 
+## 回复带图（2026-11-23，已落地）
+
+用户反馈「回复的消息不带图片」。收集口径定成：**UI 里这张回复能看到的图，
+Telegram 都带得出去**（与前端工具卡预览 / `seenImages` 同源）：
+
+- **收集**（`extract_update_images`，事件收口里纯内存）：① `content`/`delta`
+  里嵌套的 image 块——`uri`→`url`→`path`→`filePath`→`file_path` 取首个非空
+  （`file://` 剥前缀 + 百分号解码 + `file://D:/x` 两斜杠盘符 + `C|` 旧形态，
+  全对齐前端 `stripFileUri`），**只有 base64 `data` 的块也收**（截图 / Read
+  图片最常见形态——base64 在发送线程才解码，收口只搬字符串）；② content
+  没有图时才看工具 `locations[].path`（或单数 `location`）与 `rawInput` 的
+  路径字段——**必须带图片扩展名**（png/jpg/jpeg/gif/webp/bmp/svg，对齐
+  `isImagePath`），裸字符串要长得像路径，绝不把 shell 命令当路径；③ 回合末
+  段正文里的 markdown 图片 `![](src)`（`markdown_image_srcs`：跳过围栏与
+  行内代码，防「教用户图片语法」的回复误发）。同回合去重键对齐前端
+  `imagePathKey`（`D:\a.png` ≡ `D:/a.png`），**上限 4 张保最新**。
+- **排除用户自带的图**：`user_message` 时把该消息里的图键记进
+  `user_image_keys`（同一条消息的后续 chunk 并入不清），回合末
+  `take_images` 过滤——用户刚发的截图不推回他手机。用户图键留到下个回合
+  `begin_turn(fresh)` 才清（agent re-entry 同回合可能取两次，排除口径全程
+  有效）。
+- **发送**（`Outbound::Photos` 排在同回合正文之后，队列保序）：照片
+  `sendPhoto`、GIF `sendAnimation`、其余（bmp/svg/未知内联 mime）直接
+  `sendDocument`；**被 4xx 拒收退成文件再试一次**（Telegram 照片只认
+  jpg/png/webp）。本地文件 / 内联字节走手写 multipart（`tg_call_multipart`，
+  RFC 7578 拼体 + `send_bytes`，零新依赖）；远程 URL 直接传给服务端拉。
+  每张 ≤10MB（先按长度估再解码，超限连 base64 都不留）；传输层失败
+  （非 4xx）立即停发后续张（别让每张干等一个超时拖住发送线程），已拒收
+  的合并成一条「N 张图没能发到 Telegram」提示。每张成功消息的 message_id
+  进 `routes` 表——在 Telegram 里**回复这张图 = 路由到该会话**。
+- **门控**：`content_preview` 关 = 图不出本机（与正文同门）；probe 回合
+  （/status 刷新）、`notify_turn` 关、cancelled、chief worker 聚合的回合
+  天然不带图（在照片入队之前就 return 了）。
+- 限制：`data:` URL 里非 base64 的百分号编码形态不认；相对路径需要会话
+  cwd（storage 的 `session.cwd`）才能补全，没有 cwd 的跳过；文件不存在
+  的静默跳过（连电脑上也看不着）。
+- 验证：模块单测 30 → 45（收图口径 / `strip_file_uri` 形态 / 相对路径解析
+  / 去重上限与用户图排除 / markdown 图片扫描 / multipart 体形状 / 回环
+  假服务器端到端上传——`tg_call_multipart_via` 打 127.0.0.1，PNG 魔数按
+  字节落位）。真实 bot 的 sendPhoto 端到端待配对时确认（失败只记 warn 不
+  影响正文）。
+
 ## Chief 模式（2026-11-15，remoteWorkMode）
 
 本文描述的 relay 行为（通知 + 引用回复 + 批准 + 总控面板）是**默认模式**。
