@@ -112,6 +112,7 @@ export const zh = {
   "ask.defaultQuestion": "请选择",
 
   "perm.eyebrow": "需要你批准",
+  "perm.fromSession": "来自对话：{label}",
 
   "trace.group": "运行轨迹",
   "trace.livePanel": "实时轨迹面板",

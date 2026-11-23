@@ -48,7 +48,7 @@ import { useLatestCallback } from "../lib/useLatestCallback";
 import { getCachedAgentVersions } from "../lib/agentVersionCache";
 import { buildDiagnosticUiState, type DiagnosticUiState } from "../lib/diagnostics";
 import { lastCapturedUiError } from "../lib/diagnosticCapture";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, engineModelImages, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, killAcpTerminal, listAcpTerminals, listAcpTerminalOutputs, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, loadTranscriptPage, loadTranscriptWindow, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, setUiLocale, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, trimSessionWorkingSet, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, chiefTeeConsume, chiefTeeCursor, chiefTeeReplay, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID, DELEGATE_TASK_EVENT, type DelegateTaskEventPayload, delegationEnabled, setDelegationEnabled } from "../lib/api";
+import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, engineModelImages, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, killAcpTerminal, listAcpTerminals, listAcpTerminalOutputs, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, loadTranscriptPage, loadTranscriptWindow, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, setUiLocale, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, trimSessionWorkingSet, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, chiefTeeConsume, chiefTeeCursor, chiefTeeReplay, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID, DELEGATE_TASK_EVENT, type DelegateTaskEventPayload, delegationEnabled, setDelegationEnabled, delegationCancelTask } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   DETACHED_HIDDEN_EVENT,
@@ -312,6 +312,7 @@ import { listLiveSubagents, sessionHasLiveSubagents, sessionProcessAlive } from 
 import { forkCopyEvents, forkCutIndex } from "../lib/sessionFork";
 import { type AskQuestionPrompt } from "../components/AskQuestionCard";
 import { buildBackgroundTaskRows } from "../lib/backgroundTasks";
+import { delegateCardFor } from "../lib/delegateCards";
 import type { AcpTerminalRow } from "../lib/api";
 import { Composer, transferEmptyDraft } from "../components/Composer";
 import { isAcpTranscriptMethod } from "../lib/acpMeta";
@@ -9526,67 +9527,16 @@ function AppMain() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── AI 派活卡片（marionette-delegate-event，第一期「拆门」） ──────────
-  // Rust broker 在 task.started / 终态时把任务卡发给父会话；这里折成
-  // subtask_started / subtask_result 事件塞进父会话的 rail（复用 @ 委托
-  // 的卡片渲染，带 initiatedBy:"agent" 变体）。纪律：
-  // - 只给本窗已加载的 rail 追加（shadowBySessionRef 非空）；冷会话跳过
-  //   ——唤醒文本补投时会自然进转录，不丢信息。
-  // - 同 taskId 同类卡片去重（多窗/事件重放都不会造重复卡）。
-  // - result 卡只在已有 started 卡时补（历史任务回放不凭空造卡）。
+  // ── AI 派活卡片（marionette-delegate-event） ───────────────────────────
+  // Rust broker 把任务事件发给父会话；哪些事件变成哪张卡片、怎么去重，
+  // 全在 lib/delegateCards.ts（纯函数，进回归脚本）。这里只做一件事：
+  // 本窗已加载该会话的 rail 才落卡（冷会话跳过——唤醒文本补投时结果
+  // 会自然进转录）。
   const delegateCardAppendRef = useRef<(payload: DelegateTaskEventPayload) => void>(() => undefined);
   delegateCardAppendRef.current = (payload) => {
-    const parent = payload.sessionId;
-    const task = payload.task;
-    if (!parent || !task?.taskId || !task.workerSessionId) return;
-    const rail = shadowBySessionRef.current.get(parent);
-    if (!rail || rail.length === 0) return;
-    const started = payload.kind === "task.started";
-    const dup = rail.some(
-      (e) =>
-        (e.type === "subtask_started" || e.type === "subtask_result") &&
-        e.taskId === task.taskId &&
-        (started ? e.type === "subtask_started" : e.type === "subtask_result"),
-    );
-    if (dup) return;
-    const now = new Date().toISOString();
-    if (started) {
-      const card: SessionEvent = {
-        type: "subtask_started",
-        sessionId: parent,
-        childSessionId: task.workerSessionId,
-        agentId: task.agentId,
-        agentLabel: "",
-        modelId: task.model ?? undefined,
-        prompt: task.title,
-        createdAt: now,
-        initiatedBy: "agent",
-        taskId: task.taskId,
-      };
-      updateSessionEvents(parent, (current) => [...current, card], { publish: true });
-      return;
-    }
-    const hasStart = rail.some((e) => e.type === "subtask_started" && e.taskId === task.taskId);
-    if (!hasStart) return;
-    const mapped =
-      task.status === "completed" ? "done" : task.status === "cancelled" ? "cancelled" : "failed";
-    const durationMs =
-      task.updatedAt > task.createdAt ? task.updatedAt - task.createdAt : undefined;
-    const card: SessionEvent = {
-      type: "subtask_result",
-      sessionId: parent,
-      childSessionId: task.workerSessionId,
-      agentId: task.agentId,
-      status: mapped,
-      summary: task.lastSummary ?? "",
-      durationMs,
-      error: task.error ?? undefined,
-      createdAt: now,
-      initiatedBy: "agent",
-      taskId: task.taskId,
-      checkpointBase: task.checkpointBase ?? undefined,
-    };
-    updateSessionEvents(parent, (current) => [...current, card], { publish: true });
+    const card = delegateCardFor(payload, shadowBySessionRef.current.get(payload.sessionId));
+    if (!card) return;
+    updateSessionEvents(card.sessionId, (current) => [...current, card], { publish: true });
   };
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -10242,6 +10192,9 @@ function AppMain() {
           onSubtaskStop={(childId) => {
             void cancelAcpSession(childId).catch(() => undefined);
             finalizeDelegateChildRef.current(childId, "cancelled", t("app.stoppedByUser"));
+          }}
+          onAgentSubtaskStop={(taskId) => {
+            void delegationCancelTask(taskId).catch(() => undefined);
           }}
           onSubtaskQuote={(summary) => {
             const block = `> ${summary.replace(/\n/g, "\n> ").slice(0, 2000)}\n\n`;
@@ -11493,6 +11446,9 @@ function AppMain() {
           sessionLabels={sessionLabelsForBackground}
           onOpenBackgroundTask={handleOpenBackgroundTask}
           onKillBackgroundTerminal={handleKillBackgroundTerminal}
+          onStopAgentDelegate={(taskId) => {
+            void delegationCancelTask(taskId).catch(() => undefined);
+          }}
         />
       </div>
       {/* Window-level: draw as soon as the prompt exists. Do not wait for pane focus. */}
@@ -11583,6 +11539,13 @@ function AppMain() {
           prompt={permissionPrompt}
           busy={permissionBusy}
           onChoose={(optionId) => void handlePermissionChoose(optionId)}
+          // 不是当前对话在问（后台 worker / 别的标签）时标出处。
+          sourceLabel={
+            permissionPrompt.sessionId !== currentSessionId
+              ? (availableSessions.find((session) => session.id === permissionPrompt.sessionId)?.label ??
+                null)
+              : null
+          }
         />
       )}
       {browserPermission && !IS_DETACHED_WINDOW && (

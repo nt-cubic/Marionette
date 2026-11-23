@@ -14,6 +14,7 @@ import {
 } from "../src/lib/backgroundTasks.ts";
 import { isChiefOrigin } from "../src/lib/chiefTee.ts";
 import { projectAttention, STALL_MS } from "../src/lib/fleetAttention.ts";
+import { delegateCardFor } from "../src/lib/delegateCards.ts";
 import { zh as zhDelegate } from "../src/locales/parts/fe-delegate.zh";
 import { en as enDelegate } from "../src/locales/parts/fe-delegate.en";
 import { applyLocale, t } from "../src/lib/i18n.ts";
@@ -173,6 +174,65 @@ function rowsFor(tasks: AgentDelegateSnapshot[]) {
   check("chief 会话本体仍在家族内", isChiefOrigin("chief"));
   check("普通 user 会话不在家族内", !isChiefOrigin("user"));
   check("delegate（@ 委托子会话）不在家族内", !isChiefOrigin("delegate"));
+}
+
+// ── 5) 父对话卡片规则（lib/delegateCards.ts） ─────────────────────────────
+//
+// 2026-11-23 实锤：额度午休排程时后端发一条 task.progress，旧逻辑把它画成
+// 「失败」结果卡，任务真正完成时的结果卡又被去重吃掉——午休中的任务永远
+// 显示成已失败。
+
+{
+  const task = (overrides: Record<string, unknown> = {}) =>
+    ({
+      taskId: "task-card",
+      requestId: "req-card",
+      staffId: null,
+      chiefSessionId: "parent-card",
+      title: "调研 orca 的编排模型",
+      goal: "goal",
+      projectId: "project-x",
+      workerSessionId: "worker-card",
+      agentId: "grok-build",
+      status: "running",
+      createdAt: 1_000,
+      updatedAt: 2_000,
+      ...overrides,
+    }) as never;
+  const event = (kind: string, t: unknown) => ({ sessionId: "parent-card", kind, task: t });
+  const started = event("task.started", task());
+  const baseRail = [{ type: "user_message", sessionId: "parent-card", text: "去调研", createdAt: "2026-01-01T00:00:00.000Z" }] as never[];
+
+  const startCard = delegateCardFor(started, baseRail, "2026-01-01T00:00:01.000Z");
+  check("task.started → 运行卡（带 agent 标识与 taskId）",
+    startCard?.type === "subtask_started" && startCard.initiatedBy === "agent" && startCard.taskId === "task-card");
+  check("运行卡只落一次（事件重放/多窗不重复）",
+    delegateCardFor(started, [...baseRail, startCard] as never[]) === null);
+
+  const withStart = [...baseRail, startCard] as never[];
+  const napping = event("task.progress", task({ status: "running", waitingReason: "auto_retry" }));
+  check("task.progress 不生成卡片（额度午休不能被画成失败）", delegateCardFor(napping, withStart) === null);
+  check("未知 kind 不生成卡片", delegateCardFor(event("task.weird", task()), withStart) === null);
+
+  const doneCard = delegateCardFor(event("task.completed", task({ status: "completed" })), withStart);
+  check("completed → done 结果卡", doneCard?.type === "subtask_result" && doneCard.status === "done");
+  const failedCard = delegateCardFor(
+    event("task.failed", task({ status: "failed", error: "worker_gone", lastSummary: "worker 进程退出。" })),
+    withStart,
+  );
+  check("failed → failed 结果卡；error 留空（状态位显示本地化的「失败」而不是内部错误码）",
+    failedCard?.type === "subtask_result" && failedCard.status === "failed" && failedCard.error === undefined
+      && failedCard.summary === "worker 进程退出。");
+  const cancelledCard = delegateCardFor(event("task.cancelled", task({ status: "cancelled" })), withStart);
+  check("cancelled → cancelled 结果卡（用户停止后卡片显示已取消）",
+    cancelledCard?.type === "subtask_result" && cancelledCard.status === "cancelled" && cancelledCard.error === undefined);
+  check("结果卡只补一次",
+    delegateCardFor(event("task.completed", task({ status: "completed" })), [...withStart, doneCard] as never[]) === null);
+  check("没有运行卡就不凭空补结果卡（重启后回放的历史任务）", delegateCardFor(event("task.completed", task()), baseRail) === null);
+  check("冷会话不落卡", delegateCardFor(started, null) === null && delegateCardFor(started, []) === null);
+  check("有存档点才带 checkpointBase（「回滚此任务」的依据）",
+    delegateCardFor(event("task.completed", task({ status: "completed", checkpointBase: "abc123" })), withStart)?.checkpointBase === "abc123"
+      && doneCard?.checkpointBase === undefined);
 }
 
 if (failed > 0) {

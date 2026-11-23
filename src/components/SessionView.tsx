@@ -152,6 +152,8 @@ type SessionViewProps = {
   /** All live events (for expanding @-delegate child streams). */
   allEvents?: SessionEvent[];
   onSubtaskStop?: (childSessionId: string) => void;
+  /** AI 派活的运行卡按任务取消（不能只取消回合：额度午休中没有回合可取消）。 */
+  onAgentSubtaskStop?: (taskId: string) => void;
   onSubtaskQuote?: (summary: string) => void;
   /** 头部还有未加载的转录历史（尾部优先加载）→ 顶部渲染「加载更早」。 */
   olderCount?: number;
@@ -1135,6 +1137,7 @@ export function SessionView({
   onFilesRestored,
   allEvents = [],
   onSubtaskStop,
+  onAgentSubtaskStop,
   onSubtaskQuote,
   onSubtaskRetry,
   streamPrompt,
@@ -1219,6 +1222,7 @@ export function SessionView({
             setExpandedChildId={setExpandedChildId}
             subtaskResults={subtaskResults}
             onSubtaskStop={onSubtaskStop}
+            onAgentSubtaskStop={onAgentSubtaskStop}
             onSubtaskQuote={onSubtaskQuote}
             onSubtaskRetry={onSubtaskRetry}
             streamPrompt={streamPrompt}
@@ -2035,6 +2039,7 @@ function CleanPlaceholder({
   setExpandedChildId,
   subtaskResults,
   onSubtaskStop,
+  onAgentSubtaskStop,
   onSubtaskQuote,
   onSubtaskRetry,
   streamPrompt,
@@ -2067,6 +2072,7 @@ function CleanPlaceholder({
   setExpandedChildId?: (id: string | null) => void;
   subtaskResults?: Map<string, Extract<SessionEvent, { type: "subtask_result" }>>;
   onSubtaskStop?: (childSessionId: string) => void;
+  onAgentSubtaskStop?: (taskId: string) => void;
   onSubtaskQuote?: (summary: string) => void;
   onSubtaskRetry?: (childSessionId: string) => void;
   streamPrompt?: StreamPromptHandlers;
@@ -3063,6 +3069,7 @@ function CleanPlaceholder({
             // 标识、meta 换成「干完会回来汇报」、不提供前端 stop（取消走
             // 任务账本 / 让 agent 自己 cancel）。
             const agentInitiated = event.initiatedBy === "agent";
+            const agentTaskId = agentInitiated ? event.taskId : undefined;
             const target = event.modelId
               ? `@${event.agentId}/${event.modelId}`
               : `@${event.agentId}`;
@@ -3084,14 +3091,27 @@ function CleanPlaceholder({
                   <span className="subtask-card__meta">
                     {agentInitiated ? t("session.subtaskAgentRunning") : t("session.subtaskRunning")}
                   </span>
-                  {onSubtaskStop && !agentInitiated && (
-                    <button
-                      type="button"
-                      className="pill-action subtask-card__btn"
-                      onClick={() => onSubtaskStop(event.childSessionId)}
-                    >
-                      {t("session.subtaskStop")}
-                    </button>
+                  {agentInitiated ? (
+                    agentTaskId &&
+                    onAgentSubtaskStop && (
+                      <button
+                        type="button"
+                        className="pill-action subtask-card__btn"
+                        onClick={() => onAgentSubtaskStop(agentTaskId)}
+                      >
+                        {t("session.subtaskStop")}
+                      </button>
+                    )
+                  ) : (
+                    onSubtaskStop && (
+                      <button
+                        type="button"
+                        className="pill-action subtask-card__btn"
+                        onClick={() => onSubtaskStop(event.childSessionId)}
+                      >
+                        {t("session.subtaskStop")}
+                      </button>
+                    )
                   )}
                 </div>
                 {childStream.length === 0 ? (

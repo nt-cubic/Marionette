@@ -23,6 +23,8 @@ type TasksSectionProps = {
   sessionLabels?: Map<string, string>;
   onOpenBackgroundTask?: (row: BackgroundTaskRow) => void;
   onKillBackgroundTerminal?: (terminalId: string) => void;
+  /** 停止一个 AI 派活任务（跑动中 / 排队 / 等你确认 / 额度午休都能停）。 */
+  onStopAgentDelegate?: (taskId: string) => void;
 };
 
 type Mark = "done" | "doing" | "todo";
@@ -90,6 +92,7 @@ export const TasksSection = memo(function TasksSection({
   sessionLabels,
   onOpenBackgroundTask,
   onKillBackgroundTerminal,
+  onStopAgentDelegate,
 }: TasksSectionProps) {
   const t = useT();
   const planList = planEntries && planEntries.length > 0 ? planEntries : null;
@@ -354,7 +357,12 @@ export const TasksSection = memo(function TasksSection({
         <ul className="rail-list">
           {backgroundTasks.map((row) => {
             const label = bgStateLabel(row, t);
-            const killable = row.kind === "terminal" && row.state === "running";
+            const killable =
+              (row.kind === "terminal" && row.state === "running") ||
+              (row.kind === "agent-delegate" &&
+                (row.state === "running" ||
+                  row.state === "queued" ||
+                  row.state === "attention"));
             // 排队/定时发送在会话回合结束后自动冲走，行不可点；其余行点击切到发起会话。
             const clickable = row.kind !== "queued" && row.kind !== "scheduled";
             const sessionLabel = sessionLabels?.get(row.sessionId);
@@ -378,13 +386,20 @@ export const TasksSection = memo(function TasksSection({
                     {row.state === "running" ? <Elapsed since={row.startedAtMs} /> : label}
                   </span>
                 </button>
-                {killable && onKillBackgroundTerminal && (
+                {killable &&
+                  (row.kind === "agent-delegate"
+                    ? onStopAgentDelegate
+                    : onKillBackgroundTerminal) && (
                   <button
                     type="button"
                     className="rail-ib rail-ib--sm"
                     title={t("context.killTask")}
                     aria-label={t("rail.backgroundKill", { title: row.title })}
-                    onClick={() => onKillBackgroundTerminal(row.key.slice("terminal:".length))}
+                    onClick={() =>
+                      row.kind === "agent-delegate"
+                        ? onStopAgentDelegate?.(row.key.slice("agent-delegate:".length))
+                        : onKillBackgroundTerminal?.(row.key.slice("terminal:".length))
+                    }
                   >
                     <X size={11} strokeWidth={1.5} />
                   </button>

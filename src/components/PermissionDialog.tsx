@@ -22,6 +22,9 @@ type PermissionDialogProps = {
   prompt: PermissionPrompt;
   busy?: boolean;
   onChoose: (optionId: string) => void;
+  /** 哪个对话在问。只在它不是当前对话时传——后台 worker（AI 派活）的
+   *  请求要让人看得出处，否则弹窗像是凭空冒出来的。 */
+  sourceLabel?: string | null;
 };
 
 /**
@@ -35,7 +38,12 @@ function optionRank(opt: PermissionOption): number {
   return /always/i.test(`${opt.kind} ${opt.name}`) ? 2 : 3;
 }
 
-export function PermissionDialog({ prompt, busy = false, onChoose }: PermissionDialogProps) {
+export function PermissionDialog({
+  prompt,
+  busy = false,
+  onChoose,
+  sourceLabel = null,
+}: PermissionDialogProps) {
   const t = useT();
   const options = (
     prompt.options.length > 0
@@ -65,6 +73,11 @@ export function PermissionDialog({ prompt, busy = false, onChoose }: PermissionD
             <div>
               <span className="permission-dialog__eyebrow">{t("perm.eyebrow")}</span>
               <strong id="permission-dialog-title">{prompt.title || t("v2dialogs.permFallback")}</strong>
+              {sourceLabel && (
+                <span className="permission-dialog__source">
+                  {t("perm.fromSession", { label: sourceLabel })}
+                </span>
+              )}
             </div>
           </div>
           {prompt.detail && (

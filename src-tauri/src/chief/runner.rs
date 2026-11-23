@@ -66,12 +66,19 @@ pub fn ensure_session(
     }
 }
 
-/// 应用模型偏好（Agent 自报的 live 菜单 + 跨用桥都走 session/set_config_option；
-/// 失败只记日志不致命——模型不生效但任务照跑）。
-pub fn apply_model(app: &AppHandle, session_id: &str, model: &str) {
+/// 应用模型（Agent 自报的 live 菜单 + 跨用桥都走 session/set_config_option）。
+/// 返回 `Err` = agent 没有接受这个模型。要不要因此拦住任务由调用方定：
+/// 员工自己钉的模型失败不致命（`ensure_chief_started` 忽略返回值）；
+/// **派活方点名了模型就必须拦**（`broker::apply_task_settings` →
+/// Failed(model_unavailable)）——静默落到默认模型等于把用户要的免费/便宜
+/// 模型换成旗舰（2026-11-23 修；AGENTS「模型回写失败必须 fail-closed」）。
+pub fn apply_model(app: &AppHandle, session_id: &str, model: &str) -> Result<(), String> {
     let acp = acp_of(app);
-    match acp.update_session(session_id, json!({ "model": model })) {
-        Ok(_) => crate::debug_log::append(
+    let result = acp
+        .update_session(session_id, json!({ "model": model }))
+        .map(|_| ());
+    match &result {
+        Ok(()) => crate::debug_log::append(
             "chief",
             "info",
             session_id,
@@ -82,18 +89,22 @@ pub fn apply_model(app: &AppHandle, session_id: &str, model: &str) {
             "chief",
             "warn",
             session_id,
-            "model apply failed; agent default stays",
+            "model apply failed",
             Some(&format!("model={model} error={error}")),
         ),
     }
+    result
 }
 
-/// 应用推理档位（effort id；agent 不认这个档位就用它的默认——失败只记
-/// 日志，不致命，与 apply_model 同姿态：档位写不进去不该拦住任务本身）。
-pub fn apply_effort(app: &AppHandle, session_id: &str, effort: &str) {
+/// 应用推理档位（effort id）。返回 `Err` = agent 拒绝了这个档位。注意还有
+/// 一种**假成功**：见 [`effort_will_be_ignored`]。
+pub fn apply_effort(app: &AppHandle, session_id: &str, effort: &str) -> Result<(), String> {
     let acp = acp_of(app);
-    match acp.update_session(session_id, json!({ "effortId": effort })) {
-        Ok(_) => crate::debug_log::append(
+    let result = acp
+        .update_session(session_id, json!({ "effortId": effort }))
+        .map(|_| ());
+    match &result {
+        Ok(()) => crate::debug_log::append(
             "chief",
             "info",
             session_id,
@@ -104,10 +115,40 @@ pub fn apply_effort(app: &AppHandle, session_id: &str, effort: &str) {
             "chief",
             "warn",
             session_id,
-            "effort apply failed; agent default stays",
+            "effort apply failed",
             Some(&format!("effort={effort} error={error}")),
         ),
     }
+    result
+}
+
+/// 这一刀档位写入会不会被静默吞掉：Grok 上**没有档位菜单**的桥接模型——
+/// `acp.rs::update_session` 的 `BridgeEffortGate::NoMenu` 分支直接跳过，
+/// 返回 Ok 但什么都没发生（那个 agent 对任何档位值都答 -32602）。UI 那边
+/// 无所谓（档位只是个会话偏好）；派活方点名了档位时，这种假成功要让人
+/// 看见（`broker::apply_task_settings` 把它写进任务行）。
+pub fn effort_will_be_ignored(
+    app: &AppHandle,
+    session_id: &str,
+    agent_id: &str,
+    model: &str,
+) -> bool {
+    if crate::model_bridge::classify_agent(agent_id) != crate::model_bridge::BridgeAgent::GrokBuild {
+        return false;
+    }
+    let is_bridge = model.starts_with("marionette/")
+        || model.starts_with("marionette::")
+        || model.starts_with("marionette\\");
+    if !is_bridge {
+        return false;
+    }
+    // 判定口径与 update_session 一致：看 caps.current_model（写入后 agent
+    // 回报的那个），调用方传的 model 只用来先筛掉非桥接 id。
+    let current = acp_of(app)
+        .get_capabilities(session_id)
+        .and_then(|caps| caps.current_model);
+    let id = current.as_deref().unwrap_or(model);
+    crate::model_bridge::grok_bridge_effort_menu(id).is_none()
 }
 
 fn find_read_only_option(options: &[crate::acp::ModeDef]) -> Option<String> {

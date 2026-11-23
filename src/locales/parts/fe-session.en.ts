@@ -112,6 +112,7 @@ export const en = {
   "ask.defaultQuestion": "Please choose",
 
   "perm.eyebrow": "Needs your approval",
+  "perm.fromSession": "From conversation: {label}",
 
   "trace.group": "Activity trace",
   "trace.livePanel": "Live trace panel",

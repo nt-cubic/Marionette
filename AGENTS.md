@@ -1672,8 +1672,37 @@ Telegram 远程首席助理的底层仍保留：裸文本固定进一个 Chief �
   （chief 会话早退走自己的实现，普通会话由派活面接管）。
 - **天花板**：delegate_task 的 schema **刻意没有 projectId**——项目恒等于父会话
   的项目，不开放跨项目；每父会话并发 2（`SESSION_DELEGATION_CAP`）；schema 红线
-  同 chief（永无 cwd/permissionMode/env 等提权字段）；父会话钉只读/plan 档则
-  worker 用 `enforce_read_only` 同款形状强制同档；worker 永不 always-approve。
+  同 chief（永无 cwd/permissionMode/env 等提权字段）。
+- **权限档 = 父会话的权限档（子只能等于或收窄父，2026-11-23 改）**：
+  `delegation::parent_permission_tier` 把父会话落盘的模式与免审批偏好归成
+  ReadOnly / Bypass / EditsOk / Ask 四档，`inherit_permission_tier` 在 worker
+  的 agent 上找**同一档**的对应控制——Grok 是斜杠命令
+  （`always_approve_command`，镜像 `acpSupplements.ts` 的 `alwaysApprove.on`，
+  逐字一致）、其余在自报的 modes / permission 菜单里按 id 或 label 找
+  （`find_mode_for_tier`：Claude `bypassPermissions` / `acceptEdits`、Codex
+  `agent-full-access`）。找不到就如实写进任务行（「这个 agent 没有对应的
+  档位，会逐个询问」）——worker 退回逐个询问，**绝不越过父会话**；父会话是
+  只读/plan 时 `enforce_read_only` 强制同档且不继承任何放行（只读永远压过
+  免审批）。**旧规矩「worker 永不 always-approve」已废**：那条让 worker 每个
+  工具操作都弹一张权限卡（2026-11-23 用户实锤）。Marionette 自有的高权工具
+  （浏览器 Control / Computer Use）**不随继承放行**，照出卡。
+- **worker 的全部设置只在一处应用**：`broker::apply_task_settings`（只读
+  天花板 → 模型 → 档位 → 权限继承；Grok 的 `/always-approve on` 自己占一个
+  回合，必须排在目标之前）。spawn 与额度重试复活**都必须调它**——复活出来
+  的是全新进程，漏一步就把只读天花板丢了。
+- **点名的模型必须 fail-closed（2026-11-23）**：派活方传了 `model` 而 agent
+  不接受 → `Failed(model_unavailable)`，判词带 agent 自己广告的清单
+  （`SettingsError::verdict`）让它照清单重派；**绝不静默落到默认模型**——
+  用户要的是免费/便宜模型，悄悄换旗舰是最糟的结果（与「跨用桥 ID 与发送
+  fail-closed」同一条红线）。`runner::apply_model/apply_effort` 返回 Result；
+  只有员工自己钉的模型仍不致命（`ensure_chief_started` 忽略返回值）。
+  `marionette_models_list(agentId)`：该 agent 有活跃会话时给
+  `agent_capability_snapshot` 的目录（**各家自带的模型都在里面**，上限 300
+  条并如实标截断），否则只给跨用引擎模型并换算成这个 agent 认的原生写法
+  （`native_bridge_model_id_for`，镜像 `lib/bridgeRouting.ts::
+  nativeBridgeModelId`，改动两边一起）——**别再回引擎的裸 id**，agent 多半
+  不认。档位的假成功（Grok 无菜单的桥接模型，`runner::effort_will_be_ignored`）
+  与模型回显不符都写进任务行，不拦任务。
 - **worker 零派活（禁递归）**：`chief-worker`/`agent-worker`/`delegate` 来源的会话
   在 `kit_visible_for`（tools/list）与 dispatch 两层 fail-closed
   （`delegation_depth_denied`）——子员工不得再开子员工。
@@ -1689,10 +1718,13 @@ Telegram 远程首席助理的底层仍保留：裸文本固定进一个 Chief �
 - **账本必须修剪**：`store::prune_ledger`（bootstrap_chief 启动跑；非终态全留、
   终态 30 天 + 400 硬顶、事件同窗）——派活开放后 tasks.json 属于所有会话，
   没有修剪就是两个永远增长的文件（心跳每 2s 整档重写它）。
-- **UI 事件流**：`marionette-delegate-event`（仅 staff_id=None 任务，task.started
-  与终态两拍）→ App 折成 `subtask_started/result`（`initiatedBy:"agent"` 变体）
-  塞进**本窗已加载**的父 rail（冷会话跳过——唤醒文本补投自然进转录）；同
-  taskId 去重。`agent-worker` 归 `isChiefOrigin` 后端驱动家族（挂起/压制豁免 +
+- **UI 事件流**：`marionette-delegate-event`（仅 staff_id=None 任务）→
+  `src/lib/delegateCards.ts::delegateCardFor`（纯函数，进 verify-delegate-kit）
+  决定落哪张卡：`task.started` → 运行卡（`initiatedBy:"agent"` 变体）、终态 →
+  结果卡、**`task.progress` 不是卡**（额度午休排程会发 progress，画成结果卡
+  会让午休中的任务显示成已失败、真完成时的结果卡又被去重吃掉）。只给**本窗
+  已加载**的父 rail 落卡（冷会话跳过——唤醒文本补投自然进转录）；同 taskId
+  的运行卡/结果卡各只落一次。`agent-worker` 归 `isChiefOrigin` 后端驱动家族（挂起/压制豁免 +
   tee 回填）；Telegram 任务卡对 staff-free 任务**一期不推**
   （`telegram_task_notification_allowed` 返回 false）；`chief_stop_all` 纳入
   staff-free 任务（无员工机器不再提前 return）。Ctrl K 有注入开关（Rust
@@ -1704,19 +1736,36 @@ scripts/verify-delegate-kit.mts`。
 **二至六期（同日落地）补的红线**：
 
 - **回合结局分类在 `broker::handle_turn_end`**：watch 循环空闲时先从 tee
-  取最后一个 turn/complete 的 stopReason+错误文本（`last_turn_outcome`）
-  分类（`classify_turn_failure`：额度/限流匹配表→Transient；refusal→
-  refused；error→turn_error；其余才 finish）。**零产出（无正文且无工具
-  调用）= Failed(no_output)，不猜完成**。改匹配表/分类先过
-  `turn_failure_classification_matches_transient_markers` 测试。
+  取回合结局（`last_turn_outcome`）分类（`classify_turn_failure`）。
+  **中止优先于一切**：流里出现过 `cancelled` 就算 Cancelled → 任务
+  Cancelled(turn_cancelled)——`AcpService::cancel` 在取消那一刻补发一条
+  cancelled，agent 之后可能还报一条自己的结局，只认最后一条会把「停止」
+  记成完成。其后：额度/限流的**文字**匹配表→Transient；refusal→refused；
+  error / max_tokens / max_turn_requests→turn_error；其余才 finish。
+  **不认裸的 `429`**（与行号、退出码没法区分），也不认 `capacity`。
+  **零产出（无正文且无工具调用）= Failed(no_output)，不猜完成**。失败/中止
+  的判词后面带 worker 的最后一截输出（`with_worker_tail`）。改匹配表/分类
+  先过 `turn_failure_classification_matches_transient_markers` 测试。
 - **唤醒跨重启只有一处重建**：`broker::rebuild_wake_inbox_from_ledger`
   （bootstrap_chief 调，读 events.jsonl 里 delivered_at=None 的终态事件，
   上限 500）。**「读取即送达」**：delegate_status / chief_task_status 查过
   就 mark delivered——别在别处再加第二套送达标记。
-- **额度自动重试的状态在任务行上**（retry_at/retry_count/waiting_reason=
-  "auto_retry"）：到点 `reissue_goal_for_retry` 复活 worker 重发目标；
-  退避 5m/15m/30m、3 次封顶 Failed(retry_exhausted)。**卡死解药**：Running
-  且 20 分钟无事件 → cancel + 30s 宽限 → Failed(stalled)。
+- **额度自动重试与卡死解药只对 AI 派活开放**（员工任务由员工自己重派、有
+  自己的「无进展」超时；别扩过去）。重试状态在任务行上
+  （retry_at/retry_count/waiting_reason="auto_retry"）：到点
+  `reissue_goal_for_retry` 重算天花板（`effective_remote_mode`）→ 复活 →
+  `apply_task_settings` 重放全部设置 → 重发目标；退避 5m/15m/30m、3 次
+  封顶 Failed(retry_exhausted)。午休期间 watch 循环不判超时/卡死。**卡死
+  解药**：Running 且 20 分钟无事件 → cancel + 30s 宽限 → 无论哪条路都
+  Failed(stalled)（这一下是我们掐的，不能顺着回合结局记成完成）。
+- **用户必须能停**：`delegation_cancel_task`（Tauri 命令，不是 MCP 工具）
+  = 清午休排程 → **先落账** Cancelled → 取消回合 → 关浏览器标签 → 停进程。
+  先落账是因为 watch 循环只认任务状态；清排程是因为午休中的任务没有回合
+  可取消、到点还会自己复活。入口两处：父对话运行卡的「停止」
+  （`onAgentSubtaskStop`，按 taskId）与右栏后台任务面板的 ×。**别再以
+  「取消走账本」为由把卡片上的停止按钮藏掉**——那样用户只剩全局急停。
+  任务一终结就 `stop_session` 收掉 worker 进程（后端驱动家族豁免自动
+  挂起，不收就是每派一次活漏一个 agent 进程）。
 - **submit_output 是 worker 专属交付通道**：只有「带 outputSchema 任务的
   worker」在 tools/list 看得到（`worker_has_output_schema`）；校验是**顶层
   结构的诚实子集**（required 齐 + 顶层类型匹配，不做嵌套/format——拒绝

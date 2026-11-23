@@ -2039,6 +2039,14 @@ export async function setDelegationEnabled(enabled: boolean): Promise<void> {
   await invoke("set_delegation_enabled", { enabled });
 }
 
+/**
+ * 用户从界面停止一个 AI 派活任务（父对话卡片的「停止」/ 后台任务面板的 ×）。
+ * 连额度午休中的任务一起停：清掉重试排程、取消回合、收掉 worker 进程。
+ */
+export async function delegationCancelTask(taskId: string): Promise<{ ok: boolean }> {
+  return invoke("delegation_cancel_task", { taskId });
+}
+
 /** 回滚一个 AI 派活的任务（tracked 文件恢复到任务开始时的存档点）。 */
 export async function delegationRollbackTask(taskId: string): Promise<{
   restored: string[];

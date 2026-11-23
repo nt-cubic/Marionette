@@ -844,6 +844,7 @@ fn main() {
             delegation::delegation_enabled,
             delegation::set_delegation_enabled,
             delegation::delegation_rollback_task,
+            delegation::delegation_cancel_task,
             browser::set_session_approval,
             computer::computer_driver_status,
             computer::computer_install_driver,

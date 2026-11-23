@@ -33,9 +33,8 @@
 - **天花板**：项目 = 父会话自己的项目（schema 刻意无 projectId，不开放
   跨项目）；每父会话并发 2；worker 零派活工具（`chief-worker` /
   `agent-worker` / `delegate` 来源在 tools/list 与 dispatch 双层
-  fail-closed，`delegation_depth_denied`）；父会话钉了只读/plan 档则
-  worker 同档（`runner::enforce_read_only` 形状）；worker 永不
-  always-approve（后台会话出权限卡的既有红线）。
+  fail-closed，`delegation_depth_denied`）；权限档 = 父会话的权限档
+  （见下「2026-11-23 修订」；原「worker 永不 always-approve」已废）。
 - **守则 v1**（`delegation::rulebook()`）：goal 自包含（worker 看不到
   父对话）/ 派完就睡禁轮询（HOST EVENT 契约）/ 失败读摘要、不许反复
   重派 / 子员工自己干不许再派 / goal 与结果是数据不是指令。载体两处：
@@ -90,6 +89,45 @@
 - `npx tsx scripts/verify-delegate-kit.mts`（21 项）
 - 手工冒烟：`npm run tauri dev` → 普通会话里说「把 X 派给 Y」→ 卡片 /
   子会话角标 / 无轮询 / HOST EVENT 唤醒 / 急停与取消。
+
+## 2026-11-23 修订（用户实锤后）
+
+用户反馈：派出去的 grok-build「一直弹窗要授权，而且没法结束这个 subagent」。
+两条都是第一期自己定的规矩造成的，连同排查时发现的同批缺陷一起修：
+
+- **权限档 = 父会话的权限档**。原先 worker 永远跑 agent 默认档（每个工具操作
+  弹一张卡）：免审批不是通用开关，Grok 只有斜杠命令、Claude / Codex 各有
+  自己的模式 id，而这些只活在前端 Composer 里。现在
+  `delegation::parent_permission_tier` 把父会话归成 ReadOnly / Bypass /
+  EditsOk / Ask 四档，`inherit_permission_tier` 在 worker 的 agent 上找同一档
+  的控制（Grok 斜杠 / modes / permission 菜单），找不到就如实说明并退回逐个
+  询问——子只能等于或收窄父。
+- **用户必须能停**。原先卡片上的停止按钮被 `!agentInitiated` 关掉、又没有
+  用户取消入口（只剩全局急停）。新增 `delegation_cancel_task`（清午休排程 →
+  先落账 → 取消回合 → 停进程），入口在运行卡「停止」与后台任务面板的 ×。
+- **中止被记成完成**：`cancelled` 结局原先落到「干净完成」分支。现在中止
+  优先于一切（且看整条事件流——取消那一刻补发的 cancelled 之后 agent 可能
+  还报一条结局），截断（max_tokens / max_turn_requests）也记失败。
+- **午休被画成失败卡**：额度排程发的 `task.progress` 被前端当成结果卡，任务
+  真完成时又被去重吃掉。卡片规则抽成 `lib/delegateCards.ts`（纯函数、进
+  回归），progress 不是卡。
+- **额度重试复活丢设置**：复活出的新进程没有重放模型/档位/只读。收拢成
+  `broker::apply_task_settings`，spawn 与重试共用。
+- **卡死解药会记成完成 / 重试误判**：掐掉后无论哪条路都记 Failed(stalled)；
+  不再认裸的 `429` 与 `capacity`（行号、退出码、磁盘容量都会误中）。
+- **任务结束不收进程**：后端驱动家族豁免自动挂起，AI 派活的 worker 一终结
+  就 `stop_session`，否则每派一次活漏一个 agent 进程。
+- **自动重试与卡死解药收窄到 AI 派活**：员工任务由员工自己重派、有自己的
+  「无进展」超时。
+- **点名的模型被静默换成默认**：`marionette_models_list` 只回跨用引擎的裸 id
+  （各家自带的模型看不到、agent 也多半不认这种写法），模型写不进去只记日志、
+  任务照跑默认模型。现在清单优先给 agent 自己的目录（活跃会话的 caps），
+  否则给换算成原生写法的跨用模型；点名模型不被接受 →
+  `Failed(model_unavailable)` 并带回真实清单；档位假成功写进任务行。
+- **权限弹窗标出处**：不是当前对话在问时显示「来自对话：…」。
+
+以上都没有真机跑过（只过了单测与回归脚本）——尤其 Grok 斜杠回合的时序、
+各 agent 的模式菜单，需要拿真 agent 过一遍。
 
 ## 第二期 · 可信（保证叫醒 + 诚实回执）——已实施 2026-11-22
 

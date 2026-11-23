@@ -22,6 +22,59 @@ fn sandbox_root(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn settings_verdicts_name_the_cause_and_bring_back_the_models() {
+    // 点名的模型不被接受：说清「没有改用默认模型」，并带回 agent 的真实
+    // 清单——派活的 AI 照着清单重派一次就行。
+    let rejected = SettingsError::Model {
+        model: "opencode/does-not-exist".into(),
+        reason: "model not found".into(),
+        available: vec![
+            "opencode/grok-code".to_string(),
+            "openrouter/mistral/small:free".to_string(),
+        ],
+    };
+    let text = rejected.verdict("opencode");
+    assert!(text.contains("opencode 不接受模型「opencode/does-not-exist」"));
+    assert!(text.contains("没有改用默认模型"));
+    assert!(text.contains("opencode/grok-code"));
+    assert!(text.contains("openrouter/mistral/small:free"));
+    assert!(!text.contains("共"), "没截断就不报总数");
+    // agent 没广告任何模型：别编清单，给出下一步。
+    let no_catalog = SettingsError::Model {
+        model: "x".into(),
+        reason: "unknown model".into(),
+        available: vec![],
+    };
+    let text = no_catalog.verdict("codex");
+    assert!(text.contains("没有广告任何模型清单"));
+    assert!(text.contains("不指定 model 重派"));
+    // 清单很长：如实标总数，只列前 40 个。
+    let long = SettingsError::Model {
+        model: "x".into(),
+        reason: "unknown model".into(),
+        available: (0..45).map(|index| format!("provider/model-{index}")).collect(),
+    };
+    let text = long.verdict("opencode");
+    assert!(text.contains("共 45 个"));
+    assert!(text.contains("provider/model-39"));
+    assert!(!text.contains("provider/model-40"));
+    assert!(SettingsError::ReadOnly("no such option".into()).verdict("x").contains("只读"));
+}
+
+#[test]
+fn model_echo_tolerates_an_effort_suffix() {
+    // Codex 把档位编进模型名（`gpt-5.6-luna[xhigh]`）——同一个模型，不算不符。
+    assert!(model_echo_matches("gpt-5.6-luna", "gpt-5.6-luna[xhigh]"));
+    assert!(model_echo_matches("gpt-5.6-luna[xhigh]", "gpt-5.6-luna"));
+    assert!(model_echo_matches("opencode/grok-code", " opencode/grok-code "));
+    assert!(!model_echo_matches("openrouter/a:free", "openrouter/b"));
+    assert!(!model_echo_matches("gpt-5.6", "gpt-5.6-luna"));
+    // 括号不成对就不是档位后缀，原样比。
+    assert!(model_echo_matches("weird[name", "weird[name"));
+    assert!(!model_echo_matches("weird[name", "weird"));
+}
+
+#[test]
 fn wake_inbox_rebuilds_from_undelivered_ledger_events() {
     let guard = lock_sandbox();
     reset_for_tests();

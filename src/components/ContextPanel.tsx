@@ -119,6 +119,8 @@ type ContextPanelProps = {
   onOpenBackgroundTask?: (row: BackgroundTaskRow) => void;
   /** 终止一个 ACP terminal/* 后台命令。 */
   onKillBackgroundTerminal?: (terminalId: string) => void;
+  /** 停止一个 AI 派活任务（右栏后台任务面板的 ×）。 */
+  onStopAgentDelegate?: (taskId: string) => void;
   /** Active staff profile when this conversation belongs to the employee roster. */
   activeStaff?: StaffProfile | null;
   staffTasks?: ChiefTask[];
@@ -257,6 +259,7 @@ export const ContextPanel = memo(function ContextPanel({
   sessionLabels,
   onOpenBackgroundTask,
   onKillBackgroundTerminal,
+  onStopAgentDelegate,
   activeStaff = null,
   staffTasks = [],
   onEditStaff,
@@ -446,6 +449,7 @@ export const ContextPanel = memo(function ContextPanel({
           sessionLabels={sessionLabels}
           onOpenBackgroundTask={onOpenBackgroundTask}
           onKillBackgroundTerminal={onKillBackgroundTerminal}
+          onStopAgentDelegate={onStopAgentDelegate}
         />
 
         <QuotaSection usage={usage} agentId={activeAgentId} modelId={activeModelId} onRefresh={onUsageRefresh} refreshing={usageProbing} />

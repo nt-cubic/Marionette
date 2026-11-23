@@ -425,11 +425,18 @@ pub(crate) enum TurnFailureClass {
     /// 额度/限流/服务繁忙——可自愈，排队自动重试。
     Transient,
     Refused,
+    /// 用户或宿主中止了这个回合（停止按钮 / 取消 / 中止卡死）。
+    Cancelled,
     TurnError,
 }
 
-/// 从 tee 事件流提取最后一个 turn/complete 的 (stopReason, 错误文本)。
+/// 从 tee 事件流提取回合结局 (stopReason, 错误文本)。
 /// 纯函数（broker 测试直接喂事件）。
+///
+/// 「被取消」看整条流而不只看最后一条：`AcpService::cancel` 在取消那一刻
+/// 就补发一条 `cancelled`，而 agent 之后可能还会再报一条自己的结局——
+/// 只认最后一条会把一次中止当成正常完成。一个任务的观测循环里，被取消
+/// 的回合必然是最后一个回合（取消即收尾），所以这个判定不会误伤更早的回合。
 pub(crate) fn last_turn_outcome(events: &[Value]) -> (Option<String>, Option<String>) {
     let mut stop_reason = None;
     let mut error_text = None;
@@ -446,6 +453,9 @@ pub(crate) fn last_turn_outcome(events: &[Value]) -> (Option<String>, Option<Str
         // 错误文本的形状随 emit 点不同：data.error 可能是字符串、
         // {message} 对象，或嵌在 data.data 里——逐层找，找到为止。
         error_text = extract_error_text(data);
+        if stop_reason.as_deref() == Some("cancelled") {
+            break;
+        }
     }
     (stop_reason, error_text)
 }
@@ -472,10 +482,18 @@ fn extract_error_text(data: &Value) -> Option<String> {
 
 /// 额度/限流/繁忙的匹配表（小写包含）。命中即 Transient——这类失败的特点
 /// 是「等一会儿就好」，Mingle 的失败分类查表同款思路。
+///
+/// 刻意**不认裸的数字 `429`**：它和 `main.rs:429:3`、退出码 `4290` 没法
+/// 区分，一次普通失败被误判成限流会让任务白白午休三次。真实的限流报错
+/// 都带着 "Too Many Requests" / "rate limit" 这类字样，认字样就够。
 pub(crate) fn classify_turn_failure(
     stop_reason: Option<&str>,
     error_text: Option<&str>,
 ) -> TurnFailureClass {
+    // 中止优先于一切：用户按了停止，就不能被错误文本里的字样改判成别的。
+    if stop_reason == Some("cancelled") {
+        return TurnFailureClass::Cancelled;
+    }
     let haystack = format!(
         "{} {}",
         stop_reason.unwrap_or(""),
@@ -484,7 +502,7 @@ pub(crate) fn classify_turn_failure(
     .to_ascii_lowercase();
     const TRANSIENT_MARKERS: &[&str] = &[
         "quota", "usage limit", "rate limit", "ratelimit", "rate_limit",
-        "429", "overloaded", "capacity", "temporarily", "try again",
+        "overloaded", "temporarily", "try again",
         "too many requests", "resource_exhausted",
     ];
     if TRANSIENT_MARKERS.iter().any(|marker| haystack.contains(marker)) {
@@ -492,8 +510,19 @@ pub(crate) fn classify_turn_failure(
     }
     match stop_reason {
         Some("refusal") => TurnFailureClass::Refused,
-        Some("error") => TurnFailureClass::TurnError,
+        // 回合被截断（长度 / 轮数上限）同样不是「完成」。
+        Some("error" | "max_tokens" | "max_turn_requests") => TurnFailureClass::TurnError,
         _ => TurnFailureClass::Clean,
+    }
+}
+
+/// 宿主的判词 + worker 的最后一截输出（有才带）。
+fn with_worker_tail(verdict: String, tail: Option<&str>) -> String {
+    match tail {
+        Some(tail) if !tail.trim().is_empty() => {
+            format!("{verdict}\nworker 的最后输出：{tail}")
+        }
+        _ => verdict,
     }
 }
 
@@ -644,7 +673,9 @@ fn ensure_chief_started(app: &AppHandle, chief_session_id: &str) -> Result<(), S
         .and_then(|profile| profile.model)
         .or_else(|| store::load_config().chief_model);
     if let Some(model) = pinned_model.as_deref() {
-        runner::apply_model(app, chief_session_id, model);
+        // 员工自己钉的模型写不进去不致命（员工会话用 agent 默认照常工作）；
+        // 派活方点名的模型才是 fail-closed（见 apply_task_settings）。
+        let _ = runner::apply_model(app, chief_session_id, model);
     }
     with_storage(app, |storage| {
         storage.update_session_status(chief_session_id, "running")
@@ -1113,6 +1144,187 @@ pub fn chief_task_start(app: &AppHandle, chief_session_id: &str, args: &Value) -
     }))
 }
 
+/// 应用任务设置时的致命错误（调用方拒绝启动 / 停掉任务）。
+#[derive(Debug)]
+pub(crate) enum SettingsError {
+    /// 只读天花板强制不了。
+    ReadOnly(String),
+    /// 调用方**点名**的模型这个 agent 不接受——不偷偷换成默认模型：用户
+    /// 要的是免费/便宜的模型，静默落到旗舰是最糟的结果（2026-11-18 那次
+    /// 错 id 让 OpenCode 落到 OpenRouter 上花了 $9，同一条红线）。
+    Model {
+        model: String,
+        reason: String,
+        /// 这个 agent 自己广告的模型 id——随判词带回给派活的 AI，照清单重派。
+        available: Vec<String>,
+    },
+}
+
+impl SettingsError {
+    /// 给父会话 / 面板看的完整判词。
+    pub(crate) fn verdict(&self, agent_id: &str) -> String {
+        match self {
+            SettingsError::ReadOnly(error) => {
+                format!("Agent 无法强制只读权限，已拒绝启动任务：{error}")
+            }
+            SettingsError::Model { model, reason, available } => {
+                let mut text = format!(
+                    "{agent_id} 不接受模型「{model}」（{reason}）。没有改用默认模型。"
+                );
+                if available.is_empty() {
+                    text.push_str("这个 agent 没有广告任何模型清单——用 marionette_agents_list / marionette_models_list 核对，或不指定 model 重派。");
+                } else {
+                    let shown = available.iter().take(40).cloned().collect::<Vec<_>>().join("、");
+                    if available.len() > 40 {
+                        text.push_str(&format!("它接受的模型（共 {} 个，列出前 40 个）：{shown}", available.len()));
+                    } else {
+                        text.push_str(&format!("它接受的模型：{shown}"));
+                    }
+                }
+                text
+            }
+        }
+    }
+}
+
+/// 应用设置后值得让人看见、但不值得拦任务的事（写进任务行，右栏面板
+/// 在它跑动的整段时间里都显示）。
+#[derive(Debug, Default)]
+pub(crate) struct SettingsNotes {
+    pub permission: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+/// 判词里最多带回这么多模型 id。
+const AVAILABLE_MODELS_CAP: usize = 60;
+
+/// agent 回报的当前模型与要求的是否一致。Codex 会把档位编进模型名
+/// （`gpt-5.6-luna[xhigh]`），所以去掉尾部 `[...]` 再比。
+pub(crate) fn model_echo_matches(requested: &str, current: &str) -> bool {
+    fn strip(id: &str) -> &str {
+        match (id.find('['), id.ends_with(']')) {
+            (Some(index), true) => id[..index].trim(),
+            _ => id.trim(),
+        }
+    }
+    strip(requested) == strip(current)
+}
+
+/// 把任务的设置应用到一条**活着的** worker 会话上。spawn 与额度重试
+/// 复活共用——复活出来的进程是全新的，模型/档位/只读天花板/继承来的
+/// 权限档全都要重放，否则重试一次就把它们全丢了。
+///
+/// 顺序有讲究：只读天花板 → 模型（换模型会重置 agent 侧的档位）→ 档位
+/// → 权限继承（Grok 的 `/always-approve on` 自己占一个回合，必须排在
+/// 其它设置之后、目标之前）。
+/// `Err` = 致命（只读档强制失败 / 点名的模型不被接受）；`Ok` 里的备注
+/// 不拦任务。
+fn apply_task_settings(
+    app: &AppHandle,
+    task: &Task,
+    worker_session_id: &str,
+    remote_mode: RemoteMode,
+) -> Result<SettingsNotes, SettingsError> {
+    let mut notes = SettingsNotes::default();
+    if remote_mode == RemoteMode::ReadOnly {
+        runner::enforce_read_only(app, worker_session_id).map_err(SettingsError::ReadOnly)?;
+    }
+    if let Some(model) = task.model.as_deref() {
+        runner::apply_model(app, worker_session_id, model).map_err(|reason| SettingsError::Model {
+            model: model.to_string(),
+            reason,
+            available: advertised_model_ids(app, worker_session_id),
+        })?;
+        // 写入被接受了，但 agent 回报的当前模型不是它——不拦任务（有的 agent
+        // 回报有延迟），只留一句让人看得见。
+        let echoed = app
+            .state::<crate::AppState>()
+            .acp
+            .get_capabilities(worker_session_id)
+            .and_then(|caps| caps.current_model);
+        if let Some(current) = echoed {
+            if !model_echo_matches(model, &current) {
+                notes.warnings.push(format!(
+                    "模型「{model}」已提交，但 agent 回报的当前模型是「{current}」。"
+                ));
+            }
+        }
+    }
+    if let Some(effort) = task.preferred_effort.as_deref() {
+        if let Err(_) = runner::apply_effort(app, worker_session_id, effort) {
+            notes.warnings.push(format!(
+                "要求的档位「{effort}」没有生效（这个 agent 不接受它），用的是默认档。"
+            ));
+        } else if runner::effort_will_be_ignored(
+            app,
+            worker_session_id,
+            &task.agent_id,
+            task.model.as_deref().unwrap_or(""),
+        ) {
+            let model = task.model.as_deref().unwrap_or("当前模型");
+            notes.warnings.push(format!(
+                "要求的档位「{effort}」对「{model}」不生效（这个模型没有档位菜单），用的是默认档。"
+            ));
+        }
+    }
+    // 权限继承只属于 AI 派活（员工的 worker 走项目策略）；父会话是只读时
+    // 天花板已经强制完，没有什么可继承的。
+    if task.staff_id.is_some() || remote_mode == RemoteMode::ReadOnly {
+        return Ok(notes);
+    }
+    let parent = with_storage(app, |storage| {
+        storage
+            .find_session(&task.chief_session_id)
+            .ok()
+            .flatten()
+    });
+    let Some(parent) = parent else {
+        return Ok(notes);
+    };
+    let tier = crate::delegation::parent_permission_tier(
+        parent.preferred_mode.as_deref(),
+        parent.preferred_always_approve,
+    );
+    notes.permission = crate::delegation::inherit_permission_tier(
+        app,
+        worker_session_id,
+        &task.agent_id,
+        tier,
+    );
+    Ok(notes)
+}
+
+/// worker 的 agent 自己广告的模型 id（点名模型不被接受时随判词带回）。
+fn advertised_model_ids(app: &AppHandle, worker_session_id: &str) -> Vec<String> {
+    app.state::<crate::AppState>()
+        .acp
+        .get_capabilities(worker_session_id)
+        .map(|caps| {
+            caps.models
+                .iter()
+                .take(AVAILABLE_MODELS_CAP)
+                .map(|model| model.id.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// AI 派活任务此刻的权限天花板（重试复活时重算：父会话可能在午休期间
+/// 被切到了只读）。父会话行没了 = 没有可依据的策略，不该再启动 worker。
+/// 只对 AI 派活有意义——自动重试不开放给员工任务（见 handle_turn_end）。
+fn effective_remote_mode(app: &AppHandle, task: &Task) -> Option<RemoteMode> {
+    let parent = with_storage(app, |storage| {
+        storage
+            .find_session(&task.chief_session_id)
+            .ok()
+            .flatten()
+    })?;
+    Some(crate::delegation::parent_remote_mode(
+        parent.preferred_mode.as_deref(),
+        parent.preferred_always_approve,
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_and_watch_worker(
     app: &AppHandle,
@@ -1288,7 +1500,7 @@ pub(crate) fn spawn_and_watch_worker(
         return;
     }
 
-    // 3) 启动 ACP + 应用模型
+    // 3) 启动 ACP + 应用任务的全部设置
     if let Err(error) = runner::ensure_session(app, &worker.id, &task.agent_id, &worker.cwd) {
         runner::stop_session(app, &worker.id);
         tee::unregister(&worker.id);
@@ -1296,30 +1508,46 @@ pub(crate) fn spawn_and_watch_worker(
             Some(&format!("Agent 启动失败：{error}")));
         return;
     }
-    if remote_mode == RemoteMode::ReadOnly {
-        if let Err(error) = runner::enforce_read_only(app, &worker.id) {
+    let settings = match apply_task_settings(app, &task, &worker.id, remote_mode) {
+        Ok(settings) => settings,
+        Err(error) => {
             runner::stop_session(app, &worker.id);
             tee::unregister(&worker.id);
+            // 只读强制不了 / 点名的模型不被接受——两种都不启动，判词写清
+            // 原因（模型那种会带回 agent 的真实清单，派活的 AI 照着重派）。
+            let stop_reason = match &error {
+                SettingsError::ReadOnly(_) => "read_only_not_enforceable",
+                SettingsError::Model { .. } => "model_unavailable",
+            };
             let _ = finalize_task(
                 app,
                 chief_session_id,
                 task_id,
                 TaskStatus::Failed,
-                Some("read_only_not_enforceable"),
-                Some(&format!("Agent 无法强制只读权限，已拒绝启动任务：{error}")),
+                Some(stop_reason),
+                Some(&error.verdict(&task.agent_id)),
             );
             return;
         }
-    }
+    };
     with_storage(app, |storage| {
         storage.update_session_status(&worker.id, "running")
     })
     .ok();
-    if let Some(model) = task.model.as_deref() {
-        runner::apply_model(app, &worker.id, model);
-    }
-    if let Some(effort) = task.preferred_effort.as_deref() {
-        runner::apply_effort(app, &worker.id, effort);
+    // 权限说明与档位备注写进任务行：右栏后台任务面板在它跑动的整段时间
+    // 里都显示（「已继承免审批」「要求的档位不生效，用的是默认档」…）。
+    let notes: Vec<String> = settings
+        .permission
+        .into_iter()
+        .chain(settings.warnings)
+        .collect();
+    if !notes.is_empty() {
+        let _ = store::with_tasks(|tasks| {
+            if let Some(task) = tasks.iter_mut().find(|t| t.task_id == task_id) {
+                task.last_summary = Some(notes.join("\n"));
+            }
+            Ok(())
+        });
     }
 
     // 4) 发目标（read_only / 自我修改的边界在提示里明示；写权限仍由权限卡兜底）
@@ -1424,33 +1652,32 @@ fn watch_worker_loop(
                 Some("timeout"), Some(&format!("任务超过 {max_minutes} 分钟上限，已停止。")));
             return;
         }
-        // 卡死解药（第三期）：Running 且 STALL_MS 无任何事件 → 先 cancel；
-        // 宽限期仍无声 → 判 stalled（Mingle「20 分钟无声且有人在等」梯子的
-        // 前两级，第三级换进程留给 resume/重派）。
-        if current.status == TaskStatus::Running
+        // 卡死解药（第三期，只对 AI 派活——员工任务有自己的「无进展」超时）：
+        // Running 且 STALL_MS 无任何事件 → 中止这个回合；宽限期内仍不收尾
+        // 就连进程一起停掉。无论哪条路都记 Failed(stalled)：这一下是我们
+        // 掐掉的，不能顺着回合结局记成「完成」或「已取消」。
+        if current.staff_id.is_none()
+            && current.status == TaskStatus::Running
             && now_ms().saturating_sub(current.last_event_at) > WORKER_STALL_MS
         {
             runner::cancel_turn(app, worker_session_id);
-            let recovered = runner::wait_turn_idle_checked(
+            if !runner::wait_turn_idle_checked(
                 app,
                 worker_session_id,
                 WORKER_STALL_GRACE_MS,
                 || true,
-            );
-            let still_stale = store::find_task(task_id)
-                .map(|task| now_ms().saturating_sub(task.last_event_at) > WORKER_STALL_MS)
-                .unwrap_or(true);
-            if !recovered || still_stale {
-                let _ = finalize_task(
-                    app,
-                    chief_session_id,
-                    task_id,
-                    TaskStatus::Failed,
-                    Some("stalled"),
-                    Some("worker 连续 20 分钟无任何事件，已中止（卡死解药）。可重新派活或 resume。"),
-                );
-                return;
+            ) {
+                runner::stop_session(app, worker_session_id);
             }
+            let _ = finalize_task(
+                app,
+                chief_session_id,
+                task_id,
+                TaskStatus::Failed,
+                Some("stalled"),
+                Some("worker 连续 20 分钟没有任何动静，已中止。可以重新派活。"),
+            );
+            return;
         }
         if runner::turn_idle_now(app, worker_session_id) {
             // 沉默不证明完成（orca 铁律）：turn_idle 对缺席进程也返回 true，
@@ -1491,62 +1718,99 @@ fn handle_turn_end(
         .map(|(events, _)| events)
         .unwrap_or_default();
     let (stop_reason, error_text) = last_turn_outcome(&events);
+    // 失败/中止时把 worker 已经说过的最后一截话带上——父会话要据此判断
+    // 做到了哪一步，而不是只收到一句宿主的判词。
+    let worker_tail = summarize_worker_events(&events).0;
+    let detail = error_text
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or("（无错误详情）")
+        .to_string();
     match classify_turn_failure(stop_reason.as_deref(), error_text.as_deref()) {
         TurnFailureClass::Transient => {
-            let scheduled = store::with_tasks(|tasks| {
+            // 自动重试只对 AI 派活开放：员工的 worker 由员工自己决定重派
+            // （它有自己的预算与 task_resume 语义），这里只如实记失败。
+            let auto_retry = store::find_task(task_id).is_some_and(|task| task.staff_id.is_none());
+            if !auto_retry {
+                let _ = finalize_task(
+                    app,
+                    chief_session_id,
+                    task_id,
+                    TaskStatus::Failed,
+                    Some("transient_error"),
+                    Some(&with_worker_tail(
+                        format!("额度/限流/服务繁忙，任务未完成：{detail}"),
+                        worker_tail.as_deref(),
+                    )),
+                );
+                return false;
+            }
+            enum RetryPlan {
+                Scheduled,
+                Exhausted,
+                NotPossible,
+            }
+            let plan = store::with_tasks(|tasks| {
                 let Some(task) = tasks.iter_mut().find(|t| t.task_id == task_id) else {
-                    return Ok(None);
+                    return Ok(RetryPlan::NotPossible);
                 };
-                if task.status.is_terminal() {
-                    return Ok(None);
+                if task.status.is_terminal() || task.retry_at.is_some() {
+                    return Ok(RetryPlan::NotPossible);
                 }
-                let attempt = task.retry_count.saturating_add(1) as usize;
-                let Some(delay) = RETRY_BACKOFF_MS.get(attempt.saturating_sub(1)) else {
-                    return Ok(Some(0u64));
+                let Some(delay) = RETRY_BACKOFF_MS.get(task.retry_count as usize).copied() else {
+                    return Ok(RetryPlan::Exhausted);
                 };
-                task.retry_count = attempt as u32;
+                task.retry_count += 1;
                 task.retry_at = Some(now_ms() + delay);
                 task.waiting_reason = Some("auto_retry".to_string());
                 task.updated_at = now_ms();
                 task.last_event_at = now_ms();
                 task.last_summary = Some(format!(
-                    "额度/限流受限，{} 分钟后自动重试（第 {attempt} 次）：{}",
+                    "额度/限流受限，{} 分钟后自动重试（第 {} 次）。",
                     delay / 60_000,
-                    error_text.as_deref().unwrap_or("（无错误详情）")
+                    task.retry_count
                 ));
-                Ok(Some(*delay))
+                Ok(RetryPlan::Scheduled)
             })
-            .unwrap_or(None);
-            match scheduled {
-                Some(0) => {
+            .unwrap_or(RetryPlan::NotPossible);
+            match plan {
+                RetryPlan::Scheduled => {
+                    if let Some(task) = store::find_task(task_id) {
+                        let event = emit_event(&task, "task.progress", task.status, task.last_summary.clone());
+                        let _ = store::append_events(&[event]);
+                    }
+                    true
+                }
+                RetryPlan::Exhausted => {
                     let _ = finalize_task(
                         app,
                         chief_session_id,
                         task_id,
                         TaskStatus::Failed,
                         Some("retry_exhausted"),
-                        Some("额度/限流重试已达上限（3 次），任务停止。"),
+                        Some(&with_worker_tail(
+                            format!("额度/限流自动重试 3 次后仍未成功，任务停止。最后一次的错误：{detail}"),
+                            worker_tail.as_deref(),
+                        )),
                     );
-                    let _ = store::with_tasks(|tasks| {
-                        if let Some(task) = tasks.iter_mut().find(|t| t.task_id == task_id) {
-                            task.retry_at = None;
-                            task.waiting_reason = None;
-                        }
-                        Ok(())
-                    });
                     false
                 }
-                Some(_) => {
-                    let task = store::find_task(task_id);
-                    if let Some(task) = task {
-                        let event = emit_event(&task, "task.progress", task.status, task.last_summary.clone());
-                        let _ = store::append_events(&[event]);
-                        crate::delegation::emit_delegate_ui_event(app, &task, "task.progress");
-                    }
-                    true
-                }
-                None => false,
+                RetryPlan::NotPossible => false,
             }
+        }
+        TurnFailureClass::Cancelled => {
+            let _ = finalize_task(
+                app,
+                chief_session_id,
+                task_id,
+                TaskStatus::Cancelled,
+                Some("turn_cancelled"),
+                Some(&with_worker_tail(
+                    "worker 的回合被中止（用户停止或宿主取消）。".to_string(),
+                    worker_tail.as_deref(),
+                )),
+            );
+            false
         }
         TurnFailureClass::Refused => {
             let _ = finalize_task(
@@ -1555,20 +1819,30 @@ fn handle_turn_end(
                 task_id,
                 TaskStatus::Failed,
                 Some("refused"),
-                Some("worker 拒绝执行该任务（refusal）。"),
+                Some(&with_worker_tail(
+                    "worker 拒绝执行这个任务。".to_string(),
+                    worker_tail.as_deref(),
+                )),
             );
             false
         }
         TurnFailureClass::TurnError => {
+            let reason = match (error_text.as_deref(), stop_reason.as_deref()) {
+                (Some(text), _) if !text.trim().is_empty() => text.to_string(),
+                (_, Some("max_tokens")) => "回复达到长度上限，被截断".to_string(),
+                (_, Some("max_turn_requests")) => "达到单回合的请求/工具轮数上限".to_string(),
+                (_, Some(reason)) => format!("回合异常结束（{reason}）"),
+                _ => "无错误详情".to_string(),
+            };
             let _ = finalize_task(
                 app,
                 chief_session_id,
                 task_id,
                 TaskStatus::Failed,
                 Some("turn_error"),
-                Some(&format!(
-                    "worker 回合报错：{}",
-                    error_text.as_deref().unwrap_or("（无错误详情）")
+                Some(&with_worker_tail(
+                    format!("worker 回合出错，任务未完成：{reason}。"),
+                    worker_tail.as_deref(),
                 )),
             );
             false
@@ -1580,13 +1854,15 @@ fn handle_turn_end(
     }
 }
 
-/// 重试到点：清标记、复活 worker（进程没了就 ensure_session）、重发目标。
-/// 返回 false = 任务已不在可重试状态（被取消/账本写失败），watch 退出。
+/// 重试到点：清标记、复活 worker（进程没了就 ensure_session 并重放全部
+/// 设置）、重发目标。返回 false = 任务已不在可重试状态（被取消/账本写
+/// 失败/复活失败），watch 退出。
 fn reissue_goal_for_retry(app: &AppHandle, task_id: &str, worker_session_id: &str) -> bool {
     let Some(task) = store::find_task(task_id) else { return false };
     if task.status.is_terminal() {
         return false;
     }
+    let mut remote_mode = RemoteMode::ApproveWrites;
     if !runner::session_alive(app, worker_session_id) {
         let cwd = with_storage(app, |storage| {
             storage
@@ -1595,15 +1871,62 @@ fn reissue_goal_for_retry(app: &AppHandle, task_id: &str, worker_session_id: &st
                 .flatten()
                 .map(|session| session.cwd)
         });
-        let Some(cwd) = cwd else { return false };
-        if runner::ensure_session(app, worker_session_id, &task.agent_id, &cwd).is_err() {
+        let Some(cwd) = cwd else {
+            // 会话行没了就别留一个永远到点却没人重试的僵尸。
+            let _ = finalize_task(
+                app,
+                &task.chief_session_id,
+                task_id,
+                TaskStatus::Failed,
+                Some("worker_session_missing"),
+                Some("重试时找不到 worker 会话，任务停止。"),
+            );
+            return false;
+        };
+        // 策略可能在午休期间变了（员工的项目授权被改 / 父会话切到了
+        // 只读）——复活前按当前策略重算，不能沿用派活那一刻的。
+        let Some(current_mode) = effective_remote_mode(app, &task) else {
+            let _ = finalize_task(
+                app,
+                &task.chief_session_id,
+                task_id,
+                TaskStatus::Failed,
+                Some("policy_changed"),
+                Some("重试前权限策略已变化（授权被移除或禁用），任务停止。"),
+            );
+            return false;
+        };
+        remote_mode = current_mode;
+        if let Err(error) = runner::ensure_session(app, worker_session_id, &task.agent_id, &cwd) {
             let _ = finalize_task(
                 app,
                 &task.chief_session_id,
                 task_id,
                 TaskStatus::Failed,
                 Some("retry_respawn_failed"),
-                Some("额度重试时 worker 无法复活（Agent 启动失败）。"),
+                Some(&format!("额度重试时 worker 无法复活（Agent 启动失败：{error}）。")),
+            );
+            return false;
+        }
+        // 复活出来的是全新进程：只读天花板 / 模型 / 档位 / 继承的权限档
+        // 全部重放，否则重试一次就把它们丢了。点名的模型在午休期间从
+        // agent 的目录里消失了（zcode 的账号目录会浮动）也在这里如实失败。
+        if let Err(error) = apply_task_settings(app, &task, worker_session_id, remote_mode) {
+            runner::stop_session(app, worker_session_id);
+            let (stop_reason, verdict) = match &error {
+                SettingsError::ReadOnly(reason) => (
+                    "read_only_not_enforceable",
+                    format!("重试时无法强制只读权限，任务停止：{reason}"),
+                ),
+                SettingsError::Model { .. } => ("model_unavailable", error.verdict(&task.agent_id)),
+            };
+            let _ = finalize_task(
+                app,
+                &task.chief_session_id,
+                task_id,
+                TaskStatus::Failed,
+                Some(stop_reason),
+                Some(&verdict),
             );
             return false;
         }
@@ -1629,6 +1952,9 @@ fn reissue_goal_for_retry(app: &AppHandle, task_id: &str, worker_session_id: &st
         return false;
     }
     let mut prompt = format!("[HOST EVENT: task.retry]\n额度窗口已恢复，继续之前的任务「{}」。原始目标：\n{}\n", task.title, task.goal);
+    if remote_mode == RemoteMode::ReadOnly {
+        prompt.push_str("[HOST 约束] 本任务为只读模式：只分析/检索/读取，不要修改任何文件。\n");
+    }
     if let Some(schema) = task.output_schema.as_ref() {
         prompt.push_str(&format!(
             "\n交付方式不变：完成时用 marionette_submit_output 提交符合此 Schema 的对象：\n{schema}\n"
@@ -1759,6 +2085,7 @@ pub(crate) fn finalize_task(
         task.status = status;
         task.cost_usd = cost_usd;
         task.waiting_reason = None;
+        task.retry_at = None;
         task.updated_at = now_ms();
         task.last_event_at = now_ms();
         task.stop_reason = stop_reason.map(str::to_string);
@@ -1797,6 +2124,12 @@ pub(crate) fn finalize_task(
                 storage.update_session_status(worker_sid, "exited")
             })
             .ok();
+            // AI 派活的 worker 没有前端替它管生命周期（后端驱动家族豁免
+            // 自动挂起）——任务一终结就把进程收掉，否则每派过一次活就
+            // 留一个 agent 进程。员工的 worker 维持原状（resume 语义不变）。
+            if task.staff_id.is_none() {
+                runner::stop_session(app, worker_sid);
+            }
         }
     }
     Ok(true)
