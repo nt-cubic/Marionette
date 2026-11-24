@@ -54,6 +54,10 @@ export function parseAskQuestionPrompt(
       header: asString(rec.header) || undefined,
       multiSelect: rec.multiSelect === true || rec.multi_select === true,
       options,
+      // Free-text capabilities are declared by the agent's schema (Rust
+      // `questions_for_ui`); a missing flag means "infer from options".
+      ...(typeof rec.other === "boolean" ? { other: rec.other } : {}),
+      ...(typeof rec.note === "boolean" ? { note: rec.note } : {}),
     });
   }
   if (questions.length === 0) return null;

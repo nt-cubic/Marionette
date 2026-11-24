@@ -123,43 +123,34 @@ Google 官方 `agy_acp_server`（dl.google.com 二进制 zip，非 npm）作为�
   input/output/cache_write/cache_read/thought 与 ACP 侧实测吻合）。0 字节库=正常空会话。
 - **turn 边界**：不发 `turn/complete` 通知，但 `session/prompt` 响应自带 stopReason+usage——
   走 acp.rs 既有「prompt 响应即回合完成」路径，回合/记账正常，无需 re-entry 兜底。
+- **问答卡未接**：agy 的 `ask_question` 走私有 `session/request_permission` + `interaction_<hex>`
+  （codeg 用 `try_bridge_antigravity_ask` 桥成问答卡）；Marionette 没有这条桥，提问目前会落到
+  权限卡上，选项被当成批准按钮。记录在案（2026-11-22），未排期——接的时候照 codeg 的形状做。
+  各家 agent 的问答通道对照见 `docs/research/research-ask-card-channels.md`。
 - **存量回收**：`antigravity_scan_leaked_temp` / `antigravity_reclaim_leaked_temp` 命令
   （15 分钟年龄 + CreateFileW share-none 非变异存活探测 + 重校验），诊断清单报数量/体积。
 - 回归：`cargo test --bin marionette antigravity`（15 项 + 2 个 #[ignore] 真库/真网 oracle）。
 
-## Google Antigravity agent（2026-11-19，M0–M3 落地）
+## 问答卡（Agent 提问，2026-11-22 通道矩阵落地）
 
-Google 官方 `agy_acp_server`（dl.google.com 二进制 zip，非 npm）作为内置 agent（id `antigravity`）。
-完整事实与实测：`docs/research/research-antigravity.md`；方案与偏差：`docs/plans/plan-antigravity.md`。
+问答卡只有两个来源：Grok 的 `x.ai/ask_user_question`，以及 ACP `elicitation/create`（form）。
+卡片形态**按 agent 自己声明的能力**渲染，不按 agent 名字写死：
 
-- **安装**：agent 菜单一键下载（registry 版本优先 + sha256 校验，离线回退 pin 1.5.0），
-  落 `~/.marionette/agents/antigravity-acp/<version>/<platform>/`；`agy_acp_server.exe` 与
-  `localharness_external.exe` 必须**同目录成对**（缺后者=握手正常但 agent 死，安装与读侧
-  双重校验）。spawn 优先安装目录，PATH 手装其次。解压走系统 `tar.exe`（回退 PowerShell），
-  **不加 zip crate**（Cargo.toml 红线）。
-- **认证**：spawn 前把 `auth.type:"oauth-personal"`（免费档默认）同步进
-  `<GEMINI_HOME>/antigravity-acp/settings.json`（单 key RMW、strict JSON fail-closed）；
-  `GEMINI_HOME` 指 `.gemini` 目录**本身**（与 Gemini CLI 的 `GEMINI_CLI_HOME` 相反），未设时
-  默认 `~/.gemini`。settings 写好后 `session/new` 直接成功，OAuth 由 server 自己触发（弹浏览器 +
-  stderr 打授权 URL）；浏览器没弹时对话里出现「等待 Google 授权」通知卡兜底（URL 可选中复制）。
-  登录探测 = `acp_token.json` 存在性。
-- **scratch 红线**：Windows 构建是 PyInstaller onefile，**每次启动解压 ~100MB 进 %TEMP% 且杀树
-  不清**（1.5.0 实测 ~90-150MB/次）——spawn 时 `TMP/TEMP/TMPDIR` 重定向进
-  `~/.marionette/scratch/antigravity/<sessionId>`，stop/stdout-EOF 两处树死回收 + 启动清扫孤儿。
-  **只对此 agent 开**（借走 TMP 会污染用户 Git Bash 的 /tmp）。
-- **探测防执行**：`installed_version`/`--version` 类探测对 `agy_acp_server` **永不执行**
-  （stem 精确匹配，大小写/路径/可选 .exe 归一）——连 `--version` 都先整包解压。版本显示来自
-  安装目录名；升级链查 ACP registry（`cdn.agentclientprotocol.com`），URL 模板不符（Google 改名）
-  = 不提供升级。
-- **usage 回填 + 历史导入**：`parsers/antigravity.rs`（prost 手写 protobuf 子集，字段号对
-  1.5.0 实测钉死：type 14=user/15=planner、metadata 1=created/9=usage/24=model）+
-  `usage_backfill/antigravity.rs`（db 文件名即 ACP sessionId，去重锚天然对上；usage 四桶
-  input/output/cache_write/cache_read/thought 与 ACP 侧实测吻合）。0 字节库=正常空会话。
-- **turn 边界**：不发 `turn/complete` 通知，但 `session/prompt` 响应自带 stopReason+usage——
-  走 acp.rs 既有「prompt 响应即回合完成」路径，回合/记账正常，无需 re-entry 兜底。
-- **存量回收**：`antigravity_scan_leaked_temp` / `antigravity_reclaim_leaked_temp` 命令
-  （15 分钟年龄 + CreateFileW share-none 非变异存活探测 + 重校验），诊断清单报数量/体积。
-- 回归：`cargo test --bin marionette antigravity`（15 项 + 2 个 #[ignore] 真库/真网 oracle）。
+- **其他（替代答案）**：有自由文本答案通道才显示。Grok（任意字符串）、Codex
+  （`_meta.codex.isOther`）、任何 `{id}_custom` / `_other` / `__other` 伴生字段。
+- **补充（附注）**：只有独立附注通道才显示。Codex 的 `{id}_note`（title
+  "Additional answer or note"）、Claude 单选的 `_custom`（有 pick 时进
+  `annotations[q].notes`）。OpenCode / ZCode / DSH 只有一个自由文本槽，不显示补充。
+- **纯文本题**只有一个「答案」输入框；**严格 enum**（Codex `isOther:false`）只有选项。
+- 单选再点一次取消；「其他」与选项互斥（多选也一样），「补充」纯附加不参与互斥。
+- 协议哨兵不渲染：Codex 的 `None of the above`、ZCode 的 `__skip__`。
+- Grok 多选发**数组**（不是 `", "` 拼接）；补充走 `annotations[q].notes`（不带空 preview）。
+- 没有问答卡的 agent：Pi（只实现 `session/request_permission`）。Antigravity 的
+  `ask_question` 仍落在权限卡（桥未接，见其专节）。
+
+完整通道矩阵与真机探针证据：`docs/research/research-ask-card-channels.md`。
+回归：`cargo test --bin marionette elicitation`（含 Codex `_note` 不是第二题、
+Claude 的 pick+notes 分流、ZCode 哨兵过滤）+ `npx tsc --noEmit`。
 
 ## 交付卡（每轮改动的口径）
 

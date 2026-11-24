@@ -318,6 +318,10 @@ struct AcpProcess {
     memory_card_sent: AtomicBool,
     /// Explicit local file picks may be passed only to an opt-in local adapter.
     local_file_upload: AtomicBool,
+    /// ACP agent id this process was spawned for (`claude-code`, `codex`, …).
+    /// Needed where the elicitation schema alone cannot say what a companion
+    /// field means: Claude's `_custom` doubles as a note, OpenCode's does not.
+    agent_id: Option<String>,
     /// 每会话 kill-on-close Job Object（2026-11-06 内存压制批）：句柄一关
     /// （terminate/Drop）内核带走整棵进程树——含 codex.exe / MCP 这些
     /// `child.kill()` 够不到的孙进程；Marionette 自己被强杀也一样收摊。
@@ -1261,6 +1265,7 @@ impl AcpService {
             cancelling_prompt_id: Arc::new(AtomicU64::new(0)),
             memory_card_sent: AtomicBool::new(false),
             local_file_upload: AtomicBool::new(false),
+            agent_id: agent_id.clone(),
             #[cfg(target_os = "windows")]
             job,
             stderr_tail: Arc::clone(&stderr_tail),
@@ -4144,10 +4149,21 @@ fn handle_agent_request(
                 .get("mode")
                 .and_then(Value::as_str)
                 .map(str::to_string);
-            let qs = params
+            // Grok's `answers` takes a free string (`typed`) and
+            // `annotations[q].notes` is a real note channel (2026-11-22 probe),
+            // so both free-text slots are available on every question.
+            let mut qs = params
                 .get("questions")
                 .cloned()
                 .unwrap_or_else(|| Value::Array(vec![]));
+            if let Some(arr) = qs.as_array_mut() {
+                for q in arr {
+                    if let Some(obj) = q.as_object_mut() {
+                        obj.insert("other".into(), Value::Bool(true));
+                        obj.insert("note".into(), Value::Bool(true));
+                    }
+                }
+            }
             if let Ok(mut map) = questions.lock() {
                 map.insert(
                     request_id.clone(),
@@ -4206,7 +4222,13 @@ fn handle_agent_request(
         // multiple-choice / web-search, …). Advertised for every agent.
         // Approval-style → permission/prompt; questions → question/prompt.
         "elicitation/create" => {
-            let plan = match crate::elicitation::classify_elicitation(&params) {
+            // Claude's `_custom` companion is a note when an option is also
+            // picked; every other adapter treats it as a plain replacement.
+            let claude_like = matches!(
+                process.agent_id.as_deref(),
+                Some("claude-code") | Some("claude-acp")
+            );
+            let plan = match crate::elicitation::classify_elicitation(&params, claude_like) {
                 Ok(p) => p,
                 Err(e) => {
                     write_response(
@@ -4536,20 +4558,27 @@ fn exit_plan_mode_disconnect_response() -> Value {
 
 /// Build the JSON-RPC result for `_x.ai/ask_user_question`.
 ///
-/// Grok deserializes this as an **internally tagged** enum on field `outcome`.
-/// Accepted shape (from grok-build-vscode research / binary strings):
+/// Grok deserializes this as an **internally tagged** enum on field `outcome`:
 /// ```json
-/// { "outcome": "accepted", "answers": { "<question>": "<label>" }, "annotations": {} }
+/// { "outcome": "accepted", "answers": { "<question>": "<label or [labels]>" },
+///   "annotations": { "<question>": { "notes": "…" } } }
 /// { "outcome": "cancelled" }
 /// ```
-/// UI sends `answers` as `[{ "question", "selected": string[] }]`; multi-select
-/// labels are joined with `", "`.
+/// `answers` values are `StringOrVec` and any string is accepted (it becomes
+/// the tool's `typed` answer), so 「其他」 is just a string that is not one of
+/// the labels. `annotations[q].notes` is Grok's real note channel — verified on
+/// 2026-11-22 against grok.exe 1.0.77: the model sees the note verbatim.
+///
+/// Multi-select is sent as an **array** (not a `", "` join): a label that
+/// itself contains `", "` would become ambiguous, and Grok accepts
+/// `StringOrVec` either way.
 fn build_ask_user_question_result(answers: Value, declined: bool) -> Value {
     if declined {
         return json!({ "outcome": "cancelled" });
     }
 
     let mut map = serde_json::Map::new();
+    let mut annotations = serde_json::Map::new();
     if let Some(arr) = answers.as_array() {
         for item in arr {
             let question = item
@@ -4560,19 +4589,44 @@ fn build_ask_user_question_result(answers: Value, declined: bool) -> Value {
             if question.is_empty() {
                 continue;
             }
+            let typed = item
+                .get("typed")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let note = item
+                .get("note")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
             let selected: Vec<&str> = item
                 .get("selected")
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(Value::as_str).collect())
                 .unwrap_or_default();
-            map.insert(question.to_string(), Value::String(selected.join(", ")));
+
+            let value = if let Some(t) = typed {
+                Value::String(t.to_string())
+            } else if selected.len() == 1 {
+                Value::String(selected[0].to_string())
+            } else if !selected.is_empty() {
+                Value::Array(selected.iter().map(|s| Value::String(s.to_string())).collect())
+            } else {
+                continue;
+            };
+            map.insert(question.to_string(), value);
+            if let Some(n) = note {
+                // `preview` is optional; sending an empty one only makes the
+                // model read a bare "selected preview:" line.
+                annotations.insert(question.to_string(), json!({ "notes": n }));
+            }
         }
     }
 
     json!({
         "outcome": "accepted",
         "answers": Value::Object(map),
-        "annotations": {},
+        "annotations": Value::Object(annotations),
     })
 }
 
@@ -6122,19 +6176,36 @@ mod tests {
                 {
                     "question": "Color?",
                     "selected": ["Blue"]
+                },
+                {
+                    "question": "Anything else?",
+                    "selected": [],
+                    "typed": "Purple"
+                },
+                {
+                    "question": "Notes?",
+                    "selected": ["Red"],
+                    "note": "偏亮"
                 }
             ]),
             false,
         );
         assert_eq!(accepted["outcome"], json!("accepted"));
+        // Multi-select stays an array (labels may contain ", "), 「其他」 is a
+        // free string, 「补充」 rides in annotations.
         assert_eq!(
             accepted["answers"],
             json!({
-                "Which approach?": "Plan first, Also ship",
+                "Which approach?": ["Plan first", "Also ship"],
                 "Color?": "Blue",
+                "Anything else?": "Purple",
+                "Notes?": "Red",
             })
         );
-        assert_eq!(accepted["annotations"], json!({}));
+        assert_eq!(
+            accepted["annotations"],
+            json!({ "Notes?": { "notes": "偏亮" } })
+        );
     }
 
     /// Stands in for an agent that stopped draining its stdin: every write parks.

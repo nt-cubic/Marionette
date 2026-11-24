@@ -230,6 +230,9 @@ $GEMINI_HOME（缺省 ~/.gemini；指 .gemini 目录本身！）
 - **native 问答桥**：`session/request_permission` 的 `interaction_<hex>` 桥接成问答卡
   （`try_bridge_antigravity_ask:10785-10853`），已答卡片记账 + 丢弃 server 随后的
   "Response received" 关闭帧防覆盖（`record_antigravity_answer_card:21216-21248`）。
+  **Marionette 未接**（2026-11-22 核对：`src-tauri/src` 里没有 `interaction_` 桥）——
+  agy 的 `ask_question` 今天会落到权限卡上（选项被当成批准按钮）。要接需照 codeg 的
+  形状单独做一块，见坑清单 #13。
 - **fs 读**：`read_response_limit` 对 Antigravity 提到 **16 MiB**（其余 agent 2 MiB）——1.4.5 起
   `client_view_file` 整文件读后自己切片（`file_system_runtime.rs:323-330`）。前提是宿主实现了
   `fs/readTextFile`；Marionette 的 `build_client_capabilities_json` **刻意关闭**该能力
@@ -254,6 +257,7 @@ $GEMINI_HOME（缺省 ~/.gemini；指 .gemini 目录本身！）
 | 10 | 未应答工具调用不 settle | 永久 spinner | 关联键去重 + 磁盘步合成空结果 |
 | 11 | 模型变体 id 与 family 选择器两代并存 | 保存的模型 id 失效 | 旧 id 原样重放；不猜映射 |
 | 12 | release notes 不可信（URL 两次改名都不在 notes） | 升级链接 404 | URL 模板解版本，不匹配就不提供升级 |
+| 13 | 原生问答桥未接（agy `ask_question` 走私有 `session/request_permission` + `interaction_<hex>`） | 提问显示成权限卡，选项被当批准按钮 | 记录在案（2026-11-22），未排期；接的时候照 codeg `try_bridge_antigravity_ask` 做 |
 
 ## M0 真机实测（2026-11-19，本机 Windows x64，agy-acp-server 1.5.0）
 
