@@ -52,6 +52,7 @@ Rust SKU 约 5.36MB；`MARIONETTE_ENGINE=magpie` 仅保留一个发布周期的�
 | grok | `grok_account.rs` | chat 直通 + cordis.patch |
 | codex | `codex_account.rs` | responses 直通/翻译 + WS（`MARIONETTE_CODEX_WS=1`） |
 | claude | `claude_account.rs` | **CLI 子进程桥**，只挂 anthropic 入站；驻留进程池 + 进程内环回 HTTP MCP helper |
+| antigravity（Gemini 订阅） | `antigravity_account.rs` + `antigravity_codeassist.rs` + `antigravity_stream.rs` | Google Code Assist 的 Antigravity 线协议（`v1internal:streamGenerateContent`），**三个入站协议都接**；目录 `fetchAvailableModels` + 同模型各档位折成一个；额度行在同文件 |
 | zcode | `zcode_account.rs` | 额度只读 + trial 拒答词表（`trial_refused_for` 四道门） |
 
 配额与余额：`quotas.rs`（DeepSeek 多币种）、`key_balances.rs`（六家来源）、
@@ -61,7 +62,7 @@ Rust SKU 约 5.36MB；`MARIONETTE_ENGINE=magpie` 仅保留一个发布周期的�
 | 想改什么 | 去哪 | 备注 |
 |---|---|---|
 | WebSocket 最小客户端 | `ws.rs` | RFC6455 手写（SHA1/掩码帧）；keep 池语义注释在 codex_account.rs |
-| 出站代理 | `mod.rs` 的 `outbound_proxy` | HTTP CONNECT 隧道；SOCKS 两路都没开 |
+| 出站代理 | `mod.rs` 的 `outbound_proxy` + `ureq_proxy` | HTTP 路径：ureq `socks-proxy`（http / socks4 / socks5）；WS 路径：`ws.rs` 手写 HTTP CONNECT 隧道 + SOCKS5（RFC 1928/1929，2026-11-26 补）。地址一律过 `ureq_proxy`：`socks5h` 与大小写归一，**解析不了不回落直连**（指向本机丢弃端口） |
 
 ### 杂项
 `cli.rs`（provider/group 动词直调，GUI 零 println）、`cors.rs`、`store.rs`
@@ -149,10 +150,31 @@ node scripts/verify-engine-contract.mts src-tauri/target/debug/marionette-engine
 
 - **剩余队列**：continuation 断流续答（chat.rs 尾清单）、Claude 桥 gap 1
   （savedSession/replay/branch 家族）与 4–14 细项、WS 的 permessage-deflate/
-  分片延续帧/SOCKS、redact 的 crypto.go/more.go 附加规则与用户词表、HEIC
-  （红线卡住，见 bodyprep 头注）。
+  分片延续帧（SOCKS 已于 2026-11-26 补上）、redact 的 crypto.go/more.go 附加规则
+  与用户词表、HEIC（红线卡住，见 bodyprep 头注）。
 - **T13 真 key 对账**已完成核心来源；剩余边缘组合继续按真实使用补。
 - **T14** 已把 Rust 翻为默认 SKU；magpie 回退保留一个稳定发布周期。
+- **上游 v0.1.4514 → v0.1.4824 对照（2026-11-26，310 个 tag / 395 个提交，只读走查，未跑合同套件）**：
+  无 P1。已补：Codex 客户端版本下限 0.159.0 → 0.169.1（GPT-6.2 Sol/Astra 要
+  0.166.0 才被后端列出）。**仍缺的 P2**：
+  - chat 直通的空回复不判失败、不重问（`d847b7969`、`b099c8306`）；
+  - 无名 tool call 只在部分路线清洗，严格上游每轮 400（`33b04b64e`）；
+  - input item id 被拒不换 plain id 重发（`8bda3d555`）；
+  - Gemini 2.5+ 在 Google 域名上的 `max_tokens` 思考余量（`02d7e79a2`、`8bed54271`）；
+  - `POST /v1/responses/compact` 无路由（`6e6da86c8`、`1f5cd71d9`）；
+  - Claude 桥被限额拒答后不休息到 resetsAt（`c98c3df72`）；
+  - `/v1/models` 返回裸 JSON 数组的来源读不出（Together，`f203b1072`）；
+  - Codex 中继遇 `agent_message` 400 不改写重发（`1bcab610f`）；
+  - 结构性：订阅账号作为组成员不参与失败转移（排头时耗尽直接 429/401，非头时轮不到）。
+  P3（休息表分级、图片张数上限、Ultra 档位、`fit` 路由等）见当日会话与
+  `<clone>/.marionette-watch/digests/`。**vendored 快照没有跟进**：导入器在
+  4824 上锚点齐全，但 `internal/gateway` → `internal/coderun` 会把 goja（JS 解释器）
+  链进种子，并带回 Artifacts 等新端点与后台外联；要升先跑
+  `npx tsx scripts/upstream-watch.mts --verify <tag>` 在隔离 worktree 里量体积、过合同。
+- **Antigravity（Gemini 订阅）对话桥**（2026-11-26 从 v0.1.4514 移植，此前 Rust 引擎
+  只有这一族的额度行、开关空转）：红线与差距全表见 AGENTS.md「Antigravity（Gemini
+  订阅）对话桥」节。仍缺的：思考签名回传、`dropPseudoCalls`、GIF→PNG、Google 搜索执行 /
+  图片生成工具、多账号池、被拒记忆（agForeseeing）、`catalog.Decorate` 的窗口补全。
 - 各模块差距清单在**各自头注**（最重的是 claude_account.rs 14 条）。
 - 本手册蒸馏自：AGENTS.md「上游移植管线/引擎方言与子系统批次/引擎 Rust 化」段 +
   `docs/plans/plan-engine-rust.md` 全账本 + 收尾/收尾2 批（2026-11-18）实作。

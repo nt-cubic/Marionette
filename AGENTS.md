@@ -539,11 +539,15 @@ icacls D:\Apps\Marionette /setintegritylevel (OI)(CI)Medium
   3P 一组（Claude & GPT），Gemini / Gemini 4 Argon 组**整个缺失**（右栏只在反重力会话里看得齐，
   别的 agent 下点额度缺族，就是它）；agy 自己的 aidev 结构形状（`antigravity/acp/<版本>
   (aidev_client; …; proxy_client=antigravity/sdk)`）回齐全部组。`antigravity_account.rs` 的
-  `USER_AGENT` 必须逐字镜像 agy `useragent.build_user_agent` 的默认形状，**别改回扁平形状**；
-  mock 测试钉着 UA 断言。
+  `USER_AGENT`（**额度行专用**）必须逐字镜像 agy `useragent.build_user_agent` 的默认形状，
+  **别改回扁平形状**；mock 测试钉着 UA 断言。对话桥 / 模型清单（Code Assist）用的是另一个
+  UA `hub_user_agent()`——magpie 的扁平形状，两个别合并（见文末「Antigravity（Gemini
+  订阅）对话桥」节）。
 - 回归：`cargo test --bin marionette antigravity`；真机 oracle（#[ignore]）：
   `antigravity_oracle`（真库解析）/ `antigravity_backfill_oracle`（真库回填）/
   `antigravity_quota_oracle`（真账号额度，断言 aidev UA 下应答多于一个族）/
+  `antigravity_models_oracle`（真账号模型清单，只读不对话）/
+  `antigravity_chat_oracle`（**真发一句对话、花额度**）/
   `live_install_pin`（真网下载安装，测试自隔离 USERPROFILE）。没有全局 VS 环境的 shell 用
   `tools\run-tests-msvc.bat <过滤词> -- --ignored --nocapture` 跑。
 
@@ -1839,3 +1843,188 @@ SHA256SUMS 校验，engine.rs default 构建本来就不含载荷）。用户定
 
 回归：`npx tsx scripts/verify-engine-contract.mts`（对 vendored 种子）+
 `npx tsx scripts/upstream-watch.mts`（digest 模式，联网）。
+
+## 代理 SOCKS / 自定义来源流程 / 上游 4824 对照 / 内存地板复测（2026-11-26）
+
+用户反馈批（六件）：模型共享卡排版、SOCKS 代理、Magpie 体积说明、上游跟进、
+自定义来源流程、内存地板。现行行为见 `docs/CURRENT.md`「网络代理」与
+`docs/guides/model-library.md`「自定义来源对话框」。改这块先记：
+
+- **应用内取代理只有一个入口**：`proxy::ureq_proxy(url)`（主程序）/
+  `engine_gateway::ureq_proxy(url)`（网关不 import 主程序，各留一份）。
+  **别裸调 `ureq::Proxy::new`**——它大小写敏感、不认 `socks5h`，旧写法
+  `if let Ok(proxy)` 解析不了就静默直连（fail-open）。现在 `socks5h`→`socks5`、
+  scheme 小写归一；仍解析不了的地址在网关侧指向本机丢弃端口（不直连），主程序
+  侧如实报「代理地址无效」。ureq 2 **不支持 https 代理**，`validate_proxy_url`
+  如实拒绝，别把注释改回「接受 https://」。
+- SOCKS5 在 WS 路径是 `ws.rs` 手写（RFC 1928/1929，域名原样交给代理；stdlib，
+  不加 crate）；HTTP 路径靠 ureq 的 `socks-proxy` feature（只多一个极小的 `socks`
+  crate）。回归：`cargo test --bin marionette socks`、`proxy::tests`、
+  `engine_gateway::ws::tests`（本机回环假 SOCKS5 / HTTP 代理，不联网）。
+- **代理测试的红绿看 `ok` 字段**（`ProjectShelf.tsx` 的 `proxyTest.ok`）；此前结果框
+  写死 `is-ok`，「连接失败」也画成绿的。地址一改就清掉旧结论。
+- 测试只证明 **Marionette 自身**能走这个代理；agent 的网络库认不认 `socks://` 是它
+  自己的事——面板在地址是 SOCKS 时给「连不上就改填 HTTP / 混合端口」的提示，
+  **别把这句删成「已支持 SOCKS」**。
+- **自定义来源走独立对话框**（`CustomSourceDialog.tsx`：地址 → 协议 → Key → 名称 →
+  获取模型 → 保存）。后端 `model_sources::probe_custom` 在保存前拉
+  `{endpoint}/models`（不落盘、不注册；Anthropic 走 `x-api-key` + `after_id` 翻页，
+  游标不动就停）；地址校验与保存共用 `credentials::clean_custom_endpoint`。旧的内联
+  表单（服务商下拉底部的「自定义」+ 手填模型 ID）已删。
+- **动态目录 vs 固定清单**：列表显示的就是保存的内容。获取成功后保存 = `models`
+  留空 = live；手动加 ID / 删行 = 固定清单。`engine.rs::pinned_models_pair` 是唯一
+  裁决点：**只有手动来源且清单非空才发 `models=`**，其余发现来源一律 live
+  （2026-10-30 定案不动）；空清单**绝不**发 `models=`（引擎读成「一个都不
+  不暴露」）。手动来源用 `model_sources::Source::manual_entry_id`（按 origin
+  `Marionette · …#<条目 id>`）识别——**发现来源的 `view.id` 是 `source-<摘要>`，不是
+  条目的 `custom-…`，按前缀判断永远不命中**（凭据页「编辑」按钮的匹配同理）。钉死
+  的来源跳过 `maybe_refresh_source_live`（refresh→all 会解钉）；从钉死改回留空时
+  指纹必变，由它把引擎里的旧清单解掉。此前 live 化把所有来源的 `models=` 都拿掉了，
+  手填 ID 在引擎里是空话——没有 `/models` 的中转一个模型都不出。
+- **编辑**走 `bridge_update_custom_provider`（`credentials::update_custom_provider_at`）：
+  `key = None` 沿用原密钥（密文原样搬家，不解密）、`Some("")` 改成无认证；名称 /
+  地址 / 协议任一改动 = 换 id（三者的摘要），旧条目退位、`createdAt` 保留。
+- **Magpie 体积**：CLI 资产 ~48MB 是 2026-10-30（v0.1.1877）的数，现在 ~100MB。
+  release 资产实测：v0.1.3788（11-11）71.8MB → v0.1.3928（11-12）85.6MB →
+  v0.1.4612（11-20）99.4MB → v0.1.4824 101.3MB；12 天 2664 个提交、+17 万行，新增
+  `modernc.org/sqlite`、`MoeForge/moejs`、`sigstore-go`，goja 在 v0.1.4612 进入。
+  回退 SKU 的下载预算 `DOWNLOAD_TIMEOUT` 600→1200s。**发布 exe 仍 ≈6.2MB**
+  （Rust SKU，无 magpie 载荷）——上面「资源优化批」的 15.9MB 是旧的 magpie 内嵌 SKU。
+- **上游 v0.1.4514→v0.1.4824**：对照结论与仍缺的 P2 记在
+  `docs/manual/engine-gateway.md`「已知差距与源流」。已补 Codex 客户端版本下限
+  （`codex_account.rs::CLIENT_VERSION` 0.159.0→0.169.1，GPT-6.2 Sol/Astra 要 0.166.0
+  才被后端列出）。**vendored 快照没升**：导入器锚点齐全，但 `internal/gateway` →
+  `internal/coderun` 会把 goja 链进种子；要升先
+  `npx tsx scripts/upstream-watch.mts --verify <tag>` 在隔离 worktree 里量体积、过合同。
+- **magpie 回退 SKU 曾编译不过（已修）**：11-22 安全批给 `engine.rs` 加的
+  `mint_gateway_token` / `set_subscription_enabled` 两处调用没带 `engine_rust_active`
+  门，`check.bat check --no-default-features` 自那时起就是红的。新增只在进程内引擎
+  存在的东西时，主程序侧的调用点记得配 `#[cfg(engine_rust_active)]`。
+- **内存地板复测**（v0.8.6 隔离实例）：整棵树工作集 191MB / 专用 280MB，WebView2
+  六进程 138 / 248MB（gpu-process 一家 126MB 提交、~9MB 驻留）。口径没算错；
+  「WebView2 吃 600MB」是有内容之后的状态。**最小化省 150–250MB 只在渲染进程本来就
+  装了很多页时成立**（空实例实测只降 8MB，日志确认 TrySuspend 确实发生）。
+- **坑**：`tools\demo-instance.bat` 只隔离数据，**不隔离 agent 自动更新**（启动即
+  `npm install -g`，改的是全局 npm 包）。拿它量内存 / 拍图前要知道。
+
+回归：`npx tsc --noEmit`、`node scripts/verify-all.mjs`、
+`cargo test --features engine-rust --bin marionette`。
+
+## 模型设置统一 + 首启引导（2026-11-27）
+
+用户反馈批：「凭据页一堆 opencode-go 行不知道是什么」「订阅行点不开、看不到里面有什么」
+「模型与来源 / 密钥与来源两个入口分不清」。三条一次收进一个「模型设置」对话框
+（`ModelSettingsDialog.tsx`，替代原 ModelLibraryDialog + CredentialsDialog）+ 一页式
+首启引导（`GettingStartedGuide.tsx`）。改前先记：
+
+- **一个入口一个对话框**：footer 模型共享弹层只剩一行「模型设置」；composer 模型菜单
+  底部的「配置模型与来源…」也进它。左列＝订阅共享四族（点行看详情：登录、额度、
+  这一族里有什么模型、共享开关）＋ 来源列表（显示/排序、密钥、检测、删改）＋
+  添加来源 / 扫描本机 ＋ 本机登录与诊断（折叠）；右列＝选中项详情。旧的
+  `ModelLibraryDialog.tsx` / `CredentialsDialog.tsx` 已删，别再各开一个入口。
+- **订阅族的模型清单是只读 peek**：共享关着时引擎目录里没有这一族，但用户要有地方
+  看到「里面有什么」。命令 `model_library_family_models`（engine.rs
+  `subscription_family_models`）走四个账号模块的 `listed_rows_for_inspection`——
+  **只跳过 `family_enabled` 闸**，用户自建来源让位 / 登录判断 / 缓存 / 退避照旧。
+  它不进任何菜单/注入，共享闸仍管住对话与菜单；magpie 回退 SKU 返回空表 + note。
+  四个模块的 `listed_rows` 现在是 `rows_impl(providers, gated)` 的薄包装。
+- **桥注入的模型不再冒充凭据**：`grok/channel/*`（跨用桥写进 Grok 配置的模型）在
+  统一对话框里不出现；预设 API Key 按来源聚合（一个来源一行，模型在详情里），扫描
+  来的登录/来源收进「本机登录与诊断」折叠区。
+- **没有「借给谁」这回事**（2026-11-27 用户定案）：共享引擎一开所有 agent 都能用，
+  「借给 X agent」是旧桥时代的概念。来源详情只写「发现自」（origin：本机凭据 /
+  哪个 agent 的配置）+ 端点。
+- **同一账号只列一个来源**：引擎 providers.json 里同一把钥匙 + 同一厂商主机常被登记
+  成多个 provider（预设 + 发现的副本、重复发现留下的多份 `source-*`，实测 deepseek /
+  deepseek.com、zhipu / open.bigmodel.cn、opencode.ai ×3）。`engine.rs::
+  provider_account_aliases` 在扫描载荷的 `aliases` 里给重复项指回代表项（偏好不是
+  `source-` 的、模型多的、id 小的）——**只做展示合并，providers.json 不删**，已有
+  绑定 `source-…/model` 照旧解析。前端 `libraryGroups` 已对引擎行套 aliases。
+  只读诊断：`cargo test --bin marionette model_library_scan_oracle -- --ignored --nocapture`。
+- **左列按「厂商」合并展示**（2026-11-27 第二版）：aliases 之后仍有重名——同一厂商在
+  多个 agent 的目录里各一行（xAI / Z.AI 各两行、`zhipuai-coding-plan`）看着就是重叠。
+  `ModelSettingsDialog` 的 `display` 把 `plain(label)` 相同的组合成一行：每个模型行
+  仍属于原组（**显示开关/排序照旧按组写盘**，只是不再分两行呈现）；多个成员时按
+  「`<agent>` 的模型 / 来源名」分段，成员名去重后相同就当一个列表（不画重名段头）。
+  共享开关作用于这一厂商的全部成员行。
+- **订阅详情可直接登录**：未登录时给「登录」按钮，走 `start_agent_login`
+  （claude-code / codex / grok-build / antigravity 各自的登录流程，antigravity 是
+  一次性 ACP authenticate），登录在它自己的窗口里完成，8 秒后自动刷新一次、也可手点。
+- **Ctrl K 前两项固定**：「开始使用（引导）」→「模型设置」；其它动作排在后面。
+  模型设置的常驻实例在 ProjectShelf，Ctrl K 通过 `lib/modelSettings.ts` 的
+  `MODEL_SETTINGS_EVENT` 请求打开（别为此把对话框提升到 App 再复制状态）。
+- **首启引导**：一页式，不做向导。自动检测已登录订阅 / 已有 API 来源 / 已启用 agent：
+  有任意一条 → 主按钮「开始第一场对话」（当前 agent 默认模型，不强制先配来源）；
+  一条都没有 → 三条路（登录订阅 / 加 API Key 或自定义来源 / 先直接看看）。自动弹出
+  条件：**没有任何会话**且没点过跳过（localStorage `marionette-getting-started-v1`）；
+  Ctrl K「开始使用」随时重开。引导里的「打开模型设置」自己挂一份 ModelSettingsDialog。
+- 回归：`npx tsc --noEmit`、`node scripts/verify-all.mjs`、
+  `cargo test --features engine-rust --bin marionette`（新命令不改网关合同）。
+
+## Antigravity（Gemini 订阅）对话桥（2026-11-26）
+
+登录状态修对之后「Gemini 订阅」那一行会变成「未共享 · 默认关闭」，而 Rust 引擎里
+这一族只有额度行、没有对话桥——开了也没模型可出。用户定案：**补全，照 magpie 的
+做法**（不是标成暂不支持）。现行行为见 `docs/CURRENT.md`「跨用」节。三个文件：
+
+- `engine_gateway/antigravity_codeassist.rs`：请求侧。函数 schema 精简成 Google 收的
+  子集（`plain_schema`：本地 `$ref`、union 折进自己的形状、数字关键字只留一份）、
+  系统提示词改写（`cloak_system` / `cloak_user_turns` / `reword`）、chat 请求体 →
+  IR（`read_chat`）→ Gemini `request`（`build_request`）→ 信封（`envelope`）。
+- `engine_gateway/antigravity_stream.rs`：应答侧。`data: {"response": {Gemini 分块}}`
+  → 标准 chat 流（`ChatStream`：思考 / 正文 / 调用 / 收尾 / usage；正文里写出来的
+  `call:default_api:<tool>{…}` 变成真调用）。
+- `engine_gateway/antigravity_account.rs`：账号段。凭据发现与 access token（与额度行
+  同一份，只读）、项目与档位、`fetchAvailableModels` 目录与**家族折叠**、`sent_id`、
+  `intercept`（三个入站协议都接，挂在 `routes.rs` 三个对话臂 grok 之后 + `catalog_rows`）。
+
+改这块先记：
+
+- **模型 id 有两层**：Antigravity 把同一模型的每个思考档位列成一行
+  （`gemini-3.8-flash-low/-medium/-high`）。目录按家族折成一行，档位进目录行的
+  `reasoning_levels`（composer 据此给档位菜单）；出站时 `sent_id_in` 按强度换回变体
+  id（没要强度 → 家族不带强度词的 id，没有就 high，再没有就最高；家族没有的档位取
+  最近、同距取高）。**折叠前存的会话偏好还点名变体 id**——`knows` 认目录里每个变体，
+  变体 id 没要强度原样发。`-tiered` 的 id 继承所属模型的档位表。别把家族折叠挪进
+  消费点各折一遍。
+- **两个 UA 不是同一个，别合并**：额度行是 agy 的 aidev 形状（见「Google Antigravity agent」节）；对话与
+  模型清单（Code Assist：`loadCodeAssist` / `fetchAvailableModels` /
+  `streamGenerateContent`）是 magpie 实证的扁平形状 `antigravity/hub/<版本> <os>/<arch>`。
+  基址也分工：`loadCodeAssist` 走 prod，其余走 daily。版本号问更新器（6h 一次、5s
+  超时），测试构建不联网。
+- **清单按 Antigravity 自己的问法要**：项目 = 登录文件里的 `project_id`；档位来自
+  `loadCodeAssist`（1h 问一次，问不到就不带）；`entitlement.userTier` 先点付费档再点
+  当前档（免费档 / legacy 不点），**被 400 的档位 24h 内不再点**，最后总有一次不带
+  档位。不给对话用的（`chat_*` / `tab_*` / `antigravityHidden`）与 `disabled` 的不列。
+- **联网一律在 `STATE` 锁外**（清单要几秒；对话路径的 `knows` / `sent_id` 同时读
+  目录）：抓取用克隆出的 `Scratch`，抓完并回。目录 30s 缓存、失败 60s 退避并回旧
+  目录；**一份都没拿到过且不是 401** → 兜底表（`live = false`，id 原样发、不折家族），
+  401 → 什么都不列。对话请求来时目录冷着（引擎刚起、agent 没先列模型）桥自己要
+  一份再认 id。
+- **被拒的 429 不是额度**：Antigravity 对某些系统提示词（Claude Code 的计费头、Codex、
+  OpenCode、pi、Hermes、omp 的身份行）一律回 429「Resource has been exhausted」。
+  判定对着**写下来的**系统提示词（发出去的是改写过的），HTTP 层改成 400 + 提示
+  （SDK 不重试 400），流里自己的 error 事件经 `ChatStream::with_error_hook` 同样改写。
+  别的 429（「You have exhausted your capacity…」）原样透传。
+- **族名映射在 engine.rs**：这一族在引擎里的来源 id 是 `antigravity`，不是 `gemini`。
+  `share_family_of` 是唯一映射（`subscription_catalog_visible` 用）；只认 `gemini/`
+  前缀会让 antigravity 行绕过这一族的开关（已修，`subscription_families_hidden_until_enabled`
+  钉着）。
+- **三个入站协议复用现成的出站翻译**：Responses 入站走 `responses::prev_prepare`
+  （`previous_response_id` 与翻译路径同一张回合表、miss = 400）+ `reshape`；Anthropic
+  入站走 `messages::chat_reply_to_anthropic`。这三个为此才是 `pub(super)`——usage
+  记账跟着它们走，别另起一套。非流式客户端一律先 `ChatStream::into_result` 折成整块
+  再交翻译器。
+- **测试缝**：`TEST_SEAM { base, home }`——两个 Code Assist 基址在测试里都指向同一个
+  mock（按路径分流；`route_when` 再按请求体分流，档位 400 用）。`world()` 会复位
+  目录/档位/被拒表。真机 oracle（`#[ignore]`）：`antigravity_models_oracle`（只读清单，
+  不对话不花额度；2026-11-26 实跑：free-tier，14 个模型折成 12 行）、
+  `antigravity_chat_oracle`（**真发一句对话、花额度**，跑之前想清楚）。
+- **与 magpie 的差距**（各文件头注有全表）：思考签名不回传（一律带「别校验」）；
+  `dropPseudoCalls`、GIF→PNG、Google 其它工具（搜索执行/图片生成）没搬；
+  `catalog.Decorate` 只借名字；多账号池、被拒记忆（agForeseeing）不做；textcalls 的
+  scout 不装（Antigravity 有自己的正文内嵌调用处理）；responses 客户端吃到流内 error
+  被现成 `ResponsesSse` 安静跳过（所有 chat 厂商都如此，不是这里独有）。
+
+回归：`cmd //c "check.bat test --bin marionette-engine antigravity"`（65 项）+
+`cargo test --features engine-rust --bin marionette`。

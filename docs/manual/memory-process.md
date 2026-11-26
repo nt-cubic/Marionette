@@ -65,3 +65,19 @@ cargo test --bin marionette drop_auto_bindings_clears_only_auto_rows
 - 蒸馏自：AGENTS.md「资源优化批」「内存压制批」全文 + main.rs/process_util.rs 实读。
 - 硬底线（诚实）：WebView2 运行时本身 ~250MB；Web UI 不弃总量就到不了 100MB——
   换原生 UI 是独立重写项目，别顺手做。
+- **地板复测（2026-11-26，v0.8.6 隔离实例，无会话、引擎未启动）**：整棵树
+  7 个进程 = 工作集 191MB / 专用（提交）280MB，与上面的口径一致。拆开看：
+  主进程 54 / 32MB；WebView2 六进程 138 / 248MB，其中 **gpu-process 一家就占 126MB
+  提交但只有 ~9MB 驻留**，浏览器进程 43MB、渲染进程 54MB、工具进程 ~22MB。
+  「WebView2 吃 600MB」不是空闲地板，是有内容之后的状态——同一台机器上实测
+  Teams 的 WebView2 树工作集 1.1GB（渲染进程 987MB）；内置浏览器标签开了重站点、
+  长对话里解码过的图片、代码高亮都会把渲染进程顶上去。对外报数时说清是工作集
+  还是专用提交，别混。
+- **最小化省内存是有条件的**：同一次复测里最小化后专用只从 281 降到 273MB，
+  工作集没降（日志确认 `webview suspended (TrySuspend)` 确实发生）。上面写的
+  「再降 150–250MB」只在渲染进程本来就装了很多页时才成立；空实例的渲染进程
+  才 47MB，没东西可省。
+- **演示实例只隔离数据，不隔离 agent 自动更新**：`tools\demo-instance.bat` 起的
+  实例照常执行启动时的 agent 自动更新，改的是**全局 npm 包**（2026-11-26 实锤：
+  隔离实例把 `@openma/deepseek-harness-acp` 与 `zcode-acp-server` 升了级）。用它量
+  内存或拍图前要知道这一点。

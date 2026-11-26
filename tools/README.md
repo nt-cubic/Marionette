@@ -36,6 +36,7 @@
 `demo-instance.bat` 准备一个丢弃式的 profile（默认 `%TEMP%\marionette-demo`）并在其中启动一个实例：
 
 - **隔离**：`USERPROFILE` 与 `WEBVIEW2_USER_DATA_FOLDER` 都指向该 profile，所以 `projects.json`、会话、日志、单实例锁、WebView2 存储（主题 / 布局 / localStorage）全在临时目录里 —— 真实数据不会被读写，正在用的实例也不会被踢（单实例锁在 `<USERPROFILE>\.marionette\instance.lock`，换 profile 就互不相干）。
+- **隔离的只是数据，不是机器**：实例启动时照常执行 agent 自动更新，`npm install -g` 改的是**全局** npm 包（2026-11-26 实锤：一个 `-AgentConfig none -NoSeed` 的隔离实例把 `@openma/deepseek-harness-acp` 和 `zcode-acp-server` 升了级）。这不是 bug——正式实例下次启动也会这么做——但只是想拍图或量内存时要心里有数。
 - **预置**：`demo-app` 演示项目（一个小 git 仓库，带一个未提交改动）已经写进演示 profile 的 `projects.json`，所以窗口里看不到任何真实项目或对话。
 - **拍图状态**：默认再写一份预置对话——`demo-seed\session.json.tmpl` 落成 `<demo-app>\.marionette\sessions\index.json` 里的一条会话，`demo-seed\transcript.jsonl.tmpl` 落成同目录 `transcripts\<id>.jsonl`。内容是「读文件 → 改文件 → 跑命令 → 回复带代码块」的一整回合（SessionEvent JSONL，`parseTranscriptEvents` 直接吃得下），**不跑 agent、不耗额度、每次构图一样**；模板里的中文和文案随便改，时间戳由脚本填。`-NoSeed` 跳过。
 - **语言**：`-Lang zh-CN`（默认）给 WebView2 传 `--lang`，时钟按中文排版；机器是日文/英文区域设置时也不会冒出「午後 0:26」。
