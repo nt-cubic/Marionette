@@ -102,8 +102,7 @@ import {
   type DelegateCandidate,
 } from "../lib/delegate";
 import { ProviderConfigDialog } from "./ProviderConfigDialog";
-import { ModelLibraryDialog } from "./ModelLibraryDialog";
-import { CredentialsDialog } from "./CredentialsDialog";
+import { ModelSettingsDialog } from "./ModelSettingsDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { SessionInfoRing } from "./SessionInfoRing";
 import type { SessionInfoData } from "../lib/sessionInfo";
@@ -770,7 +769,6 @@ export function Composer({
   const [showProviderDialog, setShowProviderDialog] = useState(false);
   /** Opened from the model menu — display/order settings for every source. */
   const [showModelLibrary, setShowModelLibrary] = useState(false);
-  const [showSourcesDialog, setShowSourcesDialog] = useState(false);
   /** A key was added/removed this visit — the agent must restart to see it. */
   const [providerKeysDirty, setProviderKeysDirty] = useState(false);
   /**
@@ -4470,17 +4468,10 @@ export function Composer({
         />
       )}
       {showModelLibrary && (
-        <ModelLibraryDialog
-          agents={agents}
-          onClose={() => setShowModelLibrary(false)}
-          onManageSources={() => { setShowModelLibrary(false); setShowSourcesDialog(true); }}
-        />
-      )}
-      {showSourcesDialog && (
-        <CredentialsDialog
+        <ModelSettingsDialog
           agents={agents}
           onClose={() => {
-            setShowSourcesDialog(false);
+            setShowModelLibrary(false);
             // Keys and sources feed the picker; re-read them once the dialog
             // closes so the model menu reflects an added or removed credential.
             void refreshModelSources().catch(() => undefined);

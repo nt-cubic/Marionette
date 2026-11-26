@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime, type BridgeModel, type BridgeModelsResult } from "./api";
 import { bridgePresetLabel, engineProviderLabel, invalidateBridgeModels } from "./bridge";
 import { modelProviderGroup } from "./modelLabel";
+import { previewSourceScan } from "./mockData";
 import type { ModelDef } from "./types";
 
 export type SourceModel = { id: string; label: string; nativeIds: Record<string, string[]> };
@@ -17,7 +18,7 @@ export type ModelSource = { id: string; label: string; endpoint: string; protoco
  * holding a copy of the same sign-in, whose listing must not appear twice.
  */
 export type EngineAccount = { engine: string; agent: string; provider: string; kind: "owner" | "duplicate" };
-export type SourceScan = { sources: ModelSource[]; warnings: string[]; paths: { path: string; status: string; detail: string }[]; aliases: Record<string, string>; accounts?: EngineAccount[] };
+export type SourceScan = { sources: ModelSource[]; warnings: string[]; paths: { path: string; status: string; detail: string }[]; aliases: Record<string, string>; accounts?: EngineAccount[]; signedIn?: string[] };
 export type ModelLibraryPreferences = {
   hiddenProviders: string[];
   hiddenModels: string[];
@@ -53,10 +54,13 @@ export type LibraryRow = {
 };
 export type LibraryGroup = { key: string; label: string; rows: LibraryRow[] };
 export const DEFAULT_MODEL_PREFERENCES: ModelLibraryPreferences = { hiddenProviders: [], hiddenModels: [], providerOrder: [], modelOrder: {} };
+/** 浏览器预览 / 旧负载没有 `signedIn` 时的稳定空表（引用不变，memo 不白算）。 */
+const NO_SIGN_IN: string[] = [];
 const EVENT = "model-library-changed";
 const SOURCES_EVENT = "model-library-sources-changed";
 let preferences: ModelLibraryPreferences = DEFAULT_MODEL_PREFERENCES;
-let scan: SourceScan = { sources: [], warnings: [], paths: [], aliases: {} };
+// 浏览器预览带一份假扫描（订阅共享四行的三种状态能摆出来看）；桌面端从空表起步。
+let scan: SourceScan = isTauriRuntime() ? { sources: [], warnings: [], paths: [], aliases: {} } : previewSourceScan;
 let scanPromise: Promise<SourceScan> | null = null;
 let scannedAt = 0;
 const subscribers = new Set<() => void>();
@@ -152,7 +156,7 @@ export function useModelLibrary(scanOnMount = true) {
     }
     return () => { active = false; subscribers.delete(changed); disposers.forEach(fn => fn()); };
   }, [scanOnMount]);
-  return { preferences, sources: scan.sources, warnings: scan.warnings, paths: scan.paths ?? [], aliases: scan.aliases ?? {}, accounts: scan.accounts ?? [], error };
+  return { preferences, sources: scan.sources, warnings: scan.warnings, paths: scan.paths ?? [], aliases: scan.aliases ?? {}, accounts: scan.accounts ?? [], signedIn: scan.signedIn ?? NO_SIGN_IN, error };
 }
 
 export function ordered<T>(items: T[], order: string[], key: (item: T) => string, label: (item: T) => string): T[] {

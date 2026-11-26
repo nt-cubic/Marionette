@@ -1199,7 +1199,7 @@
 .model-library-dialog button:disabled { opacity: .4; cursor: default; }
 .model-library-dialog__spacer { flex: 1; }
 .model-library-dialog__faint { color: var(--text-faint); font-size: 12px; }
-.model-library-dialog__header { display: flex; align-items: center; gap: 10px; flex: none; height: 48px; padding: 0 10px 0 18px; border-bottom: 1px solid var(--hairline); }
+.model-library-dialog__header { display: flex; align-items: center; gap: 10px; flex: none; height: 46px; padding: 0 10px 0 18px; border-bottom: 1px solid var(--hairline); background: var(--panel-soft); }
 .model-library-dialog__title { font-size: 14px; font-weight: 600; color: var(--text-strong); }
 .model-library-dialog__status { font-size: 12px; color: var(--text-faint); }
 .model-library-dialog__text-btn { height: 28px; padding: 0 10px; border: 0; border-radius: var(--radius); background: transparent; color: var(--text-muted); font: inherit; font-size: 12.5px; cursor: pointer; white-space: nowrap; transition: background-color var(--dur-fast, 120ms) var(--ease-standard, ease), color var(--dur-fast, 120ms) var(--ease-standard, ease); }
@@ -1228,24 +1228,58 @@
 .model-library-dialog__search { display: flex; align-items: center; gap: 8px; flex: none; height: 38px; padding: 0 14px; border-bottom: 1px solid var(--hairline); color: var(--text-faint); }
 .model-library-dialog__search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text-strong); font: inherit; font-size: 12.5px; }
 .model-library-dialog__search input::-webkit-search-cancel-button { display: none; }
-.model-library-dialog__source-list { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 0; }
+.model-library-dialog__source-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 0 6px; }
 /* 订阅共享四族（2026-11-22 默认不共享）：搜索条与来源列表之间的常量区块。 */
-.model-library-dialog__shares { flex: none; padding: 8px 14px 6px; border-bottom: 1px solid var(--hairline); display: flex; flex-direction: column; gap: 2px; }
-.model-library-dialog__shares-title { color: var(--text-faint); font-size: 11px; margin-bottom: 2px; }
-.model-library-dialog__share { display: flex; align-items: center; gap: 8px; min-height: 30px; }
-.model-library-dialog__share-text { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 6px; }
-.model-library-dialog__share-name { color: var(--text); font-size: 12.5px; }
-.model-library-dialog__share-sub { color: var(--text-faint); font-size: 11px; }
+.model-library-dialog__shares { flex: none; display: flex; flex-direction: column; padding: 4px 0 6px; }
+.model-library-dialog__section-title { flex: none; padding: 8px 14px 4px; color: var(--text-faint); font-size: 11px; }
+/* 来源列表是独立分区：标题固定、列表自己滚，标题与行文字同一 14px 缩进。 */
+.model-library-dialog__section { display: flex; flex-direction: column; flex: 1; min-height: 0; border-top: 1px solid var(--hairline); }
+/* 名称与结论上下两行（同下方来源行）：左栏 240px 时名称 + 状态同行放不下，
+   会按汉字硬折成「ChatGPT 订 / 阅」；两行各自由省略号收尾，永不折行。
+   行本身可点开（右侧详情：登录、额度、这一族里有什么模型），开关在行尾。 */
+.model-library-dialog__share { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 10px 0 14px; }
+.model-library-dialog__share:hover { background: var(--panel-soft); }
+.model-library-dialog__share.is-selected { background: var(--panel-raised); box-shadow: inset 2px 0 0 var(--accent); }
+.model-library-dialog__share.is-selected .model-library-dialog__share-name { font-weight: 500; color: var(--text-strong); }
+.model-library-dialog__share-pick { display: flex; align-items: center; flex: 1; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.model-library-dialog__share-pick:hover { background: transparent; }
+.model-library-dialog__share-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.model-library-dialog__share-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 12.5px; }
+.model-library-dialog__share-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-size: 11px; }
 .model-library-dialog__share-sub.is-on { color: var(--accent); }
 .model-library-dialog__share-sub.is-faint { font-style: normal; }
 .model-library-dialog__source { display: flex; align-items: center; gap: 8px; width: 100%; height: 48px; padding: 0 14px; border: 0; background: transparent; color: var(--text); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; transition: background-color var(--dur-fast, 120ms) var(--ease-standard, ease); }
 .model-library-dialog__source:hover { background: var(--panel-soft); }
-.model-library-dialog__source.is-selected { background: var(--panel-raised); color: var(--text-strong); box-shadow: inset 0 1px 0 var(--hairline), inset 0 -1px 0 var(--hairline); }
+.model-library-dialog__source.is-selected { background: var(--panel-raised); color: var(--text-strong); box-shadow: inset 2px 0 0 var(--accent); }
 .model-library-dialog__source-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .model-library-dialog__source-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-library-dialog__source.is-selected .model-library-dialog__source-name { font-weight: 500; }
 .model-library-dialog__source-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-size: 11px; }
 .model-library-dialog__source-sub.is-warn { color: var(--yellow); }
+/* 左栏底部：添加来源 / 扫描本机 + 本机登录与诊断（折叠）。 */
+.model-library-dialog__actions { flex: none; display: flex; gap: 4px; padding: 6px 8px; border-top: 1px solid var(--hairline); }
+.model-library-dialog__diagnostics { flex: none; max-height: 32%; overflow-y: auto; padding: 4px 14px 10px; border-top: 1px solid var(--hairline); font-size: 11px; color: var(--text-faint); }
+.model-library-dialog__diagnostics > summary { cursor: pointer; padding: 4px 0; color: var(--text-muted); }
+.model-library-dialog__diagnostics details > summary { cursor: pointer; padding: 2px 0; }
+.model-library-dialog__diagnostics .credentials-dialog__scan { margin: 2px 0 4px; }
+/* 来源详情里的凭据块：打码密钥 + 检测/编辑/删除。 */
+.model-library-dialog__cred { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 0 0; font-size: 11px; }
+.model-library-dialog__cred code { font-family: var(--mono, ui-monospace, monospace); color: var(--text); }
+.model-library-dialog__text-btn.is-danger { color: var(--red); }
+/* 订阅详情的模型清单右侧徽章：窗口 / 视觉 / 档位。 */
+.model-library-dialog__model-meta { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; padding-right: 4px; }
+.model-library-dialog__model-meta em { font-style: normal; font-size: 10.5px; color: var(--text-faint); border: 1px solid var(--hairline); border-radius: var(--radius-sm); padding: 0 5px; line-height: 16px; white-space: nowrap; }
+.model-library-dialog__hint { margin: 2px 0 6px; color: var(--text-faint); font-size: 11.5px; line-height: 1.55; }
+/* 订阅详情的模型清单标题条：标题 + 计数 + 刷新（不是一排筛选芯片）。 */
+.model-library-dialog__models-head { display: flex; align-items: center; gap: 8px; flex: none; margin-top: 10px; padding: 10px 18px 6px; border-top: 1px solid var(--hairline); color: var(--text-strong); font-size: 12.5px; font-weight: 500; }
+.model-library-dialog__models-head b { margin-left: 5px; color: var(--text-faint); font-weight: 500; font-variant-numeric: tabular-nums; }
+.model-library-dialog__models-head .model-library-dialog__text-btn { margin-left: auto; }
+/* 订阅详情：未登录时的「登录」入口（登录在它自己的窗口里完成）。 */
+.model-library-dialog__login { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 1px 0 3px; }
+/* 合并展示：同一厂商下按来源分段（agent 自带目录 / 引擎来源），段标题在滚动列表里吸顶。 */
+.model-library-dialog__member { position: sticky; top: 0; z-index: 1; padding: 8px 18px 5px; border-bottom: 1px solid var(--hairline); background: var(--panel-muted); color: var(--text-faint); font-size: 11px; }
+/* 合并展示时凭据行先写来源名，避免「凭据」两行分不清是谁的。 */
+.model-library-dialog__cred-source { color: var(--text); font-size: 11px; }
 .model-library-dialog__source-quota { flex: none; font-size: 12.5px; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--text); }
 .model-library-dialog__source-quota.is-warm { color: var(--tone-warn); }
 .model-library-dialog__source-quota.is-hot { color: var(--tone-hot); }
@@ -1258,13 +1292,16 @@
 .model-library-dialog__detail-head { flex: none; display: flex; flex-direction: column; gap: 10px; max-height: 62%; overflow-y: auto; padding: 16px 18px 12px; border-bottom: 1px solid var(--hairline); }
 .model-library-dialog__detail-title, .model-library-dialog__lend { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .model-library-dialog__lend { flex-wrap: wrap; gap: 6px; }
+.model-library-dialog__badge { flex: none; padding: 0 6px; border: 1px solid var(--hairline); border-radius: var(--radius-sm); color: var(--text-faint); font-size: 10.5px; line-height: 18px; }
+.model-library-dialog__badge.is-on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, var(--hairline)); }
 .model-library-dialog__detail-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; color: var(--text-strong); }
 .model-library-dialog__switch { position: relative; flex: none; width: 30px; height: 18px; padding: 0; border: 0; border-radius: 9px; background: var(--border-strong); cursor: pointer; transition: background-color var(--dur-base, 180ms) var(--ease-standard, ease); }
 .model-library-dialog__switch[aria-checked="true"] { background: var(--accent); }
 .model-library-dialog__switch i { position: absolute; top: 2px; left: 0; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .2); transform: translateX(2px); transition: transform var(--dur-base, 180ms) var(--ease-out, cubic-bezier(.22, 1, .36, 1)); }
 .model-library-dialog__switch[aria-checked="true"] i { transform: translateX(14px); }
 .model-library-dialog__lend .model-library-dialog__faint:first-child { margin-right: 2px; }
-.model-library-dialog__agent { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: var(--radius-sm); background: var(--panel); box-shadow: inset 2px 0 0 var(--agent-ink, var(--accent)); color: var(--text); font-size: 12px; white-space: nowrap; }
+.model-library-dialog__agent { display: inline-flex; align-items: center; gap: 6px; height: 20px; padding: 0 7px; border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--panel); color: var(--text-muted); font-size: 11.5px; white-space: nowrap; }
+.model-library-dialog__agent::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--agent-ink, var(--accent)); }
 .model-library-dialog__endpoint { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-size: 11px; font-family: var(--font-mono, ui-monospace, monospace); }
 
 /* 剩余额度：窗口型一窗口一行，最紧的 4px，其它 2px 浅灰 */
@@ -1273,7 +1310,7 @@
 .model-library-dialog__quota-head { margin-bottom: 2px; }
 .model-library-dialog__quota-head > .model-library-dialog__faint { margin-left: auto; font-size: 11px; font-weight: 400; }
 .model-library-dialog__balance b { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.model-library-dialog__win { display: grid; grid-template-columns: 52px minmax(0, 1fr) 48px; gap: 10px; align-items: center; height: 20px; color: var(--text-faint); font-size: 11.5px; }
+.model-library-dialog__win { display: grid; grid-template-columns: minmax(88px, 132px) minmax(0, 1fr) 52px; gap: 10px; align-items: center; height: 20px; color: var(--text-faint); font-size: 11.5px; }
 .model-library-dialog__win > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-library-dialog__win i { display: block; height: 2px; border-radius: 1px; overflow: hidden; background: var(--panel-soft); }
 .model-library-dialog__win i span { display: block; height: 100%; background: var(--border-strong); transition: width var(--dur-slow, 240ms) var(--ease-out, cubic-bezier(.22, 1, .36, 1)); }

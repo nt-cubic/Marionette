@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { previewFamilyModels } from "./mockData";
 import { t } from "./i18n";
 import { normalizeCredentialScan } from "./credentialScan";
 import { agents as mockAgents, projects as mockProjects, sessions as mockSessions, memoryStore as mockMemoryStore } from "./mockData";
@@ -1340,6 +1341,34 @@ export async function bridgeAddCustomProvider(label: string, key: string, endpoi
   await invoke("bridge_add_custom_provider", { label, key, config: { endpoint, protocol, models } });
 }
 
+export type CustomProviderConfig = { endpoint: string; protocol: string; models: string[] };
+
+/** One model of a custom source's catalogue preview. `label` is the service's own display name, often empty. */
+export type ProbedModel = { id: string; label: string };
+/** Pre-save catalogue pull. On failure `detail` is an actionable sentence, never a bare status code. */
+export type CustomSourceProbe = { ok: boolean; models: ProbedModel[]; detail: string };
+
+/**
+ * "Fetch models" in the custom-source dialog: one authenticated catalogue
+ * request against the typed endpoint. Nothing is saved or registered.
+ */
+export async function probeCustomSource(endpoint: string, protocol: string, key: string): Promise<CustomSourceProbe> {
+  if (!isTauriRuntime()) {
+    // Browser preview: a fixed catalogue so the dialog's list can be laid out.
+    const { probedModels } = await import("./mockData");
+    return { ok: true, models: probedModels, detail: "" };
+  }
+  return invoke<CustomSourceProbe>("model_library_probe_custom", { endpoint, protocol, key });
+}
+
+/**
+ * Edit a saved custom source. `key = null` keeps the stored key (plaintext is
+ * never shown); `""` makes the source unauthenticated; anything else replaces it.
+ */
+export async function bridgeUpdateCustomProvider(entryId: string, label: string, key: string | null, config: CustomProviderConfig): Promise<void> {
+  await invoke("bridge_update_custom_provider", { entryId, label, key, config });
+}
+
 export async function bridgeListEntries(): Promise<BridgeEntryView[]> {
   if (!isTauriRuntime()) return [];
   try {
@@ -1467,6 +1496,41 @@ export type EngineQuotaEntry = {
   /** Other source ids registered with the same key, merged into this row. */
   aliases?: string[];
 };
+
+/** 订阅族里有什么模型（模型设置里点开订阅行看的只读清单）。 */
+export type EngineFamilyModel = {
+  id: string;
+  displayName: string;
+  contextWindow: number;
+  maxOutput: number;
+  images: boolean;
+  /** 能要的思考档位（低 → 高）；空 = 没有档位菜单。 */
+  levels: string[];
+};
+
+export type EngineFamilyModels = {
+  families: Record<string, EngineFamilyModel[]>;
+  /** 引擎侧说明（引擎没起 / 非 Rust 引擎 / 这一族没有登录等）。 */
+  note: string | null;
+};
+
+/**
+ * 订阅族的模型清单：**无视共享开关**的只读 peek——共享关着时目录里没有这一族，
+ * 但用户要有地方看到「里面有什么」。不注入、不进菜单；共享闸仍管住对话与菜单。
+ */
+export async function engineFamilyModels(): Promise<EngineFamilyModels> {
+  if (!isTauriRuntime()) return previewFamilyModels;
+  try {
+    const res = await invoke<Partial<EngineFamilyModels>>("model_library_family_models");
+    const families: Record<string, EngineFamilyModel[]> = {};
+    for (const [family, rows] of Object.entries(res?.families ?? {})) {
+      if (Array.isArray(rows)) families[family] = rows;
+    }
+    return { families, note: res?.note ?? null };
+  } catch {
+    return { families: {}, note: null };
+  }
+}
 
 /** Subscription quotas from the engine; empty when the engine is not running.
  * `stale = true`：两条取数路都失败，entries 是上一次成功的快照——UI 必须

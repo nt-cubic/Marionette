@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
-import { Archive, Bell, BellOff, ChevronRight, CloudMoon, Download, Folder, FolderOpen, GripVertical, KeyRound, MessageSquare, MoreHorizontal, Network, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, Settings, SlidersHorizontal, SunMedium, Trash2, UsersRound, X, Zap } from "lucide-react";
+import { Archive, Bell, BellOff, ChevronRight, CloudMoon, Download, Folder, FolderOpen, GripVertical, MessageSquare, MoreHorizontal, Network, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, Settings, SlidersHorizontal, SunMedium, Trash2, UsersRound, X, Zap } from "lucide-react";
 // Refresh on a project row folds CLI history into the normal session list.
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { t, useLocale, useT, type DictKey } from "../lib/i18n";
@@ -33,8 +33,8 @@ import {
   type TelegramStatus,
 } from "../lib/api";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { CredentialsDialog } from "./CredentialsDialog";
-import { ModelLibraryDialog } from "./ModelLibraryDialog";
+import { ModelSettingsDialog } from "./ModelSettingsDialog";
+import { MODEL_SETTINGS_EVENT } from "../lib/modelSettings";
 import { SplitBesideMenu, type OpenBesideEdge } from "./SplitBesideMenu";
 import { StaffRoster, type StaffRosterItem } from "./StaffRoster";
 import type { DropEdge } from "../lib/splitWorkspace";
@@ -429,7 +429,8 @@ export function ProjectShelf({
     proxyConfig ? { ...proxyConfig } : { enabled: false, url: "" }
   );
   const [proxyBusy, setProxyBusy] = useState<"test" | "save" | null>(null);
-  const [proxyTest, setProxyTest] = useState<string | null>(null);
+  /** 上一次「测试连接」的结论：ok 才画绿框（失败必须是红框，别让「连接失败」显示成通过）。 */
+  const [proxyTest, setProxyTest] = useState<{ ok: boolean; message: string } | null>(null);
   const [proxyError, setProxyError] = useState<string | null>(null);
   const [proxyAnchor, setProxyAnchor] = useState<{ left: number; top: number } | null>(null);
   const proxyPopRef = useRef<HTMLDivElement | null>(null);
@@ -491,7 +492,8 @@ export function ProjectShelf({
     setProxyTest(null);
     try {
       const result = await onTestProxy(url);
-      setProxyTest(result ? result.message : t("shelf.proxyTestUnavailable"));
+      // 非桌面环境没有结论：按「未通过」画，不冒充成功。
+      setProxyTest(result ? { ok: result.ok, message: result.message } : { ok: false, message: t("shelf.proxyTestUnavailable") });
     } catch (error) {
       setProxyError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -517,15 +519,21 @@ export function ProjectShelf({
       setProxyBusy(null);
     }
   };
-  /** Credentials (cross-agent bridge) dialog — key scan + manual keys. */
-  const [credentialsOpen, setCredentialsOpen] = useState(false);
+  /** 模型设置（模型显示与排序 / 订阅共享 / 密钥与来源，一个对话框）。 */
   const [modelLibraryOpen, setModelLibraryOpen] = useState(false);
+  // Ctrl K「模型设置」：对话框实例常驻在这里（普通窗口与贴边态都能开）。
+  useEffect(() => {
+    const open = () => setModelLibraryOpen(true);
+    window.addEventListener(MODEL_SETTINGS_EVENT, open);
+    return () => window.removeEventListener(MODEL_SETTINGS_EVENT, open);
+  }, []);
 
   /**
    * Cross-use gateway (engine) popover. The engine auto-starts with the app
    * (2026-10-16 product decision: open the app and everything works); this
    * button is its always-visible status + one-click start, NOT a dialog —
-   * key management stays one hop deeper (footer link → CredentialsDialog).
+   * models, sharing and keys live one hop deeper (footer link → the single
+   * 模型设置 dialog, 2026-11-27).
    */
   const [engineOpen, setEngineOpen] = useState(false);
   const [engineUpdateInfo, setEngineUpdateInfo] = useState<EngineUpdateInfo | null>(null);
@@ -2056,6 +2064,7 @@ export function ProjectShelf({
               type="button"
               role="switch"
               aria-checked={proxyDraft.enabled}
+              aria-label={t("shelf.proxyEnable")}
               className={proxyDraft.enabled ? "proxy-popover__switch is-on" : "proxy-popover__switch"}
               onClick={() => setProxyDraft((draft) => ({ ...draft, enabled: !draft.enabled }))}
             >
@@ -2074,16 +2083,27 @@ export function ProjectShelf({
                 placeholder="http://127.0.0.1:7890"
                 value={proxyDraft.url}
                 disabled={!proxyDraft.enabled}
-                onChange={(event) => setProxyDraft((draft) => ({ ...draft, url: event.target.value }))}
+                onChange={(event) => {
+                  // 地址一改，上一次的测试结论就不再对应这个地址——清掉，别留一个过期的绿框。
+                  setProxyTest(null);
+                  setProxyDraft((draft) => ({ ...draft, url: event.target.value }));
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") void saveProxy();
                 }}
               />
             </label>
           </div>
-          {proxyTest && <div className="proxy-popover__test is-ok">{proxyTest}</div>}
-          {proxyError && <div className="proxy-popover__test is-err">{proxyError}</div>}
+          {proxyTest && (
+            <div className={`proxy-popover__test ${proxyTest.ok ? "is-ok" : "is-err"}`} role={proxyTest.ok ? "status" : "alert"}>
+              {proxyTest.message}
+            </div>
+          )}
+          {proxyError && <div className="proxy-popover__test is-err" role="alert">{proxyError}</div>}
           <div className="proxy-popover__hint">{t("shelf.proxyHint")}</div>
+          {proxyDraft.url.trim().toLowerCase().startsWith("socks") && (
+            <div className="proxy-popover__hint">{t("shelf.proxySocksHint")}</div>
+          )}
           <div className="proxy-popover__actions">
             <button
               type="button"
@@ -2344,19 +2364,6 @@ export function ProjectShelf({
               <small>{t("shelf.modelsAndSourcesHint")}</small>
               <ChevronRight size={12} aria-hidden />
             </button>
-            <button
-              type="button"
-              className="engine-panel__nav-row"
-              onClick={() => {
-                setEngineOpen(false);
-                setCredentialsOpen(true);
-              }}
-            >
-              <KeyRound size={12} aria-hidden />
-              <span>{t("shelf.keysAndSources")}</span>
-              <small>{t("shelf.keysAndSourcesHint")}</small>
-              <ChevronRight size={12} aria-hidden />
-            </button>
           </nav>
           {engineRunning && (
             <p className="engine-panel__credit">
@@ -2531,10 +2538,7 @@ export function ProjectShelf({
       </div>
     </section>
     {docked ? createPortal(dockFooter, dockFooterHost()) : null}
-    {credentialsOpen && (
-      <CredentialsDialog agents={agents} onClose={() => setCredentialsOpen(false)} />
-    )}
-    {modelLibraryOpen && <ModelLibraryDialog agents={agents} onClose={() => setModelLibraryOpen(false)} onManageSources={() => { setModelLibraryOpen(false); setCredentialsOpen(true); }} />}
+    {modelLibraryOpen && <ModelSettingsDialog agents={agents} onClose={() => setModelLibraryOpen(false)} />}
     {pendingDelete && (
       <ConfirmDialog
         title={

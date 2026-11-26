@@ -1,4 +1,5 @@
 import type { AgentConfig, ChangedFile, Project, Session, SessionEvent } from "./types";
+import type { EngineFamilyModels } from "./api";
 
 export const projects: Project[] = [
   {
@@ -199,6 +200,68 @@ export const changedFiles: ChangedFile[] = [
   { path: "src/app/App.tsx", changeType: "added" },
   { path: "src/components/SessionView.tsx", changeType: "added" }
 ];
+
+/** Browser mock for the custom-source dialog's "Fetch models" (desktop asks the real endpoint). */
+export const probedModels: { id: string; label: string }[] = [
+  { id: "gpt-4o", label: "GPT-4o" },
+  { id: "gpt-4o-mini", label: "" },
+  { id: "o3-mini", label: "" },
+  { id: "text-embedding-3-small", label: "" }
+];
+
+/**
+ * Browser mock for the model-library scan's sign-in statuses, one row per state of the
+ * subscription-share card: signed in (ChatGPT, Grok), not signed in (Claude), and not
+ * supported by the engine (Gemini under the built-in Rust engine). Desktop asks each
+ * account module instead.
+ */
+export const previewSourceScan: import("./modelLibrary").SourceScan = {
+  // 浏览器预览：两个同厂商来源（引擎预设 + 从 Grok 配置发现的副本）用来演示
+  // 「同一厂商合并成一行、里面按来源分段」。
+  sources: [
+    {
+      id: "deepseek", label: "deepseek", endpoint: "https://api.deepseek.com/v1", protocol: "chat",
+      origins: ["Marionette · credentials.json#custom-deepseek"], issue: null,
+      models: [
+        { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", nativeIds: {} },
+        { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", nativeIds: {} }
+      ]
+    },
+    {
+      id: "deepseek-grok", label: "DeepSeek", endpoint: "https://api.deepseek.com/anthropic", protocol: "anthropic",
+      origins: ["grok-build · ~/.grok/config.toml#deepseek-flash"], issue: null,
+      models: [{ id: "deepseek-flash", label: "DeepSeek Flash", nativeIds: {} }]
+    },
+    {
+      id: "opencode-go", label: "opencode.ai", endpoint: "https://opencode.ai/inference/go/v1", protocol: "chat",
+      origins: ["grok-build · ~/.grok/config.toml#opencode-go-glm-5.3"], issue: null,
+      models: [{ id: "glm-5.3", label: "GLM-5.3", nativeIds: {} }, { id: "kimi-k3", label: "Kimi K3", nativeIds: {} }]
+    }
+  ],
+  warnings: [], paths: [], aliases: {}, accounts: [],
+  signedIn: ["codex", "grok", "gemini"]
+};
+
+/** Browser mock only — 订阅共享详情在浏览器预览里也有模型可看。 */
+export const previewFamilyModels: EngineFamilyModels = {
+  note: null,
+  families: {
+    claude: [
+      { id: "claude/claude-opus-5-5", displayName: "Claude Opus 5.5", contextWindow: 1000000, maxOutput: 0, images: true, levels: ["low", "medium", "high"] },
+      { id: "claude/claude-sonnet-5-5", displayName: "Claude Sonnet 5.5", contextWindow: 1000000, maxOutput: 0, images: true, levels: ["low", "medium", "high"] },
+    ],
+    codex: [
+      { id: "codex/gpt-6-luna", displayName: "GPT-6 Luna", contextWindow: 400000, maxOutput: 128000, images: true, levels: ["low", "medium", "high", "xhigh"] },
+    ],
+    grok: [
+      { id: "grok/grok-4.7", displayName: "Grok 4.7", contextWindow: 256000, maxOutput: 0, images: true, levels: ["low", "high", "xhigh"] },
+    ],
+    gemini: [
+      { id: "antigravity/gemini-3.8-flash", displayName: "Gemini 3.8 Flash", contextWindow: 1048576, maxOutput: 65536, images: true, levels: ["low", "medium", "high"] },
+      { id: "antigravity/gemini-3.8-flash-tiered", displayName: "Gemini 3.8 Flash (Tiered)", contextWindow: 1048576, maxOutput: 65536, images: true, levels: ["low", "medium", "high"] },
+    ],
+  },
+};
 
 export const sessionEvents: SessionEvent[] = [
   {

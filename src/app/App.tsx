@@ -322,6 +322,8 @@ import { type PlanApprovalPrompt } from "../components/PlanApprovalCard";
 import { UnifiedDiffView } from "../components/UnifiedDiffView";
 import { ProjectShelf } from "../components/ProjectShelf";
 import { CommandPalette } from "../components/CommandPalette";
+import { GettingStartedGuide } from "../components/GettingStartedGuide";
+import { openModelSettings } from "../lib/modelSettings";
 import { DiagnosticDialog } from "../components/DiagnosticDialog";
 import { withViewTransition } from "../lib/viewTransition";
 import { ToastStack } from "../components/ToastStack";
@@ -675,6 +677,8 @@ function AppMain() {
   const [leftCollapsed, setLeftCollapsed] = useState(IS_DETACHED_WINDOW);
   /** Ctrl+K palette: jump to any dialog / project, or run a shell action. */
   const [paletteOpen, setPaletteOpen] = useState(false);
+  /** 首次启动引导：Ctrl K「开始使用」可随时重开；首次无会话时自动弹一次。 */
+  const [gettingStartedOpen, setGettingStartedOpen] = useState(false);
   const [diagnosticOpen, setDiagnosticOpen] = useState(false);
   const [diagnosticSnapshot, setDiagnosticSnapshot] = useState<DiagnosticUiState | null>(null);
   const [rightCollapsed, setRightCollapsed] = useState(false);
@@ -10684,6 +10688,19 @@ function AppMain() {
             }}
             onClose={() => setPaletteOpen(false)}
             actions={[
+              // 前两项固定：开始使用（引导）与模型设置（2026-11-27 用户定案）。
+              {
+                id: "getting-started",
+                label: t("guide.paletteLabel"),
+                hint: t("guide.paletteHint"),
+                run: () => setGettingStartedOpen(true),
+              },
+              {
+                id: "model-settings",
+                label: t("models.settingsTitle"),
+                hint: t("shelf.modelsAndSourcesHint"),
+                run: () => openModelSettings(),
+              },
               ...staffController.roster.map((member) => ({
                 id: "staff-" + member.staffId,
                 label: member.name + " · " + member.title,
@@ -10982,6 +10999,14 @@ function AppMain() {
             ]}
           />
         )}
+
+        <GettingStartedGuide
+          agents={availableAgents}
+          hasSessions={availableSessions.length > 0 || chatSessions.length > 0 || memoSessions.length > 0}
+          open={gettingStartedOpen}
+          onClose={() => setGettingStartedOpen(false)}
+          onCreateChat={() => void handleCreateChatSession()}
+        />
 
         {diagnosticOpen && diagnosticSnapshot && (
           <DiagnosticDialog

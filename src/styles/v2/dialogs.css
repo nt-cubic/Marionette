@@ -1126,3 +1126,235 @@
   opacity: 0.5;
   cursor: default;
 }
+
+/* ── custom source dialog (2026-11-26): the form is a table (shared
+   .project-dialog__field rows), the service's catalogue is a hairline list ── */
+.custom-source-dialog {
+  width: min(520px, calc(100vw - 40px));
+  max-height: min(680px, calc(100vh - 48px));
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.custom-source-dialog .project-dialog__field {
+  flex: none;
+}
+.custom-source-dialog .project-dialog__field select {
+  width: 100%;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.custom-source-dialog__models {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 150px;
+}
+.custom-source-dialog__models-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 44px;
+}
+.custom-source-dialog__models-head > span {
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+.custom-source-dialog__fetch {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard);
+}
+.custom-source-dialog__fetch:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: var(--panel-soft);
+  color: var(--text-strong);
+}
+.custom-source-dialog__fetch:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.custom-source-dialog__fetch svg {
+  flex: none;
+}
+.custom-source-dialog__fetch svg.is-spinning {
+  animation: custom-source-spin 0.8s linear infinite;
+}
+@keyframes custom-source-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.custom-source-dialog__search {
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--hairline);
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 12.5px;
+}
+.custom-source-dialog__list {
+  flex: 1 1 auto;
+  min-height: 84px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.custom-source-dialog__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+  border-bottom: 1px solid var(--hairline);
+}
+.custom-source-dialog__id {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.custom-source-dialog__label {
+  flex: none;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+.custom-source-dialog__remove {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
+}
+.custom-source-dialog__remove:hover:not(:disabled) {
+  background: var(--panel-soft);
+  color: var(--red);
+}
+.custom-source-dialog__remove:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.custom-source-dialog__empty {
+  margin: 0;
+  padding: 12px 0;
+  color: var(--text-faint);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.custom-source-dialog__failure {
+  margin: 0;
+  padding: 10px 0;
+  color: var(--red);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.custom-source-dialog__failure-tail {
+  display: block;
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+.custom-source-dialog__manual {
+  display: flex;
+  align-items: center;
+  height: 36px;
+  border-bottom: 1px solid var(--hairline);
+}
+.custom-source-dialog__manual input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.custom-source-dialog__note {
+  flex: none;
+  margin: 8px 0 0;
+  color: var(--text-faint);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.custom-source-dialog > .project-dialog__actions {
+  margin-top: 12px;
+}
+.custom-source-dialog .project-dialog__submit:disabled,
+.custom-source-dialog .project-dialog__cancel:disabled,
+.custom-source-dialog .project-dialog__close:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* Credentials toolbar: the custom-source entry sits left of the primary action. */
+.credentials-dialog__toolbar .credentials-dialog__add-custom {
+  margin-left: auto;
+}
+.credentials-dialog__toolbar .credentials-dialog__add-custom + .project-dialog__submit {
+  margin-left: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .custom-source-dialog__fetch svg.is-spinning { animation: none; }
+}
+
+/* ---- 首次启动引导（GettingStartedGuide）---- */
+.project-dialog.getting-started { width: min(640px, calc(100vw - 48px)); max-height: calc(100vh - 64px); overflow-y: auto; padding: 0; display: flex; flex-direction: column; }
+.getting-started__head { display: flex; align-items: center; flex: none; height: 48px; padding: 0 10px 0 20px; border-bottom: 1px solid var(--hairline); }
+.getting-started__title { flex: 1; font-size: 14px; font-weight: 600; color: var(--text-strong); }
+.getting-started__close { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--radius); background: transparent; color: var(--text-faint); cursor: pointer; }
+.getting-started__close:hover { background: var(--panel-soft); color: var(--text-strong); }
+.getting-started__lead { margin: 0; padding: 14px 20px 0; color: var(--text-muted); font-size: 12.5px; line-height: 1.7; }
+.getting-started__detect { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 12px 20px; }
+.getting-started__detect > div { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--panel-muted); }
+.getting-started__detect span { color: var(--text-faint); font-size: 11px; }
+.getting-started__detect b { color: var(--text); font-size: 12.5px; font-weight: 500; }
+.getting-started__ready { display: flex; flex-direction: column; gap: 10px; padding: 0 20px 16px; }
+.getting-started__ready p { margin: 0; color: var(--text-muted); font-size: 12.5px; }
+.getting-started__actions { display: flex; gap: 8px; }
+.getting-started__paths { display: flex; flex-direction: column; gap: 8px; padding: 0 20px 16px; }
+.getting-started__path { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--hairline); border-radius: var(--radius-sm); }
+.getting-started__path b { color: var(--text-strong); font-size: 12.5px; font-weight: 500; }
+.getting-started__path span { color: var(--text-muted); font-size: 11.5px; line-height: 1.6; }
+.getting-started__families { display: flex; flex-wrap: wrap; gap: 2px 10px; color: var(--text-faint); font-size: 11px; }
+.getting-started__families .is-on { color: var(--accent); }
+.getting-started__more { align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: transparent; color: var(--accent); font: inherit; font-size: 11.5px; cursor: pointer; }
+.getting-started__footer { display: flex; align-items: center; gap: 10px; flex: none; padding: 10px 20px; border-top: 1px solid var(--hairline); color: var(--text-faint); font-size: 11px; }
+.getting-started__skip { margin-left: auto; padding: 0 8px; height: 26px; border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); font: inherit; font-size: 11.5px; cursor: pointer; }
+.getting-started__skip:hover { background: var(--panel-soft); color: var(--text-strong); }
