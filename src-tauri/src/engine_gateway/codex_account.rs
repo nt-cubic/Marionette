@@ -59,8 +59,12 @@ use super::store::Provider;
 pub const CODEX_ID: &str = "codex";
 const DEFAULT_BASE: &str = "https://chatgpt.com/backend-api/codex";
 /// Go codexClientVersion：没人告诉我们更新的版本时，模型表按这个版本问
-/// （后端只把新模型列给够新的客户端）。
-const CLIENT_VERSION: &str = "0.159.0";
+/// （后端只把新模型列给够新的客户端）。下限 0.169.1 = 上游 2026-11-18 的
+/// npm latest；此前停在 0.159.0——GPT-6.2 Sol / Astra 要 0.166.0 才被列出来，
+/// 本机没有更新的 Codex CLI（或 models_cache.json）的用户永远看不到它们
+/// （上游 zzstar101 / m0eaki 实锤，Rust 侧 2026-11-26 跟上）。上游另外还会在
+/// 后台跟 npm latest；这里只取「内置下限 vs 本机缓存」的新者，如 Go codexVersion。
+const CLIENT_VERSION: &str = "0.169.1";
 const CACHE_TTL: Duration = Duration::from_secs(30);
 const FAIL_BACKOFF: Duration = Duration::from_secs(60);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -562,7 +566,16 @@ fn fetch_models(account: &Account) -> Result<(Vec<VendorRow>, HashMap<String, St
 /// 账号 / 令牌过期 / 用户自有 `codex` 来源 / 订阅共享未开启（2026-11-22 四族
 /// 默认不共享）→ 空（过期时有旧缓存就继续给旧的）。
 pub fn listed_rows(providers: &[Provider]) -> Vec<VendorRow> {
-    if providers.iter().any(|p| p.id == CODEX_ID) || !super::family_enabled(CODEX_ID) {
+    rows_impl(providers, true)
+}
+
+/// 管理面（模型设置里点开订阅行）：无视共享开关的只读清单，不进菜单/注入。
+pub fn listed_rows_for_inspection(providers: &[Provider]) -> Vec<VendorRow> {
+    rows_impl(providers, false)
+}
+
+fn rows_impl(providers: &[Provider], gated: bool) -> Vec<VendorRow> {
+    if providers.iter().any(|p| p.id == CODEX_ID) || (gated && !super::family_enabled(CODEX_ID)) {
         return Vec::new();
     }
     let Some(account) = discover() else { return Vec::new() };
@@ -3006,7 +3019,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert_eq!(headers["chatgpt-account-id"], "acct-test");
         assert_eq!(headers["originator"], "codex_cli_rs");
         assert!(headers["user-agent"].starts_with("codex_cli_rs/"));
-        assert!(mock.seen.lock().unwrap()[0].path.contains("client_version=0.159.0"));
+        assert!(mock.seen.lock().unwrap()[0].path.contains("client_version=0.169.1"));
 
         // 30s 缓存：第二次不再打后端
         let hits = mock.hits();
@@ -3305,6 +3318,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert_eq!(newer_version("0.159.0", "0.158.9"), "0.159.0");
         assert_eq!(newer_version("0.159.0", "garbage"), "0.159.0");
         assert_eq!(newer_version("0.159.0", ""), "0.159.0");
+        // 内置下限必须够新：后端只把 GPT-6.2 Sol / Astra 列给 0.166.0 起的客户端，
+        // 本机没有任何 Codex 缓存时也得看得到（Go codexClientVersion 2026-11-18）。
+        assert_eq!(newer_version(CLIENT_VERSION, "0.166.0"), CLIENT_VERSION);
+        assert_eq!(client_version(), CLIENT_VERSION, "no models_cache.json in the test home → the built-in floor");
     }
 
     #[test]

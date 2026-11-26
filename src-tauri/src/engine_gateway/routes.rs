@@ -53,10 +53,11 @@ fn catalog_rows(gateway: &super::Gateway) -> Result<Vec<(String, super::catalog:
     };
     // Codex 订阅账号的 codex/* 行与其它来源并发抓（自带 10s 超时 +
     // 失败退避，慢/挂都不拖别人）。
-    let (mut rows, codex_rows, grok_rows, claude_rows) = std::thread::scope(|scope| {
+    let (mut rows, codex_rows, grok_rows, claude_rows, antigravity_rows) = std::thread::scope(|scope| {
         let codex = scope.spawn(|| super::codex_account::listed_rows(&providers));
         let grok = scope.spawn(|| super::grok_account::listed_rows(&providers));
         let claude = scope.spawn(|| super::claude_account::listed_rows(&providers));
+        let antigravity = scope.spawn(|| super::antigravity_account::listed_rows(&providers));
         gateway.catalog.prewarm(&providers);
         let mut rows = Vec::new();
         for provider in &providers {
@@ -64,7 +65,13 @@ fn catalog_rows(gateway: &super::Gateway) -> Result<Vec<(String, super::catalog:
                 rows.push((provider.id.clone(), row));
             }
         }
-        (rows, codex.join().unwrap_or_default(), grok.join().unwrap_or_default(), claude.join().unwrap_or_default())
+        (
+            rows,
+            codex.join().unwrap_or_default(),
+            grok.join().unwrap_or_default(),
+            claude.join().unwrap_or_default(),
+            antigravity.join().unwrap_or_default(),
+        )
     });
     for row in codex_rows {
         rows.push((super::codex_account::CODEX_ID.to_string(), row));
@@ -74,6 +81,9 @@ fn catalog_rows(gateway: &super::Gateway) -> Result<Vec<(String, super::catalog:
     }
     for row in claude_rows {
         rows.push((super::claude_account::CLAUDE_ID.to_string(), row));
+    }
+    for row in antigravity_rows {
+        rows.push((super::antigravity_account::AGY_ID.to_string(), row));
     }
     Ok(rows)
 }
@@ -155,6 +165,10 @@ pub fn route(request: &Request, gateway: &super::Gateway) -> Reply {
             if let Some(reply) = super::grok_account::intercept(gateway, request, super::effort::Proto::Chat) {
                 return reply;
             }
+            // Antigravity（Gemini 订阅）的 Code Assist 桥：三个入站协议都接。
+            if let Some(reply) = super::antigravity_account::intercept(gateway, request, super::effort::Proto::Chat) {
+                return reply;
+            }
             let body = &request.body;
             super::chat::forward(gateway, &request.headers, &body)
         }
@@ -170,6 +184,10 @@ pub fn route(request: &Request, gateway: &super::Gateway) -> Reply {
                 return reply;
             }
             if let Some(reply) = super::grok_account::intercept(gateway, request, super::effort::Proto::Responses) {
+                return reply;
+            }
+            // Antigravity（Gemini 订阅）的 Code Assist 桥：三个入站协议都接。
+            if let Some(reply) = super::antigravity_account::intercept(gateway, request, super::effort::Proto::Responses) {
                 return reply;
             }
             let body = &request.body;
@@ -197,6 +215,10 @@ pub fn route(request: &Request, gateway: &super::Gateway) -> Reply {
                 return reply;
             }
             if let Some(reply) = super::grok_account::intercept(gateway, request, super::effort::Proto::Anthropic) {
+                return reply;
+            }
+            // Antigravity（Gemini 订阅）的 Code Assist 桥：三个入站协议都接。
+            if let Some(reply) = super::antigravity_account::intercept(gateway, request, super::effort::Proto::Anthropic) {
                 return reply;
             }
             // Claude 订阅桥（anthropic 原生入站——chat/responses 入站是桥的

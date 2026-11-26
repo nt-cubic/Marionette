@@ -579,7 +579,7 @@ fn offered_scout(parsed: &Value) -> Option<super::textcalls::TextCallScout> {
 /// 外层（message_start/message_delta 帧），整块在折好的 message 对象上扫
 /// （`anthropic_usage_of` 补的 0 桶被 tap 的 >0 过滤掉，不编数）。
 #[allow(clippy::too_many_arguments)]
-fn chat_reply_to_anthropic(
+pub(super) fn chat_reply_to_anthropic(
     reply: Reply,
     streaming: bool,
     asked_model: &str,

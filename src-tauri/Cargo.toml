@@ -40,7 +40,11 @@ tauri = { version = "2", default-features = false, features = ["wry", "protocol-
 # Typed session/new only; do not pull full ACP SDK / async stack
 agent-client-protocol-schema = "1.4.0"
 # Small blocking HTTP (usage + npm version + app update). No tokio.
-ureq = { version = "2", features = ["json", "native-tls"], default-features = false }
+# socks-proxy：代理面板收 socks5://（2026-11-26 修——面板写着「HTTP / SOCKS 代理」，
+# 这个 feature 没开时测试/来源探测/引擎出站全部报 "SOCKS feature disabled"）。
+# 只多拉一个极小的 socks crate（握手用），不是新依赖面。应用内取代理一律走
+# proxy::ureq_proxy（引擎侧 outbound_ureq_proxy），别裸调 ureq::Proxy::new。
+ureq = { version = "2", features = ["json", "native-tls", "socks-proxy"], default-features = false }
 # grok 方言规整器的环回 HTTP 服务（同步、std 线程，无异步运行时）
 tiny_http = "0.12"
 # Codex keeps its MCP servers in config.toml

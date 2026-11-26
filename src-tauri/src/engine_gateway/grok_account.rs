@@ -401,7 +401,16 @@ fn fetch_models(account: &Account) -> Result<Vec<VendorRow>, String> {
 /// 令牌过期 / 用户自有 `grok` 来源 / 订阅共享未开启（2026-11-22 四族默认不
 /// 共享）→ 空（过期时有旧缓存就继续给旧的）。
 pub fn listed_rows(providers: &[Provider]) -> Vec<VendorRow> {
-    if providers.iter().any(|p| p.id == GROK_ID) || !super::family_enabled(GROK_ID) {
+    rows_impl(providers, true)
+}
+
+/// 管理面（模型设置里点开订阅行）：无视共享开关的只读清单，不进菜单/注入。
+pub fn listed_rows_for_inspection(providers: &[Provider]) -> Vec<VendorRow> {
+    rows_impl(providers, false)
+}
+
+fn rows_impl(providers: &[Provider], gated: bool) -> Vec<VendorRow> {
+    if providers.iter().any(|p| p.id == GROK_ID) || (gated && !super::family_enabled(GROK_ID)) {
         return Vec::new();
     }
     let Some(account) = discover() else { return Vec::new() };

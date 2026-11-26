@@ -45,7 +45,7 @@ fn download_agent() -> Result<ureq::Agent, String> {
     builder = builder.tls_connector(std::sync::Arc::new(connector));
     let config = crate::proxy::load_proxy_config();
     if config.enabled && !config.url.trim().is_empty() {
-        if let Ok(proxy) = ureq::Proxy::new(config.url.trim()) {
+        if let Ok(proxy) = crate::proxy::ureq_proxy(&config.url) {
             builder = builder.proxy(proxy);
         }
     }

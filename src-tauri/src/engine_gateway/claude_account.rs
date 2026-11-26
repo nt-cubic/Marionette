@@ -481,7 +481,17 @@ const MODELS: [(&str, u64); 9] = [
 /// `/v1/models` 的 claude 行（有凭据 + CLI + 用户没自定义 claude 来源 +
 /// 订阅共享已开启才有；2026-11-22 四族默认不共享）。
 pub fn listed_rows(providers: &[Provider]) -> Vec<VendorRow> {
-    if providers.iter().any(|p| p.id == CLAUDE_ID) || !super::family_enabled(CLAUDE_ID) || !available() {
+    rows_impl(providers, true)
+}
+
+/// 管理面（模型设置里点开订阅行）：**无视共享开关**列出这一族里有什么模型，
+/// 只读、不进任何菜单/注入。共享闸仍管住对话与菜单；没有 CLI 或凭据照样空。
+pub fn listed_rows_for_inspection(providers: &[Provider]) -> Vec<VendorRow> {
+    rows_impl(providers, false)
+}
+
+fn rows_impl(providers: &[Provider], gated: bool) -> Vec<VendorRow> {
+    if providers.iter().any(|p| p.id == CLAUDE_ID) || (gated && !super::family_enabled(CLAUDE_ID)) || !available() {
         return Vec::new();
     }
     MODELS

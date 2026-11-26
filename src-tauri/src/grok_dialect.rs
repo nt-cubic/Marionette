@@ -739,7 +739,7 @@ fn agent() -> ureq::Agent {
         builder = builder.tls_connector(Arc::new(connector));
     }
     if let Some((proxy_url, _no_proxy)) = crate::proxy::proxy_env() {
-        if let Ok(proxy) = ureq::Proxy::new(&proxy_url) {
+        if let Ok(proxy) = crate::proxy::ureq_proxy(&proxy_url) {
             builder = builder.proxy(proxy);
         }
     }

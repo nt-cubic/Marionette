@@ -6,7 +6,8 @@
 //! 协议。S1 spike 的源码级结论（本模块照抄的处方）：
 //!
 //! - **安装**：`~/.marionette/engine/`——`magpie.exe`（GitHub releases 的
-//!   `magpie-cli-windows-amd64.exe` 资产，~48MB）+ 空 `.portable` 标记文件
+//!   `magpie-cli-windows-amd64.exe` 资产，~100MB——2026-11-26 实测 101.3MB；
+//!   11 月中已从 ~48MB 涨到 ~91MB，v0.1.4612 起稳在 99–102MB）+ 空 `.portable` 标记文件
 //!   （全部状态自动进 `engine/data/`，零 env 围栏）+ `manifest.json`
 //!   `{version, sha256, installedAt}`。SHA256SUMS 校验失败删除重下一次；
 //!   临时文件 + rename 原子落位；下载尊重 `proxy.rs` 的代理配置。
@@ -67,9 +68,10 @@ const DEFAULT_PORT: u16 = 3425;
 const GITHUB_REPO: &str = "yetone/magpie";
 const ASSET_NAME: &str = "magpie-cli-windows-amd64.exe";
 const USER_AGENT: &str = "Marionette/0.1 (engine)";
-/// 48MB 下载的整体预算（慢网络 + 断点重来一次）。
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
-/// 下载体积上限：真实 magpie ~48MB，10 倍余量防「无限流」把磁盘写穿。
+/// ~100MB 下载的整体预算（慢网络 + 断点重来一次）。按原 48MB / 600s 的同一
+/// 速率余量翻倍（≈85KB/s 也能下完）；上游再涨体积时同步放宽。
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(1200);
+/// 下载体积上限：真实 magpie ~100MB，5 倍余量防「无限流」把磁盘写穿。
 const MAX_MAGPIE_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
 /// serve 起来后等 /v1/models 变健康的窗口（discovery 首启可能慢）。
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -435,7 +437,7 @@ fn download_agent() -> Result<ureq::Agent, String> {
     builder = builder.tls_connector(std::sync::Arc::new(connector));
     let config = crate::proxy::load_proxy_config();
     if config.enabled && !config.url.trim().is_empty() {
-        match ureq::Proxy::new(config.url.trim()) {
+        match crate::proxy::ureq_proxy(&config.url) {
             Ok(proxy) => builder = builder.proxy(proxy),
             Err(error) => {
                 crate::debug_log::append(
@@ -604,8 +606,8 @@ fn download_once(plan: &ReleasePlan, dir: &Path) -> Result<(), String> {
             drop(file);
             let _ = std::fs::remove_file(&temp);
             return Err(crate::ts!(
-                "下载超过 {limit} MiB 上限 — 不像 magpie.exe（~48MB）",
-                "Download exceeds {limit} MiB limit — not plausibly magpie.exe (~48MB)",
+                "下载超过 {limit} MiB 上限 — 不像 magpie.exe（~100MB）",
+                "Download exceeds {limit} MiB limit — not plausibly magpie.exe (~100MB)",
                 limit = MAX_MAGPIE_DOWNLOAD_BYTES / (1024 * 1024)
             ));
         }
@@ -620,8 +622,8 @@ fn download_once(plan: &ReleasePlan, dir: &Path) -> Result<(), String> {
     if downloaded < 1024 * 1024 {
         let _ = std::fs::remove_file(&temp);
         return Err(crate::ts!(
-            "下载的文件只有 {size} 字节 — 不像 magpie.exe（~48MB）",
-            "Downloaded file is only {size} bytes — not plausibly magpie.exe (~48MB)",
+            "下载的文件只有 {size} 字节 — 不像 magpie.exe（~100MB）",
+            "Downloaded file is only {size} bytes — not plausibly magpie.exe (~100MB)",
             size = downloaded
         ));
     }
@@ -953,7 +955,14 @@ fn ensure_serve_token(dir: &Path) -> String {
             return text.to_string();
         }
     }
+    #[cfg(engine_rust_active)]
     let token = crate::engine_gateway::mint_gateway_token();
+    // magpie 回退 SKU 没有进程内 httpd，也就没有令牌校验：给调用方一个形状相同的
+    // 占位即可（子进程形态不看它，下一次以 Rust SKU 启动时因不是 48-hex 会重铸）。
+    // 这两处 2026-11-22 加调用时漏了门，回退 SKU 自那时起 `--no-default-features`
+    // 编不过（2026-11-26 跑手册回归清单时发现）。
+    #[cfg(not(engine_rust_active))]
+    let token = ENGINE_TOKEN.to_string();
     if let Err(error) = std::fs::write(&path, &token) {
         crate::debug_log::append(
             "engine",
@@ -1692,6 +1701,42 @@ fn maybe_refresh_source_live(exe: &Path, id: &str, force: bool, changed: &mut bo
     }
 }
 
+/// 发现来源注册时端点写在哪个键下：Anthropic / Responses 各有字段，其余（Chat
+/// Completions 兼容）走 `url`。
+fn endpoint_key(source: &crate::model_sources::Source) -> &'static str {
+    match source.view.protocol.as_str() {
+        "anthropic" => "anthropic",
+        "responses" => "responses",
+        _ => "url",
+    }
+}
+
+/// 注册对里的模型清单：**只有**手动自定义来源填了模型 ID 才带 `models=`（钉死
+/// 清单——厂商抓不到目录时引擎按清单合成行，没有 `/models` 的中转靠它才能用）。
+/// 其余一律不带 = live 目录（2026-10-30 定案：中转上新模型自动进目录）。
+/// 「是不是手动来源」由 `model_sources::Source::manual_entry_id` 判（按 origin，
+/// **不是**按 `custom-` 前缀——发现来源的 id 是 `source-<摘要>`）。
+///
+/// 2026-11-26 修：live 化时把所有来源的 `models=` 都拿掉了，于是「手填模型 ID」
+/// 在引擎里成了空话——目录抓不到的自定义来源一个模型都不出，用户只能去手改
+/// credentials.json。空清单绝不发 `models=`（引擎把空清单读成「一个都不暴露」）。
+fn pinned_models_pair(is_manual: bool, model_ids: &[String]) -> Option<String> {
+    if !is_manual {
+        return None;
+    }
+    let ids: Vec<&str> = model_ids
+        .iter()
+        .map(String::as_str)
+        .map(str::trim)
+        // 逗号是注册对的分隔符；保存时已拒绝，这里是旧数据的兜底。
+        .filter(|id| !id.is_empty() && !id.contains(','))
+        .collect();
+    if ids.is_empty() {
+        return None;
+    }
+    Some(format!("models={}", ids.join(",")))
+}
+
 /// Generic provider definitions discovered in CLI files. A separate ownership
 /// ledger keeps these routes apart from preset registrations and user routes.
 /// Fingerprints stay in memory only; secrets never enter the ledger or logs.
@@ -1723,14 +1768,20 @@ fn sync_sources_at(exe: &Path, force_refresh: bool) -> Vec<String> {
     for source in &discovery.sources {
         if source.view.issue.is_some() { continue; }
         let id=provider_id_slug(&source.view.id);
-        let endpoint_key = match source.view.protocol.as_str() { "anthropic" => "anthropic", "responses" => "responses", _ => "url" };
+        let manual = source.manual_entry_id().is_some();
+        let model_ids: Vec<String> = source.view.models.iter().map(|m| m.id.clone()).collect();
+        let pinned = pinned_models_pair(manual, &model_ids).is_some();
         // 不带 models=：暴露厂商的 live 模型清单（新免费模型自动进目录）。
         // 抓不到列表的中转由旧注册的 picks 兜底，refresh 失败时原样保留。
+        // **例外**：手动添加的自定义来源填了模型 ID（见 pinned_models_pair）。
+        let endpoint_key = endpoint_key(source);
         let mut pairs=vec![format!("{endpoint_key}={}",source.view.endpoint),format!("key={}",source.key),format!("name={}",source.view.label)];
         for (k,v) in &source.headers { pairs.push(format!("header.{k}={v}")); }
+        pairs.extend(pinned_models_pair(manual, &model_ids));
         let fingerprint=Sha256::digest(pairs.join("\n")).to_vec();
         if fingerprints.get(&id)==Some(&fingerprint) && ledger.contains(&id) {
-            maybe_refresh_source_live(exe, &id, force_refresh, &mut changed);
+            // 钉死清单不走 live 刷新：refresh→models all 会把清单解钉。
+            if !pinned { maybe_refresh_source_live(exe, &id, force_refresh, &mut changed); }
             kept.push(id.clone()); continue;
         }
         let mut args=vec!["provider", "set", id.as_str()];
@@ -1744,7 +1795,9 @@ fn sync_sources_at(exe: &Path, force_refresh: bool) -> Vec<String> {
         match result {
             Ok(()) => {
                 fingerprints.insert(id.clone(),fingerprint); kept.push(id.clone()); changed = true;
-                maybe_refresh_source_live(exe, &id, true, &mut changed);
+                // 钉死的不解钉；从「填了 ID」改回留空（live）时指纹必变、必到这里，
+                // 由 refresh→all 把引擎里残留的旧清单解掉。
+                if !pinned { maybe_refresh_source_live(exe, &id, true, &mut changed); }
             }
             // 过旧的种子二进制还没有精简 provider 命令。新种子已经自带，
             // 不必去下上游完整 magpie。
@@ -1781,6 +1834,196 @@ pub fn sync_discovered_sources(force_refresh: bool) -> Vec<String> {
     // Reused user installations are not owned by Marionette.
     if matches!(status(),EngineStatus::Running {reused:true,..}) { return vec![crate::ts!("当前复用外部引擎；发现的 CLI 来源需由 Marionette 自带引擎接入", "An external engine is in use; discovered CLI sources require the Marionette-bundled engine")]; }
     sync_sources_at(&exe, force_refresh)
+}
+
+/// 本机已登录的订阅族（`claude` / `codex` / `grok` / `gemini`），给模型共享面板
+/// 「订阅共享」四行的已登录 / 未登录用（2026-11-26 修：以前拿发现链的账号去重
+/// 清单当信号，那份清单只产出 ChatGPT 一家，另外三行永远写「未检测到本机登录」）。
+/// Rust SKU 直接问各账号模块——与合成来源、额度行是同一份只读判断；每次现读
+/// 文件，不缓存、不联网、不写凭据。
+#[cfg(engine_rust_active)]
+pub fn signed_in_families() -> Vec<String> {
+    crate::engine_gateway::signed_in_families().iter().map(|family| family.to_string()).collect()
+}
+
+/// 引擎数据目录里的 providers.json（读不到 = None）。
+#[cfg(engine_rust_active)]
+fn engine_data_providers() -> Option<Vec<crate::engine_gateway::store::Provider>> {
+    let dir = engine_dir().ok()?;
+    let bytes = std::fs::read(dir.join("data").join("providers.json")).ok()?;
+    serde_json::from_slice::<crate::engine_gateway::store::ProvidersFile>(&bytes)
+        .ok()
+        .map(|file| file.providers)
+}
+
+/// 同一个账号被登记成多个引擎 provider 时（预设 key + 从各 CLI 配置发现的同主机同
+/// key 副本、或反复发现留下的多份 `source-*`），给重复项一个别名指回代表项——
+/// 模型设置左列只显示一个来源（2026-11-27 用户实锤：deepseek / DeepSeek 两行、
+/// opencode.ai 三行、zhipu / open.bigmodel.cn 两行，额度还各显示一遍）。
+///
+/// **只做展示合并**：providers.json 一个都不删，已有会话里 `source-…/model` 的
+/// 绑定照旧由引擎解析。账号身份与额度合并同口径：**同一把钥匙 + 同一厂商主机**
+/// （路径写法不计，`endpoint_host`）。代表项取「不是发现来源的（无 `source-` 前缀）
+/// → 这一来源的模型多的 → id 字典序小的」，结果稳定可复现。
+#[cfg(engine_rust_active)]
+pub fn provider_account_aliases(
+    sources: &[crate::model_sources::Source],
+) -> std::collections::BTreeMap<String, String> {
+    match engine_data_providers() {
+        Some(providers) => provider_account_aliases_for(&providers, sources),
+        None => std::collections::BTreeMap::new(),
+    }
+}
+
+/// [`provider_account_aliases`] 对一份现成 provider 表（真机 oracle / 测试直接调）。
+#[cfg(engine_rust_active)]
+pub fn provider_account_aliases_for(
+    providers: &[crate::engine_gateway::store::Provider],
+    sources: &[crate::model_sources::Source],
+) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let providers = providers.to_vec();
+    let hosts = |p: &crate::engine_gateway::store::Provider| -> Vec<String> {
+        [&p.chat, &p.responses, &p.anthropic]
+            .iter()
+            .filter(|url| !url.trim().is_empty())
+            .filter_map(|url| crate::model_sources::endpoint_host(url))
+            .collect()
+    };
+    let model_count = |id: &str| {
+        sources.iter().find(|s| s.view.id == id).map(|s| s.view.models.len()).unwrap_or(0)
+    };
+    let rank = |p: &crate::engine_gateway::store::Provider| {
+        (p.id.starts_with("source-") as u8, usize::MAX - model_count(&p.id), p.id.clone())
+    };
+    let mut order: Vec<&crate::engine_gateway::store::Provider> =
+        providers.iter().filter(|p| !p.key.trim().is_empty()).collect();
+    order.sort_by_key(|p| rank(p));
+    let mut assigned: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for p in &order {
+        if assigned.contains(&p.id) {
+            continue;
+        }
+        let ph = hosts(p);
+        if ph.is_empty() {
+            continue;
+        }
+        let mut dup: Vec<String> = Vec::new();
+        for q in &order {
+            if q.id == p.id || assigned.contains(&q.id) || q.key != p.key {
+                continue;
+            }
+            let qh = hosts(q);
+            if qh.iter().any(|h| ph.contains(h)) {
+                dup.push(q.id.clone());
+            }
+        }
+        assigned.insert(p.id.clone());
+        for id in dup {
+            assigned.insert(id.clone());
+            out.insert(format!("engine:{id}"), format!("engine:{}", p.id));
+        }
+    }
+    out
+}
+
+/// magpie 回退 SKU：引擎数据不在本进程里，没有可核对的 provider 表。
+#[cfg(not(engine_rust_active))]
+pub fn provider_account_aliases(
+    _sources: &[crate::model_sources::Source],
+) -> std::collections::BTreeMap<String, String> {
+    std::collections::BTreeMap::new()
+}
+
+/// 订阅族的模型清单（模型设置里点开订阅行看的只读 peek）：**无视共享开关**问各
+/// 账号模块这一族里有什么模型——共享关着时目录里没有这一族，用户仍要有地方看到
+/// 「里面有什么」。不注入、不进菜单；共享闸仍管住对话与菜单。引擎没起也能用
+/// （各模块自带缓存/退避，四个族并发问）。magpie 回退 SKU 没有这些账号模块。
+#[cfg(engine_rust_active)]
+pub fn subscription_family_models() -> serde_json::Value {
+    // 用户自建的 claude/codex/grok/antigravity 来源让位（与目录行同一份判断）。
+    let providers = engine_providers();
+    let (claude, codex, grok, gemini) = std::thread::scope(|scope| {
+        let claude = scope.spawn(|| crate::engine_gateway::claude_account::listed_rows_for_inspection(&providers));
+        let codex = scope.spawn(|| crate::engine_gateway::codex_account::listed_rows_for_inspection(&providers));
+        let grok = scope.spawn(|| crate::engine_gateway::grok_account::listed_rows_for_inspection(&providers));
+        let gemini = scope.spawn(|| crate::engine_gateway::antigravity_account::listed_rows_for_inspection(&providers));
+        (
+            claude.join().unwrap_or_default(),
+            codex.join().unwrap_or_default(),
+            grok.join().unwrap_or_default(),
+            gemini.join().unwrap_or_default(),
+        )
+    });
+    serde_json::json!({
+        "families": {
+            "claude": family_rows(claude, "claude"),
+            "codex": family_rows(codex, "codex"),
+            "grok": family_rows(grok, "grok"),
+            "gemini": family_rows(gemini, "antigravity"),
+        },
+        "note": serde_json::Value::Null,
+    })
+}
+
+/// 引擎数据目录里的 providers.json（用户自建来源让位判断用；读不到 = 空表）。
+#[cfg(engine_rust_active)]
+fn engine_providers() -> Vec<crate::engine_gateway::store::Provider> {
+    let Ok(dir) = engine_dir() else { return Vec::new() };
+    let Ok(bytes) = std::fs::read(dir.join("data").join("providers.json")) else { return Vec::new() };
+    serde_json::from_slice::<crate::engine_gateway::store::ProvidersFile>(&bytes)
+        .map(|file| file.providers)
+        .unwrap_or_default()
+}
+
+/// 目录行 → 模型设置的订阅清单（前端字段 camelCase）。
+#[cfg(engine_rust_active)]
+fn family_rows(rows: Vec<crate::engine_gateway::catalog::VendorRow>, prefix: &str) -> serde_json::Value {
+    let list: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            let levels: Vec<String> = row
+                .raw
+                .get("reasoning_levels")
+                .and_then(|v| v.as_array())
+                .map(|list| list.iter().filter_map(|item| item.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            let name = row
+                .raw
+                .get("display_name")
+                .and_then(|v| v.as_str())
+                .filter(|name| !name.is_empty())
+                .unwrap_or(&row.id);
+            serde_json::json!({
+                "id": format!("{prefix}/{}", row.id),
+                "displayName": name,
+                "contextWindow": row.context_window,
+                "maxOutput": row.max_output,
+                "images": row.images,
+                "levels": levels,
+            })
+        })
+        .collect();
+    serde_json::Value::Array(list)
+}
+
+/// magpie 回退 SKU：账号模块不在本进程里，模型设置里只给一句说明。
+#[cfg(not(engine_rust_active))]
+pub fn subscription_family_models() -> serde_json::Value {
+    serde_json::json!({
+        "families": {},
+        "note": crate::ts!(
+            "当前是 magpie 回退引擎，订阅详情暂不可用；开启共享后在模型目录里查看模型",
+            "The magpie fallback engine has no subscription detail; enable sharing and look in the catalog"
+        ),
+    })
+}
+
+/// magpie 回退 SKU：没有进程内账号模块可问，只认得凭据文件里的 ChatGPT 登录
+/// （发现链已有的那份判断）；其余三族照旧显示未登录。这个 SKU 只剩一个发布周期。
+#[cfg(not(engine_rust_active))]
+pub fn signed_in_families() -> Vec<String> {
+    if crate::model_sources::codex_signed_in() { vec!["codex".to_string()] } else { Vec::new() }
 }
 
 /// Exact account aliases for menu presentation. Compare resolved credentials
@@ -2204,7 +2447,7 @@ pub(crate) fn engine_binding_count() -> usize {
 }
 
 /// 引擎已安装但处于 Absent（典型：空闲回收后）→ 后台唤醒。幂等；未安装
-/// 不动（绝不因菜单打开触发 48MB 下载）。
+/// 不动（绝不因菜单打开触发 100MB 下载）。
 pub fn wake_if_installed() {
     #[cfg(test)]
     {
@@ -2366,7 +2609,7 @@ fn stop_owned_for_replace() -> Result<(), String> {
 
 /// 查 GitHub latest（稳定版）与本机 / 出厂版本对比。网络失败时仍返回本机信息，`note` 带原因。
 /// engine-rust 形态（T12）：引擎编在 exe 里，版本随应用走——不打 GitHub、
-/// 不比 magpie latest（比了必然「有更新」，诱导 UI 走 48MB 子进程下载）。
+/// 不比 magpie latest（比了必然「有更新」，诱导 UI 走 100MB 子进程下载）。
 /// 返回形状按前端消费口径定：currentVersion 显示编译进来的网关版本、
 /// latest/embedded 置空、两个可用位全 false——更新/恢复按钮不出现，
 /// note 置 None（note 会渲染成错误横幅）。
@@ -3212,7 +3455,7 @@ fn place_and_prep(dir: &Path, allow_download: bool) -> Result<PrepOutcome, Strin
     //    实锤：孤儿跑了近 5 小时）。规则 fail-open，扫失败只记 warn。
     reap_orphan_engines(dir);
     // engine-rust 形态到此为止：引擎编译在 exe 里——没有 magpie.exe 可落位、
-    // 不该再从 GitHub 下载 48MB 的子进程形态，也不复用默认端口上的外部
+    // 不该再从 GitHub 下载 100MB 的子进程形态，也不复用默认端口上的外部
     // magpie（CLI 直调写的是我们自己的 store；复用会造成「网关读别人的
     // 数据、CLI 写自己的」两头分家——默认形态两口径同源于我们 exe 的
     // data 目录，没有这个问题）。孤儿收割照跑：老版本留下的 magpie 进程
@@ -3716,9 +3959,23 @@ pub fn subscription_share_enabled(family: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// 目录行的引擎来源前缀 → 订阅共享族。gemini 族在引擎里的来源 id 是
+/// `antigravity`（Antigravity 的 Google 登录，Code Assist 桥——
+/// engine_gateway/antigravity_account.rs），不是 `gemini`：只认 `gemini/` 前缀会
+/// 让 antigravity 行绕过这一族的开关（2026-11-26 修）。
+pub(crate) fn share_family_of(prefix: &str) -> Option<&'static str> {
+    match prefix {
+        "claude" => Some("claude"),
+        "codex" => Some("codex"),
+        "grok" => Some("grok"),
+        "gemini" | "antigravity" => Some("gemini"),
+        _ => None,
+    }
+}
+
 /// 目录行是否可见：非订阅族恒真；订阅族要看用户开没开。
 fn subscription_catalog_visible(id: &str) -> bool {
-    match SUBSCRIPTION_FAMILIES.iter().find(|f| id.starts_with(&format!("{}/", f))) {
+    match id.split('/').next().and_then(share_family_of) {
         Some(family) => subscription_share_enabled(family),
         None => true,
     }
@@ -3736,7 +3993,12 @@ fn push_subscription_gate() {
         }
     }
     drop(guard);
+    // 网关执行闸只存在于进程内引擎；magpie 子进程形态没有可推的对象（未推送 =
+    // 全开，与独立 dev bin / 契约套件同形），菜单侧的过滤照旧生效。
+    #[cfg(engine_rust_active)]
     crate::engine_gateway::set_subscription_enabled(enabled);
+    #[cfg(not(engine_rust_active))]
+    let _ = enabled;
 }
 
 /// 模型共享面板的开关命令入口：族名白名单校验 → 写偏好 → 刷新缓存 →
@@ -4860,6 +5122,7 @@ mod tests {
                 "codex/gpt-6-luna".into(),
                 "grok/grok-4.7".into(),
                 "gemini/gemini-3-pro".into(),
+                "antigravity/gemini-3.1-pro-high".into(),
                 "deepseek/deepseek-chat".into(),
                 "glm/glm-5.3".into(),
             ]),
@@ -4896,7 +5159,9 @@ mod tests {
             cached.into_iter().map(|row| row.id).collect::<Vec<_>>(),
             vec!["deepseek/deepseek-chat".to_string()]
         );
-        // 用户开启 claude + grok → 这两族回来（live 侧）。
+        // 用户开启 claude + grok + gemini → 这三族回来（live 侧）。gemini 族在引擎里
+        // 的来源 id 是 antigravity（Code Assist 桥）：关着时必须跟 gemini/ 一样被剥
+        // （2026-11-26 前只认 gemini/ 前缀，antigravity 行绕过了这一族的开关）。
         drop(_sleeping);
         let _enabled = install_test_seams(Seams {
             dir: Some(dir.clone()),
@@ -4905,14 +5170,87 @@ mod tests {
                 "claude/claude-opus-5-5".into(),
                 "codex/gpt-6-luna".into(),
                 "grok/grok-4.7".into(),
+                "antigravity/gemini-3.1-pro-high".into(),
                 "deepseek/deepseek-chat".into(),
             ]),
             ..Seams::default()
         });
-        set_subscription_shares_for_tests(Some(&[("claude", true), ("grok", true)]));
+        set_subscription_shares_for_tests(Some(&[("claude", true), ("grok", true), ("gemini", true)]));
         let ids = catalog_direct();
-        assert_eq!(ids, vec!["claude/claude-opus-5-5", "grok/grok-4.7", "deepseek/deepseek-chat"]);
+        assert_eq!(
+            ids,
+            vec!["claude/claude-opus-5-5", "grok/grok-4.7", "antigravity/gemini-3.1-pro-high", "deepseek/deepseek-chat"]
+        );
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 引擎来源前缀 → 共享族：四个族名各归自己，antigravity 归 gemini（Antigravity 的
+    /// Google 登录就是这一族），别的来源不是族。
+    #[test]
+    fn share_family_maps_the_antigravity_source_to_gemini() {
+        for family in SUBSCRIPTION_FAMILIES {
+            assert_eq!(share_family_of(family), Some(family));
+        }
+        assert_eq!(share_family_of("antigravity"), Some("gemini"));
+        for other in ["deepseek", "zcode", "group", "auto", "", "claude-code"] {
+            assert_eq!(share_family_of(other), None, "{other}");
+        }
+    }
+
+    /// 订阅族的只读清单（模型设置里的订阅详情）：没登录任何一族时四个族都是空表、
+    /// note 为空——命令要能在浏览器/桌面两端都安全回答，不 panic、不联网。
+    #[cfg(engine_rust_active)]
+    #[test]
+    fn subscription_family_models_is_an_empty_map_when_nothing_is_signed_in() {
+        let _guard = crate::engine_gateway::TEST_SANDBOX_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                // 四个模块的测试缝类型各异，逐个复位（mod.rs 的登录态测试同款）。
+                *crate::engine_gateway::codex_account::TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                *crate::engine_gateway::grok_account::TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                *crate::engine_gateway::claude_account::TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                *crate::engine_gateway::antigravity_account::TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = None;
+            }
+        }
+        let _reset = Reset;
+        let body = subscription_family_models();
+        for family in ["claude", "codex", "grok", "gemini"] {
+            assert_eq!(body["families"][family], serde_json::json!([]), "{family}");
+        }
+        assert!(body["note"].is_null());
+    }
+
+    /// 同一把钥匙、同一个厂商主机被登记成两个 provider（预设 + 从 CLI 配置发现的
+    /// 副本）：重复项给别名指回代表项，模型设置左列只显示一个来源。只读展示合并，
+    /// providers.json 一个都不删。
+    #[cfg(engine_rust_active)]
+    #[test]
+    fn provider_account_aliases_point_duplicates_at_the_preset_provider() {
+        let dir = temp_dir("provider-alias");
+        let _seams = install_test_seams(Seams { dir: Some(dir.clone()), ..Seams::default() });
+        std::fs::create_dir_all(dir.join("data")).unwrap();
+        std::fs::write(
+            dir.join("data").join("providers.json"),
+            serde_json::json!({ "providers": [
+                { "id": "deepseek", "name": "DeepSeek", "key": "sk-same", "chat": "https://api.deepseek.com/v1" },
+                { "id": "source-aaa", "name": "deepseek.com", "key": "sk-same", "chat": "https://api.deepseek.com/v1" },
+                { "id": "source-bbb", "name": "opencode.ai", "key": "sk-other", "chat": "https://opencode.ai/inference/go/v1" },
+                { "id": "source-ccc", "name": "opencode.ai", "key": "sk-other", "anthropic": "https://opencode.ai/inference/go" },
+                { "id": "other", "name": "Other", "key": "sk-else", "chat": "https://example.com/v1" },
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        let aliases = provider_account_aliases(&[]);
+        assert_eq!(aliases.get("engine:source-aaa").map(String::as_str), Some("engine:deepseek"));
+        // 两个都带 `source-` 前缀、模型一样多 → id 字典序小的当代表；另一份指回来
+        assert_eq!(aliases.get("engine:source-ccc").map(String::as_str), Some("engine:source-bbb"));
+        assert!(!aliases.contains_key("engine:other"));
+        assert!(!aliases.contains_key("engine:deepseek"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// 无网络（release 解析被 mock 成失败）→ 干净落 Failed 并留档，无残留
@@ -5064,6 +5402,21 @@ mod tests {
         assert!(!seed_cli_passthrough(&[]));
     }
 
+    /// 自定义来源的模型清单（2026-11-26）：只有手动来源 + 非空清单才钉；空清单
+    /// 绝不发 `models=`（引擎读成「一个都不暴露」）；发现来源一律 live。
+    #[test]
+    fn manual_source_models_are_pinned_and_everything_else_stays_live() {
+        let ids = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // 发现来源即使带着模型清单也 live（中转上新模型自动进目录）。
+        assert_eq!(pinned_models_pair(false, &ids(&["a", "b"])), None);
+        // 手动来源留空 = live。
+        assert_eq!(pinned_models_pair(true, &ids(&[])), None);
+        assert_eq!(pinned_models_pair(true, &ids(&["  ", ""])), None);
+        // 手动来源填了 ID = 钉死（保序、去空白；旧数据里的逗号条目被丢掉而不是撑破注册对）。
+        assert_eq!(pinned_models_pair(true, &ids(&["a", " b "])), Some("models=a,b".to_string()));
+        assert_eq!(pinned_models_pair(true, &ids(&["a,b"])), None);
+    }
+
     /// 注册对账：账本减去本次计划 = 引擎侧应回收的名字；计划里的不动。
     #[test]
     fn reconcile_removals_only_reclaims_ledger_names_missing_from_the_plan() {
@@ -5161,6 +5514,8 @@ mod tests {
 
     /// serve-token.txt（2026-11-22 安全批）：首跑铸造 48-hex 落盘，二跑复读
     /// 同一枚（引擎回收再唤醒不换令牌），坏文件（截断/非 hex）重铸。
+    /// 只在 Rust SKU 下成立——回退 SKU 的 `ensure_serve_token` 给的是占位。
+    #[cfg(engine_rust_active)]
     #[test]
     fn serve_token_is_persistent_and_revalidated() {
         let dir = temp_dir("serve-token");

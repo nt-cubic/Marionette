@@ -414,21 +414,57 @@ pub fn add_custom_provider(label: &str, key: &str, config: CustomProviderConfig)
     add_custom_provider_at(&path,label,key,config)
 }
 
-fn add_custom_provider_at(path: &Path, label: &str, key: &str, config: CustomProviderConfig) -> Result<String, String> {
-    use sha2::{Digest, Sha256};
-    let label=label.trim();
-    if label.is_empty() { return Err(crate::ts!("请输入自定义来源名称", "Enter a custom source name")); }
-    if !matches!(config.protocol.as_str(), "chat" | "responses" | "anthropic") { return Err(crate::ts!("请选择支持的接口协议", "Choose a supported API protocol")); }
-    let endpoint=config.endpoint.trim().trim_end_matches('/');
-    let authority=endpoint.split("://").nth(1).unwrap_or("").split('/').next().unwrap_or("");
+/// 编辑一条手动自定义来源（见 [`update_custom_provider_at`]）。返回（可能变了的）条目 id。
+pub fn update_custom_provider(entry_id: &str, label: &str, key: Option<&str>, config: CustomProviderConfig) -> Result<String, String> {
+    let path = credentials_store_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    update_custom_provider_at(&path, entry_id, label, key, config)
+}
+
+/// 自定义来源的接口地址校验 + 归一（去首尾空白与结尾的 `/`）。保存与
+/// 「获取模型」预览共用这一套：预览能过，保存就一定能过。
+pub(crate) fn clean_custom_endpoint(endpoint: &str) -> Result<String, String> {
+    let endpoint = endpoint.trim().trim_end_matches('/');
+    let authority = endpoint.split("://").nth(1).unwrap_or("").split('/').next().unwrap_or("");
     if authority.is_empty() || authority.contains('@') || endpoint.contains('?') || endpoint.contains('#') || !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
         return Err(crate::ts!("请输入有效的 http/https 接口地址，认证信息请填在 API Key 中", "Enter a valid http/https endpoint; put authentication in the API key field"));
     }
-    let mut models:Vec<String>=config.models.iter().map(|m|m.trim().to_string()).filter(|m|!m.is_empty()).collect();
-    models.dedup();
-    if models.iter().any(|m|m.contains(',') || m.chars().any(char::is_control)) { return Err(crate::ts!("模型 ID 不能包含逗号或控制字符", "Model IDs cannot contain commas or control characters")); }
-    let digest=Sha256::digest(format!("{label}|{endpoint}|{}",config.protocol));
-    let id=format!("custom-{digest:x}")[..23].to_string();
+    Ok(endpoint.to_string())
+}
+
+/// 模型 ID 清单的校验 + 归一：去首尾空白与空行，**全表**去重（保序）；
+/// 不许逗号（注册对里逗号是分隔符）或控制字符。
+pub(crate) fn clean_custom_models(models: &[String]) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for model in models {
+        let model = model.trim();
+        if model.is_empty() {
+            continue;
+        }
+        if model.contains(',') || model.chars().any(char::is_control) {
+            return Err(crate::ts!("模型 ID 不能包含逗号或控制字符", "Model IDs cannot contain commas or control characters"));
+        }
+        if !out.iter().any(|m| m == model) {
+            out.push(model.to_string());
+        }
+    }
+    Ok(out)
+}
+
+/// 自定义来源的稳定 id：`名称|地址|协议` 的摘要——三者任一改动就是另一个来源
+/// （同名同址再存 = 换钥匙；改名/改址 = 新来源，编辑路径负责让旧条目退场）。
+fn custom_provider_id(label: &str, endpoint: &str, protocol: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("{label}|{endpoint}|{protocol}"));
+    format!("custom-{digest:x}")[..23].to_string()
+}
+
+pub(crate) fn add_custom_provider_at(path: &Path, label: &str, key: &str, config: CustomProviderConfig) -> Result<String, String> {
+    let label=label.trim();
+    if label.is_empty() { return Err(crate::ts!("请输入自定义来源名称", "Enter a custom source name")); }
+    if !matches!(config.protocol.as_str(), "chat" | "responses" | "anthropic") { return Err(crate::ts!("请选择支持的接口协议", "Choose a supported API protocol")); }
+    let endpoint=clean_custom_endpoint(&config.endpoint)?;
+    let models = clean_custom_models(&config.models)?;
+    let id=custom_provider_id(label,&endpoint,&config.protocol);
     let mut store=load_store_at(&path)?;
     let created_at=store.entries.iter().find(|e|e.id==id).map(|e|e.created_at.clone()).unwrap_or_else(now_epoch_secs);
     let secret=if key.trim().is_empty() {None} else {Some(encrypt_stored(key.trim())?)};
@@ -436,6 +472,51 @@ fn add_custom_provider_at(path: &Path, label: &str, key: &str, config: CustomPro
     store.entries.push(CredentialEntry { id:id.clone(),kind:CredentialKind::KeyPlan,label:label.into(),preset:Some("custom".into()),secret,ref_path:None,host_agent:None,source:"manual".into(),created_at,last_used_at:None,
         custom_provider:Some(CustomProviderConfig {endpoint:endpoint.into(),protocol:config.protocol,models}) });
     save_store_at(&path,&store)?;
+    Ok(id)
+}
+
+/// 编辑一条手动添加的自定义来源（2026-11-26：此前保存后只能删了重填，改模型
+/// 清单得手改 credentials.json——而 key 是 DPAPI 密文，手改并不现实）。
+///
+/// - `key = None`：沿用原密钥（密文原样搬家，不解密、不重新加密）；
+///   `Some("")`：改成无认证；`Some(k)`：换新 key。
+/// - 名称 / 地址 / 协议任一改动都会换 id → 旧条目退位，`createdAt` 保留。
+/// - 只认手动自定义来源（`preset = "custom"` 且带 `customProvider`），其余报错。
+fn update_custom_provider_at(path: &Path, entry_id: &str, label: &str, key: Option<&str>, config: CustomProviderConfig) -> Result<String, String> {
+    let label = label.trim();
+    if label.is_empty() { return Err(crate::ts!("请输入自定义来源名称", "Enter a custom source name")); }
+    if !matches!(config.protocol.as_str(), "chat" | "responses" | "anthropic") { return Err(crate::ts!("请选择支持的接口协议", "Choose a supported API protocol")); }
+    let endpoint = clean_custom_endpoint(&config.endpoint)?;
+    let models = clean_custom_models(&config.models)?;
+    let mut store = load_store_at(path)?;
+    let Some(old) = store.entries.iter().find(|e| e.id == entry_id).cloned() else {
+        return Err(crate::ts!("未找到凭证 `{entry_id}`", "Credential `{entry_id}` not found"));
+    };
+    if old.kind != CredentialKind::KeyPlan || old.preset.as_deref() != Some("custom") || old.custom_provider.is_none() {
+        return Err(crate::ts!("只能编辑手动添加的自定义来源", "Only manually added custom sources can be edited"));
+    }
+    let secret = match key {
+        None => old.secret.clone(),
+        Some(key) if key.trim().is_empty() => None,
+        Some(key) => Some(encrypt_stored(key.trim())?),
+    };
+    let id = custom_provider_id(label, &endpoint, &config.protocol);
+    // 旧条目退位；撞上同 id 的另一条（改名/改址后与已有来源重合）按「同名同址再存」处理：被这一条替换。
+    store.entries.retain(|e| e.id != entry_id && e.id != id);
+    store.entries.push(CredentialEntry {
+        id: id.clone(),
+        kind: CredentialKind::KeyPlan,
+        label: label.into(),
+        preset: Some("custom".into()),
+        secret,
+        ref_path: None,
+        host_agent: None,
+        source: "manual".into(),
+        created_at: old.created_at,
+        last_used_at: old.last_used_at,
+        custom_provider: Some(CustomProviderConfig { endpoint, protocol: config.protocol, models }),
+    });
+    save_store_at(path, &store)?;
     Ok(id)
 }
 
@@ -1157,6 +1238,54 @@ mod tests {
         assert_eq!(super::peek_secret_at(&path,&id).unwrap().as_deref(),Some("sk-fixture-rotated"));
         super::delete_entry_at(&path,&id).unwrap();
         assert!(super::load_store_at(&path).unwrap().entries.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 编辑（2026-11-26）：改模型清单 / 换 key 不必删了重填。名称、地址、协议
+    /// 没动 → id 不变、密文原样沿用；动了 → 换 id、旧条目退位、createdAt 保留。
+    #[test]
+    fn custom_provider_update_keeps_key_and_swaps_identity_when_needed() {
+        let root = temp_home("custom_update");
+        let path = root.join("credentials.json");
+        let config = |endpoint: &str, protocol: &str, models: &[&str]| super::CustomProviderConfig {
+            endpoint: endpoint.into(),
+            protocol: protocol.into(),
+            models: models.iter().map(|m| m.to_string()).collect(),
+        };
+        let id = super::add_custom_provider_at(&path, "Ollama", "sk-fixture-private", config("https://ollama.com/v1", "chat", &["a"])).unwrap();
+        let before = super::load_store_at(&path).unwrap().entries.remove(0);
+
+        // 只改模型清单：key = None 沿用原密钥（密文一个字节不变）。
+        let same = super::update_custom_provider_at(&path, &id, "Ollama", None, config("https://ollama.com/v1/", "chat", &["a", "b", " a ", ""])).unwrap();
+        assert_eq!(same, id, "name/endpoint/protocol unchanged → same id");
+        let after = super::load_store_at(&path).unwrap().entries.remove(0);
+        assert_eq!(after.secret, before.secret, "ciphertext moves as is — no decrypt/re-encrypt");
+        assert_eq!(after.created_at, before.created_at);
+        let models: Vec<&str> = after.custom_provider.as_ref().unwrap().models.iter().map(String::as_str).collect();
+        assert_eq!(models, vec!["a", "b"], "trimmed, blanks dropped, order kept");
+
+        // 清空模型清单 = 回到 live 目录；显式清空 key = 改成无认证。
+        let live = super::update_custom_provider_at(&path, &id, "Ollama", Some(""), config("https://ollama.com/v1", "chat", &[])).unwrap();
+        assert_eq!(live, id);
+        let after = super::load_store_at(&path).unwrap().entries.remove(0);
+        assert!(after.secret.is_none(), "Some(\"\") means no auth from now on");
+        assert!(after.custom_provider.as_ref().unwrap().models.is_empty());
+
+        // 改名：换 id，旧条目退位，createdAt 保留，条目总数不变。
+        let renamed = super::update_custom_provider_at(&path, &id, "Ollama Cloud", Some("sk-new"), config("https://ollama.com/v1", "chat", &[])).unwrap();
+        assert_ne!(renamed, id);
+        let store = super::load_store_at(&path).unwrap();
+        assert_eq!(store.entries.len(), 1);
+        assert_eq!(store.entries[0].label, "Ollama Cloud");
+        assert_eq!(store.entries[0].created_at, before.created_at);
+        assert_eq!(super::peek_secret_at(&path, &renamed).unwrap().as_deref(), Some("sk-new"));
+
+        // preset 钥匙条目不是自定义来源：拒绝编辑、原样不动；不存在的条目报错而不是新建。
+        add_key_plan_at(&path, "deepseek", "DeepSeek", "sk-preset").unwrap();
+        assert!(super::update_custom_provider_at(&path, "deepseek", "x", None, config("https://a.com/v1", "chat", &[])).is_err());
+        assert_eq!(super::peek_secret_at(&path, "deepseek").unwrap().as_deref(), Some("sk-preset"));
+        assert!(super::update_custom_provider_at(&path, "custom-nope", "x", None, config("https://a.com/v1", "chat", &[])).is_err());
+        assert_eq!(super::load_store_at(&path).unwrap().entries.len(), 2);
         fs::remove_dir_all(root).unwrap();
     }
 

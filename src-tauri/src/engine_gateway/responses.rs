@@ -336,7 +336,7 @@ fn tapped(
 
 /// store:true 回合的落账上下文：应答侧拿它生成 id 并保存（Go
 /// previousResponse 的 conversationWriter sink，prev_response.go:395 附近）。
-struct PrevSave {
+pub(super) struct PrevSave {
     store: std::sync::Arc<super::prev_response::PrevStore>,
     /// 存账的 input（合并后的整段 items；无 previous_response_id 时就是
     /// 本轮自己的 items——Go kept(scope, nil, fresh) 首轮也存）。
@@ -404,6 +404,16 @@ fn prev_merge(
         }
     }
     Ok((parsed, None))
+}
+
+/// 订阅桥（antigravity_account）的 responses 入站也认 `previous_response_id` /
+/// store：与翻译路径同一张服务端回合表、同一个 miss 口径。桥拿到的
+/// [`PrevSave`] 原样交回 [`reshape`]。
+pub(super) fn prev_prepare(
+    gateway: &super::Gateway,
+    parsed: Value,
+) -> Result<(Value, Option<PrevSave>), Reply> {
+    prev_merge(gateway, parsed)
 }
 
 /// store:true 回合的应答侧落账：生成 fresh_id、存（model=asked、
@@ -499,7 +509,7 @@ fn translate_via_chat(
 /// 对象上扫（`usage_to_responses` 补的 0 桶被 tap 的 >0 过滤掉，不编数）；
 /// 流式 tap 包在 ResponsesSse 外层，从 completed 帧提桶。
 #[allow(clippy::too_many_arguments)]
-fn reshape(
+pub(super) fn reshape(
     reply: Reply,
     asked: &str,
     table: &super::translate::ToolTable,

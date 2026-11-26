@@ -3418,13 +3418,46 @@ pub fn bridge_add_custom_provider(label: String, key: String, config: crate::cre
     Ok(())
 }
 
+/// 编辑一条手动自定义来源（2026-11-26）。`key = None` 沿用原密钥，`Some("")`
+/// 改成无认证。返回（改名/改址/改协议后会变的）条目 id。
+#[tauri::command(async)]
+pub fn bridge_update_custom_provider(entry_id: String, label: String, key: Option<String>, config: crate::credentials::CustomProviderConfig) -> Result<String,String> {
+    let _trace = crate::debug_log::CmdTrace::new("bridge_update_custom_provider");
+    let id = crate::credentials::update_custom_provider(&entry_id, &label, key.as_deref(), config)?;
+    // 换了地址或清单 → 引擎侧按新配置重登记；换了 id → 账本对账回收旧 provider。
+    crate::engine::reregister_key_providers();
+    Ok(id)
+}
+
+/// 「添加自定义来源」保存前的模型目录预览：按地址 + 协议 + key 拉一次目录，
+/// 不落盘、不注册、不发生成请求。
+#[tauri::command(async)]
+pub fn model_library_probe_custom(endpoint: String, protocol: String, key: String) -> crate::model_sources::CustomProbe {
+    let _trace = crate::debug_log::CmdTrace::new("model_library_probe_custom");
+    crate::model_sources::probe_custom(&endpoint, &protocol, &key)
+}
+
+/// 订阅族的模型清单（模型设置里点开订阅行）：只读 peek，无视共享开关。
+/// 要联网（最慢 ~10s × 并发），`async` 让它离开主线程。
+#[tauri::command(async)]
+pub fn model_library_family_models() -> serde_json::Value {
+    crate::engine::subscription_family_models()
+}
+
 #[tauri::command(async)]
 pub fn model_library_scan() -> serde_json::Value {
     let mut discovery = crate::model_sources::discover();
     // 手动面板刷新：强制 live 重抓 + 排队等锁（用户显式要新数据）。
     discovery.warnings.extend(crate::engine::sync_discovered_sources(true));
-    let aliases=crate::engine::model_source_aliases(&discovery.sources);
-    serde_json::json!({ "sources": discovery.sources.into_iter().map(|s|s.view).collect::<Vec<_>>(), "warnings": discovery.warnings, "paths": discovery.paths, "aliases": aliases, "accounts": discovery.accounts })
+    // 来源别名（发现来源 / 凭据条目 → 引擎 provider）+ 同一账号的重复 provider
+    // 别名（模型设置只列一个来源；providers.json 不删，已有绑定照旧解析）。
+    let mut aliases=crate::engine::model_source_aliases(&discovery.sources);
+    aliases.extend(crate::engine::provider_account_aliases(&discovery.sources));
+    // 「订阅共享」四行的已登录 / 未登录：直接问各账号模块，不走上面的账号去重清单
+    // （那份只为菜单合并而设，只产出 ChatGPT 一家）。四族在 Rust 引擎里都有对话桥
+    // （gemini = Antigravity 的 Code Assist 桥，2026-11-26 补齐），没有「暂不支持」的族。
+    let signed_in=crate::engine::signed_in_families();
+    serde_json::json!({ "sources": discovery.sources.into_iter().map(|s|s.view).collect::<Vec<_>>(), "warnings": discovery.warnings, "paths": discovery.paths, "aliases": aliases, "accounts": discovery.accounts, "signedIn": signed_in })
 }
 
 #[tauri::command(async)]

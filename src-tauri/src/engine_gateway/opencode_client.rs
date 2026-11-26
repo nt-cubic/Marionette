@@ -892,9 +892,7 @@ fn updater_agent() -> ureq::Agent {
         builder = builder.tls_connector(std::sync::Arc::new(connector));
     }
     if let Some(proxy) = super::outbound_proxy().filter(|p| !p.trim().is_empty()) {
-        if let Ok(p) = ureq::Proxy::new(proxy.trim()) {
-            builder = builder.proxy(p);
-        }
+        builder = builder.proxy(super::ureq_proxy(proxy.trim()));
     }
     builder.build()
 }
