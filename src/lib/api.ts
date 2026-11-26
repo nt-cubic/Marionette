@@ -1981,8 +1981,12 @@ export interface ChiefTask {
   workerSessionId?: string | null;
   agentId: string;
   model?: string | null;
+  /** Engine model actually bound to the worker (UI display truth). */
+  bridgeModel?: string | null;
+  /** bridgeModel when present, otherwise model. */
+  displayModel?: string | null;
   status: "proposed" | "starting" | "running" | "waiting_user" | "completed" | "failed" | "cancelled" | "interrupted";
-  waitingReason?: "permission" | "question" | "plan_approval" | "user_input" | null;
+  waitingReason?: "permission" | "question" | "plan_approval" | "user_input" | "user_interrupt" | "auto_retry" | null;
   turnCount?: number;
   costUsd?: number;
   createdAt: number;
@@ -2109,6 +2113,52 @@ export async function setDelegationEnabled(enabled: boolean): Promise<void> {
  */
 export async function delegationCancelTask(taskId: string): Promise<{ ok: boolean }> {
   return invoke("delegation_cancel_task", { taskId });
+}
+
+export type DelegateTranscriptEvent = {
+  kind?: string | null;
+  method?: string | null;
+  tool?: string | null;
+  text?: string | null;
+};
+
+export type DelegateTranscript = {
+  task: ChiefTask;
+  events: DelegateTranscriptEvent[];
+  returned?: number;
+  total?: number;
+  note?: string;
+};
+
+/** Live tail of a delegated worker (same data the main model can read). */
+export async function delegationTaskTranscript(
+  taskId: string,
+  limit = 60,
+): Promise<DelegateTranscript> {
+  return invoke("delegation_task_transcript", { taskId, limit });
+}
+
+/** Interrupt the worker's current turn but keep the task alive. */
+export async function delegationInterruptTask(taskId: string): Promise<{ task: ChiefTask }> {
+  return invoke("delegation_interrupt_task", { taskId });
+}
+
+/** Send a follow-up / answer to a worker. interrupt=true cancels its current turn first. */
+export async function delegationSendTask(
+  taskId: string,
+  message: string,
+  interrupt = true,
+): Promise<{ task: ChiefTask }> {
+  return invoke("delegation_send_task", { taskId, message, interrupt });
+}
+
+/** 0 = unlimited. */
+export async function delegationMaxConcurrent(): Promise<number> {
+  return invoke("delegation_max_concurrent");
+}
+
+export async function setDelegationMaxConcurrent(value: number): Promise<void> {
+  await invoke("set_delegation_max_concurrent", { value });
 }
 
 /** 回滚一个 AI 派活的任务（tracked 文件恢复到任务开始时的存档点）。 */

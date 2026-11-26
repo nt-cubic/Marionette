@@ -314,6 +314,8 @@ export type SessionEvent =
       agentId: string;
       agentLabel: string;
       modelId?: string;
+      /** 跨用引擎的真实模型 id（显示用；modelId 保留该 agent 的原生写法）。 */
+      displayModel?: string;
       prompt: string;
       createdAt: string;
       /** agent 自主派活（marionette_delegate_task）时为 "agent"；
@@ -330,6 +332,8 @@ export type SessionEvent =
       status: "done" | "failed" | "cancelled" | "timeout";
       /** Last assistant_message from child, clipped to 2000 chars. */
       summary: string;
+      /** 跨用引擎的真实模型 id（显示用）。 */
+      displayModel?: string;
       durationMs?: number;
       error?: string;
       createdAt: string;

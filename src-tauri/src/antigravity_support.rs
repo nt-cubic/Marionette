@@ -110,7 +110,17 @@ pub fn ensure_settings_auth_type() -> SettingsSync {
     ensure_settings_auth_type_in(&antigravity_acp_dir())
 }
 
+/// 写入指定的 `auth.type`（跨用引擎会话写 `gateway`，原生会话写
+/// `oauth-personal`）。其余 key 原样保留；解析不了的文件不碰。
+pub fn ensure_settings_auth_type_value(auth_type: &str) -> SettingsSync {
+    ensure_settings_auth_type_value_in(&antigravity_acp_dir(), auth_type)
+}
+
 fn ensure_settings_auth_type_in(acp_dir: &Path) -> SettingsSync {
+    ensure_settings_auth_type_value_in(acp_dir, DEFAULT_AUTH_TYPE)
+}
+
+fn ensure_settings_auth_type_value_in(acp_dir: &Path, auth_type: &str) -> SettingsSync {
     let path = acp_dir.join("settings.json");
     let mut root: serde_json::Value = match fs::read_to_string(&path) {
         Ok(text) => match serde_json::from_str(&text) {
@@ -126,7 +136,7 @@ fn ensure_settings_auth_type_in(acp_dir: &Path) -> SettingsSync {
         .get("auth")
         .and_then(|a| a.get("type"))
         .and_then(|t| t.as_str())
-        == Some(DEFAULT_AUTH_TYPE)
+        == Some(auth_type)
     {
         return SettingsSync::AlreadyCurrent;
     }
@@ -143,7 +153,7 @@ fn ensure_settings_auth_type_in(acp_dir: &Path) -> SettingsSync {
     };
     auth_obj.insert(
         "type".to_string(),
-        serde_json::Value::String(DEFAULT_AUTH_TYPE.to_string()),
+        serde_json::Value::String(auth_type.to_string()),
     );
     if let Err(err) = fs::create_dir_all(acp_dir) {
         return SettingsSync::WriteFailed(format!("create antigravity-acp dir: {err}"));

@@ -67,6 +67,10 @@ fn model_echo_tolerates_an_effort_suffix() {
     assert!(model_echo_matches("gpt-5.6-luna", "gpt-5.6-luna[xhigh]"));
     assert!(model_echo_matches("gpt-5.6-luna[xhigh]", "gpt-5.6-luna"));
     assert!(model_echo_matches("opencode/grok-code", " opencode/grok-code "));
+    assert!(model_echo_matches(
+        "opencode-go/deepseek-v4.1-flash",
+        "models/opencode-go/deepseek-v4.1-flash"
+    ));
     assert!(!model_echo_matches("openrouter/a:free", "openrouter/b"));
     assert!(!model_echo_matches("gpt-5.6", "gpt-5.6-luna"));
     // 括号不成对就不是档位后缀，原样比。

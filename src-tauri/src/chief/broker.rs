@@ -695,6 +695,14 @@ pub(crate) fn task_card(task: &Task) -> Value {
         "workerSessionId": task.worker_session_id,
         "agentId": task.agent_id,
         "model": task.model,
+        // 跨用引擎的真实模型 id（UI 用它显示「OpenCode Go / DeepSeek …」，
+        // 而不是 Grok 原生的 `marionette/...` 写法）。
+        "bridgeModel": task.bridge.as_ref().map(|bridge| bridge.model_id.clone()),
+        "displayModel": task
+            .bridge
+            .as_ref()
+            .map(|bridge| bridge.model_id.clone())
+            .or_else(|| task.model.clone()),
         "status": task.status,
         "waitingReason": task.waiting_reason,
         "turnCount": task.turn_count,
@@ -985,6 +993,7 @@ pub fn chief_task_start(app: &AppHandle, chief_session_id: &str, args: &Value) -
         checkpoint_base_commit: None,
         checkpoint_repo_root: None,
         preferred_effort: None,
+        bridge: None,
     };
     enum ReserveOutcome {
         Existing(Task),
@@ -1202,12 +1211,48 @@ const AVAILABLE_MODELS_CAP: usize = 60;
 /// （`gpt-5.6-luna[xhigh]`），所以去掉尾部 `[...]` 再比。
 pub(crate) fn model_echo_matches(requested: &str, current: &str) -> bool {
     fn strip(id: &str) -> &str {
+        let id = id.trim();
+        // Antigravity gateway 目录可能回显 `models/<id>`。
+        let id = id.strip_prefix("models/").unwrap_or(id);
         match (id.find('['), id.ends_with(']')) {
             (Some(index), true) => id[..index].trim(),
             _ => id.trim(),
         }
     }
     strip(requested) == strip(current)
+}
+
+/// worker 启动前把跨用引擎绑定写好：Claude 的环境变量、Grok 的 owned 表、
+/// Codex 的 providers.set 都在 spawn 阶段读它；OpenCode/DSH/Pi/ZCode 的
+/// 全局路由也由各自的 spawn 分支刷新。绑定写失败 = 拒绝启动，绝不静默
+/// 落到 agent 自家默认模型。
+fn prepare_worker_bridge(
+    app: &AppHandle,
+    task: &Task,
+    worker_session_id: &str,
+) -> Result<(), String> {
+    let Some(selection) = task.bridge.as_ref() else {
+        return Ok(());
+    };
+    if selection.entry_id == crate::engine::ENGINE_ENTRY_ID {
+        crate::engine::wake_if_installed();
+        if !crate::engine::bridge_ready() {
+            crate::engine::ensure_bridge_ready(std::time::Duration::from_secs(30));
+        }
+        if !crate::engine::bridge_ready() {
+            return Err(crate::ts!(
+                "翻译引擎未就绪，无法为 worker 建立跨用模型绑定",
+                "The translation engine is not ready; cannot bind the worker's cross-use model"
+            ));
+        }
+    }
+    crate::model_bridge::bind_session(
+        worker_session_id,
+        Some(task.agent_id.as_str()),
+        Some(selection.clone()),
+    )?;
+    let _ = app;
+    Ok(())
 }
 
 /// 把任务的设置应用到一条**活着的** worker 会话上。spawn 与额度重试
@@ -1229,8 +1274,27 @@ fn apply_task_settings(
     if remote_mode == RemoteMode::ReadOnly {
         runner::enforce_read_only(app, worker_session_id).map_err(SettingsError::ReadOnly)?;
     }
-    if let Some(model) = task.model.as_deref() {
-        runner::apply_model(app, worker_session_id, model).map_err(|reason| SettingsError::Model {
+    if let Some(model) = task.model.as_deref().filter(|_| {
+        // Claude 的桥接模型由 spawn 环境变量钉住（§4.8：跨用会话不发
+        // set_model）；再发一次会被它按自家菜单拒绝，反而把任务判死。
+        !(task.bridge.is_some()
+            && crate::model_bridge::classify_agent(&task.agent_id)
+                == crate::model_bridge::BridgeAgent::ClaudeCode)
+    }) {
+        let antigravity = task.bridge.is_some()
+            && crate::model_bridge::classify_agent(&task.agent_id)
+                == crate::model_bridge::BridgeAgent::Antigravity;
+        let applied = match runner::apply_model(app, worker_session_id, model) {
+            Ok(()) => Ok(()),
+            Err(first) if antigravity && !model.starts_with("models/") => {
+                // Antigravity 的 gateway 目录可能用 `models/<id>` 形式广告；
+                // 第一次裸 id 被拒时再试一次前缀写法，仍失败才判死。
+                runner::apply_model(app, worker_session_id, &format!("models/{model}"))
+                    .map_err(|second| format!("{first} / {second}"))
+            }
+            Err(error) => Err(error),
+        };
+        applied.map_err(|reason| SettingsError::Model {
             model: model.to_string(),
             reason,
             available: advertised_model_ids(app, worker_session_id),
@@ -1501,6 +1565,19 @@ pub(crate) fn spawn_and_watch_worker(
     }
 
     // 3) 启动 ACP + 应用任务的全部设置
+    if let Err(error) = prepare_worker_bridge(app, &task, &worker.id) {
+        runner::stop_session(app, &worker.id);
+        tee::unregister(&worker.id);
+        let _ = finalize_task(
+            app,
+            chief_session_id,
+            task_id,
+            TaskStatus::Failed,
+            Some("bridge_unavailable"),
+            Some(&format!("跨用模型绑定失败：{error}")),
+        );
+        return;
+    }
     if let Err(error) = runner::ensure_session(app, &worker.id, &task.agent_id, &worker.cwd) {
         runner::stop_session(app, &worker.id);
         tee::unregister(&worker.id);
@@ -1678,6 +1755,11 @@ fn watch_worker_loop(
                 Some("worker 连续 20 分钟没有任何动静，已中止。可以重新派活。"),
             );
             return;
+        }
+        if current.status == TaskStatus::WaitingUser {
+            // 等用户指示 / 权限卡：不判超时、不把回合结束当任务完成。
+            std::thread::sleep(std::time::Duration::from_millis(2000));
+            continue;
         }
         if runner::turn_idle_now(app, worker_session_id) {
             // 沉默不证明完成（orca 铁律）：turn_idle 对缺席进程也返回 true，

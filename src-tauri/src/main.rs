@@ -8,6 +8,7 @@ mod agent_registry;
 mod agent_update;
 mod antigravity_login;
 mod antigravity_support;
+mod antigravity_bridge;
 mod app_paths;
 mod browser;
 mod chief;
@@ -846,8 +847,13 @@ fn main() {
             browser::set_browser_tools_enabled,
             delegation::delegation_enabled,
             delegation::set_delegation_enabled,
+            delegation::delegation_max_concurrent,
+            delegation::set_delegation_max_concurrent,
             delegation::delegation_rollback_task,
             delegation::delegation_cancel_task,
+            delegation::delegation_task_transcript,
+            delegation::delegation_interrupt_task,
+            delegation::delegation_send_task,
             browser::set_session_approval,
             computer::computer_driver_status,
             computer::computer_install_driver,

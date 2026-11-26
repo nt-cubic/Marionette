@@ -2828,6 +2828,45 @@
   flex: 0 0 auto;
 }
 
+.subtask-card__reply {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 0 2px;
+}
+
+.subtask-card__reply input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+
+.subtask-card__reply input:focus {
+  border-color: var(--accent);
+}
+
+.subtask-card__reply button {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.subtask-card__reply button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .subtask-card__expand {
   justify-self: start;
 }

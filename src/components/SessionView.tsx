@@ -154,6 +154,10 @@ type SessionViewProps = {
   onSubtaskStop?: (childSessionId: string) => void;
   /** AI 派活的运行卡按任务取消（不能只取消回合：额度午休中没有回合可取消）。 */
   onAgentSubtaskStop?: (taskId: string) => void;
+  /** AI 派活：只打断当前回合，任务保留为「等你指示」。 */
+  onAgentSubtaskInterrupt?: (taskId: string) => void | Promise<void>;
+  /** AI 派活：给 worker 发消息（默认打断后发送）。 */
+  onAgentSubtaskSend?: (taskId: string, text: string) => void | Promise<void>;
   onSubtaskQuote?: (summary: string) => void;
   /** 头部还有未加载的转录历史（尾部优先加载）→ 顶部渲染「加载更早」。 */
   olderCount?: number;
@@ -1138,6 +1142,8 @@ export function SessionView({
   allEvents = [],
   onSubtaskStop,
   onAgentSubtaskStop,
+  onAgentSubtaskInterrupt,
+  onAgentSubtaskSend,
   onSubtaskQuote,
   onSubtaskRetry,
   streamPrompt,
@@ -1223,6 +1229,8 @@ export function SessionView({
             subtaskResults={subtaskResults}
             onSubtaskStop={onSubtaskStop}
             onAgentSubtaskStop={onAgentSubtaskStop}
+            onAgentSubtaskInterrupt={onAgentSubtaskInterrupt}
+            onAgentSubtaskSend={onAgentSubtaskSend}
             onSubtaskQuote={onSubtaskQuote}
             onSubtaskRetry={onSubtaskRetry}
             streamPrompt={streamPrompt}
@@ -2015,6 +2023,41 @@ function StaffTypingIndicator({
   );
 }
 
+function SubtaskReplyBox({
+  onSend,
+}: {
+  onSend: (text: string) => void | Promise<void>;
+}) {
+  const t = useT();
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  return (
+    <form
+      className="subtask-card__reply"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const value = text.trim();
+        if (!value || busy) return;
+        setBusy(true);
+        void Promise.resolve(onSend(value))
+          .then(() => setText(""))
+          .finally(() => setBusy(false));
+      }}
+    >
+      <input
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        placeholder={t("session.subtaskReplyPlaceholder")}
+        aria-label={t("session.subtaskReplyPlaceholder")}
+        disabled={busy}
+      />
+      <button type="submit" disabled={busy || !text.trim()}>
+        {busy ? "…" : t("session.subtaskReplySend")}
+      </button>
+    </form>
+  );
+}
+
 function CleanPlaceholder({
   agent,
   session,
@@ -2040,6 +2083,8 @@ function CleanPlaceholder({
   subtaskResults,
   onSubtaskStop,
   onAgentSubtaskStop,
+  onAgentSubtaskInterrupt,
+  onAgentSubtaskSend,
   onSubtaskQuote,
   onSubtaskRetry,
   streamPrompt,
@@ -2073,6 +2118,8 @@ function CleanPlaceholder({
   subtaskResults?: Map<string, Extract<SessionEvent, { type: "subtask_result" }>>;
   onSubtaskStop?: (childSessionId: string) => void;
   onAgentSubtaskStop?: (taskId: string) => void;
+  onAgentSubtaskInterrupt?: (taskId: string) => void | Promise<void>;
+  onAgentSubtaskSend?: (taskId: string, text: string) => void | Promise<void>;
   onSubtaskQuote?: (summary: string) => void;
   onSubtaskRetry?: (childSessionId: string) => void;
   streamPrompt?: StreamPromptHandlers;
@@ -3070,9 +3117,12 @@ function CleanPlaceholder({
             // 任务账本 / 让 agent 自己 cancel）。
             const agentInitiated = event.initiatedBy === "agent";
             const agentTaskId = agentInitiated ? event.taskId : undefined;
-            const target = event.modelId
-              ? `@${event.agentId}/${event.modelId}`
-              : `@${event.agentId}`;
+            const displayModel = event.displayModel || event.modelId;
+            const target = agentInitiated
+              ? [event.agentLabel || event.agentId, displayModel].filter(Boolean).join(" · ")
+              : event.modelId
+                ? `@${event.agentId}/${event.modelId}`
+                : `@${event.agentId}`;
             const childStream = allEvents.filter((e) => e.sessionId === event.childSessionId);
             return (
               <div
@@ -3081,38 +3131,48 @@ function CleanPlaceholder({
               >
                 <div className="subtask-card__row">
                   <NineDotSpinner compact />
-                  <span className="subtask-card__title">
-                    {target} · {event.prompt.slice(0, 48)}
-                    {event.prompt.length > 48 ? "…" : ""}
+                  <span className="subtask-card__title" title={event.prompt}>
+                    {event.prompt.slice(0, 72)}
+                    {event.prompt.length > 72 ? "…" : ""}
                   </span>
                   {agentInitiated && (
                     <span className="subtask-card__chip">{t("session.subtaskAgentChip")}</span>
                   )}
                   <span className="subtask-card__meta">
-                    {agentInitiated ? t("session.subtaskAgentRunning") : t("session.subtaskRunning")}
+                    {target} ·{" "}
+                    {agentInitiated
+                      ? t("session.subtaskAgentRunning")
+                      : t("session.subtaskRunning")}
                   </span>
-                  {agentInitiated ? (
-                    agentTaskId &&
-                    onAgentSubtaskStop && (
-                      <button
-                        type="button"
-                        className="pill-action subtask-card__btn"
-                        onClick={() => onAgentSubtaskStop(agentTaskId)}
-                      >
-                        {t("session.subtaskStop")}
-                      </button>
-                    )
-                  ) : (
-                    onSubtaskStop && (
-                      <button
-                        type="button"
-                        className="pill-action subtask-card__btn"
-                        onClick={() => onSubtaskStop(event.childSessionId)}
-                      >
-                        {t("session.subtaskStop")}
-                      </button>
-                    )
+                  {agentInitiated && agentTaskId && onAgentSubtaskInterrupt && (
+                    <button
+                      type="button"
+                      className="pill-action subtask-card__btn"
+                      onClick={() => void onAgentSubtaskInterrupt(agentTaskId)}
+                    >
+                      {t("session.subtaskInterrupt")}
+                    </button>
                   )}
+                  {agentInitiated
+                    ? agentTaskId &&
+                      onAgentSubtaskStop && (
+                        <button
+                          type="button"
+                          className="pill-action subtask-card__btn"
+                          onClick={() => onAgentSubtaskStop(agentTaskId)}
+                        >
+                          {t("session.subtaskStop")}
+                        </button>
+                      )
+                    : onSubtaskStop && (
+                        <button
+                          type="button"
+                          className="pill-action subtask-card__btn"
+                          onClick={() => onSubtaskStop(event.childSessionId)}
+                        >
+                          {t("session.subtaskStop")}
+                        </button>
+                      )}
                 </div>
                 {childStream.length === 0 ? (
                   <div className="tool-running-panel tool-running-panel--subtask">
@@ -3147,6 +3207,11 @@ function CleanPlaceholder({
                     )}
                   </div>
                 )}
+                {agentInitiated && agentTaskId && onAgentSubtaskSend && (
+                  <SubtaskReplyBox
+                    onSend={(text) => onAgentSubtaskSend(agentTaskId, text)}
+                  />
+                )}
               </div>
             );
           }
@@ -3160,14 +3225,22 @@ function CleanPlaceholder({
               startEv && startEv.type === "subtask_started" ? startEv.prompt : "";
             const modelId =
               startEv && startEv.type === "subtask_started" ? startEv.modelId : undefined;
+            const displayModel =
+              (startEv && startEv.type === "subtask_started"
+                ? startEv.displayModel
+                : undefined) ||
+              event.displayModel ||
+              modelId;
             const agentLabel =
               startEv && startEv.type === "subtask_started"
                 ? startEv.agentLabel || startEv.agentId
                 : event.agentId;
-            const target = modelId
-              ? `@${event.agentId}/${modelId}`
-              : `@${event.agentId}`;
             const agentInitiated = event.initiatedBy === "agent";
+            const target = agentInitiated
+              ? [agentLabel, displayModel].filter(Boolean).join(" · ")
+              : modelId
+                ? `@${event.agentId}/${modelId}`
+                : `@${event.agentId}`;
             const ok = event.status === "done";
             const glyph = ok ? "✓" : "✕";
             const duration =

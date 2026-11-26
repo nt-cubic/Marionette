@@ -1110,7 +1110,33 @@ impl AcpService {
         //   shells hijacks the user's Git Bash /tmp, codeg #1025).
         let mut antigravity_scratch: Option<std::path::PathBuf> = None;
         if agent_id.as_deref() == Some(crate::antigravity_support::AGENT_ID) {
-            match crate::antigravity_support::ensure_settings_auth_type() {
+            // 跨用引擎绑定 → 走 Antigravity 官方 gateway auth：本地 Gemini
+            // 协议面把请求转给引擎。没有绑定 → 回原生 Google 登录。
+            let gateway_base = if crate::model_bridge::binding_for(&session_id)
+                .is_some_and(|selection| selection.entry_id == crate::engine::ENGINE_ENTRY_ID)
+            {
+                match crate::antigravity_bridge::ensure_serving() {
+                    Ok(base) => Some(base),
+                    Err(error) => {
+                        crate::debug_log::append(
+                            "bridge",
+                            "warn",
+                            &session_id,
+                            "antigravity gateway bridge unavailable; falling back to native sign-in",
+                            Some(&error),
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let auth_type = if gateway_base.is_some() {
+                "gateway"
+            } else {
+                "oauth-personal"
+            };
+            match crate::antigravity_support::ensure_settings_auth_type_value(auth_type) {
                 crate::antigravity_support::SettingsSync::WriteFailed(ref error) => {
                     crate::debug_log::append(
                         "acp",
@@ -1128,13 +1154,26 @@ impl AcpService {
                         "antigravity settings sync",
                         Some(match report {
                             crate::antigravity_support::SettingsSync::Written =>
-                                "auth.type=oauth-personal written to settings.json",
+                                "auth.type written to settings.json",
                             crate::antigravity_support::SettingsSync::AlreadyCurrent =>
                                 "settings.json auth.type already current",
                             _ => "settings.json not strict JSON — left alone",
                         }),
                     );
                 }
+            }
+            if let Some(base) = gateway_base {
+                child_command
+                    .env("AGY_LLM_GATEWAY_URL", &base)
+                    .env("AGY_LLM_GATEWAY_API_KEY", &crate::engine::gateway_token())
+                    .env("AGY_LLM_GATEWAY_WIRE_PROTOCOL", "genai");
+                crate::debug_log::append(
+                    "bridge",
+                    "info",
+                    &session_id,
+                    "antigravity session bridged via gateway auth",
+                    Some(&base),
+                );
             }
             if let Some(scratch) = crate::antigravity_support::create_scratch(&session_id) {
                 let value = scratch.to_string_lossy().to_string();

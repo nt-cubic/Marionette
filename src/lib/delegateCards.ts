@@ -58,8 +58,9 @@ export function delegateCardFor(
       sessionId: parent,
       childSessionId: task.workerSessionId,
       agentId: task.agentId,
-      agentLabel: "",
+      agentLabel: task.agentId,
       modelId: task.model ?? undefined,
+      displayModel: task.displayModel ?? task.bridgeModel ?? task.model ?? undefined,
       prompt: task.title,
       createdAt: now,
       initiatedBy: "agent",
@@ -84,6 +85,7 @@ export function delegateCardFor(
     // `error` 留空：卡片的状态位因此显示本地化的「失败 / 已取消」，
     // 而不是后端的内部错误码。
     summary: task.lastSummary ?? "",
+    displayModel: task.displayModel ?? task.bridgeModel ?? task.model ?? undefined,
     durationMs:
       task.updatedAt > task.createdAt ? task.updatedAt - task.createdAt : undefined,
     createdAt: now,

@@ -279,6 +279,10 @@ pub enum BridgeAgent {
     /// 「marionette」（openai-chat-completions → 引擎 /v1，本模块
     /// refresh_zcode_marionette_route），不走 SpawnInjection。
     Zcode,
+    /// Google Antigravity（agy_acp_server）：官方支持 gateway auth
+    /// （`auth.type=gateway` + `AGY_LLM_GATEWAY_URL`）。我们给它一个
+    /// Gemini 协议面的本地桥（antigravity_bridge.rs），模型 id 用引擎 id。
+    Antigravity,
     /// M1 未接线的其余 agent：没有注入通道，列表为空。
     Other,
 }
@@ -294,7 +298,58 @@ pub fn classify_agent(agent_id: &str) -> BridgeAgent {
         "deepseek" | "deepseek-acp" => BridgeAgent::Deepseek,
         "pi" | "pi-acp" => BridgeAgent::Pi,
         "zcode" | "zcode-acp" => BridgeAgent::Zcode,
+        "antigravity" | "agy-acp-server" => BridgeAgent::Antigravity,
         _ => BridgeAgent::Other,
+    }
+}
+
+/// 引擎目录里是否存在这个模型：接受裸 id，也接受各 agent 的桥接前缀
+/// （`marionette/`、`marionette::`、`marionette\`）。返回目录里的规范 id。
+pub fn engine_model_id_of(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let candidates = [
+        Some(trimmed),
+        trimmed.strip_prefix("marionette::"),
+        trimmed.strip_prefix("marionette\\"),
+        trimmed.strip_prefix("marionette/"),
+    ];
+    let (live, _from_cache) = crate::engine::catalog_direct_or_cached();
+    let mut catalog: Vec<String> = live;
+    if catalog.is_empty() {
+        catalog = crate::engine::catalog_direct_entries()
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+    }
+    for candidate in candidates.into_iter().flatten() {
+        if catalog.iter().any(|id| id == candidate) {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+/// worker 会话里实际要写入的模型 id（各 agent 认的写法）。`None` = 这个
+/// agent 没有接引擎桥。
+pub fn worker_native_model_id(agent_id: &str, engine_model_id: &str) -> Option<String> {
+    match classify_agent(agent_id) {
+        // Claude 用 env 钉模型，Codex 用 providers.set + 引擎别名，Antigravity
+    // 用官方 gateway auth（Gemini 协议面）——都直接吃引擎模型 id。
+        BridgeAgent::ClaudeCode | BridgeAgent::Codex | BridgeAgent::Antigravity => {
+            Some(engine_model_id.to_string())
+        }
+        // Grok / OpenCode / Pi：provider/id 拼首个 `/`。
+        BridgeAgent::GrokBuild | BridgeAgent::Opencode | BridgeAgent::Pi => {
+            Some(format!("marionette/{engine_model_id}"))
+        }
+        // DSH：llm-pi-ai 路由。
+        BridgeAgent::Deepseek => Some(format!("marionette::{engine_model_id}")),
+        // ZCode：provider\model。
+        BridgeAgent::Zcode => Some(format!("marionette\\{engine_model_id}")),
+        BridgeAgent::Other => None,
     }
 }
 
@@ -1206,7 +1261,11 @@ fn list_models_at(
         // `~/.zcode/v2/provider_config.json` 托管 provider。原生 id 是
         // `marionette\<engineId>`（适配器 configOptions 的 `provider\model`
         // 拼法，反斜杠分隔）。
-        BridgeAgent::Opencode | BridgeAgent::Deepseek | BridgeAgent::Pi | BridgeAgent::Zcode => {
+        BridgeAgent::Opencode
+        | BridgeAgent::Deepseek
+        | BridgeAgent::Pi
+        | BridgeAgent::Zcode
+        | BridgeAgent::Antigravity => {
             // 懒启动配套（2026-11-06）：引擎源不再「没跑就整组不给」——停着时
             // 回放 engine-catalog.json 磁盘缓存，菜单/注入链的成员保持稳定。
             let mut models = Vec::new();
@@ -1233,7 +1292,7 @@ fn list_models_at(
         BridgeAgent::Other => BridgeModelsResult {
             models: Vec::new(),
             sources: Vec::new(),
-            note: Some(crate::ts!("该 agent 的模型共享还没接（当前支持 Claude Code、Grok、Codex、OpenCode、DeepSeek、Pi 与 ZCode）", "Model Share is not wired up for this agent yet (currently supported: Claude Code, Grok, Codex, OpenCode, DeepSeek, Pi, and ZCode)")),
+            note: Some(crate::ts!("该 agent 的模型共享还没接（当前支持 Claude Code、Grok、Codex、OpenCode、DeepSeek、Pi、ZCode 与 Antigravity）", "Model Share is not wired up for this agent yet (currently supported: Claude Code, Grok, Codex, OpenCode, DeepSeek, Pi, ZCode, and Antigravity)")),
         },
         agent => {
             let store = match crate::credentials::load_store_at(credentials_path) {

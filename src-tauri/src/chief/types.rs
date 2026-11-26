@@ -84,6 +84,9 @@ pub struct ChiefConfig {
     pub allowed_projects: Vec<ProjectPolicy>,
     /// 全局并发上限（默认 1，最大 3；docs 决策表）。
     pub max_concurrent_workers: u32,
+    /// 普通会话 AI 派活的并发上限。0 = 不限制（默认）。
+    #[serde(default)]
+    pub delegation_max_concurrent: usize,
 }
 
 impl Default for ChiefConfig {
@@ -96,6 +99,7 @@ impl Default for ChiefConfig {
             chief_model: None,
             allowed_projects: Vec::new(),
             max_concurrent_workers: 1,
+            delegation_max_concurrent: 0,
         }
     }
 }
@@ -202,6 +206,11 @@ pub struct Task {
     /// 推理档位（effort id）。None = agent 默认档（常是最高档——派活方
     /// 应该刻意选择，见 delegation 守则的「选最小够用」纪律）。
     pub preferred_effort: Option<String>,
+    /// 跨用引擎绑定：必须在 worker 的 ACP 启动之前写入并生效（Claude 环境变量 /
+    /// Grok owned 表 / Codex providers.set 都在 spawn 时读取它）。None = 用
+    /// agent 自己的原生模型。
+    #[serde(default)]
+    pub bridge: Option<crate::model_bridge::BridgeSelection>,
 }
 
 impl Default for Task {
@@ -237,6 +246,7 @@ impl Default for Task {
             checkpoint_base_commit: None,
             checkpoint_repo_root: None,
             preferred_effort: None,
+            bridge: None,
         }
     }
 }
