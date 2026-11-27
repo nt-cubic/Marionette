@@ -8996,19 +8996,6 @@ function AppMain() {
       };
       updateSessionEvents(meta.parentId, (current) => [...current, result], { publish: true });
 
-      const subagentLabel = `${meta.agentLabel || "Subagent"} subagent`;
-      if (status === "done") {
-        scheduleDesktopNotify(childId, "subagent_complete", subagentLabel);
-      } else if (status === "failed" || status === "timeout") {
-        const failureDetail = compactNotifyDetail(error);
-        void raiseDesktopNotify(
-          "error",
-          failureDetail
-            ? `${subagentLabel} · ${failureDetail}`
-            : `${subagentLabel} · ${status}`,
-        );
-      }
-
       void stopAcpSession(childId).catch(() => undefined);
 
       // Drain queue for this parent.

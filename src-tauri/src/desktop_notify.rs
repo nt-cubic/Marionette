@@ -70,6 +70,22 @@ fn session_label(app: &AppHandle, session_id: &str) -> Option<String> {
     (!label.is_empty()).then_some(label)
 }
 
+/// Worker session origin, queried without waiting for the storage mutex.
+/// This runs on the ACP dispatch path; a busy storage lock means "unknown"
+/// and must not delay notifications or ACP delivery.
+fn session_origin(app: &AppHandle, session_id: &str) -> Option<String> {
+    let state = app.try_state::<crate::AppState>()?;
+    let storage = state.storage.try_lock().ok()?;
+    let session = storage.find_session(session_id).ok().flatten()?;
+    session.origin
+}
+
+/// A turn completion belongs to the user-facing conversation only when it
+/// is not a delegate child, a worker-origin session, or a cancelled turn.
+fn should_notify_acp_turn(origin: Option<&str>, delegate_child: bool, stop_reason: &str) -> bool {
+    !delegate_child && stop_reason != "cancelled" && !crate::delegation::is_worker_origin(origin)
+}
+
 fn with_label(label: Option<&str>, detail: &str) -> String {
     match label {
         Some(l) if detail.is_empty() => l.to_string(),
@@ -187,7 +203,10 @@ pub fn observe_acp_event(
                 .get("stopReason")
                 .and_then(Value::as_str)
                 .unwrap_or("end_turn");
-            if suppressed || delegate_child || stop_reason == "cancelled" {
+            let origin = session_origin(app, session_id);
+            if suppressed || !should_notify_acp_turn(origin.as_deref(), delegate_child, stop_reason)
+            {
+                clear_turn_marks(session_id);
                 return;
             }
             let failed = kind == "error" || matches!(stop_reason, "error" | "refusal");
@@ -595,5 +614,17 @@ mod tests {
         mark_silent_turn(session);
         assert!(consume_suppressed_turn(session));
         assert!(!consume_suppressed_turn(session));
+    }
+
+    #[test]
+    fn worker_and_delegate_turn_completions_do_not_notify() {
+        for origin in [Some("chief-worker"), Some("agent-worker"), Some("delegate")] {
+            assert!(!should_notify_acp_turn(origin, false, "end_turn"));
+        }
+        assert!(!should_notify_acp_turn(None, true, "end_turn"));
+        assert!(!should_notify_acp_turn(Some("user"), false, "cancelled"));
+        assert!(should_notify_acp_turn(Some("user"), false, "end_turn"));
+        assert!(should_notify_acp_turn(Some("chief"), false, "end_turn"));
+        assert!(should_notify_acp_turn(None, false, "end_turn"));
     }
 }

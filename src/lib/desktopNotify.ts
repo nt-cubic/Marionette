@@ -27,7 +27,6 @@ import completeSoundUrl from "../assets/notifications/complete.wav";
 import errorSoundUrl from "../assets/notifications/error.wav";
 import permissionSoundUrl from "../assets/notifications/permission.wav";
 import questionSoundUrl from "../assets/notifications/question.wav";
-import subagentCompleteSoundUrl from "../assets/notifications/subagent_complete.wav";
 
 const STORAGE_KEY = "marionette-desktop-notify";
 const BASE_TITLE = "Marionette";
@@ -47,7 +46,6 @@ const SOUND_URLS: Partial<Record<NotifyKind, string>> = {
   error: errorSoundUrl,
   stuck: errorSoundUrl,
   process: errorSoundUrl,
-  subagent_complete: subagentCompleteSoundUrl,
 };
 
 const ERROR_KINDS = new Set<NotifyKind>(["error", "process", "stuck"]);
@@ -61,8 +59,7 @@ export type NotifyKind =
   | "question"
   | "plan"
   | "error"
-  | "process"
-  | "subagent_complete";
+  | "process";
 
 export type RaiseOptions = {
   /**
@@ -345,9 +342,7 @@ export async function raiseDesktopNotify(
         ? "Reply ready"
         : kind === "idle"
           ? "Agent stopped"
-          : kind === "subagent_complete"
-            ? "Subagent finished"
-            : kind === "permission"
+          : kind === "permission"
               ? "Permission required"
               : kind === "question"
                 ? "Agent has a question"

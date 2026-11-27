@@ -138,7 +138,7 @@ pub fn is_delegate_tool(name: &str) -> bool {
 }
 
 /// worker 家族来源：这些会话不注入派活工具（禁递归）。
-fn is_worker_origin(origin: Option<&str>) -> bool {
+pub(crate) fn is_worker_origin(origin: Option<&str>) -> bool {
     matches!(origin, Some("chief-worker" | "agent-worker" | "delegate"))
 }
 
