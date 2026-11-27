@@ -53,6 +53,7 @@ import {
 import {
   bridgeBindingIsStale,
   bridgeSubmissionModelId,
+  bridgeSwitchNeedsRestart,
   nativeBridgeModelId,
   reportsNativeBridgeModel,
 } from "../lib/bridgeRouting";
@@ -856,6 +857,10 @@ export function Composer({
   /** Latest disk prefs, read by effects that must not re-run on every write. */
   const sessionPrefsRef = useRef(sessionPrefs);
   sessionPrefsRef.current = sessionPrefs;
+  /** Latest commitUpdate for pickers declared before it (render order). */
+  const commitUpdateRef = useRef<
+    (patch: Record<string, unknown>, revert: () => void) => Promise<void>
+  >(async () => undefined);
 
   const pinOptions = useCallback((patch: OptionPins) => {
     const live =
@@ -1275,19 +1280,28 @@ export function Composer({
 
   /**
    * Cross-use pick (§4.8): never sends session/set_model from here — the
-   * backend pins the model at spawn time (claude env / grok owned TOML table).
-   * grok additionally persists `marionette/<modelId>` as the dialog's normal
-   * model preference so the native catalog takes over after restart.
+   * Two shapes (see bridgeSwitchNeedsRestart):
+   * - process-pinned bridges (grok owned TOML table / claude env / codex
+   *   providers-set / antigravity gateway): persist `marionette/<modelId>` and
+   *   swap the process so a new spawn carries the pick.
+   * - catalog-native bridges (opencode / pi / dsh / zcode): the provider is
+   *   already in the live model list, so the pick is a plain
+   *   session/set_config_option. Restarting there only repaints the harness
+   *   default and the chip reads Seaglass Alpha Free until the next prompt.
    */
   const pickBridgeModel = useCallback(
     (model: BridgeModel) => {
       setMenu(null);
-      // Re-clicking the selected cross item keeps the selection — no repeat bind.
+      // A second click on the same item is only a no-op when the agent is
+      // already on that wire id; a drifted session gets the pick re-asserted.
       if (
         bridgeSelection &&
         bridgeSelection.entryId === model.entryId &&
         bridgeSelection.modelId === model.modelId
       ) {
+        const wire = nativeBridgeModelId(agent.id, model.modelId);
+        if (wire === caps?.currentModel || !capsLive) return;
+        void commitUpdateRef.current({ model: wire }, () => undefined);
         return;
       }
       if (!sessionId || sessionId.startsWith("session-empty-")) return;
@@ -1299,14 +1313,29 @@ export function Composer({
           // OPENCODE_CONFIG provider / dsh llm-pi-ai 路由 / pi models.json
           // provider / zcode provider_config.json 托管 provider），把原生形态的
           // marionette id 钉成偏好，重启后原生目录接管、跨用 chip 退位。
-          if (
-            agent.id === "grok-build" ||
-            agent.id === "opencode" ||
-            agent.id === "deepseek" ||
-            agent.id === "pi" ||
-            agent.id === "zcode"
-          ) {
+          if (reportsNativeBridgeModel(agent.id)) {
             persistPrefs({ preferredModel: nativeBridgeModelId(agent.id, model.modelId) });
+          }
+          const wire = nativeBridgeModelId(agent.id, model.modelId);
+          if (!bridgeSwitchNeedsRestart(agent.id)) {
+            const advertised =
+              !caps || caps.models.length === 0 || caps.models.some((m) => m.id === wire);
+            if (advertised) {
+              // Provider is in the live catalog already: switch it right here.
+              // Restarting here only repaints the harness default (OpenCode's
+              // seaglass-alpha-free) until the next prompt re-asserts the pick.
+              flash(t("composer.bridgeSwitchedFlash", { label: model.label }));
+              void commitUpdateRef.current({ model: wire }, () => {
+                setBridgeSelection(prev);
+                persistPrefs({
+                  preferredModel: prev ? nativeBridgeModelId(agent.id, prev.modelId) : null,
+                });
+              });
+              return;
+            }
+            // Not in this process' model list (spawned before the source
+            // existed, or catalog empty at spawn). A fresh process re-injects
+            // the whole engine catalog; the saved pref re-asserts the pick.
           }
           // 注入是 spawn 级的（env / 配置表）：活进程当场换血，历史保留，
           // 下一条消息即以新模型继续 —— 不等「下次打开会话」。
@@ -1332,41 +1361,63 @@ export function Composer({
           flash(msg.length > 140 ? `${msg.slice(0, 140)}…` : msg || t("composer.bridgeBindFailed"));
         });
     },
-    [agent.id, bridgeSelection, flash, onRestartAgentSession, persistPrefs, sessionId],
+    [
+      agent.id,
+      bridgeSelection,
+      caps?.currentModel,
+      capsLive,
+      flash,
+      onRestartAgentSession,
+      persistPrefs,
+      sessionId,
+    ],
   );
 
-  /** Switching back to a native model drops the dialog's bridge binding. */
-  const unbindBridge = useCallback(() => {
-    if (!bridgeSelection) return;
-    const agentId = agent.id;
-    setBridgeSelection(null);
-    if (sessionId && !sessionId.startsWith("session-empty-")) {
-      void bridgeBind(sessionId, null)
-        .then(() => {
-          // opencode / dsh / pi：跨用 provider 是 spawn 级刷新的常驻目录——
-          // 解绑后它仍在菜单里，钉着的 marionette 偏好会把会话又拉回去；清掉
-          // 偏好让重启落回原生默认。grok 无此问题（owned 表随解绑移除）。
-          if (agentId === "opencode" || agentId === "deepseek" || agentId === "pi") {
-            persistPrefs({ preferredModel: null });
-          }
-          // 活进程的 env 还指着跨用端点 —— 同样当场换血，切回原生立即生效。
+  /**
+   * Native pick. When a cross-use binding is present this also drops it, but
+   * the pick must survive the drop: the model is written to disk BEFORE any
+   * process swap so the warm path restores THIS model instead of the harness
+   * default. (unbindBridge used to wipe the pref to null and race a restart,
+   * leaving OpenCode on seaglass-alpha-free no matter what was clicked.)
+   */
+  const pickNativeModel = useCallback(
+    (modelId: string, prev: string | null) => {
+      setMenu(null);
+      if (!sessionId || sessionId.startsWith("session-empty-")) return;
+      pinOptions({ model: modelId });
+      setCurrentModel(modelId);
+      if (bridgeSelection) {
+        setBridgeSelection(null);
+        persistPrefs({ preferredModel: modelId });
+        void bridgeBind(sessionId, null).catch(() => undefined);
+        if (onRestartAgentSession && bridgeSwitchNeedsRestart(agent.id)) {
           const status = sessionStatusRef.current;
           if (
-            onRestartAgentSession &&
-            (status === "running" ||
-              status === "waiting" ||
-              status === "starting" ||
-              status === "error")
+            status === "running" ||
+            status === "waiting" ||
+            status === "starting" ||
+            status === "error"
           ) {
-            onRestartAgentSession(
-              sessionId,
-              t("composer.nativeSwitchedBanner"),
-            );
+            onRestartAgentSession(sessionId, t("composer.nativeSwitchedBanner"));
+            return;
           }
-        })
-        .catch(() => undefined);
-    }
-  }, [agent.id, bridgeSelection, onRestartAgentSession, persistPrefs, sessionId]);
+        }
+      }
+      void commitUpdateRef.current({ model: modelId }, () => {
+        unpinOption("model");
+        setCurrentModel(prev);
+      });
+    },
+    [
+      agent.id,
+      bridgeSelection,
+      onRestartAgentSession,
+      persistPrefs,
+      pinOptions,
+      sessionId,
+    ],
+  );
+
 
   /**
    * Confirm the inline custom-model input: validate + trim the id, then bind
@@ -1526,6 +1577,7 @@ export function Composer({
     },
     [sessionId, flash, loadCapabilities, agent.id, caps, onEnsureAgentReady, onSilentPrompt, persistPrefs],
   );
+  commitUpdateRef.current = commitUpdate;
 
   // Early builds persisted the bridge chip's engine-side id as the dialog
   // preference. Normalize it back to the agent-native wire id when the binding
@@ -1547,7 +1599,7 @@ export function Composer({
     const advertised =
       caps.models.length === 0 || caps.models.some((model) => model.id === wire);
     if (advertised && caps.currentModel !== wire) {
-      void commitUpdate({ model: wire }, () => undefined);
+      void commitUpdateRef.current({ model: wire }, () => undefined);
     }
   }, [
     agent.id,
@@ -3755,18 +3807,7 @@ export function Composer({
                                         role="option"
                                         aria-selected={selected}
                                         title={modelTooltip(model)}
-                                        onClick={() => {
-                                          const prev = displayModel;
-                                          // Picking a native model drops the cross-use binding.
-                                          unbindBridge();
-                                          pinOptions({ model: entry.modelId });
-                                          setCurrentModel(entry.modelId);
-                                          setMenu(null);
-                                          void commitUpdate({ model: entry.modelId }, () => {
-                                            unpinOption("model");
-                                            setCurrentModel(prev);
-                                          });
-                                        }}
+                                        onClick={() => pickNativeModel(entry.modelId, displayModel)}
                                       >
                                         <span className="composer-menu__model-name">{modelRowLabel(model)}</span>
                                         <span className="composer-menu__model-recent-hint">
@@ -3794,14 +3835,8 @@ export function Composer({
                                     return <button key={row.key} className={selected ? "is-selected" : ""} type="button" role="option" aria-selected={selected}
                                       title={[row.label, row.modelId, row.origin].filter(Boolean).join("\n")}
                                       onClick={() => {
-                                        if (m) {
-                                          const prev = displayModel;
-                                          unbindBridge();
-                                          pinOptions({ model: m.id });
-                                          setCurrentModel(m.id);
-                                          setMenu(null);
-                                          void commitUpdate({ model: m.id }, () => { unpinOption("model"); setCurrentModel(prev); });
-                                        } else if (shared) { void pickBridgeModel(shared); }
+                                        if (m) pickNativeModel(m.id, displayModel);
+                                        else if (shared) void pickBridgeModel(shared);
                                       }}>
                                       <ModelMenuName label={m ? modelRowLabel(m) : row.label} hint={row.hint} selected={selected} />
                                     </button>;

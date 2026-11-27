@@ -41,7 +41,20 @@ export function detectCapabilityDrift(
   // is a transient, not a dead preference — keep it on disk so the next spawn
   // that advertises it again restores the user's choice.
   const accountScoped = model?.startsWith("account:") ?? false;
-  if (model && !accountScoped && caps.models.length > 0 && !caps.models.some((m) => m.id === model)) {
+  // Bridge wire ids (`marionette/â¦`, `marionette::â¦`, `marionette\â¦`) are also
+  // spawn-conditional: the provider is injected only when the engine happens to
+  // be running at spawn (engine asleep / still starting => no provider => the
+  // whole group is absent). Treating that as a dead preference rewrote the
+  // user's shared-model pick to the harness default (OpenCode's
+  // seaglass-alpha-free) on the first cold start (2026-11-27). Keep it on disk.
+  const bridgeScoped = isBridgeWireModelId(model);
+  if (
+    model &&
+    !accountScoped &&
+    !bridgeScoped &&
+    caps.models.length > 0 &&
+    !caps.models.some((m) => m.id === model)
+  ) {
     issues.push({
       field: "model",
       preferred: model,
@@ -126,6 +139,30 @@ export function detectCapabilityDrift(
  * re-point at the agent default's account, and the wire must fail closed
  * rather than bill an account the user did not choose.
  */
+const BRIDGE_WIRE_PREFIXES = ["marionette/", "marionette::", "marionette\\"];
+
+/** True for the agent-native wire ids the bridge injects into a catalog. */
+export function isBridgeWireModelId(model: string | null | undefined): boolean {
+  const id = model?.trim() || "";
+  return BRIDGE_WIRE_PREFIXES.some((prefix) => id.startsWith(prefix));
+}
+
+/**
+ * Same spawn-transient story for bridge wire ids: when the engine was asleep
+ * at spawn the provider is absent from this process' catalog even though the
+ * next spawn injects it again. Used to keep a fallback chip from rewriting the
+ * saved pick on disk (the chip still rides the wire honestly).
+ */
+export function isBridgePrefTransientlyMissing(
+  savedModel: string | null | undefined,
+  live: CapabilitySnapshot | null | undefined,
+): boolean {
+  const model = savedModel?.trim() || null;
+  if (!model || !isBridgeWireModelId(model)) return false;
+  if (!live || (live.models?.length ?? 0) === 0) return false;
+  return !live.models.some((m) => m.id === model);
+}
+
 export function isAccountPrefTransientlyMissing(
   savedModel: string | null | undefined,
   live: CapabilitySnapshot | null | undefined,

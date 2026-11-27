@@ -258,7 +258,10 @@ import { prettyEffortLabel, prettyModelLabel } from "../lib/modelLabel";
 import { classifyToolCall } from "../lib/turnActivity";
 import { selectTurnWorkspaceChanges, type TurnWorkspaceChange } from "../lib/turnDelivery";
 import { getLastUsedDefaults } from "../lib/recentModels";
-import { isAccountPrefTransientlyMissing } from "../lib/capabilityDrift";
+import {
+  isAccountPrefTransientlyMissing,
+  isBridgePrefTransientlyMissing,
+} from "../lib/capabilityDrift";
 import {
   loadUiRestore,
   pickRestoredSession,
@@ -9114,11 +9117,14 @@ function AppMain() {
       // forever. The chip still rides the wire; only the disk write is skipped.
       {
         const prefsPatch: SessionComposerPrefs = {};
-        const transientAccountPref = isAccountPrefTransientlyMissing(
-          sendRow?.preferredModel,
-          caps,
-        );
-        if (modelId && !transientAccountPref) prefsPatch.preferredModel = modelId;
+        // A saved pref the live catalog cannot show *this spawn* is transient
+        // for account-scoped ids (zcode) and for bridge wire ids (engine asleep
+        // at spawn => provider absent). Writing the fallback chip there would
+        // erase the user's pick forever (2026-11-27 seaglass report).
+        const transientPref =
+          isAccountPrefTransientlyMissing(sendRow?.preferredModel, caps) ||
+          isBridgePrefTransientlyMissing(sendRow?.preferredModel, caps);
+        if (modelId && !transientPref) prefsPatch.preferredModel = modelId;
         if (modeId) prefsPatch.preferredMode = modeId;
         if (effortId) prefsPatch.preferredEffortId = effortId;
         if (sendEffort != null) prefsPatch.preferredEffort = sendEffort;

@@ -20,6 +20,8 @@ import { applyLocale } from "../src/lib/i18n";
 import {
   detectCapabilityDrift,
   isAccountPrefTransientlyMissing,
+  isBridgePrefTransientlyMissing,
+  isBridgeWireModelId,
 } from "../src/lib/capabilityDrift";
 import type { CapabilitySnapshot, SessionComposerPrefs } from "../src/lib/types";
 
@@ -114,4 +116,48 @@ console.log("isAccountPrefTransientlyMissing is the single send-chain predicate"
   ok("null pref reports false", isAccountPrefTransientlyMissing(null, caps()) === false);
 }
 
+// -- Bridge wire ids (2026-11-27 OpenCode seaglass report) ----------------
+// The marionette provider is injected at spawn only while the engine runs.
+// A cold start that raced the engine advertises the native catalog only; that
+// must NOT erase the shared-model pick on disk.
+const BRIDGE_WIRE = "marionette/source-c3f358329cebd120/deepseek-v4.1-flash";
+const nativeOnlyCaps = () =>
+  caps({
+    models: [
+      { id: "opencode/seaglass-alpha-free", name: "Seaglass Alpha Free" },
+      { id: INDIVIDUAL, name: "GLM-5.3" },
+    ],
+    currentModel: "opencode/seaglass-alpha-free",
+  });
+
+console.log("bridge wire ids survive a spawn without the injected provider");
+{
+  ok("prefix recognizer: slash form", isBridgeWireModelId(BRIDGE_WIRE));
+  ok("prefix recognizer: :: form", isBridgeWireModelId("marionette::x/y"));
+  ok("prefix recognizer: backslash form", isBridgeWireModelId("marionette" + "\\" + "x"));
+  ok("prefix recognizer: plain id is false", isBridgeWireModelId("opencode/seaglass-alpha-free") === false);
+
+  const drift = detectCapabilityDrift(
+    prefs({ preferredModel: BRIDGE_WIRE }),
+    nativeOnlyCaps(),
+    "opencode",
+  );
+  ok("bridge pick not reported as dead", drift == null || drift.clearedPrefs.preferredModel == null);
+  ok(
+    "transient helper flags the missing provider",
+    isBridgePrefTransientlyMissing(BRIDGE_WIRE, nativeOnlyCaps()),
+  );
+  ok(
+    "advertised bridge pick reports false",
+    isBridgePrefTransientlyMissing(BRIDGE_WIRE, caps({ models: [{ id: BRIDGE_WIRE, name: "DeepSeek" }] })) === false,
+  );
+  ok("plain id reports false", isBridgePrefTransientlyMissing("opencode/seaglass-alpha-free", nativeOnlyCaps()) === false);
+  // A genuinely dead native id must still be cleared.
+  const deadNative = detectCapabilityDrift(
+    prefs({ preferredModel: "opencode/gone-forever" }),
+    nativeOnlyCaps(),
+    "opencode",
+  );
+  ok("dead native model still cleared", deadNative?.clearedPrefs.preferredModel === null);
+}
 console.log(`\nverify-capability-drift: ${passed} checks passed`);
