@@ -99,7 +99,7 @@ fn target_for(gw: &super::Gateway, cand: &Candidate) -> Result<Target, String> {
 /// 的 output 桶（Go sniff.go:243-269 aUsage 口径；input_tokens 本就只数
 /// 非缓存）。会话种子取 body 侧（路由层不传请求头，`stick_key(&[], …)`
 /// ——Claude Code 的 metadata.user_id 在这条上能拿到）。
-pub fn handle(gateway: &super::Gateway, body: &[u8]) -> Reply {
+pub fn handle(gateway: &super::Gateway, headers: &[(String, String)], body: &[u8]) -> Reply {
     let began = std::time::Instant::now();
     let parsed: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
@@ -123,14 +123,17 @@ pub fn handle(gateway: &super::Gateway, body: &[u8]) -> Reply {
     let log = super::usage_ledger::TurnLog::new(
         "anthropic",
         &model,
-        super::affinity::stick_key(&[], &parsed),
+        super::affinity::stick_key(headers, &parsed),
         began,
     );
+    // OpenCode gateways (opencode.ai) answer 400 MissingSessionID without
+    // the session header family; compute the seed once for every candidate.
+    let oc = super::opencode_client::gateway_ctx(headers, body);
     groups::drive(&cands, |cand| {
         // 成员强度按候选各算各的（失败转移到下一个成员时不沿用首发的）。
         let body = groups::body_for(gateway, super::effort::Proto::Anthropic, cand, body);
         let parsed = serde_json::from_slice::<Value>(&body).unwrap_or_else(|_| parsed.clone());
-        attempt(gateway, cand, &body, &parsed, &model, streaming, &log)
+        attempt(gateway, cand, &body, &parsed, &model, streaming, &oc, &log)
     })
 }
 
@@ -143,7 +146,7 @@ pub fn handle(gateway: &super::Gateway, body: &[u8]) -> Reply {
 /// 解析不到来源 → 本地粗估（字节数 / 4，Go `estimate`）。**不数后备成员**
 /// （它可能用另一种分词器，Go 同款）。厂商的其它错误原样转成 anthropic
 /// 形状交给客户端（429 带 Retry-After）。
-pub fn count_tokens(gateway: &super::Gateway, body: &[u8]) -> Reply {
+pub fn count_tokens(gateway: &super::Gateway, headers: &[(String, String)], body: &[u8]) -> Reply {
     let parsed: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(e) => return error_reply(400, &format!("invalid request body: {e}")),
@@ -158,7 +161,12 @@ pub fn count_tokens(gateway: &super::Gateway, body: &[u8]) -> Reply {
         .next()
         .and_then(|cand| target_for(gateway, &cand).ok())
         .filter(|t| !t.anthropic.is_empty());
-    if let Some(target) = counted {
+    if let Some(mut target) = counted {
+        super::opencode_client::apply_outbound(
+            &mut target.headers,
+            &format!("{}/v1/messages/count_tokens", target.anthropic),
+            &super::opencode_client::gateway_ctx(headers, body),
+        );
         let out_body = rewrite_model(body, &target.bare_model);
         match send_anthropic(&target, "/v1/messages/count_tokens", &out_body) {
             Ok(response) => {
@@ -300,6 +308,7 @@ fn attempt(
     parsed: &Value,
     asked_model: &str,
     streaming: bool,
+    oc: &super::opencode_client::OpenCodeCtx,
     log: &super::usage_ledger::TurnLog,
 ) -> Attempt {
     let target = match target_for(gw, cand) {
@@ -307,10 +316,10 @@ fn attempt(
         Err(e) => return Attempt::Retry(error_reply(404, &e)),
     };
     if !target.anthropic.is_empty() {
-        return forward_direct(gw, &target, body, streaming, log);
+        return forward_direct(gw, &target, body, streaming, oc, log);
     }
     if !target.chat.is_empty() {
-        return forward_translated(gw, cand, parsed, asked_model, streaming, log);
+        return forward_translated(gw, cand, parsed, asked_model, streaming, oc, log);
     }
     // 只配了 responses（或什么都没有）：没有诚实的 chat/anthropic 出站点，
     // 别拿 responses 基址拼 /chat/completions 硬试（URL 形状就是错的）；
@@ -332,8 +341,24 @@ fn forward_direct(
     target: &Target,
     body: &[u8],
     streaming: bool,
+    oc: &super::opencode_client::OpenCodeCtx,
     log: &super::usage_ledger::TurnLog,
 ) -> Attempt {
+    // OpenCode's Messages route is behind the same session gate as chat and
+    // responses: measured 400 MissingSessionID without the headers, 200 with.
+    let mut target = Target {
+        provider_id: target.provider_id.clone(),
+        key: target.key.clone(),
+        headers: target.headers.clone(),
+        bare_model: target.bare_model.clone(),
+        anthropic: target.anthropic.clone(),
+        chat: target.chat.clone(),
+    };
+    super::opencode_client::apply_outbound(
+        &mut target.headers,
+        &format!("{}/v1/messages", target.anthropic),
+        oc,
+    );
     let asked = body_model(body);
     let out_body = rewrite_model(body, &target.bare_model);
     // DeepSeek 系 anthropic 端点的 thinking 回放修补（Go gateway.go
@@ -355,7 +380,7 @@ fn forward_direct(
         &out_body,
     )
     .unwrap_or(out_body);
-    let response = match send_messages(target, &out_body) {
+    let response = match send_messages(&target, &out_body) {
         Ok(r) => r,
         Err(e) => {
             return Attempt::Retry(error_reply(502, &format!("{}: {}", target.provider_id, e)))
@@ -405,7 +430,7 @@ fn forward_direct(
         &out_body,
         status,
         &vendor_body,
-        &|b| send_messages(target, b),
+        &|b| send_messages(&target, b),
     ) {
         // 重发应答本来就是 anthropic 话：成功原样，失败（含 413 语义）转 anthropic 错误形状。
         return Attempt::Done(match reply {
@@ -618,6 +643,7 @@ fn forward_translated(
     parsed: &Value,
     asked_model: &str,
     streaming: bool,
+    oc: &super::opencode_client::OpenCodeCtx,
     log: &super::usage_ledger::TurnLog,
 ) -> Attempt {
     let chat_body = match translate::anthropic_to_chat(parsed) {
@@ -645,10 +671,9 @@ fn forward_translated(
         Ok(b) => b,
         Err(e) => return Attempt::Done(error_reply(500, &format!("re-serialize failed: {e}"))),
     };
-    // 入站头尚未穿进 messages 翻译路径（差距清单）：体派生种子——codex 的
-    // prompt_cache_key 在体里全保真；agent 头名族在此路不生效，穿线另开小批。
-    let oc = super::opencode_client::gateway_ctx(&[], &chat_bytes);
-    match chat::attempt(gw, cand, &chat_bytes, &oc) {
+    // 入站头已经穿到这里：会话种子在 handle() 算一次，候选循环共用
+    // （OpenCode 网关按它路由与缓存）。
+    match chat::attempt(gw, cand, &chat_bytes, oc) {
         Attempt::Retry(Reply::Json { status, body }) => {
             Attempt::Retry(vendor_error_reply(status, &body))
         }
@@ -1671,7 +1696,7 @@ mod tests {
             "model": "fake/m", "max_tokens": 64, "system": "be nice",
             "messages": [{ "role": "user", "content": [{ "type": "text", "text": "hi" }] }]
         });
-        let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
+        let reply = handle(&gateway, &[], serde_json::to_vec(&request).unwrap().as_slice());
         let Reply::Json { status, body } = reply else {
             panic!("expected json reply, got stream");
         };
@@ -1725,7 +1750,7 @@ mod tests {
             "model": "anth/claude-x", "max_tokens": 32, "system": "be nice",
             "messages": [{ "role": "user", "content": "hi" }]
         });
-        let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
+        let reply = handle(&gateway, &[], serde_json::to_vec(&request).unwrap().as_slice());
         let Reply::Json { status, body } = reply else {
             panic!("expected json reply, got stream");
         };
@@ -1778,7 +1803,7 @@ mod tests {
             "model": "fake/m", "max_tokens": 64, "stream": true,
             "messages": [{ "role": "user", "content": "hi" }]
         });
-        let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
+        let reply = handle(&gateway, &[], serde_json::to_vec(&request).unwrap().as_slice());
         let Reply::Stream {
             status,
             content_type,
@@ -1866,7 +1891,7 @@ mod tests {
             "tools": [{ "name": "get_weather", "description": "weather",
                 "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}} }],
         });
-        let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
+        let reply = handle(&gateway, &[], serde_json::to_vec(&request).unwrap().as_slice());
         // 流式请求同样带 tools 定义（翻译是体级的，与 stream 无关）。
         let sent: Value = serde_json::from_str(&vendor.last().body).expect("sent chat json");
         assert_eq!(sent["tools"][0]["function"]["name"], "get_weather");
@@ -1952,7 +1977,7 @@ mod tests {
             "model": "fake/m", "max_tokens": 64, "stream": true,
             "messages": [{ "role": "user", "content": "hi" }],
         });
-        let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
+        let reply = handle(&gateway, &[], serde_json::to_vec(&request).unwrap().as_slice());
         let Reply::Stream { mut reader, .. } = reply else {
             panic!("stream reply")
         };
@@ -2002,7 +2027,7 @@ mod tests {
             "model": "fake/m", "max_tokens": 64, "stream": true,
             "messages": [{ "role": "user", "content": "go" }],
         });
-        let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
+        let reply = handle(&gateway, &[], serde_json::to_vec(&request).unwrap().as_slice());
         let Reply::Stream { mut reader, .. } = reply else {
             panic!("stream reply")
         };
@@ -2030,6 +2055,34 @@ mod tests {
     // 未知模型
     // -----------------------------------------------------------------
 
+    /// The Messages route sits behind the same OpenCode session gate as chat
+    /// and responses: measured 2026-11-27, /zen/go/v1/messages answered 400
+    /// MissingSessionID without the header family and 200 with it.
+    #[test]
+    fn opencode_messages_target_carries_the_session_header_family() {
+        use super::super::opencode_client::{apply_outbound, gateway_ctx, opencode_real_session};
+        let headers = vec![(
+            "x-claude-code-session-id".to_string(),
+            "b7c1f0e2-1111-4222-8333-944455556666".to_string(),
+        )];
+        let body = br#"{"model":"o/m","max_tokens":8,"messages":[]}"#;
+        let mut out: Vec<(String, String)> = Vec::new();
+        apply_outbound(&mut out, "https://opencode.ai/zen/go/v1/messages", &gateway_ctx(&headers, body));
+        let header = |name: &str| out.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+        let session = header("x-opencode-session").expect("session family on the Messages route");
+        assert!(opencode_real_session(session));
+        assert_eq!(header("x-opencode-session-id"), Some(session));
+        assert_eq!(header("x-opencode-client"), Some("cli"));
+
+        // A provider outside opencode.ai keeps its headers clean.
+        let mut plain: Vec<(String, String)> = Vec::new();
+        apply_outbound(
+            &mut plain,
+            "https://api.deepseek.com/anthropic/v1/messages",
+            &gateway_ctx(&headers, body),
+        );
+        assert!(plain.is_empty(), "no OpenCode family off the gateway");
+    }
     #[test]
     fn unknown_model_is_anthropic_404() {
         let (gateway, _sandbox) = sandbox(r#"{"providers":[]}"#);
@@ -2037,7 +2090,7 @@ mod tests {
             "model": "nope/m", "max_tokens": 8,
             "messages": [{ "role": "user", "content": "hi" }]
         });
-        let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
+        let reply = handle(&gateway, &[], serde_json::to_vec(&request).unwrap().as_slice());
         let Reply::Json { status, body } = reply else {
             panic!("expected json reply, got stream");
         };
@@ -2068,7 +2121,7 @@ mod tests {
             "model": "fake/m", "max_tokens": 8,
             "messages": [{ "role": "user", "content": "hi" }]
         });
-        let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
+        let reply = handle(&gateway, &[], serde_json::to_vec(&request).unwrap().as_slice());
         let Reply::Json { status, body } = reply else {
             panic!("expected json reply, got stream");
         };
@@ -2114,7 +2167,7 @@ mod tests {
             "messages": [{ "role": "user", "content": "weather?" }],
             "tools": textcall_tools(),
         });
-        let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
+        let reply = handle(&gateway, &[], serde_json::to_vec(&request).unwrap().as_slice());
         let Reply::Json { status, body } = reply else {
             panic!("expected json reply, got stream");
         };
@@ -2158,7 +2211,7 @@ mod tests {
             "messages": [{ "role": "user", "content": "weather?" }],
             "tools": textcall_tools(),
         });
-        let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
+        let reply = handle(&gateway, &[], serde_json::to_vec(&request).unwrap().as_slice());
         let Reply::Stream {
             status,
             content_type,
@@ -2222,7 +2275,7 @@ mod tests {
             "model": "fake/m", "max_tokens": 64,
             "messages": [{ "role": "user", "content": "weather?" }],
         });
-        let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
+        let reply = handle(&gateway, &[], serde_json::to_vec(&request).unwrap().as_slice());
         let Reply::Json { status, body } = reply else {
             panic!("expected json reply, got stream");
         };
@@ -2261,7 +2314,7 @@ mod tests {
             "metadata": { "user_id": "user-77" },
             "messages": [{ "role": "user", "content": "hi" }]
         });
-        let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
+        let reply = handle(&gateway, &[], serde_json::to_vec(&request).unwrap().as_slice());
         let Reply::Stream { mut reader, .. } = reply else {
             panic!("expected stream reply, got json");
         };
@@ -2317,7 +2370,7 @@ mod tests {
             "model": "anth/claude-x", "max_tokens": 32, "stream": true,
             "messages": [{ "role": "user", "content": "hi" }]
         });
-        let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
+        let reply = handle(&gateway, &[], serde_json::to_vec(&request).unwrap().as_slice());
         let Reply::Stream { mut reader, .. } = reply else {
             panic!("expected stream reply, got json");
         };

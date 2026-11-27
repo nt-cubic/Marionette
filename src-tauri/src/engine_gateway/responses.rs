@@ -124,9 +124,11 @@ fn rewrite_model(body: &[u8], bare: &str) -> Vec<u8> {
 /// （agent="responses"）——流式（直通透传与翻译输出）由
 /// `usage_ledger::TapReader` 包在 reader 外层，从 response.completed 的
 /// usage 提桶（input_tokens 含缓存 → 减两桶得净额，Go rUsage 口径）；
-/// 非流式整块扫描。会话种子取 body 侧（路由层不传请求头，
-/// `stick_key(&[], …)`——头携带的会话是记录在案的差距）。
-pub fn handle(gateway: &super::Gateway, body: &[u8]) -> Reply {
+/// 会话种子头优先（codex 的 `session_id`、Claude Code 的
+/// `x-claude-code-session-id` 都在 sessionOf 名族里），body 兜底。
+/// 入站头会穿到出站：opencode.ai 系缺 `x-opencode-session` 直接
+/// 400 MissingSessionID（Codex 走的就是这条路）。
+pub fn handle(gateway: &super::Gateway, headers: &[(String, String)], body: &[u8]) -> Reply {
     let began = std::time::Instant::now();
     let model = asked_model(body);
     if model.is_empty() {
@@ -140,12 +142,18 @@ pub fn handle(gateway: &super::Gateway, body: &[u8]) -> Reply {
     let log = super::usage_ledger::TurnLog::new(
         "responses",
         &model,
-        super::affinity::stick_key(&[], &parsed),
+        super::affinity::stick_key(headers, &parsed),
         began,
     );
+    // OpenCode gateways (opencode.ai, where Codex's Go rows point) route and
+    // cache by x-opencode-session and answer 400 MissingSessionID without it.
+    // Measured 2026-11-27 against /zen/go/v1/responses with a live key: same
+    // body, 400 without the header, 200 with it. Compute the seed once here;
+    // every candidate shares it.
+    let oc = super::opencode_client::gateway_ctx(headers, body);
     super::groups::drive(&cands, |cand| {
         let body = super::groups::body_for(gateway, super::effort::Proto::Responses, cand, body);
-        attempt(gateway, cand, &body, &log)
+        attempt(gateway, cand, &body, &oc, &log)
     })
 }
 
@@ -154,6 +162,7 @@ fn attempt(
     gateway: &super::Gateway,
     cand: &super::groups::Candidate,
     body: &[u8],
+    oc: &super::opencode_client::OpenCodeCtx,
     log: &super::usage_ledger::TurnLog,
 ) -> Attempt {
     // 锁内只做表查询与字段快照，锁外跑网络（store 锁绝不持着等 HTTP——
@@ -181,11 +190,19 @@ fn attempt(
         )
     };
     if !responses_url.is_empty() {
+        // The OpenCode family belongs on this path too; the chat translation
+        // path gets it inside chat::prepare_outbound.
+        let mut direct_headers = headers.clone();
+        super::opencode_client::apply_outbound(
+            &mut direct_headers,
+            &format!("{}/responses", responses_url.trim_end_matches('/')),
+            oc,
+        );
         let target = DirectTarget {
             provider_id: &cand.provider,
             base: &responses_url,
             key: &key,
-            headers: &headers,
+            headers: &direct_headers,
         };
         match passthrough(gateway, &target, body, &cand.model, log) {
             // 预设表给了 responses 端点不等于厂商真有（DeepSeek 一类：用户机上
@@ -206,7 +223,7 @@ fn attempt(
             &format!("{} has no endpoint for /v1/responses", cand.provider),
         ));
     }
-    translate_via_chat(gateway, cand, body, log)
+    translate_via_chat(gateway, cand, body, oc, log)
 }
 
 // =====================================================================
@@ -529,6 +546,7 @@ fn translate_via_chat(
     gateway: &super::Gateway,
     cand: &super::groups::Candidate,
     body: &[u8],
+    oc: &super::opencode_client::OpenCodeCtx,
     log: &super::usage_ledger::TurnLog,
 ) -> Attempt {
     let parsed: Value = match serde_json::from_slice(body) {
@@ -567,8 +585,7 @@ fn translate_via_chat(
     let scout = (!names.is_empty()).then(|| super::textcalls::TextCallScout::new(&names));
     let chat_body = serde_json::to_vec(&chat_value).unwrap_or_default();
     // 入站头尚未穿进 responses 翻译路径（差距清单）：体派生种子（同 messages.rs 注）。
-    let oc = super::opencode_client::gateway_ctx(&[], &chat_body);
-    match super::chat::attempt(gateway, cand, &chat_body, &oc) {
+    match super::chat::attempt(gateway, cand, &chat_body, oc) {
         Attempt::Done(reply) => Attempt::Done(reshape(
             reply,
             &asked,
@@ -1456,6 +1473,8 @@ mod tests {
     struct Seen {
         path: String,
         authorization: String,
+        /// 全部请求头（名称已小写）：OpenCode 会话头家族的断言靠它。
+        headers: Vec<(String, String)>,
         body: Vec<u8>,
     }
 
@@ -1502,6 +1521,7 @@ mod tests {
                     .to_string();
                 let mut authorization = String::new();
                 let mut length = 0usize;
+                let mut headers: Vec<(String, String)> = Vec::new();
                 loop {
                     let mut line = String::new();
                     if reader.read_line(&mut line).unwrap_or(0) == 0 {
@@ -1513,6 +1533,9 @@ mod tests {
                     }
                     if let Some(v) = trimmed.strip_prefix("Authorization:") {
                         authorization = v.trim().to_string();
+                    }
+                    if let Some((name, value)) = trimmed.split_once(':') {
+                        headers.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
                     }
                     if let Some(v) = trimmed.strip_prefix("Content-Length:") {
                         length = v.trim().parse().unwrap_or(0);
@@ -1528,6 +1551,7 @@ mod tests {
                     .push(Seen {
                         path,
                         authorization,
+                        headers,
                         body,
                     });
                 let mut stream = stream;
@@ -1592,7 +1616,7 @@ mod tests {
         // 的存取/合并/miss 由 prev_response_* 系列测试覆盖）。
         let body = br#"{"model":"p/m","instructions":"be nice","input":"hi",
             "store":true,"include":["usage"]}"#;
-        let reply = handle(&gateway, body);
+        let reply = handle(&gateway, &[], body);
 
         // 打到 chat 厂商：Bearer、路径、翻译后的形状。
         assert_eq!(vendor.hits.load(Ordering::SeqCst), 1);
@@ -1650,7 +1674,7 @@ mod tests {
             r#"{{"providers":[{{"id":"p","name":"P","key":"sk-test","chat":"{}/v1"}}]}}"#,
             vendor.base
         ));
-        let reply = handle(&gateway, br#"{"model":"p/m","input":"hi","stream":true}"#);
+        let reply = handle(&gateway, &[], br#"{"model":"p/m","input":"hi","stream":true}"#);
 
         // 发给厂商的 chat 请求补了 include_usage（Go buildChat 同款）。
         let seen = vendor.seen.lock().unwrap_or_else(|p| p.into_inner());
@@ -1731,6 +1755,7 @@ mod tests {
         ));
         let reply = handle(
             &gateway,
+            &[],
             br#"{"model":"p/m","input":"weather?","stream":true,
                 "tools":[{"type":"function","name":"get_weather","description":"weather",
                     "parameters":{"type":"object","properties":{"city":{"type":"string"}}}}]}"#,
@@ -1816,7 +1841,7 @@ mod tests {
             r#"{{"providers":[{{"id":"p","name":"P","key":"sk-test","chat":"{}/v1"}}]}}"#,
             vendor.base
         ));
-        let reply = handle(&gateway, br#"{"model":"p/m","input":"go","stream":true}"#);
+        let reply = handle(&gateway, &[], br#"{"model":"p/m","input":"go","stream":true}"#);
         let Reply::Stream { mut reader, .. } = reply else {
             panic!("stream reply")
         };
@@ -1845,6 +1870,72 @@ mod tests {
         );
     }
 
+    /// OpenCode's gateway (/zen/go, where Codex's Go rows point) routes and
+    /// caches by x-opencode-session and answers 400 MissingSessionID without
+    /// it. Measured 2026-11-27 with a live key: the same request went 400
+    /// without the header family and 200 with it -- and the engine used to
+    /// drop the inbound headers on this path entirely.
+    #[test]
+    fn opencode_gateway_headers_derive_from_the_agents_own_session_header() {
+        use super::super::opencode_client::{apply_outbound, gateway_ctx, opencode_real_session};
+        let headers = vec![
+            ("session_id".to_string(), "01a21ca4-048f-7f80-ac3a-a9d292852db4".to_string()),
+            ("x-opencode-project".to_string(), "proj-from-agent".to_string()),
+        ];
+        let body = br#"{"model":"o/m","input":"hi"}"#;
+        let ctx = gateway_ctx(&headers, body);
+
+        let mut out: Vec<(String, String)> = vec![("Content-Type".to_string(), "application/json".to_string())];
+        apply_outbound(&mut out, "https://opencode.ai/zen/go/v1/responses", &ctx);
+        let header = |name: &str| out.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+        let session = header("x-opencode-session").expect("the family lands on an opencode.ai target");
+        assert!(opencode_real_session(session), "the gateway validates the id shape: {session}");
+        assert_eq!(header("x-opencode-session-id"), Some(session));
+        assert_eq!(header("x-session-affinity"), Some(session));
+        assert_eq!(header("x-session-id"), Some(session));
+        assert_eq!(header("x-opencode-client"), Some("cli"));
+        assert_eq!(header("x-opencode-project"), Some("proj-from-agent"));
+        assert!(header("b3").is_some() && header("traceparent").is_some());
+        assert_eq!(header("Content-Type"), Some("application/json"), "unrelated headers survive");
+
+        // Same conversation, same session: routing and caching depend on it.
+        let mut again: Vec<(String, String)> = Vec::new();
+        apply_outbound(&mut again, "https://opencode.ai/zen/go/v1/responses", &gateway_ctx(&headers, body));
+        let repeated = again.iter().find(|(k, _)| k == "x-opencode-session").map(|(_, v)| v.as_str());
+        assert_eq!(repeated, Some(session), "the session is stable across turns");
+
+        // A client that already speaks OpenCode keeps its own session.
+        let pinned = vec![("x-opencode-session".to_string(), "ses_e3f0ae6c3ffeRr1VWDtZjoE2XP".to_string())];
+        let mut keeps: Vec<(String, String)> = Vec::new();
+        apply_outbound(&mut keeps, "https://opencode.ai/zen/go/v1/responses", &gateway_ctx(&pinned, body));
+        let forwarded = keeps.iter().find(|(k, _)| k == "x-opencode-session").map(|(_, v)| v.as_str());
+        assert_eq!(forwarded, Some("ses_e3f0ae6c3ffeRr1VWDtZjoE2XP"), "the client's own session wins");
+    }
+
+    /// A provider outside opencode.ai gets none of it: the family is the
+    /// gateway's contract, not something to spray at every vendor.
+    #[test]
+    fn non_opencode_vendors_get_no_session_headers() {
+        let vendor = fake_vendor(
+            200,
+            "application/json",
+            r#"{"id":"resp_plain","object":"response","status":"completed"}"#,
+        );
+        let (gateway, _sandbox) = sandbox(&format!(
+            r#"{{"providers":[{{"id":"p","name":"P","key":"k",
+                "responses":"{}/v1"}}]}}"#,
+            vendor.base
+        ));
+        let reply = handle(&gateway, &[], br#"{"model":"p/m","input":"hi"}"#);
+        let Reply::Json { status, .. } = &reply else { panic!("json reply") };
+        assert_eq!(*status, 200);
+        let seen = vendor.seen.lock().unwrap_or_else(|p| p.into_inner());
+        assert!(
+            seen[0].headers.iter().all(|(k, _)| !k.starts_with("x-opencode-")),
+            "no OpenCode header family outside opencode.ai"
+        );
+        assert!(seen[0].headers.iter().all(|(k, _)| k != "b3" && k != "traceparent"));
+    }
     #[test]
     fn passthrough_prefers_responses_url_with_bearer() {
         // responses URL 与 chat URL 都配了：直通优先，打到 responses 那家。
@@ -1863,7 +1954,7 @@ mod tests {
                 "chat":"{0}/v1","responses":"{1}/v1"}}]}}"#,
             chat_vendor.base, responses_vendor.base
         ));
-        let reply = handle(&gateway, br#"{"model":"o/m2","input":"hi"}"#);
+        let reply = handle(&gateway, &[], br#"{"model":"o/m2","input":"hi"}"#);
 
         assert_eq!(responses_vendor.hits.load(Ordering::SeqCst), 1);
         assert_eq!(
@@ -1911,6 +2002,7 @@ mod tests {
         ));
         let reply = handle(
             &gateway,
+            &[],
             br#"{"model":"o/m","input":"hi","reasoning":{"effort":"max","context":"all_turns"}}"#,
         );
 
@@ -1940,7 +2032,7 @@ mod tests {
             r#"{{"providers":[{{"id":"o","name":"O","key":"k","responses":"{}/v1"}}]}}"#,
             vendor.base
         ));
-        let reply = handle(&gateway, br#"{"model":"o/m","input":"hi","stream":true}"#);
+        let reply = handle(&gateway, &[], br#"{"model":"o/m","input":"hi","stream":true}"#);
         let Reply::Stream {
             status,
             content_type,
@@ -1959,7 +2051,7 @@ mod tests {
     #[test]
     fn unknown_model_404() {
         let (gateway, _sandbox) = sandbox(r#"{"providers":[]}"#);
-        let reply = handle(&gateway, br#"{"model":"nope/x","input":"hi"}"#);
+        let reply = handle(&gateway, &[], br#"{"model":"nope/x","input":"hi"}"#);
         let Reply::Json { status, body } = reply else {
             panic!("json reply")
         };
@@ -2020,7 +2112,7 @@ mod tests {
             r#"{{"providers":[{{"id":"o","name":"O","key":"k","chat":"{}/v1","responses":"{}/v1"}}]}}"#,
             chat_vendor.base, dead_responses.base
         ));
-        let reply = handle(&gateway, br#"{"model":"o/m","input":"hi"}"#);
+        let reply = handle(&gateway, &[], br#"{"model":"o/m","input":"hi"}"#);
         let Reply::Json { status, body } = reply else {
             panic!("json reply")
         };
@@ -2346,7 +2438,7 @@ mod tests {
 
         // 第一轮：store:true、无 previous_response_id——存（input=本轮、
         // output=应答 output），应答 id 是网关生成的存账 id。
-        let reply = handle(&gateway, br#"{"model":"p/m","input":"first","store":true}"#);
+        let reply = handle(&gateway, &[], br#"{"model":"p/m","input":"first","store":true}"#);
         let Reply::Json { status, body } = reply else {
             panic!("json reply")
         };
@@ -2360,7 +2452,7 @@ mod tests {
         let body = format!(
             r#"{{"model":"p/m","input":"second","store":true,"previous_response_id":"{id1}"}}"#
         );
-        let reply = handle(&gateway, body.as_bytes());
+        let reply = handle(&gateway, &[], body.as_bytes());
         let Reply::Json { status, body } = reply else {
             panic!("json reply")
         };
@@ -2391,6 +2483,7 @@ mod tests {
         // 第三个请求。
         let reply = handle(
             &gateway,
+            &[],
             br#"{"model":"p/m","input":"third","previous_response_id":"resp_never"}"#,
         );
         let Reply::Json { status, body } = reply else {
@@ -2406,6 +2499,7 @@ mod tests {
         // 它照常应答，但不产生可点名的存账。
         let reply = handle(
             &gateway,
+            &[],
             br#"{"model":"p/m","input":"no keep","store":false}"#,
         );
         let Reply::Json { status, .. } = reply else {
@@ -2415,6 +2509,7 @@ mod tests {
         // 点名一个网关从没存过的 id（包括 store:false 轮的占位 id）都 miss。
         let reply = handle(
             &gateway,
+            &[],
             br#"{"model":"p/m","input":"again","previous_response_id":"resp_nokeep"}"#,
         );
         let Reply::Json { status, .. } = reply else {
@@ -2441,6 +2536,7 @@ mod tests {
         ));
         let reply = handle(
             &gateway,
+            &[],
             br#"{"model":"p/m","input":"first","store":true,"stream":true}"#,
         );
         let Reply::Stream { mut reader, .. } = reply else {
@@ -2470,7 +2566,7 @@ mod tests {
         let body = format!(
             r#"{{"model":"p/m","input":"second","stream":true,"previous_response_id":"{created_id}"}}"#
         );
-        let reply = handle(&gateway, body.as_bytes());
+        let reply = handle(&gateway, &[], body.as_bytes());
         let Reply::Stream {
             status, mut reader, ..
         } = reply
@@ -2506,6 +2602,7 @@ mod tests {
         ));
         let reply = handle(
             &gateway,
+            &[],
             br#"{"model":"o/m","input":"hi","store":true,"previous_response_id":"resp_anything"}"#,
         );
         let Reply::Json { status, body } = reply else {
@@ -2715,6 +2812,7 @@ mod tests {
         ));
         let reply = handle(
             &gateway,
+            &[],
             br#"{"model":"p/m","input":"hi","stream":true,"prompt_cache_key":"sess-r"}"#,
         );
         let Reply::Stream { mut reader, .. } = reply else {
@@ -2758,7 +2856,7 @@ mod tests {
                     "prompt_tokens_details":{"cached_tokens":250}}}"#,
         );
         let (gateway, _sandbox) = sandbox(&one_chat_vendor(&vendor));
-        let reply = handle(&gateway, br#"{"model":"p/m","input":"hi"}"#);
+        let reply = handle(&gateway, &[], br#"{"model":"p/m","input":"hi"}"#);
         assert!(matches!(reply, Reply::Json { status: 200, .. }));
         let rows = gateway.usage.records_since(0);
         assert_eq!(rows.len(), 1);

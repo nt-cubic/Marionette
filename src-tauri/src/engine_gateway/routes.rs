@@ -194,7 +194,7 @@ pub fn route(request: &Request, gateway: &super::Gateway) -> Reply {
                 return reply;
             }
             let body = &request.body;
-            super::responses::handle(gateway, &body)
+            super::responses::handle(gateway, &request.headers, body)
         }
         ("POST", "/v1/messages/count_tokens") | ("POST", "/messages/count_tokens") => {
             // Go countTokens：厂商有 anthropic 基址就转它的计数，不支持/没有就本地粗估。
@@ -205,7 +205,7 @@ pub fn route(request: &Request, gateway: &super::Gateway) -> Reply {
                 Err(e) => return Reply::error(503, &e),
             };
             let request = &*req;
-            super::messages::count_tokens(gateway, &request.body)
+            super::messages::count_tokens(gateway, &request.headers, &request.body)
         }
         ("POST", "/v1/messages") | ("POST", "/messages") => {
             // anthropic Messages 端点（T3）：直通优先 + chat 翻译路径。
@@ -230,7 +230,7 @@ pub fn route(request: &Request, gateway: &super::Gateway) -> Reply {
                 return reply;
             }
             let body = &request.body;
-            super::messages::handle(gateway, &body)
+            super::messages::handle(gateway, &request.headers, body)
         }
         (method, path) if method == "GET" && path.starts_with("/v1/models/group/") => {
             // C4 组宣告探针：组在 → 200（列成员行），不在 → 404。

@@ -2383,7 +2383,7 @@ mod routing_tests {
                 {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "latest"}]},
             ]
         }));
-        let reply = super::super::responses::handle(&gw, &body);
+        let reply = super::super::responses::handle(&gw, &[], &body);
         assert_eq!(
             status_of(&reply),
             200,
@@ -2399,7 +2399,7 @@ mod routing_tests {
             .contains("image left out"));
         // 学到的 cap 让后续同厂商请求先合身再发（不再吃一次拒答）。
         let before = v.hits.load(Ordering::SeqCst);
-        let again = super::super::responses::handle(&gw, &body);
+        let again = super::super::responses::handle(&gw, &[], &body);
         assert_eq!(status_of(&again), 200);
         assert_eq!(
             v.hits.load(Ordering::SeqCst) - before,
@@ -2432,7 +2432,7 @@ mod routing_tests {
                 {"role": "user", "content": "latest"},
             ]
         }));
-        let reply = super::super::messages::handle(&gw, &body);
+        let reply = super::super::messages::handle(&gw, &[], &body);
         assert_eq!(status_of(&reply), 200);
         let bodies = v.bodies();
         assert!(bodies.len() >= 2);
@@ -2463,7 +2463,7 @@ mod routing_tests {
             &json!({"providers": [{"id": "pv", "name": "V", "chat": format!("{}/v1", v.base)}]})
                 .to_string(),
         );
-        let reply = super::super::responses::handle(&gw, &make("pv/deepseek-v4"));
+        let reply = super::super::responses::handle(&gw, &[], &make("pv/deepseek-v4"));
         assert_eq!(status_of(&reply), 200);
         let sent = &v.bodies()[0];
         let msgs = sent["messages"].as_array().unwrap();
@@ -2475,7 +2475,7 @@ mod routing_tests {
         // 尾部只有加密思考的 reasoning item 不会变成空 assistant 消息。
         assert_eq!(msgs.last().unwrap()["role"], "user");
         // 非 DeepSeek 模型：不回放（也没有任何暂存键漏出去）。
-        let reply = super::super::responses::handle(&gw, &make("pv/gpt-x"));
+        let reply = super::super::responses::handle(&gw, &[], &make("pv/gpt-x"));
         assert_eq!(status_of(&reply), 200);
         let sent = &v.bodies()[1];
         assert!(!sent.to_string().contains("reasoning_content"));
