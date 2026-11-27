@@ -318,6 +318,20 @@ struct AcpProcess {
     memory_card_sent: AtomicBool,
     /// Explicit local file picks may be passed only to an opt-in local adapter.
     local_file_upload: AtomicBool,
+    /// Codex engine binding: did `providers/set` actually re-point this
+    /// process's openai slot at the engine? false on a session that *has* an
+    /// engine binding means the process is running **native** (requests go to
+    /// the ChatGPT backend and burn the user's subscription).
+    /// `send_prompt`'s gate repairs the bridge or refuses to send.
+    codex_bridge_routed: AtomicBool,
+    /// Did codex-acp advertise `agentCapabilities.providers` (the precondition
+    /// for providers/set)? Without it the bridge can never be repaired, so the
+    /// gate fails closed instead of retrying forever.
+    codex_providers_available: AtomicBool,
+    /// The codex built-in model name reported at session/new. After
+    /// providers/set the model catalog goes empty, so the alias repair cannot
+    /// rely on live caps; keep the spawn-time name.
+    codex_builtin_model: Mutex<Option<String>>,
     /// ACP agent id this process was spawned for (`claude-code`, `codex`, …).
     /// Needed where the elicitation schema alone cannot say what a companion
     /// field means: Claude's `_custom` doubles as a note, OpenCode's does not.
@@ -1304,6 +1318,9 @@ impl AcpService {
             cancelling_prompt_id: Arc::new(AtomicU64::new(0)),
             memory_card_sent: AtomicBool::new(false),
             local_file_upload: AtomicBool::new(false),
+            codex_bridge_routed: AtomicBool::new(false),
+            codex_providers_available: AtomicBool::new(false),
+            codex_builtin_model: Mutex::new(None),
             agent_id: agent_id.clone(),
             #[cfg(target_os = "windows")]
             job,
@@ -1441,28 +1458,48 @@ impl AcpService {
                 // 事故同族）。
                 if selection.entry_id == crate::engine::ENGINE_ENTRY_ID {
                     crate::engine::wake_if_installed();
+                    // Wait for it instead of fire-and-forget: a spawn while the
+                    // engine is still starting leaves the route unresolved and
+                    // the session then silently runs native against the user's
+                    // ChatGPT plan (2026-11-27: a whole session on provider=openai,
+                    // 40 billed requests). `send_prompt` re-checks and fails closed.
+                    if !crate::engine::ensure_bridge_ready_if_installed(Duration::from_secs(30)) {
+                        crate::debug_log::append(
+                            "bridge",
+                            "warn",
+                            &session_id,
+                            "codex spawn bridge: engine still not ready after 30s; prompts will retry and refuse to run native",
+                            None,
+                        );
+                    }
                 }
                 if let Some((base_url, api_key)) =
                     crate::model_bridge::codex_bridge_route(&selection)
                 {
                     if crate::model_bridge::advertises_providers(&initialized) {
+                        process
+                            .codex_providers_available
+                            .store(true, Ordering::SeqCst);
                         let params = crate::model_bridge::codex_providers_set_params(
                             &base_url,
                             &api_key,
                         );
                         match request_quiet(&process, "providers/set", params) {
-                            Ok(_) => crate::debug_log::append(
-                                "bridge",
-                                "info",
-                                &session_id,
-                                "codex openai slot routed via providers/set",
-                                Some(&base_url),
-                            ),
+                            Ok(_) => {
+                                process.codex_bridge_routed.store(true, Ordering::SeqCst);
+                                crate::debug_log::append(
+                                    "bridge",
+                                    "info",
+                                    &session_id,
+                                    "codex openai slot routed via providers/set",
+                                    Some(&base_url),
+                                );
+                            }
                             Err(error) => crate::debug_log::append(
                                 "bridge",
                                 "warn",
                                 &session_id,
-                                "codex providers/set failed",
+                                "codex providers/set failed; prompts will retry and refuse to run native",
                                 Some(&error),
                             ),
                         }
@@ -1476,13 +1513,14 @@ impl AcpService {
                         );
                     }
                 } else {
-                    // 有绑定但解析不出路由：非引擎绑定（chat-only，进不了
-                    // codex）或引擎不在跑 —— 会话按原生跑，留痕说明。
+                    // A binding exists but no route resolves: non-engine binding (chat-only,
+                    // cannot ride codex) or the engine is unreachable. The prompt gate
+                    // refuses the send instead of quietly going native.
                     crate::debug_log::append(
                         "bridge",
                         "warn",
                         &session_id,
-                        "codex binding present but no route resolved; session runs native",
+                        "codex binding present but no route resolved; the prompt gate will refuse to run native",
                         Some(&format!("entry={}", selection.entry_id)),
                     );
                 }
@@ -1743,6 +1781,14 @@ impl AcpService {
         if let Ok(mut caps_map) = self.capabilities.lock() {
             caps_map.insert(session_id.clone(), caps.clone());
         }
+        // Remember the codex built-in model name: after providers/set the model
+        // catalog goes empty, so the prompt gate's alias repair cannot read it
+        // back from live caps.
+        if let Some(model) = caps.current_model.clone() {
+            if let Ok(mut slot) = process.codex_builtin_model.lock() {
+                *slot = Some(model);
+            }
+        }
 
         // codex × 引擎绑定：把会话当前内建名别名成引擎路由组（模型 id 保持
         // codex 内建名，组把裸名路由到所选引擎模型）。同步执行 —— CLI 只需
@@ -1868,6 +1914,125 @@ impl AcpService {
             .unwrap_or_default();
         crate::model_bridge::classify_agent(&agent) == crate::model_bridge::BridgeAgent::Codex
             && crate::model_bridge::session_has_engine_binding(session_id)
+    }
+
+    /// Codex engine binding: the pre-prompt bridge gate.
+    ///
+    /// A working bridge is three things: the engine is up, `providers/set`
+    /// re-pointed this process's openai slot at the engine, and a routing group
+    /// maps the codex built-in model name onto the bound engine model. Missing
+    /// any piece means codex talks straight to the ChatGPT backend (native slot)
+    /// or the engine serves the bare built-in name from the codex subscription
+    /// source. Both spend the user's plan while the UI claims a DeepSeek model
+    /// (2026-11-27: a spawn that raced the engine's start billed 40 native
+    /// requests). Repair first; refuse the send if it cannot be repaired.
+    fn ensure_codex_bridge_ready(
+        &self,
+        session_id: &str,
+        process: &Arc<AcpProcess>,
+    ) -> Result<(), String> {
+        if !self.session_codex_engine_bound(session_id) {
+            return Ok(());
+        }
+        let Some(selection) = crate::model_bridge::binding_for(session_id) else {
+            return Ok(());
+        };
+        let caps = self.get_capabilities(session_id);
+        let effort = caps
+            .as_ref()
+            .and_then(|caps| caps.current_effort_id.clone());
+        let builtin = caps
+            .as_ref()
+            .and_then(|caps| caps.current_model.clone())
+            .or_else(|| {
+                process
+                    .codex_builtin_model
+                    .lock()
+                    .ok()
+                    .and_then(|slot| slot.clone())
+            });
+        let engine_model =
+            crate::engine::with_member_effort(&selection.model_id, effort.as_deref());
+        let alias_ok = builtin.as_deref().is_some_and(|builtin| {
+            crate::engine::codex_alias_in_place(session_id, builtin, &engine_model)
+        });
+        if process.codex_bridge_routed.load(Ordering::SeqCst) && alias_ok {
+            return Ok(());
+        }
+
+        // Repair. The usual reason this is needed is a spawn that raced the
+        // engine's start (the spawn path now waits, but a session can also be
+        // restored long after the engine went to sleep).
+        let mut problems: Vec<String> = Vec::new();
+        crate::engine::wake_if_installed();
+        if !crate::engine::ensure_bridge_ready_if_installed(Duration::from_secs(20)) {
+            problems.push("engine is not ready".to_string());
+        }
+        if !process.codex_bridge_routed.load(Ordering::SeqCst) {
+            if !process.codex_providers_available.load(Ordering::SeqCst) {
+                problems.push("this codex agent does not accept providers/set".to_string());
+            } else {
+                match crate::model_bridge::codex_bridge_route(&selection) {
+                    Some((base_url, api_key)) => {
+                        let params =
+                            crate::model_bridge::codex_providers_set_params(&base_url, &api_key);
+                        match request_with_timeout(
+                            process,
+                            "providers/set",
+                            params,
+                            Duration::from_secs(15),
+                            true,
+                        ) {
+                            Ok(_) => {
+                                process.codex_bridge_routed.store(true, Ordering::SeqCst);
+                                crate::debug_log::append(
+                                    "bridge",
+                                    "info",
+                                    session_id,
+                                    "codex openai slot routed via providers/set (repaired before prompt)",
+                                    Some(&base_url),
+                                );
+                            }
+                            Err(error) => {
+                                problems.push(format!("providers/set failed: {error}"))
+                            }
+                        }
+                    }
+                    None => problems.push("no engine route for this binding".to_string()),
+                }
+            }
+        }
+        if process.codex_bridge_routed.load(Ordering::SeqCst) && !alias_ok {
+            match builtin.as_deref() {
+                Some(builtin) => {
+                    crate::model_bridge::sync_codex_engine_alias(
+                        session_id,
+                        process.agent_id.as_deref(),
+                        Some(builtin),
+                        effort.as_deref(),
+                    );
+                    if !crate::engine::codex_alias_in_place(session_id, builtin, &engine_model) {
+                        problems
+                            .push(format!("routing group for {builtin} is not in the engine"));
+                    }
+                }
+                None => problems.push("codex did not report its current model".to_string()),
+            }
+        }
+        if problems.is_empty() {
+            return Ok(());
+        }
+        let detail = problems.join("; ");
+        crate::debug_log::append(
+            "bridge",
+            "warn",
+            session_id,
+            "codex prompt refused (fail-closed): without the bridge it would run native",
+            Some(&detail),
+        );
+        Err(format!(
+            "This Codex session is bound to a shared engine model, but its engine bridge is not ready ({detail}). The message was not sent: sending it now would quietly spend your Codex subscription instead of using that model. Make sure the engine is running (Model settings), then send again."
+        ))
     }
 
     /// 桥接模型在该会话的 effort 门控（见 [`BridgeEffortGate`]）。读 grok
@@ -2592,6 +2757,9 @@ impl AcpService {
         file_paths: Vec<String>,
     ) -> Result<Value, String> {
         let process = self.process(session_id)?;
+        // Fail closed before anything else: a codex session bound to an engine
+        // model must never reach the agent on its native provider.
+        self.ensure_codex_bridge_ready(session_id, &process)?;
         let agent_session_id = process
             .agent_session_id
             .lock()

@@ -277,6 +277,27 @@ fn emit_download_progress(downloaded: u64, total: u64) {
 
 // ─── 路径与 manifest ─────────────────────────────────────────────────────────
 
+/// `serve.json` records the live endpoint for processes that are NOT this one
+/// (`Marionette.exe --doctor` / tools\doctor.bat). The in-memory engine state
+/// cannot answer that from another process: a fresh doctor run reported
+/// "engine not running" while the app was serving on 3425 (2026-11-27).
+/// Stale files are harmless -- the doctor probes the port and treats a silent
+/// one as "asleep".
+fn write_serve_state(dir: &Path, port: u16, version: Option<&str>) {
+    let body = serde_json::json!({
+        "port": port,
+        "pid": std::process::id(),
+        "version": version,
+        "at": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    });
+    if let Ok(text) = serde_json::to_string(&body) {
+        let _ = std::fs::write(dir.join("serve.json"), text);
+    }
+}
+
 pub fn engine_dir() -> Result<PathBuf, String> {
     #[cfg(test)]
     if let Some(dir) = test_engine_dir() {
@@ -3171,6 +3192,52 @@ fn codex_group_id(builtin: &str) -> Option<String> {
         .then_some(id)
 }
 
+/// Is the routing group for this built-in name actually in place? The pre-prompt
+/// gate asks this. Mirrors [`codex_alias_sync`]'s normalization and compares the
+/// in-memory ledger that `codex_alias_sync` maintains (CLI writes we did not
+/// make (a group made by hand in a reused magpie install, for instance) read as "not in
+/// place"; the gate then refuses instead of guessing).
+pub(crate) fn codex_alias_in_place(session_id: &str, builtin: &str, engine_model: &str) -> bool {
+    let effort = peel_combined_effort(builtin);
+    let engine_model = with_member_effort_catalogued(engine_model, effort);
+    let Some(group_id) = codex_group_id(peel_combined_model_id(builtin)) else {
+        return false;
+    };
+    let ledger_hit = {
+        let map = alias_map()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        map.get(session_id)
+            .is_some_and(|(id, model)| id == &group_id && model == &engine_model)
+    };
+    if ledger_hit {
+        return true;
+    }
+    // A group this process did not write still counts when the gateway really
+    // serves it (reused user install, or the ledger of a previous app run).
+    // Stricter than the write-path probe: an unreachable gateway is a NO here,
+    // because "cannot tell" must not become "send it natively".
+    match engine_v1_url() {
+        Some(v1) => codex_alias_served_strict(&v1, &group_id),
+        None => false,
+    }
+}
+
+/// 200 = the gateway serves this group; anything else (404, connection refused,
+/// timeout) = not verified. Only [`codex_alias_in_place`] uses this; the write
+/// path keeps the fail-open probe.
+fn codex_alias_served_strict(v1: &str, group_id: &str) -> bool {
+    let Ok(agent) = loopback_agent() else {
+        return false;
+    };
+    let url = format!("{v1}/models/group/{group_id}");
+    agent
+        .get(&url)
+        .set("Authorization", &format!("Bearer {}", gateway_token()))
+        .call()
+        .is_ok()
+}
+
 /// 别名组（以及一切 CLI 状态写入）只对**我们自己拉起**的 serve 有效：
 /// reused 实例的状态不在我们的 `engine/data/` 里，CLI 写进去它也读不到。
 /// Running 且非 reused → 我们那份 magpie.exe 的路径。
@@ -3596,9 +3663,10 @@ fn serve_and_run(dir: &Path) -> Result<(), String> {
     note_engine_needed();
     set_status(EngineStatus::Running {
         port,
-        version,
+        version: version.clone(),
         reused: false,
     });
+    write_serve_state(dir, port, version.as_deref());
     spawn_provider_registration(exe.clone());
     // 6. 桥文件（dsh cordis patch / zcode provider_config）里的引擎 baseURL
     //    立即刷新到新端口——引擎每次重启端口都变，等下一次 spawn 才重写的话，
@@ -5684,6 +5752,48 @@ mod tests {
             "share pick must pin Codex effort on the magpie member: {add:?}"
         );
         assert!(add.iter().any(|a| a == "models=codex/gpt-6.1-terra:xhigh"));
+    }
+
+    /// The pre-prompt gate only believes in groups this process actually wrote:
+    /// a stale/absent entry must read as "not in place" so the send is refused
+    /// instead of falling back to the built-in provider.
+    #[test]
+    fn codex_alias_in_place_tracks_the_synced_group() {
+        let _cli = CliRecorder::install(Vec::new());
+        assert!(!codex_alias_in_place(
+            "alias-gate-s1",
+            "gpt-5.2-codex",
+            "deepseek/deepseek-v4.1"
+        ));
+        codex_alias_sync("alias-gate-s1", "gpt-5.2-codex", "deepseek/deepseek-v4.1");
+        assert!(codex_alias_in_place(
+            "alias-gate-s1",
+            "gpt-5.2-codex",
+            "deepseek/deepseek-v4.1"
+        ));
+        // The effort suffix is peeled for the group id and kept on the member,
+        // so a mismatch there must not count as "in place".
+        assert!(!codex_alias_in_place(
+            "alias-gate-s1",
+            "gpt-5.2-codex[xhigh]",
+            "deepseek/deepseek-v4.1"
+        ));
+        codex_alias_sync(
+            "alias-gate-s1",
+            "gpt-5.2-codex[xhigh]",
+            "deepseek/deepseek-v4.1",
+        );
+        assert!(codex_alias_in_place(
+            "alias-gate-s1",
+            "gpt-5.2-codex[xhigh]",
+            "deepseek/deepseek-v4.1"
+        ));
+        codex_alias_clear("alias-gate-s1");
+        assert!(!codex_alias_in_place(
+            "alias-gate-s1",
+            "gpt-5.2-codex[xhigh]",
+            "deepseek/deepseek-v4.1"
+        ));
     }
 
     #[test]

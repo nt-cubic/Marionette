@@ -186,9 +186,13 @@ fn attempt(
             // 预设表给了 responses 端点不等于厂商真有（DeepSeek 一类：用户机上
             // magpie 学到后把它清空了）：端点不存在（404/405/501）且来源有 chat
             // 基址 → 退回翻译路径，别把 codex 晾在一个不存在的端点上。
-            Attempt::Retry(Reply::Json { status, .. }) | Attempt::Done(Reply::Json { status, .. })
-                if matches!(status, 404 | 405 | 501) && has_chat => {}
-            other => return other,
+            // 还有一种：responses 端点存在，但模型不是原生 Responses；
+            // codex 会带 `reasoning.context`，厂商回 400 要求 native Responses
+            // target。翻译到 chat 时这个字段本来就不带，退回翻译路径。
+            Attempt::Retry(reply) if has_chat && passthrough_fallback_to_chat(&reply) => {}
+            Attempt::Done(reply) if has_chat && passthrough_fallback_to_chat(&reply) => {}
+            Attempt::Retry(reply) => return Attempt::Retry(reply),
+            Attempt::Done(reply) => return Attempt::Done(reply),
         }
     }
     if !has_chat {
@@ -203,6 +207,25 @@ fn attempt(
 // =====================================================================
 // 直通路径
 // =====================================================================
+
+/// 直通失败后是否退回 chat 翻译路径。
+///
+/// 404/405/501 = responses 端点不存在；400 + `reasoning.context` +
+/// native Responses target = 端点在、但模型不是原生 Responses，codex 带的
+/// `reasoning.context` 不能直通。翻译路径不转发 `reasoning.context`。
+fn passthrough_fallback_to_chat(reply: &Reply) -> bool {
+    let Reply::Json { status, body } = reply else { return false };
+    match *status {
+        404 | 405 | 501 => true,
+        400 => native_responses_reasoning_context_refusal(body),
+        _ => false,
+    }
+}
+
+fn native_responses_reasoning_context_refusal(body: &[u8]) -> bool {
+    let lower = String::from_utf8_lossy(body).to_lowercase();
+    lower.contains("reasoning.context") && lower.contains("native responses target")
+}
 
 struct DirectTarget<'a> {
     provider_id: &'a str,
@@ -1662,6 +1685,40 @@ mod tests {
         assert_eq!(status, 200);
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["id"], "resp_vendor");
+    }
+
+    #[test]
+    fn passthrough_native_responses_refusal_falls_back_to_chat() {
+        // opencode-go 一类：responses 端点在、但模型不是原生 Responses；
+        // codex 带 `reasoning.context` → 400，退回 chat 翻译。翻译路径不转发
+        // `reasoning.context`，只保留可选 reasoning_effort。
+        let responses_vendor = fake_vendor(
+            400,
+            "application/json",
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"reasoning.context: this reasoning option requires a native Responses target"}}"#,
+        );
+        let chat_vendor = fake_vendor(
+            200,
+            "application/json",
+            r#"{"id":"chatcmpl_ok","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+        );
+        let (gateway, _sandbox) = sandbox(&format!(
+            r#"{{"providers":[{{"id":"o","name":"O","key":"k",
+                "chat":"{0}/v1","responses":"{1}/v1"}}]}}"#,
+            chat_vendor.base, responses_vendor.base
+        ));
+        let reply = handle(
+            &gateway,
+            br#"{"model":"o/m","input":"hi","reasoning":{"effort":"max","context":"all_turns"}}"#,
+        );
+
+        assert_eq!(responses_vendor.hits.load(Ordering::SeqCst), 1);
+        assert_eq!(chat_vendor.hits.load(Ordering::SeqCst), 1, "native Responses 拒绝后退回 chat");
+        let seen_chat = chat_vendor.seen.lock().unwrap_or_else(|p| p.into_inner());
+        let chat_body = String::from_utf8_lossy(&seen_chat[0].body);
+        assert!(!chat_body.contains("reasoning.context"), "翻译到 chat 不转发 reasoning.context: {chat_body}");
+        let Reply::Json { status, .. } = reply else { panic!("json reply") };
+        assert_eq!(status, 200);
     }
 
     #[test]
