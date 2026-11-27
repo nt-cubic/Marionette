@@ -288,7 +288,12 @@ pub fn set_consumed_seq(session_id: &str, upto_seq: u64) -> Result<(), String> {
     crate::storage::write_atomic(&path, &body)
 }
 
-fn spawn_writer(session_id: String, path: PathBuf, rx: Receiver<Value>, seed_seq: u64) -> std::thread::JoinHandle<()> {
+fn spawn_writer(
+    session_id: String,
+    path: PathBuf,
+    rx: Receiver<Value>,
+    seed_seq: u64,
+) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name(format!("chief-tee-{session_id}"))
         .spawn(move || {

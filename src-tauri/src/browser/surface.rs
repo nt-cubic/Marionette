@@ -24,20 +24,22 @@ use std::sync::mpsc;
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, Url, WebviewWindow};
-use wry::{NewWindowResponse, Rect, WebView, WebViewBuilder, WebContext, WebViewExtWindows};
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
 use webview2_com::{
     CallDevToolsProtocolMethodCompletedHandler, DevToolsProtocolEventReceivedEventHandler,
 };
-use windows::core::{HSTRING, Interface, PWSTR};
+use windows::core::{Interface, HSTRING, PWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WAIT_TIMEOUT, WPARAM};
-use windows::Win32::UI::Shell::{DefSubclassProc, GetWindowSubclass, RemoveWindowSubclass, SetWindowSubclass};
-use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageA, GetClientRect, MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE,
-    PeekMessageA, PM_REMOVE, QS_ALLINPUT, SetWindowPos, SIZE_MINIMIZED, SWP_ASYNCWINDOWPOS,
-    SWP_NOACTIVATE, SWP_NOZORDER, TranslateMessage, WM_ENTERSIZEMOVE, WM_MOVE, WM_MOVING,
-    WM_NCDESTROY, WM_SETFOCUS, WM_SIZE, MSG,
+use windows::Win32::UI::Shell::{
+    DefSubclassProc, GetWindowSubclass, RemoveWindowSubclass, SetWindowSubclass,
 };
+use windows::Win32::UI::WindowsAndMessaging::{
+    DispatchMessageA, GetClientRect, MsgWaitForMultipleObjectsEx, PeekMessageA, SetWindowPos,
+    TranslateMessage, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, SIZE_MINIMIZED,
+    SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOZORDER, WM_ENTERSIZEMOVE, WM_MOVE, WM_MOVING,
+    WM_NCDESTROY, WM_SETFOCUS, WM_SIZE,
+};
+use wry::{NewWindowResponse, Rect, WebContext, WebView, WebViewBuilder, WebViewExtWindows};
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2Controller, COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
@@ -365,13 +367,12 @@ const CDP_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20)
 fn call_and_wait(webview: &ICoreWebView2, method: &str, params: &str) -> Result<String, String> {
     let (tx, rx) = mpsc::channel::<String>();
     // Late completion after a timeout: the send fails and is ignored — no panic.
-    let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
-        move |result, json| {
+    let handler =
+        CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |result, json| {
             result?;
             let _ = tx.send(json);
             Ok(())
-        },
-    ));
+        }));
     let name = HSTRING::from(method);
     let params_h = HSTRING::from(params);
     // SAFETY: main thread, live webview; WebView2 owns the handler from here.
@@ -431,8 +432,8 @@ fn call_then(
     next: impl FnOnce() + 'static,
 ) -> Result<(), String> {
     let method_for_log = method.to_string();
-    let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
-        move |result, _json| {
+    let handler =
+        CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |result, _json| {
             if let Err(error) = result {
                 crate::debug_log::append(
                     "browser",
@@ -444,8 +445,7 @@ fn call_then(
             }
             next();
             Ok(())
-        },
-    ));
+        }));
     let name = HSTRING::from(method);
     let params_h = HSTRING::from(params);
     // SAFETY: main thread, live webview; WebView2 owns the handler from here.
@@ -470,9 +470,7 @@ pub fn should_bypass_http_cache(url: &str) -> bool {
         return false;
     };
     let host = host.trim_start_matches('[').trim_end_matches(']');
-    if host.eq_ignore_ascii_case("localhost")
-        || host.to_ascii_lowercase().ends_with(".localhost")
-    {
+    if host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".localhost") {
         return true;
     }
     host.parse::<std::net::IpAddr>()
@@ -495,9 +493,8 @@ pub fn navigate(surface: &Surface, url: &str) -> Result<(), String> {
         move || {
             let tab_for_job = tab_id.clone();
             if let Err(error) = app.run_on_main_thread(move || {
-                let surface = SURFACES.with(|surfaces| {
-                    surfaces.borrow().get(&tab_for_job).cloned()
-                });
+                let surface =
+                    SURFACES.with(|surfaces| surfaces.borrow().get(&tab_for_job).cloned());
                 if let Some(surface) = surface {
                     if let Err(error) = surface.webview.load_url(&target) {
                         crate::debug_log::append(
@@ -547,19 +544,20 @@ fn subscribe(webview: &ICoreWebView2, key: usize, event: &str) -> Result<(), Str
     // SAFETY: main thread; WebView2 owns the handler.
     let mut token = 0i64;
     unsafe {
-        receiver.add_DevToolsProtocolEventReceived(
-            &DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |_, args| {
-                if let Some(args) = args {
-                    let json = pwstr_out(|out| args.ParameterObjectAsJson(out));
-                    if let Some(json) = json {
-                        on_cdp_event(key, &received, &json);
+        receiver
+            .add_DevToolsProtocolEventReceived(
+                &DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |_, args| {
+                    if let Some(args) = args {
+                        let json = pwstr_out(|out| args.ParameterObjectAsJson(out));
+                        if let Some(json) = json {
+                            on_cdp_event(key, &received, &json);
+                        }
                     }
-                }
-                Ok(())
-            })),
-            &mut token,
-        )
-        .map_err(|e| format!("subscribe {event} failed: {e}"))?;
+                    Ok(())
+                })),
+                &mut token,
+            )
+            .map_err(|e| format!("subscribe {event} failed: {e}"))?;
     }
     Ok(())
 }
@@ -632,7 +630,11 @@ fn on_cdp_event(key: usize, event: &str, parameter_json: &str) {
                     }
                 }
             }
-            let text: String = parts.join(" ").chars().take(CONSOLE_MAX_TEXT_CHARS).collect();
+            let text: String = parts
+                .join(" ")
+                .chars()
+                .take(CONSOLE_MAX_TEXT_CHARS)
+                .collect();
             if !text.is_empty() {
                 push_console(&surface, level, text);
             }
@@ -817,9 +819,9 @@ pub fn apply_document_navigation(surface: &Surface, url: String, title: Option<S
     // the new document opens with a clean gate.
     *surface.dialog.borrow_mut() = None;
     surface.world_ctx.set(None); // new document, new contexts
-    // The overlay and its state died with the old document (the doc-start
-    // script re-registers passively; it does not start itself). Retained pick
-    // rects describe that page too — they crop nothing useful now.
+                                 // The overlay and its state died with the old document (the doc-start
+                                 // script re-registers passively; it does not start itself). Retained pick
+                                 // rects describe that page too — they crop nothing useful now.
     surface.picker_active.set(false);
     surface.picks.borrow_mut().clear();
     // Clear the old title immediately; the helper's nav-state supplies the
@@ -938,7 +940,9 @@ fn install_world(webview2: &ICoreWebView2, key: usize) -> Result<(), String> {
         if let Some(id) = parsed["executionContextId"].as_i64() {
             // Route the context id to the surface that owns this webview.
             if let Some(tab_id) = PTR_TO_ID.with(|map| map.borrow().get(&key).cloned()) {
-                if let Some(surface) = SURFACES.with(|surfaces| surfaces.borrow().get(&tab_id).cloned()) {
+                if let Some(surface) =
+                    SURFACES.with(|surfaces| surfaces.borrow().get(&tab_id).cloned())
+                {
                     surface.world_ctx.set(Some(id));
                 }
             }
@@ -1073,9 +1077,7 @@ impl CdpLease {
     fn take() -> Result<CdpLease, String> {
         CDP_BUSY.with(|busy| {
             if busy.replace(true) {
-                return Err(
-                    "another browser call is still running; retry in a moment".to_string(),
-                );
+                return Err("another browser call is still running; retry in a moment".to_string());
             }
             Ok(CdpLease)
         })
@@ -1121,7 +1123,13 @@ fn lease_adopt(surface: &Surface, snapshot: &Value, replaced: LeaseDeath) {
     };
     let at = now_ms();
     let mut lease = surface.ref_lease.borrow_mut();
-    *lease = Some(RefLease::adopt(token, surface.nav_epoch.get(), at, replaced, lease.as_ref()));
+    *lease = Some(RefLease::adopt(
+        token,
+        surface.nav_epoch.get(),
+        at,
+        replaced,
+        lease.as_ref(),
+    ));
 }
 
 /// Mark the lease dead for a cause the host witnessed (both navigation
@@ -1192,12 +1200,17 @@ pub fn act(surface: &Surface, request: &agent::ActionRequest) -> Result<Value, S
             if bump_generation_after_act() {
                 surface.generation.set(surface.generation.get() + 1);
             }
-            ref_lease::note_action(&surface.ref_lease, &request.generation, &mut value, now_ms());
+            ref_lease::note_action(
+                &surface.ref_lease,
+                &request.generation,
+                &mut value,
+                now_ms(),
+            );
             Ok(value)
         }
-        WorldAnswer::Absent => Err(
-            "the aria engine is not in this document; take a snapshot first".to_string(),
-        ),
+        WorldAnswer::Absent => {
+            Err("the aria engine is not in this document; take a snapshot first".to_string())
+        }
     }
 }
 
@@ -1208,9 +1221,9 @@ pub fn probe(surface: &Surface, expression: &str) -> Result<Value, String> {
     ensure_world(surface)?;
     match parse_world_answer(&evaluate_in_world_raw(surface, expression)?)? {
         WorldAnswer::Json(value) => Ok(value),
-        WorldAnswer::Absent => Err(
-            "the page probe did not install itself in this document".to_string(),
-        ),
+        WorldAnswer::Absent => {
+            Err("the page probe did not install itself in this document".to_string())
+        }
     }
 }
 
@@ -1230,8 +1243,10 @@ pub fn set_control_value(
     {
         return Ok(answer);
     }
-    let mut answer =
-        probe(surface, &crate::browser::probe::set_value_call(generation, target, value))?;
+    let mut answer = probe(
+        surface,
+        &crate::browser::probe::set_value_call(generation, target, value),
+    )?;
     ref_lease::note_action(&surface.ref_lease, generation, &mut answer, now_ms());
     Ok(answer)
 }
@@ -1245,8 +1260,16 @@ pub fn set_control_value(
 /// mirror — that is the recovery path when the user already answered the
 /// default dialog themselves. Never auto-accepts anything: `accept` is the
 /// agent's explicit choice (or the user's, via the native dialog).
-pub fn resolve_dialog(surface: &Surface, accept: bool, prompt_text: Option<&str>) -> Result<Value, String> {
-    let pending = surface.dialog.borrow().as_ref().map(|d| (d.kind.clone(), d.message.clone()));
+pub fn resolve_dialog(
+    surface: &Surface,
+    accept: bool,
+    prompt_text: Option<&str>,
+) -> Result<Value, String> {
+    let pending = surface
+        .dialog
+        .borrow()
+        .as_ref()
+        .map(|d| (d.kind.clone(), d.message.clone()));
     let Some((kind, message)) = pending else {
         *surface.dialog.borrow_mut() = None;
         return Ok(json!({
@@ -1260,7 +1283,11 @@ pub fn resolve_dialog(surface: &Surface, accept: bool, prompt_text: Option<&str>
     if let Some(text) = prompt_text {
         params["promptText"] = json!(text);
     }
-    let answer = call_and_wait(&webview2, "Page.handleJavaScriptDialog", &params.to_string());
+    let answer = call_and_wait(
+        &webview2,
+        "Page.handleJavaScriptDialog",
+        &params.to_string(),
+    );
     match answer {
         Ok(raw) => {
             let parsed: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
@@ -1333,7 +1360,8 @@ pub fn screenshot(surface: &Surface, max_width: Option<u32>) -> Result<Value, St
 fn encode_capture(mut image: image::DynamicImage) -> Result<Value, String> {
     loop {
         let mut jpeg = Vec::new();
-        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, CAPTURE_JPEG_QUALITY);
+        let encoder =
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, CAPTURE_JPEG_QUALITY);
         image
             .write_with_encoder(encoder)
             .map_err(|e| format!("capture encode: {e}"))?;
@@ -1346,8 +1374,10 @@ fn encode_capture(mut image: image::DynamicImage) -> Result<Value, String> {
             }));
         }
         let ratio = (CAPTURE_MAX_ENCODED_BYTES as f64 / jpeg.len() as f64).sqrt() * 0.9;
-        let narrower = ((f64::from(image.width()) * ratio).floor() as u32)
-            .clamp(CAPTURE_MIN_WIDTH, image.width().saturating_sub(1).max(CAPTURE_MIN_WIDTH));
+        let narrower = ((f64::from(image.width()) * ratio).floor() as u32).clamp(
+            CAPTURE_MIN_WIDTH,
+            image.width().saturating_sub(1).max(CAPTURE_MIN_WIDTH),
+        );
         image = narrow_to(image, narrower);
     }
 }
@@ -1442,7 +1472,11 @@ pub fn pick_finalize(surface: &Surface, pick_id: &str) -> Result<Value, String> 
             .map(|(_, message)| message)
             .ok_or_else(|| format!("no pending pick {pick_id}"))?;
         let is_region = entry["kind"].as_str() == Some("region");
-        let rect_node = if is_region { &entry["rect"] } else { &entry["info"]["rect"] };
+        let rect_node = if is_region {
+            &entry["rect"]
+        } else {
+            &entry["info"]["rect"]
+        };
         let dpr = entry["info"]["dpr"]
             .as_f64()
             .or_else(|| entry["dpr"].as_f64())
@@ -1511,9 +1545,12 @@ pub fn pick_finalize(surface: &Surface, pick_id: &str) -> Result<Value, String> 
 /// `generation` feeds the world's ref validation.
 pub fn pick_resolve(surface: &Surface) -> Result<Value, String> {
     let _lease = CdpLease::take()?;
-    let snapshot = snapshot_inner(surface, &SnapshotRequest {
-        max_chars: PICK_RESOLVE_MAX_CHARS,
-    })?;
+    let snapshot = snapshot_inner(
+        surface,
+        &SnapshotRequest {
+            max_chars: PICK_RESOLVE_MAX_CHARS,
+        },
+    )?;
     surface.generation.set(surface.generation.get() + 1);
     // The hidden full snapshot above replaced the world's refs — the agent's
     // token for the previous snapshot dies of it. Adopt this snapshot's
@@ -1572,8 +1609,9 @@ pub fn ensure_resize_hook(window: &WebviewWindow) -> Result<(), String> {
             }
             let held = Box::into_raw(Box::new(platform.controller()));
             // SAFETY: as above; the subclass carries the Box for the window's life.
-            let installed =
-                unsafe { SetWindowSubclass(hwnd, Some(resize_hook_proc), RESIZE_HOOK_ID, held as usize) };
+            let installed = unsafe {
+                SetWindowSubclass(hwnd, Some(resize_hook_proc), RESIZE_HOOK_ID, held as usize)
+            };
             if !installed.as_bool() {
                 drop(unsafe { Box::from_raw(held) });
                 crate::debug_log::append(
@@ -1609,7 +1647,12 @@ unsafe extern "system" fn resize_hook_proc(
                 let width = client.right - client.left;
                 let height = client.bottom - client.top;
                 let _ = unsafe {
-                    (*controller).SetBounds(RECT { left: 0, top: 0, right: width, bottom: height })
+                    (*controller).SetBounds(RECT {
+                        left: 0,
+                        top: 0,
+                        right: width,
+                        bottom: height,
+                    })
                 };
                 let mut host = HWND::default();
                 if unsafe { (*controller).ParentWindow(&mut host) }.is_ok() {
@@ -1702,11 +1745,14 @@ fn build_surface(
         .ok_or("main window is gone")?;
     ensure_resize_hook(&window)?;
 
-    let id = format!("b{}", NEXT_ID.with(|n| {
-        let value = n.get();
-        n.set(value + 1);
-        value
-    }));
+    let id = format!(
+        "b{}",
+        NEXT_ID.with(|n| {
+            let value = n.get();
+            n.set(value + 1);
+            value
+        })
+    );
     // `about:blank` is the prewarm target (and nothing else): no network at
     // startup, and the first real tab simply navigates the same surface.
     let url = if url == "about:blank" {
@@ -1748,17 +1794,21 @@ fn build_surface(
                 let display_for_job = popup_display.clone();
                 let owner_for_job = popup_owner_session_id.clone();
                 let _ = popup_app.run_on_main_thread(move || {
-                    if let Err(error) =
-                        create_surface(
-                            &app_for_job,
-                            &url,
-                            popup_by_agent,
-                            &display_for_job,
-                            owner_for_job.as_deref(),
-                            None,
-                        )
-                    {
-                        crate::debug_log::append("browser", "warn", "", "popup open failed", Some(&error));
+                    if let Err(error) = create_surface(
+                        &app_for_job,
+                        &url,
+                        popup_by_agent,
+                        &display_for_job,
+                        owner_for_job.as_deref(),
+                        None,
+                    ) {
+                        crate::debug_log::append(
+                            "browser",
+                            "warn",
+                            "",
+                            "popup open failed",
+                            Some(&error),
+                        );
                     }
                 });
                 NewWindowResponse::Deny
@@ -1794,7 +1844,11 @@ fn build_surface(
         grant: RefCell::new(if opened_by_agent {
             // The agent chose to open this page: reading it is the point.
             // Control still asks (permission card / manual share).
-            Some(AgentGrant { level: GrantLevel::Read, origin, granted_at_ms: now_ms() })
+            Some(AgentGrant {
+                level: GrantLevel::Read,
+                origin,
+                granted_at_ms: now_ms(),
+            })
         } else {
             None
         }),
@@ -1809,11 +1863,14 @@ fn build_surface(
 fn register_surface(app: &AppHandle, surface: &Rc<Surface>) {
     let webview2 = surface.webview.webview();
     let key = webview2.as_raw() as usize;
-    SURFACES.with(|surfaces| surfaces.borrow_mut().insert(surface.id.clone(), surface.clone()));
+    SURFACES.with(|surfaces| {
+        surfaces
+            .borrow_mut()
+            .insert(surface.id.clone(), surface.clone())
+    });
     PTR_TO_ID.with(|map| map.borrow_mut().insert(key, surface.id.clone()));
     emit_tabs(app);
 }
-
 
 /// The ICoreWebView2 of a surface (mod.rs diagnostics).
 pub fn webview2_of(surface: &Surface) -> ICoreWebView2 {
@@ -1928,7 +1985,9 @@ pub fn with_surface<R: Send + 'static>(
     let tab_id = tab_id.to_string();
     let missing = tab_id.clone();
     app.run_on_main_thread(move || {
-        let result = SURFACES.with(|surfaces| surfaces.borrow().get(&tab_id).cloned()).map(|s| f(&s));
+        let result = SURFACES
+            .with(|surfaces| surfaces.borrow().get(&tab_id).cloned())
+            .map(|s| f(&s));
         let _ = tx.send(result);
     })
     .map_err(|e| format!("main thread hop: {e}"))?;
@@ -1968,8 +2027,14 @@ mod tests {
 
     #[test]
     fn origins_strip_paths_and_queries() {
-        assert_eq!(url_origin("https://example.com/a/b?x=1"), "https://example.com");
-        assert_eq!(url_origin("http://localhost:5173/"), "http://localhost:5173");
+        assert_eq!(
+            url_origin("https://example.com/a/b?x=1"),
+            "https://example.com"
+        );
+        assert_eq!(
+            url_origin("http://localhost:5173/"),
+            "http://localhost:5173"
+        );
         assert_eq!(url_origin("about:blank"), "about:blank");
         assert_eq!(
             url_origin("file:///D:/Projects/One/index.html?x=1#start"),
@@ -2126,7 +2191,10 @@ mod tests {
     fn one_cdp_call_runs_at_a_time() {
         let first = CdpLease::take().expect("first call is free to run");
         let second = CdpLease::take();
-        assert!(second.is_err(), "a concurrent call must be refused, not queued");
+        assert!(
+            second.is_err(),
+            "a concurrent call must be refused, not queued"
+        );
         drop(first);
         let third = CdpLease::take();
         assert!(third.is_ok(), "the lease must free when the call ends");
@@ -2154,7 +2222,8 @@ mod tests {
         assert_eq!(dialog.message, "Delete all files?");
         assert_eq!(dialog.at_ms, 1234);
         assert_eq!(dialog_from_event(&json!({ "message": "no type" }), 0), None);
-        let flood = dialog_from_event(&json!({ "type": "alert", "message": "x".repeat(500) }), 0).unwrap();
+        let flood =
+            dialog_from_event(&json!({ "type": "alert", "message": "x".repeat(500) }), 0).unwrap();
         assert!(flood.message.chars().count() <= DIALOG_MESSAGE_MAX_CHARS);
     }
 

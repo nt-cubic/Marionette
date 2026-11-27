@@ -204,9 +204,7 @@ pub fn queue_host_text(chief_session_id: &str, text: &str) {
 /// Bootstrap must be the first prompt in a newly-created staff session.
 pub fn queue_bootstrap_text(chief_session_id: &str, text: &str) {
     if let Ok(mut queues) = bootstrap_queues().lock() {
-        let queue = queues
-            .entry(chief_session_id.to_string())
-            .or_default();
+        let queue = queues.entry(chief_session_id.to_string()).or_default();
         queue.clear();
         queue.push_back(text.to_string());
     }
@@ -338,7 +336,11 @@ pub(crate) fn summarize_worker_events(events: &[Value]) -> (Option<String>, u64,
         let Some(update) = event.pointer("/data/params/update") else {
             continue;
         };
-        match update.get("sessionUpdate").and_then(Value::as_str).unwrap_or("") {
+        match update
+            .get("sessionUpdate")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+        {
             "agent_message_chunk" => {
                 if let Some(part) = update.pointer("/content/text").and_then(Value::as_str) {
                     text.push_str(part);
@@ -494,18 +496,24 @@ pub(crate) fn classify_turn_failure(
     if stop_reason == Some("cancelled") {
         return TurnFailureClass::Cancelled;
     }
-    let haystack = format!(
-        "{} {}",
-        stop_reason.unwrap_or(""),
-        error_text.unwrap_or("")
-    )
-    .to_ascii_lowercase();
+    let haystack =
+        format!("{} {}", stop_reason.unwrap_or(""), error_text.unwrap_or("")).to_ascii_lowercase();
     const TRANSIENT_MARKERS: &[&str] = &[
-        "quota", "usage limit", "rate limit", "ratelimit", "rate_limit",
-        "overloaded", "temporarily", "try again",
-        "too many requests", "resource_exhausted",
+        "quota",
+        "usage limit",
+        "rate limit",
+        "ratelimit",
+        "rate_limit",
+        "overloaded",
+        "temporarily",
+        "try again",
+        "too many requests",
+        "resource_exhausted",
     ];
-    if TRANSIENT_MARKERS.iter().any(|marker| haystack.contains(marker)) {
+    if TRANSIENT_MARKERS
+        .iter()
+        .any(|marker| haystack.contains(marker))
+    {
         return TurnFailureClass::Transient;
     }
     match stop_reason {
@@ -560,7 +568,12 @@ fn host_event_text(event: &TaskEvent, task: Option<&Task>) -> String {
     text
 }
 
-pub(crate) fn emit_event(task: &Task, kind: &str, status: TaskStatus, summary: Option<String>) -> TaskEvent {
+pub(crate) fn emit_event(
+    task: &Task,
+    kind: &str,
+    status: TaskStatus,
+    summary: Option<String>,
+) -> TaskEvent {
     let seq = store::load_events_for_task(&task.task_id).len() as u64 + 1;
     TaskEvent {
         event_id: short_id("evt"),
@@ -686,8 +699,89 @@ fn ensure_chief_started(app: &AppHandle, chief_session_id: &str) -> Result<(), S
 
 // ── 任务卡片（envelope 里的 task 形状） ──────────────────────────────────
 
+fn provider_label_from_record(
+    provider_id: &str,
+    record: Option<&serde_json::Value>,
+) -> Option<String> {
+    if let Some(record) = record {
+        for key in ["catalog", "preset", "id"] {
+            let candidate = record
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .trim();
+            if let Some(preset) = crate::model_bridge::find_preset(candidate) {
+                return Some(preset.label.to_string());
+            }
+        }
+        if let Some(name) = record
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            return Some(name.to_string());
+        }
+    }
+    crate::model_bridge::find_preset(provider_id).map(|preset| preset.label.to_string())
+}
+
+/// Provider/model split for task-card metadata. The provider comes from the
+/// engine's registered record, never from the model family, so an OpenCode Go
+/// route to DeepSeek cannot masquerade as the official DeepSeek account.
+fn task_display_parts(task: &Task) -> (Option<String>, Option<String>) {
+    let raw = task
+        .bridge
+        .as_ref()
+        .map(|bridge| bridge.model_id.as_str())
+        .or(task.model.as_deref())
+        .unwrap_or("")
+        .trim();
+    if raw.is_empty() {
+        return (None, None);
+    }
+    let Some((provider_id, model_name)) = raw.split_once('/') else {
+        return (None, Some(raw.to_string()));
+    };
+    let record = crate::engine::engine_dir().ok().and_then(|dir| {
+        std::fs::read(dir.join("data").join("providers.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|root| {
+                root.get("providers")
+                    .and_then(serde_json::Value::as_array)
+                    .and_then(|rows| {
+                        rows.iter().find(|row| {
+                            row.get("id").and_then(serde_json::Value::as_str) == Some(provider_id)
+                        })
+                    })
+                    .cloned()
+            })
+    });
+    (
+        provider_label_from_record(provider_id, record.as_ref()),
+        Some(model_name.to_string()),
+    )
+}
+
+fn insert_task_display(map: &mut serde_json::Map<String, serde_json::Value>, task: &Task) {
+    let (provider, model) = task_display_parts(task);
+    map.insert("displayProvider".into(), json!(provider));
+    map.insert("displayModelName".into(), json!(model));
+    map.insert("displayEffort".into(), json!(task.preferred_effort));
+}
+
+/// Full Task plus derived display fields for historical delegated-task cards.
+pub(crate) fn task_with_presentation(task: &Task) -> serde_json::Value {
+    let mut value = serde_json::to_value(task).unwrap_or_else(|_| json!({}));
+    if let Some(map) = value.as_object_mut() {
+        insert_task_display(map, task);
+    }
+    value
+}
+
 pub(crate) fn task_card(task: &Task) -> Value {
-    json!({
+    let mut card = json!({
         "taskId": task.task_id,
         "staffId": task.staff_id,
         "title": task.title,
@@ -718,7 +812,11 @@ pub(crate) fn task_card(task: &Task) -> Value {
         "structuredOutput": task.structured_output,
         "checkpointBase": task.checkpoint_base_commit,
         "preferredEffort": task.preferred_effort,
-    })
+    });
+    if let Some(map) = card.as_object_mut() {
+        insert_task_display(map, task);
+    }
+    card
 }
 
 /// 启动时从事件账本重建唤醒收件箱（第二期「可信」）：`delivered_at=None`
@@ -728,7 +826,9 @@ pub(crate) fn task_card(task: &Task) -> Value {
 pub fn rebuild_wake_inbox_from_ledger() {
     let mut queued = 0usize;
     for event in store::undelivered_wake_events() {
-        let Some(task) = store::find_task(&event.task_id) else { continue };
+        let Some(task) = store::find_task(&event.task_id) else {
+            continue;
+        };
         let target = task
             .staff_id
             .as_deref()
@@ -859,15 +959,17 @@ pub fn chief_models_list(agent_id: &str) -> Value {
     }))
 }
 
-pub fn chief_tasks_list(chief_session_id: &str, status_filter: Option<&str>, limit: usize) -> Value {
+pub fn chief_tasks_list(
+    chief_session_id: &str,
+    status_filter: Option<&str>,
+    limit: usize,
+) -> Value {
     let tasks: Vec<Value> = store::load_tasks()
         .into_iter()
         .filter(|task| task_belongs_to_session(task, chief_session_id))
-        .filter(|task| {
-            match status_filter {
-                Some(status) => format!("{:?}", task.status).to_lowercase() == status.to_lowercase(),
-                None => true,
-            }
+        .filter(|task| match status_filter {
+            Some(status) => format!("{:?}", task.status).to_lowercase() == status.to_lowercase(),
+            None => true,
         })
         .take(limit.clamp(1, 50))
         .map(|task| task_card(&task))
@@ -887,7 +989,11 @@ pub fn chief_task_start(app: &AppHandle, chief_session_id: &str, args: &Value) -
         .chars()
         .take(120)
         .collect::<String>();
-    let goal = args.get("goal").and_then(Value::as_str).unwrap_or("").to_string();
+    let goal = args
+        .get("goal")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     if goal.trim().is_empty() {
         return envelope_reject("bad_request", "goal 必填（完整自然语言目标）。");
     }
@@ -910,7 +1016,10 @@ pub fn chief_task_start(app: &AppHandle, chief_session_id: &str, args: &Value) -
     // Fast path for a normal retry. The authoritative check is repeated inside
     // the task-ledger lock immediately before insertion.
     let loaded_tasks = store::load_tasks();
-    if let Some(existing) = loaded_tasks.iter().find(|task| task.request_id == request_id) {
+    if let Some(existing) = loaded_tasks
+        .iter()
+        .find(|task| task.request_id == request_id)
+    {
         let same_owner = existing.chief_session_id == chief_session_id
             || existing.staff_id.as_deref() == Some(profile.staff_id.as_str());
         if same_owner {
@@ -940,8 +1049,13 @@ pub fn chief_task_start(app: &AppHandle, chief_session_id: &str, args: &Value) -
     let config = staff_commands::config_for_staff(&profile);
     let agents = known_enabled_agents();
     let (project_id, agent_id, model, remote_mode, policy_minutes, self_modification) =
-        match policy::validate_task_start(&config, project_id, requested_agent, requested_model, &agents)
-        {
+        match policy::validate_task_start(
+            &config,
+            project_id,
+            requested_agent,
+            requested_model,
+            &agents,
+        ) {
             Decision::Grant {
                 project_id,
                 agent_id,
@@ -949,7 +1063,14 @@ pub fn chief_task_start(app: &AppHandle, chief_session_id: &str, args: &Value) -
                 remote_mode,
                 max_task_minutes,
                 self_modification,
-            } => (project_id, agent_id, model, remote_mode, max_task_minutes, self_modification),
+            } => (
+                project_id,
+                agent_id,
+                model,
+                remote_mode,
+                max_task_minutes,
+                self_modification,
+            ),
             Decision::Reject { error, note } => return envelope_reject(error, &note),
         };
     let max_minutes = runtime_minutes
@@ -1081,9 +1202,10 @@ pub fn chief_task_start(app: &AppHandle, chief_session_id: &str, args: &Value) -
     // Close the pause-with-new-task race: stop_all may have scanned the ledger
     // just before this Proposed row became visible.
     let policy_block = match staff_commands::profile_for_staff_id(&profile.staff_id) {
-        Some(current) if current.policy.paused_until_user_resumes => {
-            Some(("staff_paused", "员工在任务预留期间被暂停，任务已取消。".to_string()))
-        }
+        Some(current) if current.policy.paused_until_user_resumes => Some((
+            "staff_paused",
+            "员工在任务预留期间被暂停，任务已取消。".to_string(),
+        )),
         Some(current) if !current.policy.allow_background_work => Some((
             "background_work_disabled",
             "员工在任务预留期间关闭了后台工作，任务已取消。".to_string(),
@@ -1128,7 +1250,7 @@ pub fn chief_task_start(app: &AppHandle, chief_session_id: &str, args: &Value) -
                 &chief_sid,
                 &spawn_task_id,
                 remote_mode,
-                max_minutes,
+                Some(max_minutes),
                 self_modification,
             );
         })
@@ -1176,16 +1298,27 @@ impl SettingsError {
             SettingsError::ReadOnly(error) => {
                 format!("Agent 无法强制只读权限，已拒绝启动任务：{error}")
             }
-            SettingsError::Model { model, reason, available } => {
-                let mut text = format!(
-                    "{agent_id} 不接受模型「{model}」（{reason}）。没有改用默认模型。"
-                );
+            SettingsError::Model {
+                model,
+                reason,
+                available,
+            } => {
+                let mut text =
+                    format!("{agent_id} 不接受模型「{model}」（{reason}）。没有改用默认模型。");
                 if available.is_empty() {
                     text.push_str("这个 agent 没有广告任何模型清单——用 marionette_agents_list / marionette_models_list 核对，或不指定 model 重派。");
                 } else {
-                    let shown = available.iter().take(40).cloned().collect::<Vec<_>>().join("、");
+                    let shown = available
+                        .iter()
+                        .take(40)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("、");
                     if available.len() > 40 {
-                        text.push_str(&format!("它接受的模型（共 {} 个，列出前 40 个）：{shown}", available.len()));
+                        text.push_str(&format!(
+                            "它接受的模型（共 {} 个，列出前 40 个）：{shown}",
+                            available.len()
+                        ));
                     } else {
                         text.push_str(&format!("它接受的模型：{shown}"));
                     }
@@ -1244,6 +1377,27 @@ fn prepare_worker_bridge(
                 "翻译引擎未就绪，无法为 worker 建立跨用模型绑定",
                 "The translation engine is not ready; cannot bind the worker's cross-use model"
             ));
+        }
+        // A reachable loopback port is not the same as a populated catalog.
+        // OpenCode/Pi used to launch in this window and reject `marionette/*`
+        // or report auth-required before the provider was injected. Wait for
+        // the exact bound model (live or last-good cache) first.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let (rows, _) = crate::engine::catalog_direct_or_cached_entries();
+            if rows
+                .iter()
+                .any(|row| row.id.as_str() == selection.model_id.as_str())
+            {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(crate::ts!(
+                    "ç¿»è¯å¼æç®å½å°æªæ´é²è¯·æ±çæ¨¡åï¼æ æ³ä¸º worker å»ºç«è·¨ç¨æ¨¡åç»å®",
+                    "The translation engine catalog did not expose the requested model; cannot bind the worker"
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
     crate::model_bridge::bind_session(
@@ -1337,10 +1491,7 @@ fn apply_task_settings(
         return Ok(notes);
     }
     let parent = with_storage(app, |storage| {
-        storage
-            .find_session(&task.chief_session_id)
-            .ok()
-            .flatten()
+        storage.find_session(&task.chief_session_id).ok().flatten()
     });
     let Some(parent) = parent else {
         return Ok(notes);
@@ -1349,12 +1500,8 @@ fn apply_task_settings(
         parent.preferred_mode.as_deref(),
         parent.preferred_always_approve,
     );
-    notes.permission = crate::delegation::inherit_permission_tier(
-        app,
-        worker_session_id,
-        &task.agent_id,
-        tier,
-    );
+    notes.permission =
+        crate::delegation::inherit_permission_tier(app, worker_session_id, &task.agent_id, tier);
     Ok(notes)
 }
 
@@ -1378,10 +1525,7 @@ fn advertised_model_ids(app: &AppHandle, worker_session_id: &str) -> Vec<String>
 /// 只对 AI 派活有意义——自动重试不开放给员工任务（见 handle_turn_end）。
 fn effective_remote_mode(app: &AppHandle, task: &Task) -> Option<RemoteMode> {
     let parent = with_storage(app, |storage| {
-        storage
-            .find_session(&task.chief_session_id)
-            .ok()
-            .flatten()
+        storage.find_session(&task.chief_session_id).ok().flatten()
     })?;
     Some(crate::delegation::parent_remote_mode(
         parent.preferred_mode.as_deref(),
@@ -1395,7 +1539,7 @@ pub(crate) fn spawn_and_watch_worker(
     chief_session_id: &str,
     task_id: &str,
     remote_mode: RemoteMode,
-    max_minutes: u32,
+    max_minutes: Option<u32>,
     self_modification: bool,
 ) {
     let Some(preview) = store::find_task(task_id) else {
@@ -1410,9 +1554,10 @@ pub(crate) fn spawn_and_watch_worker(
         Some(profile) if profile.policy.paused_until_user_resumes => {
             Some(("staff_paused", "员工已暂停，任务未启动。"))
         }
-        Some(profile) if !profile.policy.allow_background_work => {
-            Some(("background_work_disabled", "员工已关闭后台工作，任务未启动。"))
-        }
+        Some(profile) if !profile.policy.allow_background_work => Some((
+            "background_work_disabled",
+            "员工已关闭后台工作，任务未启动。",
+        )),
         Some(profile) => match profile.policy.policy_for(&preview.project_id) {
             Some(policy) if policy.enabled && policy.remote_mode != RemoteMode::Blocked => None,
             Some(_) => Some(("project_blocked", "项目授权已禁用，任务未启动。")),
@@ -1497,44 +1642,65 @@ pub(crate) fn spawn_and_watch_worker(
     //    挂起豁免、tee 回填都按来源家族区分。Chat 虚拟项目的父会话派活时
     //    worker 也落 Chat 库，cwd 跟父会话（不是进程 current_dir）。
     let is_staff_task = task.staff_id.is_some();
-    let worker_origin = if is_staff_task { "chief-worker" } else { "agent-worker" };
+    let worker_origin = if is_staff_task {
+        "chief-worker"
+    } else {
+        "agent-worker"
+    };
     let worker_label = format!(
         "{}（{}）",
         task.title,
-        if is_staff_task { "Chief 任务" } else { "AI 派活" }
+        if is_staff_task {
+            "Chief 任务"
+        } else {
+            "AI 派活"
+        }
     );
     let worker = match with_storage(app, |storage| {
+        let parent = storage.find_session(chief_session_id).ok().flatten();
+        let lineage = parent.as_ref().map(|parent| crate::models::SessionLineage {
+            parent_session_id: parent.id.clone(),
+            root_session_id: parent
+                .lineage
+                .as_ref()
+                .map(|lineage| lineage.root_session_id.clone())
+                .unwrap_or_else(|| parent.id.clone()),
+            relationship: "subagent".to_string(),
+        });
         if task.project_id == crate::app_paths::CHAT_PROJECT_ID {
-            let parent_cwd = storage
-                .find_session(chief_session_id)
-                .ok()
-                .flatten()
-                .map(|session| session.cwd)
-                .unwrap_or_default();
+            let parent_cwd = parent.map(|session| session.cwd).unwrap_or_default();
             let cwd = if parent_cwd.is_empty() {
                 crate::app_paths::current_dir()?
             } else {
                 parent_cwd
             };
-            storage.create_chat_session(
+            storage.create_chat_session_with_lineage(
                 task.agent_id.clone(),
                 worker_label,
                 &cwd,
                 Some(worker_origin),
+                lineage,
             )
         } else {
-            storage.create_session_with_origin(
+            storage.create_session_with_lineage(
                 &task.project_id,
                 task.agent_id.clone(),
                 worker_label,
                 Some(worker_origin),
+                lineage,
             )
         }
     }) {
         Ok(session) => session,
         Err(error) => {
-            let _ = finalize_task(app, chief_session_id, task_id, TaskStatus::Failed, None,
-                Some(&format!("创建 worker 会话失败：{error}")));
+            let _ = finalize_task(
+                app,
+                chief_session_id,
+                task_id,
+                TaskStatus::Failed,
+                None,
+                Some(&format!("创建 worker 会话失败：{error}")),
+            );
             return;
         }
     };
@@ -1581,8 +1747,14 @@ pub(crate) fn spawn_and_watch_worker(
     if let Err(error) = runner::ensure_session(app, &worker.id, &task.agent_id, &worker.cwd) {
         runner::stop_session(app, &worker.id);
         tee::unregister(&worker.id);
-        let _ = finalize_task(app, chief_session_id, task_id, TaskStatus::Failed, None,
-            Some(&format!("Agent 启动失败：{error}")));
+        let _ = finalize_task(
+            app,
+            chief_session_id,
+            task_id,
+            TaskStatus::Failed,
+            None,
+            Some(&format!("Agent 启动失败：{error}")),
+        );
         return;
     }
     let settings = match apply_task_settings(app, &task, &worker.id, remote_mode) {
@@ -1650,8 +1822,14 @@ pub(crate) fn spawn_and_watch_worker(
     match runner::send_prompt(app, &worker.id, &prompt) {
         Ok(_) => {}
         Err(error) => {
-            let _ = finalize_task(app, chief_session_id, task_id, TaskStatus::Failed, None,
-                Some(&format!("目标下发失败：{error}")));
+            let _ = finalize_task(
+                app,
+                chief_session_id,
+                task_id,
+                TaskStatus::Failed,
+                None,
+                Some(&format!("目标下发失败：{error}")),
+            );
             return;
         }
     }
@@ -1681,7 +1859,10 @@ pub(crate) fn spawn_and_watch_worker(
         &task,
         "task.started",
         TaskStatus::Running,
-        Some(format!("worker 已启动（{} · {}）", task.agent_id, worker.id)),
+        Some(format!(
+            "worker 已启动（{} · {}）",
+            task.agent_id, worker.id
+        )),
     );
     let _ = store::append_events(&[running_event]);
     crate::delegation::emit_delegate_ui_event(app, &task, "task.started");
@@ -1697,15 +1878,20 @@ fn watch_worker_loop(
     chief_session_id: &str,
     task_id: &str,
     worker_session_id: &str,
-    max_minutes: u32,
+    max_minutes: Option<u32>,
 ) {
-    let deadline_ms = (max_minutes as u64) * 60_000;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(deadline_ms);
+    let deadline = max_minutes.map(|minutes| {
+        std::time::Instant::now() + std::time::Duration::from_millis((minutes as u64) * 60_000)
+    });
     loop {
         // 任务被外部取消/恢复：状态驱动退出。
-        let Some(current) = store::find_task(task_id) else { return };
+        let Some(current) = store::find_task(task_id) else {
+            return;
+        };
         match current.status {
-            TaskStatus::Cancelled | TaskStatus::Failed | TaskStatus::Completed
+            TaskStatus::Cancelled
+            | TaskStatus::Failed
+            | TaskStatus::Completed
             | TaskStatus::Interrupted => return, // 终态已由相应路径落账
             _ => {}
         }
@@ -1722,17 +1908,26 @@ fn watch_worker_loop(
             std::thread::sleep(std::time::Duration::from_millis(2000));
             continue;
         }
-        if std::time::Instant::now() >= deadline {
-            runner::cancel_turn(app, worker_session_id);
-            let _ = runner::wait_turn_idle_checked(app, worker_session_id, 10_000, || true);
-            let _ = finalize_task(app, chief_session_id, task_id, TaskStatus::Failed,
-                Some("timeout"), Some(&format!("任务超过 {max_minutes} 分钟上限，已停止。")));
-            return;
+        if let Some(deadline) = deadline {
+            if std::time::Instant::now() >= deadline {
+                let max_minutes = max_minutes.unwrap_or_default();
+                runner::cancel_turn(app, worker_session_id);
+                let _ = runner::wait_turn_idle_checked(app, worker_session_id, 10_000, || true);
+                let _ = finalize_task(
+                    app,
+                    chief_session_id,
+                    task_id,
+                    TaskStatus::Failed,
+                    Some("timeout"),
+                    Some(&format!("任务超过 {max_minutes} 分钟上限，已停止。")),
+                );
+                return;
+            }
+            // 卡死解药（第三期，只对 AI 派活——员工任务有自己的「无进展」超时）：
+            // Running 且 STALL_MS 无任何事件 → 中止这个回合；宽限期内仍不收尾
+            // 就连进程一起停掉。无论哪条路都记 Failed(stalled)：这一下是我们
+            // 掐掉的，不能顺着回合结局记成「完成」或「已取消」。
         }
-        // 卡死解药（第三期，只对 AI 派活——员工任务有自己的「无进展」超时）：
-        // Running 且 STALL_MS 无任何事件 → 中止这个回合；宽限期内仍不收尾
-        // 就连进程一起停掉。无论哪条路都记 Failed(stalled)：这一下是我们
-        // 掐掉的，不能顺着回合结局记成「完成」或「已取消」。
         if current.staff_id.is_none()
             && current.status == TaskStatus::Running
             && now_ms().saturating_sub(current.last_event_at) > WORKER_STALL_MS
@@ -1858,7 +2053,12 @@ fn handle_turn_end(
             match plan {
                 RetryPlan::Scheduled => {
                     if let Some(task) = store::find_task(task_id) {
-                        let event = emit_event(&task, "task.progress", task.status, task.last_summary.clone());
+                        let event = emit_event(
+                            &task,
+                            "task.progress",
+                            task.status,
+                            task.last_summary.clone(),
+                        );
                         let _ = store::append_events(&[event]);
                     }
                     true
@@ -1940,7 +2140,9 @@ fn handle_turn_end(
 /// 设置）、重发目标。返回 false = 任务已不在可重试状态（被取消/账本写
 /// 失败/复活失败），watch 退出。
 fn reissue_goal_for_retry(app: &AppHandle, task_id: &str, worker_session_id: &str) -> bool {
-    let Some(task) = store::find_task(task_id) else { return false };
+    let Some(task) = store::find_task(task_id) else {
+        return false;
+    };
     if task.status.is_terminal() {
         return false;
     }
@@ -1986,7 +2188,9 @@ fn reissue_goal_for_retry(app: &AppHandle, task_id: &str, worker_session_id: &st
                 task_id,
                 TaskStatus::Failed,
                 Some("retry_respawn_failed"),
-                Some(&format!("额度重试时 worker 无法复活（Agent 启动失败：{error}）。")),
+                Some(&format!(
+                    "额度重试时 worker 无法复活（Agent 启动失败：{error}）。"
+                )),
             );
             return false;
         }
@@ -2026,14 +2230,20 @@ fn reissue_goal_for_retry(app: &AppHandle, task_id: &str, worker_session_id: &st
         task.turn_count = task.turn_count.saturating_add(1);
         task.updated_at = now_ms();
         task.last_event_at = now_ms();
-        task.last_summary = Some(format!("额度重试（第 {} 次）已重新下发目标。", task.retry_count));
+        task.last_summary = Some(format!(
+            "额度重试（第 {} 次）已重新下发目标。",
+            task.retry_count
+        ));
         Ok(true)
     })
     .unwrap_or(false);
     if !cleared {
         return false;
     }
-    let mut prompt = format!("[HOST EVENT: task.retry]\n额度窗口已恢复，继续之前的任务「{}」。原始目标：\n{}\n", task.title, task.goal);
+    let mut prompt = format!(
+        "[HOST EVENT: task.retry]\n额度窗口已恢复，继续之前的任务「{}」。原始目标：\n{}\n",
+        task.title, task.goal
+    );
     if remote_mode == RemoteMode::ReadOnly {
         prompt.push_str("[HOST 约束] 本任务为只读模式：只分析/检索/读取，不要修改任何文件。\n");
     }
@@ -2046,7 +2256,12 @@ fn reissue_goal_for_retry(app: &AppHandle, task_id: &str, worker_session_id: &st
         Ok(_) => {
             let task = store::find_task(task_id);
             if let Some(task) = task {
-                let event = emit_event(&task, "task.progress", task.status, task.last_summary.clone());
+                let event = emit_event(
+                    &task,
+                    "task.progress",
+                    task.status,
+                    task.last_summary.clone(),
+                );
                 let _ = store::append_events(&[event]);
             }
             true
@@ -2070,13 +2285,17 @@ fn reissue_goal_for_retry(app: &AppHandle, task_id: &str, worker_session_id: &st
     }
 }
 
-fn finish_completed(app: &AppHandle, chief_session_id: &str, task_id: &str, worker_session_id: &str) {
-    let cost_cap = store::find_task(task_id)
-        .and_then(|task| {
-            let staff_id = task.staff_id?;
-            let profile = staff_commands::profile_for_staff_id(&staff_id)?;
-            Some((profile.policy.max_cost_per_task_usd, task.project_id))
-        });
+fn finish_completed(
+    app: &AppHandle,
+    chief_session_id: &str,
+    task_id: &str,
+    worker_session_id: &str,
+) {
+    let cost_cap = store::find_task(task_id).and_then(|task| {
+        let staff_id = task.staff_id?;
+        let profile = staff_commands::profile_for_staff_id(&staff_id)?;
+        Some((profile.policy.max_cost_per_task_usd, task.project_id))
+    });
     let reported_cost = worker_reported_cost_usd(worker_session_id);
     if let Some((cap, project_id)) = cost_cap {
         if cap > 0.0 && reported_cost >= cap {
@@ -2297,7 +2516,10 @@ pub fn chief_task_send(app: &AppHandle, chief_session_id: &str, args: &Value) ->
     if message.trim().is_empty() {
         return envelope_reject("bad_request", "message 必填。");
     }
-    let urgency = args.get("urgency").and_then(Value::as_str).unwrap_or("normal");
+    let urgency = args
+        .get("urgency")
+        .and_then(Value::as_str)
+        .unwrap_or("normal");
     let command_id = args.get("commandId").and_then(Value::as_str).unwrap_or("");
     if !command_id.is_empty() && sent_command_seen(task_id, command_id) {
         return envelope_ok(json!({
@@ -2453,12 +2675,15 @@ pub fn chief_task_cancel(app: &AppHandle, chief_session_id: &str, args: &Value) 
     let Some(task_id) = args.get("taskId").and_then(Value::as_str) else {
         return envelope_reject("bad_request", "taskId 必填。");
     };
-    let reason = args.get("reason").and_then(Value::as_str).unwrap_or("用户要求停止");
+    let reason = args
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or("用户要求停止");
     let Some(task) = store::find_task(task_id) else {
         return envelope_reject("task_not_found", "任务不存在。");
     };
-    let staff_id = staff_commands::profile_for_session(chief_session_id)
-        .map(|profile| profile.staff_id);
+    let staff_id =
+        staff_commands::profile_for_session(chief_session_id).map(|profile| profile.staff_id);
     if let Err((error, note)) = policy::validate_task_access_for_staff(
         &task,
         chief_session_id,
@@ -2536,7 +2761,11 @@ pub fn chief_task_resume(app: &AppHandle, chief_session_id: &str, args: &Value) 
     let Some(task_id) = args.get("taskId").and_then(Value::as_str) else {
         return envelope_reject("bad_request", "taskId 必填。");
     };
-    let note = args.get("note").and_then(Value::as_str).unwrap_or("").to_string();
+    let note = args
+        .get("note")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let Some(task) = store::find_task(task_id) else {
         return envelope_reject("task_not_found", "任务不存在。");
     };
@@ -2574,7 +2803,10 @@ pub fn chief_task_resume(app: &AppHandle, chief_session_id: &str, args: &Value) 
         );
     }
     let Some(worker_sid) = task.worker_session_id.clone() else {
-        return envelope_reject("not_resumable", "worker 从未启动，没有可恢复的会话。请重新发起任务。");
+        return envelope_reject(
+            "not_resumable",
+            "worker 从未启动，没有可恢复的会话。请重新发起任务。",
+        );
     };
     let model_calls = worker_reported_model_calls(&worker_sid).max(task.turn_count);
     if profile.policy.max_model_calls_per_task > 0
@@ -2623,7 +2855,10 @@ pub fn chief_task_resume(app: &AppHandle, chief_session_id: &str, args: &Value) 
             return Err("__resume_in_progress__".to_string());
         }
         if t.status != TaskStatus::Interrupted {
-            return Err(format!("状态 {} 不能恢复", format!("{:?}", t.status).to_lowercase()));
+            return Err(format!(
+                "状态 {} 不能恢复",
+                format!("{:?}", t.status).to_lowercase()
+            ));
         }
         t.status = TaskStatus::Starting;
         t.chief_session_id = chief_session_id.to_string();
@@ -2691,7 +2926,9 @@ fn resume_and_watch(
     self_modification: bool,
     note: &str,
 ) {
-    let Some(task) = store::find_task(task_id) else { return };
+    let Some(task) = store::find_task(task_id) else {
+        return;
+    };
     if task.status != TaskStatus::Starting {
         return;
     }
@@ -2714,8 +2951,14 @@ fn resume_and_watch(
         return;
     };
     if let Err(error) = runner::ensure_session(app, worker_session_id, &task.agent_id, &cwd) {
-        let _ = finalize_task(app, chief_session_id, task_id, TaskStatus::Failed, None,
-            Some(&format!("恢复失败：{error}")));
+        let _ = finalize_task(
+            app,
+            chief_session_id,
+            task_id,
+            TaskStatus::Failed,
+            None,
+            Some(&format!("恢复失败：{error}")),
+        );
         return;
     }
     if remote_mode == RemoteMode::ReadOnly {
@@ -2756,8 +2999,14 @@ fn resume_and_watch(
     match runner::send_prompt(app, worker_session_id, &prompt) {
         Ok(_) => {}
         Err(error) => {
-            let _ = finalize_task(app, chief_session_id, task_id, TaskStatus::Failed, None,
-                Some(&format!("恢复下发失败：{error}")));
+            let _ = finalize_task(
+                app,
+                chief_session_id,
+                task_id,
+                TaskStatus::Failed,
+                None,
+                Some(&format!("恢复下发失败：{error}")),
+            );
             return;
         }
     }
@@ -2778,7 +3027,13 @@ fn resume_and_watch(
         runner::cancel_turn(app, worker_session_id);
         return;
     }
-    watch_worker_loop(app, chief_session_id, task_id, worker_session_id, max_minutes);
+    watch_worker_loop(
+        app,
+        chief_session_id,
+        task_id,
+        worker_session_id,
+        Some(max_minutes),
+    );
 }
 
 /// 确保 Chief 会话存在并返回其 id（供 E2E 入口用；产品路径走
@@ -2800,15 +3055,13 @@ pub fn is_chief_worker(session_id: &str) -> bool {
 /// Worker 权限/提问/计划卡的等待与解除 → 任务状态机（02-architecture.md
 /// §7.1：task.waiting_user 直接发批准卡，不经 Chief 决定）。挂在 emit_now
 /// 的事件收口上；非 worker 会话 / 非等待类事件一次查表即返回。
-pub fn observe_chief_event(
-    app: &AppHandle,
-    session_id: &str,
-    method: Option<&str>,
-    data: &Value,
-) {
+pub fn observe_chief_event(app: &AppHandle, session_id: &str, method: Option<&str>, data: &Value) {
     use TaskStatus::*;
     let Some(method) = method else { return };
-    let entered = matches!(method, "permission/prompt" | "question/prompt" | "plan/approval");
+    let entered = matches!(
+        method,
+        "permission/prompt" | "question/prompt" | "plan/approval"
+    );
     let cleared = matches!(
         method,
         "permission/resolved"
@@ -2822,9 +3075,10 @@ pub fn observe_chief_event(
         touch_worker_progress(session_id);
         return;
     }
-    let Some(task) = store::load_tasks().into_iter().find(|task| {
-        task.worker_session_id.as_deref() == Some(session_id)
-    }) else {
+    let Some(task) = store::load_tasks()
+        .into_iter()
+        .find(|task| task.worker_session_id.as_deref() == Some(session_id))
+    else {
         return;
     };
     if entered {
@@ -2842,13 +3096,15 @@ pub fn observe_chief_event(
                 return Ok(None);
             }
             task.status = WaitingUser;
-            task.waiting_reason = Some(match method {
-                "permission/prompt" => "permission",
-                "question/prompt" => "question",
-                "plan/approval" => "plan_approval",
-                _ => "user_input",
-            }
-            .to_string());
+            task.waiting_reason = Some(
+                match method {
+                    "permission/prompt" => "permission",
+                    "question/prompt" => "question",
+                    "plan/approval" => "plan_approval",
+                    _ => "user_input",
+                }
+                .to_string(),
+            );
             task.updated_at = now_ms();
             task.last_event_at = now_ms();
             if summary.is_some() {
@@ -2856,8 +3112,15 @@ pub fn observe_chief_event(
             }
             Ok(Some(task.clone()))
         });
-        let Some(task) = updated.ok().flatten() else { return };
-        let event = emit_event(&task, "task.waiting_user", WaitingUser, task.last_summary.clone());
+        let Some(task) = updated.ok().flatten() else {
+            return;
+        };
+        let event = emit_event(
+            &task,
+            "task.waiting_user",
+            WaitingUser,
+            task.last_summary.clone(),
+        );
         let _ = store::append_events(&[event]);
         notify(&task, "task.waiting_user", task.last_summary.as_deref());
         // worker 会话行状态同步（UI 侧栏显示「等你」）。
@@ -2883,7 +3146,9 @@ pub fn observe_chief_event(
             task.last_event_at = now_ms();
             Ok(Some(task.clone()))
         });
-        let Some(task) = updated.ok().flatten() else { return };
+        let Some(task) = updated.ok().flatten() else {
+            return;
+        };
         let event = emit_event(&task, "task.progress", Running, None);
         let _ = store::append_events(&[event]);
         if let Some(worker_sid) = task.worker_session_id.as_deref() {
@@ -2981,7 +3246,9 @@ pub fn chief_stop_all(app: &AppHandle) -> Result<usize, String> {
         }
     }
     match persist_error {
-        Some(error) => Err(format!("已停止 {stopped} 个，但仍有任务账本写入失败：{error}")),
+        Some(error) => Err(format!(
+            "已停止 {stopped} 个，但仍有任务账本写入失败：{error}"
+        )),
         None => Ok(stopped),
     }
 }
@@ -2997,8 +3264,7 @@ pub fn chief_cancel_staff_tasks(
     let active: Vec<Task> = store::load_tasks()
         .into_iter()
         .filter(|task| {
-            task.staff_id.as_deref() == Some(staff_id)
-                || task.chief_session_id == chief_session_id
+            task.staff_id.as_deref() == Some(staff_id) || task.chief_session_id == chief_session_id
         })
         .filter(|task| {
             matches!(
@@ -3120,8 +3386,7 @@ fn heartbeat_staff(app: &AppHandle, profile: &staff::StaffProfile) {
     {
         staff_commands::maybe_queue_bootstrap(profile);
     }
-    let pending_work =
-        pending_user_count(chief_sid) > 0 || pending_wake_count(chief_sid) > 0;
+    let pending_work = pending_user_count(chief_sid) > 0 || pending_wake_count(chief_sid) > 0;
     if !runner::session_alive(app, chief_sid) {
         if pending_work {
             if let Err(error) = ensure_chief_started(app, chief_sid) {
@@ -3147,7 +3412,10 @@ fn heartbeat_staff(app: &AppHandle, profile: &staff::StaffProfile) {
                     .unwrap_or(false)
             });
             if running {
-                with_storage(app, |storage| storage.update_session_status(chief_sid, "exited")).ok();
+                with_storage(app, |storage| {
+                    storage.update_session_status(chief_sid, "exited")
+                })
+                .ok();
             }
         }
     }
@@ -3197,7 +3465,10 @@ fn heartbeat_staff(app: &AppHandle, profile: &staff::StaffProfile) {
                 .join("\n");
             match runner::send_prompt(app, chief_sid, &text) {
                 Ok(_) => {
-                    let ids = events.iter().map(|event| event.event_id.clone()).collect::<Vec<_>>();
+                    let ids = events
+                        .iter()
+                        .map(|event| event.event_id.clone())
+                        .collect::<Vec<_>>();
                     let _ = store::mark_events_delivered(&ids, now_ms());
                 }
                 Err(error) => {
@@ -3270,6 +3541,41 @@ fn heartbeat_staff(app: &AppHandle, profile: &staff::StaffProfile) {
 }
 
 /// 启动心跳线程（幂等）。tick 2s。
+/// Persist worker lineage from the task ledger before the retention sweep can
+/// remove it. New workers write this at creation; this migrates existing rows.
+pub fn backfill_worker_lineage(app: &AppHandle) -> usize {
+    let tasks = store::load_tasks();
+    with_storage(app, |storage| {
+        let mut updated = 0;
+        for task in &tasks {
+            let Some(worker_id) = task.worker_session_id.as_deref() else {
+                continue;
+            };
+            let Some(parent) = storage.find_session(&task.chief_session_id).ok().flatten() else {
+                continue;
+            };
+            let root_id = parent
+                .lineage
+                .as_ref()
+                .map(|lineage| lineage.root_session_id.clone())
+                .unwrap_or_else(|| parent.id.clone());
+            let lineage = crate::models::SessionLineage {
+                parent_session_id: parent.id,
+                root_session_id: root_id,
+                relationship: "subagent".to_string(),
+            };
+            if storage
+                .set_session_lineage(worker_id, lineage)
+                .unwrap_or(false)
+            {
+                updated += 1;
+            }
+        }
+        Ok::<usize, String>(updated)
+    })
+    .unwrap_or(0)
+}
+
 pub fn ensure_heartbeat(app: AppHandle) {
     HEARTBEAT.get_or_init(|| {
         let _ = std::thread::Builder::new()
@@ -3313,7 +3619,10 @@ fn flush_agent_wake_inboxes(app: &AppHandle, covered: &HashSet<String>) {
             .join("\n");
         match runner::send_prompt(app, &sid, &text) {
             Ok(_) => {
-                let ids = events.iter().map(|event| event.event_id.clone()).collect::<Vec<_>>();
+                let ids = events
+                    .iter()
+                    .map(|event| event.event_id.clone())
+                    .collect::<Vec<_>>();
                 let _ = store::mark_events_delivered(&ids, now_ms());
             }
             Err(error) => {
@@ -3399,8 +3708,7 @@ fn heartbeat_tick(app: &AppHandle) {
     //   flush 直接 send_prompt 会报 not running 并每 2s 无限重试）；
     // - 没有待办 → 只把账面 running 放回 exited（空转不养 agent 进程），
     //   照常做 worker 超时/失联检测。
-    let pending_work =
-        pending_user_count(&chief_sid) > 0 || pending_wake_count(&chief_sid) > 0;
+    let pending_work = pending_user_count(&chief_sid) > 0 || pending_wake_count(&chief_sid) > 0;
     if !runner::session_alive(app, &chief_sid) {
         if pending_work {
             if let Err(error) = ensure_chief_started(app, &chief_sid) {
@@ -3496,7 +3804,9 @@ fn heartbeat_tick(app: &AppHandle) {
             TaskStatus::Starting | TaskStatus::Running | TaskStatus::WaitingUser => {}
             _ => continue,
         }
-        let Some(policy) = config.policy_for(&task.project_id) else { continue };
+        let Some(policy) = config.policy_for(&task.project_id) else {
+            continue;
+        };
         let max_ms = (policy.max_task_minutes as u64) * 60_000;
         let stale = now_ms().saturating_sub(task.last_event_at) > max_ms;
         let worker_gone = task
@@ -3505,17 +3815,30 @@ fn heartbeat_tick(app: &AppHandle) {
             .map(|sid| runner::process_gone(app, sid))
             .unwrap_or(false);
         if worker_gone && task.status == TaskStatus::Running {
-            let _ = finalize_task(app, &chief_sid, &task.task_id, TaskStatus::Interrupted,
+            let _ = finalize_task(
+                app,
+                &chief_sid,
+                &task.task_id,
+                TaskStatus::Interrupted,
                 Some("worker_gone"),
-                Some("worker 进程失联，任务标为中断——可用 task_resume 继续。"));
+                Some("worker 进程失联，任务标为中断——可用 task_resume 继续。"),
+            );
         } else if stale {
             if let Some(worker_sid) = task.worker_session_id.as_deref() {
                 runner::cancel_turn(app, worker_sid);
                 let _ = runner::wait_turn_idle_checked(app, worker_sid, 8_000, || true);
             }
-            let _ = finalize_task(app, &chief_sid, &task.task_id, TaskStatus::Failed,
+            let _ = finalize_task(
+                app,
+                &chief_sid,
+                &task.task_id,
+                TaskStatus::Failed,
                 Some("timeout"),
-                Some(&format!("任务超过 {} 分钟无进展，已停止。", policy.max_task_minutes)));
+                Some(&format!(
+                    "任务超过 {} 分钟无进展，已停止。",
+                    policy.max_task_minutes
+                )),
+            );
         }
     }
 }

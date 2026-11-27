@@ -89,7 +89,11 @@ pub(crate) fn std_base64(s: &str) -> Option<String> {
     }
     // Go 先 TrimRight 掉全部尾随 '=' 再用 Raw 编码解码（中缝的 '=' 会失败）。
     let trimmed = s.trim_end_matches('=');
-    let alphabet = if url_safe { &base64::alphabet::URL_SAFE } else { &base64::alphabet::STANDARD };
+    let alphabet = if url_safe {
+        &base64::alphabet::URL_SAFE
+    } else {
+        &base64::alphabet::STANDARD
+    };
     // Go 的 Raw*Encoding 解码不查尾随位是否为零（"YR" -> "a"，实测），crate
     // 默认查——显式放开保持 1:1。
     let engine = GeneralPurpose::new(
@@ -165,7 +169,9 @@ pub(crate) fn std_base64_body(proto: Proto, body: &[u8]) -> Cow<'_, [u8]> {
     if !changed {
         return Cow::Borrowed(body);
     }
-    serde_json::to_vec(&v).map(Cow::Owned).unwrap_or(Cow::Borrowed(body))
+    serde_json::to_vec(&v)
+        .map(Cow::Owned)
+        .unwrap_or(Cow::Borrowed(body))
 }
 
 /// 递归改写：data URI 字符串统一标准 base64；anthropic 的 base64 source
@@ -190,7 +196,11 @@ fn walk_values(v: &mut Value, proto: Proto, changed: &mut bool) {
                     if is_base64 && source.get("data").map(|d| d.is_string()).unwrap_or(false) {
                         // Go imageSrc 只认 type=="base64" 且 data 非空；
                         // media_type 原样带过（withImageData 写回同 mime）。
-                        let data = source.get("data").and_then(|d| d.as_str()).unwrap_or("").to_string();
+                        let data = source
+                            .get("data")
+                            .and_then(|d| d.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         if let Some(std) = std_base64(&data) {
                             source.insert("data".into(), Value::String(std));
                             *changed = true;
@@ -257,7 +267,12 @@ fn json_body(content_type: Option<&str>, body: &[u8]) -> bool {
 /// 出来是空的（畸形头）时退回整段小写（Go err 分支的同款兜底——两种结果
 /// 对上面的前缀判定等价）。
 fn media_type(ct: &str) -> String {
-    let mt = ct.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let mt = ct
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     if mt.is_empty() {
         ct.trim().to_ascii_lowercase()
     } else {
@@ -402,7 +417,10 @@ fn decode_rune_at(body: &[u8], i: usize) -> (Option<char>, usize) {
     if i + len > body.len() {
         return (None, 1);
     }
-    match std::str::from_utf8(&body[i..i + len]).ok().and_then(|s| s.chars().next()) {
+    match std::str::from_utf8(&body[i..i + len])
+        .ok()
+        .and_then(|s| s.chars().next())
+    {
         Some(ch) => (Some(ch), len),
         None => (None, 1),
     }
@@ -452,7 +470,9 @@ fn webp_of(src: &str) -> Option<Vec<u8>> {
     if !is_webp(&sniff) {
         return None;
     }
-    base64::engine::general_purpose::STANDARD_NO_PAD.decode(b64.trim_end_matches('=')).ok()
+    base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(b64.trim_end_matches('='))
+        .ok()
 }
 
 /// encodeWebP（webp.go:106）+ pictureWritten（heic.go:248）的合并：webp 字节
@@ -470,7 +490,8 @@ fn webp_to_png(raw: &[u8]) -> Option<Vec<u8>> {
     }
     let img = cap_side(image::DynamicImage::from_decoder(dec).ok()?);
     let mut out = Vec::new();
-    img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).ok()?;
+    img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .ok()?;
     Some(out)
 }
 
@@ -483,11 +504,22 @@ fn cap_side(img: image::DynamicImage) -> image::DynamicImage {
         return img;
     }
     let (nw, nh) = if w >= h {
-        (HEIC_MAX_SIDE, (((h as u64) * HEIC_MAX_SIDE as u64) / w as u64).max(1) as u32)
+        (
+            HEIC_MAX_SIDE,
+            (((h as u64) * HEIC_MAX_SIDE as u64) / w as u64).max(1) as u32,
+        )
     } else {
-        ((((w as u64) * HEIC_MAX_SIDE as u64) / h as u64).max(1) as u32, HEIC_MAX_SIDE)
+        (
+            (((w as u64) * HEIC_MAX_SIDE as u64) / h as u64).max(1) as u32,
+            HEIC_MAX_SIDE,
+        )
     };
-    image::DynamicImage::ImageRgba8(image::imageops::resize(&img, nw, nh, image::imageops::FilterType::Triangle))
+    image::DynamicImage::ImageRgba8(image::imageops::resize(
+        &img,
+        nw,
+        nh,
+        image::imageops::FilterType::Triangle,
+    ))
 }
 
 /// webpAsJPEG（webp.go:47）的 Rust 半步：体里每个 webp 内联图写成 PNG（Go：
@@ -508,7 +540,9 @@ pub(crate) fn webp_body(proto: Proto, body: &[u8]) -> Cow<'_, [u8]> {
     if !changed {
         return Cow::Borrowed(body);
     }
-    serde_json::to_vec(&v).map(Cow::Owned).unwrap_or(Cow::Borrowed(body))
+    serde_json::to_vec(&v)
+        .map(Cow::Owned)
+        .unwrap_or(Cow::Borrowed(body))
 }
 
 /// 递归转写：webp 的 data URI 换成 PNG 的；anthropic 的 base64 source 改
@@ -533,10 +567,14 @@ fn walk_webp(v: &mut Value, proto: Proto, changed: &mut bool) {
                     let is_b64 = source.get("type").and_then(Value::as_str) == Some("base64");
                     if is_b64 {
                         if let Some(data) = source.get("data").and_then(Value::as_str) {
-                            let media = source.get("media_type").and_then(Value::as_str).unwrap_or("");
+                            let media = source
+                                .get("media_type")
+                                .and_then(Value::as_str)
+                                .unwrap_or("");
                             let uri = format!("data:{media};base64,{data}");
                             if let Some(png) = webp_of(&uri).as_deref().and_then(webp_to_png) {
-                                source.insert("media_type".into(), Value::String("image/png".into()));
+                                source
+                                    .insert("media_type".into(), Value::String("image/png".into()));
                                 source.insert("data".into(), Value::String(STANDARD.encode(&png)));
                                 *changed = true;
                             }
@@ -609,7 +647,12 @@ pub fn prepare<'a>(proto: Proto, content_type: Option<&str>, body: &'a [u8]) -> 
 }
 
 /// [`prepare`] 的可注入开关版（测试用，免碰进程环境）。
-fn prepare_with<'a>(on: bool, proto: Proto, content_type: Option<&str>, body: &'a [u8]) -> Cow<'a, [u8]> {
+fn prepare_with<'a>(
+    on: bool,
+    proto: Proto,
+    content_type: Option<&str>,
+    body: &'a [u8],
+) -> Cow<'a, [u8]> {
     match try_prepare_with(on, proto, content_type, body) {
         Ok(prepared) => prepared,
         Err(_) => Cow::Owned(Vec::new()),
@@ -649,7 +692,10 @@ pub fn prepared_request<'a>(request: &'a Request, proto: Proto) -> Cow<'a, Reque
 /// Err（redact 开态扫不了的体）原样交给调用方——对话臂按 fails-closed
 /// 回 503（Go maskStatus 的非拦截分支，internal/gateway/redact.go:229）。
 /// 体没变时借回原请求（零拷贝）；变了才重建（同 [`prepared_request`]）。
-pub fn try_prepared_request<'a>(request: &'a Request, proto: Proto) -> Result<Cow<'a, Request>, String> {
+pub fn try_prepared_request<'a>(
+    request: &'a Request,
+    proto: Proto,
+) -> Result<Cow<'a, Request>, String> {
     try_prepared_request_with(redact::enabled(), request, proto)
 }
 
@@ -781,13 +827,17 @@ mod tests {
         );
         let out = std_base64_body(Proto::Chat, body.as_bytes());
         let v: Value = serde_json::from_slice(&out).expect("json");
-        let url = v["messages"][0]["content"][0]["image_url"]["url"].as_str().unwrap();
+        let url = v["messages"][0]["content"][0]["image_url"]["url"]
+            .as_str()
+            .unwrap();
         assert!(url.starts_with("data:image/png;base64,"), "{url}");
         let std = url.strip_prefix("data:image/png;base64,").unwrap();
         assert!(!std.contains('-') && !std.contains('_'), "{std}");
         // 解码回来是同一份字节
         let raw_std = STANDARD.decode(std).unwrap();
-        let raw_url = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(b64.as_bytes()).unwrap();
+        let raw_url = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(b64.as_bytes())
+            .unwrap();
         assert_eq!(raw_std, raw_url);
         // 其余字段不动
         assert_eq!(v["model"], "p/m");
@@ -883,10 +933,16 @@ mod tests {
         assert_eq!(out.as_ref(), body.as_slice());
         // 坏 hex（\uZZZZ）不是转义：原样（零拷贝）
         let body = br#"{"a":"\uZZZZ"}"#;
-        assert!(matches!(text_body(Some("application/json"), body), Cow::Borrowed(_)));
+        assert!(matches!(
+            text_body(Some("application/json"), body),
+            Cow::Borrowed(_)
+        ));
         // 尾部截断的 \u12：原样
         let body = br#"{"a":"\u12"#;
-        assert!(matches!(text_body(Some("application/json"), body), Cow::Borrowed(_)));
+        assert!(matches!(
+            text_body(Some("application/json"), body),
+            Cow::Borrowed(_)
+        ));
     }
 
     #[test]
@@ -916,7 +972,10 @@ mod tests {
         }
         // 体不以 {/[ 开头：不碰
         let plain = b"hello \xc4\xe3".as_slice();
-        assert!(matches!(text_body(Some("application/json"), plain), Cow::Borrowed(_)));
+        assert!(matches!(
+            text_body(Some("application/json"), plain),
+            Cow::Borrowed(_)
+        ));
         // 前导空白后是 {：算 JSON
         let mut body = b" \r\n\t".to_vec();
         body.extend_from_slice(b"{\"a\":\"\xc4\"}");
@@ -1008,7 +1067,10 @@ mod tests {
         // 手工构造的 VP8L 常量经解码器色彩空间往返有 ±1 舍入（实测 B=254）；
         // 断言「近纯蓝」而不是逐位相等——测的是「这是那张图」而不是色彩管理。
         let [r, g, b, a] = img.to_rgba8().get_pixel(0, 0).0;
-        assert!(r <= 2 && g <= 2 && b >= 250 && a == 255, "got [{r},{g},{b},{a}]");
+        assert!(
+            r <= 2 && g <= 2 && b >= 250 && a == 255,
+            "got [{r},{g},{b},{a}]"
+        );
     }
 
     #[test]
@@ -1019,13 +1081,20 @@ mod tests {
         );
         let out = webp_body(Proto::Chat, body.as_bytes());
         let v: Value = serde_json::from_slice(&out).expect("json");
-        let url = v["messages"][0]["content"][0]["image_url"]["url"].as_str().unwrap();
+        let url = v["messages"][0]["content"][0]["image_url"]["url"]
+            .as_str()
+            .unwrap();
         assert!(url.starts_with("data:image/png;base64,"), "{url}");
-        let png = STANDARD.decode(url.strip_prefix("data:image/png;base64,").unwrap()).unwrap();
+        let png = STANDARD
+            .decode(url.strip_prefix("data:image/png;base64,").unwrap())
+            .unwrap();
         let img = image::load_from_memory(&png).expect("rewritten picture decodes");
         // 与常量单测同口径：解码器色彩往返 ±1 舍入（实测 B=254）。
         let [r, g, b, a] = img.to_rgba8().get_pixel(0, 0).0;
-        assert!(r <= 2 && g <= 2 && b >= 250 && a == 255, "像素不丢：got [{r},{g},{b},{a}]");
+        assert!(
+            r <= 2 && g <= 2 && b >= 250 && a == 255,
+            "像素不丢：got [{r},{g},{b},{a}]"
+        );
         assert_eq!(v["model"], "p/m", "其余字段不动");
     }
 
@@ -1037,7 +1106,10 @@ mod tests {
         let body = format!(r#"{{"u":"data:image/jpeg;base64,{b64}"}}"#);
         let out = webp_body(Proto::Chat, body.as_bytes());
         let v: Value = serde_json::from_slice(&out).expect("json");
-        assert!(v["u"].as_str().unwrap().starts_with("data:image/png;base64,"));
+        assert!(v["u"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
     }
 
     #[test]
@@ -1052,7 +1124,10 @@ mod tests {
         assert_eq!(src["type"], "base64");
         assert_eq!(src["media_type"], "image/png");
         let png = STANDARD.decode(src["data"].as_str().unwrap()).unwrap();
-        assert!(image::load_from_memory(&png).is_ok(), "写回的是可解码的 PNG");
+        assert!(
+            image::load_from_memory(&png).is_ok(),
+            "写回的是可解码的 PNG"
+        );
     }
 
     #[test]
@@ -1063,7 +1138,10 @@ mod tests {
         let body = format!(r#"{{"u":"data:image\/webp;base64,{b64}"}}"#);
         let out = webp_body(Proto::Chat, body.as_bytes());
         let v: Value = serde_json::from_slice(&out).expect("json");
-        assert!(v["u"].as_str().unwrap().starts_with("data:image/png;base64,"));
+        assert!(v["u"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
     }
 
     #[test]
@@ -1075,30 +1153,54 @@ mod tests {
         assert_eq!(out.as_ref(), body.as_bytes());
         // 非 webp 的 data URI（PNG）：字节嗅不过，原样
         let mut png = Vec::new();
-        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 255])))
-            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-            .unwrap();
-        let body = format!(r#"{{"u":"data:image/png;base64,{}"}}"#, STANDARD.encode(png));
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            1,
+            1,
+            image::Rgba([1, 2, 3, 255]),
+        ))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+        let body = format!(
+            r#"{{"u":"data:image/png;base64,{}"}}"#,
+            STANDARD.encode(png)
+        );
         let out = webp_body(Proto::Chat, body.as_bytes());
         assert!(matches!(out, Cow::Borrowed(b) if b.as_ptr() == body.as_bytes().as_ptr()));
         // 没有任何标记的体：预检零拷贝
         let plain = br#"{"a":"hello"}"#;
-        assert!(matches!(webp_body(Proto::Chat, plain), Cow::Borrowed(b) if b.as_ptr() == plain.as_ptr()));
+        assert!(
+            matches!(webp_body(Proto::Chat, plain), Cow::Borrowed(b) if b.as_ptr() == plain.as_ptr())
+        );
         // 预检过了但不是 JSON：原样
         let raw = format!("x = image/webp {b64}", b64 = STANDARD.encode(TINY_WEBP));
-        assert_eq!(webp_body(Proto::Chat, raw.as_bytes()).as_ref(), raw.as_bytes());
+        assert_eq!(
+            webp_body(Proto::Chat, raw.as_bytes()).as_ref(),
+            raw.as_bytes()
+        );
     }
 
     #[test]
     fn cap_side_resizes_the_long_side_to_4096() {
-        let wide = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(8192, 4, image::Rgba([0, 0, 0, 255])));
+        let wide = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            8192,
+            4,
+            image::Rgba([0, 0, 0, 255]),
+        ));
         let out = cap_side(wide);
         assert_eq!((out.width(), out.height()), (4096, 2));
-        let tall = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(4, 8192, image::Rgba([0, 0, 0, 255])));
+        let tall = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            4,
+            8192,
+            image::Rgba([0, 0, 0, 255]),
+        ));
         let out = cap_side(tall);
         assert_eq!((out.width(), out.height()), (2, 4096));
         // 门内不碰
-        let small = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(4096, 4096, image::Rgba([0, 0, 0, 255])));
+        let small = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            4096,
+            4096,
+            image::Rgba([0, 0, 0, 255]),
+        ));
         let (w, h) = (small.width(), small.height());
         let out = cap_side(small);
         assert_eq!((out.width(), out.height()), (w, h));
@@ -1115,8 +1217,14 @@ mod tests {
         body.extend_from_slice(b"\"}");
         let out = prepare(Proto::Chat, Some("application/json"), &body);
         let v: Value = serde_json::from_slice(&out).expect("json");
-        assert_eq!(v["note"].as_str().unwrap().as_bytes(), "\u{FFFD}\u{FFFD}".as_bytes());
-        assert!(v["u"].as_str().unwrap().starts_with("data:image/png;base64,"));
+        assert_eq!(
+            v["note"].as_str().unwrap().as_bytes(),
+            "\u{FFFD}\u{FFFD}".as_bytes()
+        );
+        assert!(v["u"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
     }
 
     // ----- redact 收口（链末位，默认关）-----
@@ -1137,7 +1245,8 @@ mod tests {
         let body = format!(
             r#"{{"model":"p/m","u":"data:image/png;base64,{png}","content":"key sk-Abcdef12345678901234"}}"#
         );
-        let out = try_prepare_with(true, Proto::Chat, Some("application/json"), body.as_bytes()).unwrap();
+        let out =
+            try_prepare_with(true, Proto::Chat, Some("application/json"), body.as_bytes()).unwrap();
         let s = String::from_utf8(out.into_owned()).unwrap();
         assert!(s.contains("{{API_KEY_"), "{s}");
         assert!(!s.contains("sk-Abcdef12345678901234"), "{s}");
@@ -1150,9 +1259,12 @@ mod tests {
         // 一步 textBody 就修成 U+FFFD，走不到这个 Err——这里用 textBody 不碰
         // 的字节媒体类型。
         let bad: &[u8] = b"\xff\xfe\x00not json";
-        assert!(try_prepare_with(true, Proto::Chat, Some("application/octet-stream"), bad).is_err());
+        assert!(
+            try_prepare_with(true, Proto::Chat, Some("application/octet-stream"), bad).is_err()
+        );
         // 同体关态：原样借回
-        let out = try_prepare_with(false, Proto::Chat, Some("application/octet-stream"), bad).unwrap();
+        let out =
+            try_prepare_with(false, Proto::Chat, Some("application/octet-stream"), bad).unwrap();
         assert!(matches!(out, Cow::Borrowed(b) if b.as_ptr() == bad.as_ptr()));
     }
 

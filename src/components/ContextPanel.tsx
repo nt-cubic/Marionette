@@ -9,6 +9,7 @@ import type { ImageSupport } from "../lib/imageSupport";
 import { MemorySection } from "./MemorySection";
 import { QuotaSection } from "./QuotaSection";
 import { TasksSection } from "./TasksSection";
+import { AgentsSection } from "./AgentsSection";
 import { UniversalPluginsSection } from "./UniversalPluginsSection";
 import { StaffSection } from "./StaffSection";
 import { UniversalSkillsSection } from "./UniversalSkillsSection";
@@ -113,6 +114,8 @@ type ContextPanelProps = {
   activeSessionId?: string | null;
   /** 后台任务面板：聚合好的行（子代理/后台命令/排队发送/需要你），空数组 = 不渲染。 */
   backgroundTasks?: BackgroundTaskRow[];
+  /** Subagents delegated by the active parent conversation. */
+  agentTasks?: BackgroundTaskRow[];
   /** sessionId → 会话名（行的归属说明）。 */
   sessionLabels?: Map<string, string>;
   /** 点击行：打开发起会话。 */
@@ -256,6 +259,7 @@ export const ContextPanel = memo(function ContextPanel({
   appUpdateAvailable = false,
   activeSessionId = null,
   backgroundTasks = EMPTY_BG_TASKS,
+  agentTasks = EMPTY_BG_TASKS,
   sessionLabels,
   onOpenBackgroundTask,
   onKillBackgroundTerminal,
@@ -450,6 +454,12 @@ export const ContextPanel = memo(function ContextPanel({
           onOpenBackgroundTask={onOpenBackgroundTask}
           onKillBackgroundTerminal={onKillBackgroundTerminal}
           onStopAgentDelegate={onStopAgentDelegate}
+        />
+
+        <AgentsSection
+          tasks={agentTasks}
+          onOpenTask={onOpenBackgroundTask}
+          onStopTask={onStopAgentDelegate}
         />
 
         <QuotaSection usage={usage} agentId={activeAgentId} modelId={activeModelId} onRefresh={onUsageRefresh} refreshing={usageProbing} />

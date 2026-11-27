@@ -337,7 +337,7 @@ pub fn engine_model_id_of(input: &str) -> Option<String> {
 pub fn worker_native_model_id(agent_id: &str, engine_model_id: &str) -> Option<String> {
     match classify_agent(agent_id) {
         // Claude 用 env 钉模型，Codex 用 providers.set + 引擎别名，Antigravity
-    // 用官方 gateway auth（Gemini 协议面）——都直接吃引擎模型 id。
+        // 用官方 gateway auth（Gemini 协议面）——都直接吃引擎模型 id。
         BridgeAgent::ClaudeCode | BridgeAgent::Codex | BridgeAgent::Antigravity => {
             Some(engine_model_id.to_string())
         }
@@ -475,8 +475,14 @@ fn entry_view(credentials_path: &Path, entry: &CredentialEntry) -> BridgeEntryVi
     };
     let note = match entry.kind {
         CredentialKind::KeyPlan => None,
-        CredentialKind::Subscription => Some(crate::ts!("订阅型，跨用将在下版本开放", "Subscription-based; cross-agent use arrives in the next release")),
-        CredentialKind::Reference => Some(crate::ts!("key 保存在原 agent 文件里，未复制", "Key stays in the original agent's file; not copied")),
+        CredentialKind::Subscription => Some(crate::ts!(
+            "订阅型，跨用将在下版本开放",
+            "Subscription-based; cross-agent use arrives in the next release"
+        )),
+        CredentialKind::Reference => Some(crate::ts!(
+            "key 保存在原 agent 文件里，未复制",
+            "Key stays in the original agent's file; not copied"
+        )),
     };
     BridgeEntryView {
         id: entry.id.clone(),
@@ -492,7 +498,8 @@ fn entry_view(credentials_path: &Path, entry: &CredentialEntry) -> BridgeEntryVi
 
 /// bridge_list_entries 本体（默认路径包装）。
 pub fn list_entries() -> Result<Vec<BridgeEntryView>, String> {
-    let path = credentials_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    let path = credentials_path()
+        .ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     list_entries_at(&path)
 }
 
@@ -507,7 +514,8 @@ fn list_entries_at(path: &Path) -> Result<Vec<BridgeEntryView>, String> {
 
 /// bridge_add_key 本体：校验 preset 在表内，落 DPAPI store，返回新视图。
 pub fn add_key(preset: &str, label: Option<&str>, key: &str) -> Result<BridgeEntryView, String> {
-    let path = credentials_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    let path = credentials_path()
+        .ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     add_key_at(&path, preset, label, key)
 }
 
@@ -517,11 +525,14 @@ fn add_key_at(
     label: Option<&str>,
     key: &str,
 ) -> Result<BridgeEntryView, String> {
-    let known = find_preset(preset)
-        .ok_or_else(|| {
-            let known: Vec<&str> = presets().iter().map(|p| p.id).collect();
-            crate::ts!("未知 preset `{preset}`（可选：{}）", "Unknown preset `{preset}` (options: {})", known.join(", "))
-        })?;
+    let known = find_preset(preset).ok_or_else(|| {
+        let known: Vec<&str> = presets().iter().map(|p| p.id).collect();
+        crate::ts!(
+            "未知 preset `{preset}`（可选：{}）",
+            "Unknown preset `{preset}` (options: {})",
+            known.join(", ")
+        )
+    })?;
     let label = label
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -532,7 +543,12 @@ fn add_key_at(
         .entries
         .iter()
         .find(|entry| entry.id == preset)
-        .ok_or_else(|| crate::ts!("写入后读不回条目", "Could not read the entry back after writing"))?;
+        .ok_or_else(|| {
+            crate::ts!(
+                "写入后读不回条目",
+                "Could not read the entry back after writing"
+            )
+        })?;
     Ok(entry_view(path, entry))
 }
 
@@ -542,7 +558,10 @@ pub fn list_models(agent_id: &str) -> BridgeModelsResult {
         return BridgeModelsResult {
             models: Vec::new(),
             sources: Vec::new(),
-            note: Some(crate::ts!("无法定位用户目录", "Could not locate the user directory")),
+            note: Some(crate::ts!(
+                "无法定位用户目录",
+                "Could not locate the user directory"
+            )),
         };
     };
     let credentials = home.join(".marionette").join("credentials.json");
@@ -618,7 +637,6 @@ pub(crate) fn engine_model_label(model_id: &str) -> String {
     trimmed.to_string()
 }
 
-
 // ─── opencode 原生跨用（provider「marionette」→ 引擎 /v1）───────────────────
 
 /// 构建写进子进程 `OPENCODE_CONFIG_CONTENT` 的内联配置：provider
@@ -685,11 +703,17 @@ const OPENCODE_LIMIT_OUTPUT_FALLBACK: u64 = 32_000;
 /// 都不写，让 opencode 用它自己的默认值。
 fn opencode_model_entry(name: &str, row: &CatalogModelRow) -> serde_json::Value {
     let mut entry = serde_json::Map::new();
-    entry.insert("name".to_string(), serde_json::Value::String(name.to_string()));
+    entry.insert(
+        "name".to_string(),
+        serde_json::Value::String(name.to_string()),
+    );
     // 图片能力（2026-11-13 全量审计批）：opencode 的 per-model schema 有
     // `attachment: boolean`（config.json $defs.ProviderConfig.models 实锤），
     // 不写按默认（text）办——附图被当文本模型处理，DSH 同款坑。真值直写。
-    entry.insert("attachment".to_string(), serde_json::Value::Bool(row.images));
+    entry.insert(
+        "attachment".to_string(),
+        serde_json::Value::Bool(row.images),
+    );
     // 但 `attachment` 只表示“能挂文件”，opencode 的 `read` 工具真正看的是
     // `capabilities.input.image`（由本条的 `modalities.input` 派生）：
     // 只写 attachment 不写 modalities 时，界面显示能挂图，读图仍报
@@ -724,7 +748,11 @@ fn opencode_model_entry(name: &str, row: &CatalogModelRow) -> serde_json::Value 
 /// spawn 时刻的真实参数版（引擎没跑或目录为空 → None，不注入）。
 pub fn opencode_engine_config(existing: Option<&str>) -> Option<String> {
     let (port, _) = crate::engine::running_base()?;
-    let models = crate::engine::catalog_direct_entries();
+    // A freshly started engine can be reachable before its live /v1/models
+    // discovery has populated. The last catalog is enough to inject the same
+    // model ids, and avoiding the empty-live race is what made OpenCode reject
+    // `marionette/<engine-id>` shortly after app startup.
+    let models = crate::engine::catalog_direct_or_cached_entries().0;
     if models.is_empty() {
         return None;
     }
@@ -735,7 +763,7 @@ pub fn opencode_engine_config(existing: Option<&str>) -> Option<String> {
 
 /// pi 的 agent 目录：`PI_CODING_AGENT_DIR` > `~/.pi/agent`（与 parsers/pi.rs
 /// 的会话目录解析同一套约定，见 pi docs/configuration.md）。
-fn pi_agent_dir() -> Option<std::path::PathBuf> {
+pub(crate) fn pi_agent_dir() -> Option<std::path::PathBuf> {
     if let Some(raw) = std::env::var_os("PI_CODING_AGENT_DIR") {
         if !raw.to_string_lossy().trim().is_empty() {
             return Some(PathBuf::from(raw));
@@ -769,7 +797,10 @@ fn pi_model_entry(row: &CatalogModelRow) -> serde_json::Value {
         },
     );
     if row.context_window > 0 {
-        entry.insert("contextWindow".to_string(), serde_json::json!(row.context_window));
+        entry.insert(
+            "contextWindow".to_string(),
+            serde_json::json!(row.context_window),
+        );
     }
     if row.max_output > 0 {
         entry.insert("maxTokens".to_string(), serde_json::json!(row.max_output));
@@ -809,10 +840,7 @@ fn pi_merge_models_json(
         crate::dsh_bridge::MARIONETTE_PROVIDER.to_string(),
         pi_marionette_provider(port, models),
     );
-    root.insert(
-        "providers".to_string(),
-        Value::Object(providers),
-    );
+    root.insert("providers".to_string(), Value::Object(providers));
     let changed = before != serde_json::to_value(&root).ok();
     let text = serde_json::to_string_pretty(&Value::Object(root)).unwrap_or_default();
     (format!("{text}\n"), changed)
@@ -825,15 +853,27 @@ fn pi_remove_marionette_at(path: &Path) -> Result<bool, String> {
     let original = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(crate::ts!("读取 models.json 失败: {error}", "Failed to read models.json: {error}")),
+        Err(error) => {
+            return Err(crate::ts!(
+                "读取 models.json 失败: {error}",
+                "Failed to read models.json: {error}"
+            ))
+        }
     };
     if original.trim().is_empty() {
         return Ok(false);
     }
-    let mut root = serde_json::from_str::<Value>(&original)
-        .map_err(|e| crate::ts!("models.json 解析失败（{e}）— 拒绝写入半截", "models.json parse failed ({e}) — refusing a partial write"))?;
+    let mut root = serde_json::from_str::<Value>(&original).map_err(|e| {
+        crate::ts!(
+            "models.json 解析失败（{e}）— 拒绝写入半截",
+            "models.json parse failed ({e}) — refusing a partial write"
+        )
+    })?;
     let Some(root_obj) = root.as_object_mut() else {
-        return Err(crate::ts!("models.json 不是 JSON object — 拒绝写入", "models.json is not a JSON object — refusing to write"));
+        return Err(crate::ts!(
+            "models.json 不是 JSON object — 拒绝写入",
+            "models.json is not a JSON object — refusing to write"
+        ));
     };
     let mut providers = root_obj
         .remove("providers")
@@ -863,17 +903,26 @@ pub fn refresh_pi_marionette_route() -> Result<bool, String> {
     let _guard = BRIDGE_WRITE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let path = pi_models_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    let path = pi_models_path()
+        .ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     match crate::engine::status() {
         crate::engine::EngineStatus::Running { port, .. } => {
-            let models = crate::engine::catalog_direct_entries();
+            // Same startup race as OpenCode: use the last good catalog while
+            // live discovery catches up, so the `marionette` provider is
+            // written and MARIONETTE_API_KEY is set before Pi starts.
+            let models = crate::engine::catalog_direct_or_cached_entries().0;
             if models.is_empty() {
                 return Ok(false);
             }
             let existing = match fs::read_to_string(&path) {
                 Ok(text) => Some(text),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => return Err(crate::ts!("读取 models.json 失败: {error}", "Failed to read models.json: {error}")),
+                Err(error) => {
+                    return Err(crate::ts!(
+                        "读取 models.json 失败: {error}",
+                        "Failed to read models.json: {error}"
+                    ))
+                }
             };
             // 半写坏 / 非 object 的原文不能静默整体替换（用户自建 provider
             // 会丢）——先改名留档，再当作新文件合并。
@@ -890,8 +939,9 @@ pub fn refresh_pi_marionette_route() -> Result<bool, String> {
             }
             Ok(true)
         }
-        crate::engine::EngineStatus::Starting
-        | crate::engine::EngineStatus::Downloading { .. } => Ok(false),
+        crate::engine::EngineStatus::Starting | crate::engine::EngineStatus::Downloading { .. } => {
+            Ok(false)
+        }
         crate::engine::EngineStatus::Absent | crate::engine::EngineStatus::Failed { .. } => {
             pi_remove_marionette_at(&path)?;
             Ok(false)
@@ -1041,14 +1091,9 @@ fn zcode_merge_provider_config(
         .remove("providerRules")
         .and_then(|value| value.as_array().cloned())
         .unwrap_or_default();
-    provider_rules.retain(|rule| {
-        rule.get("providerId").and_then(Value::as_str) != Some(managed)
-    });
+    provider_rules.retain(|rule| rule.get("providerId").and_then(Value::as_str) != Some(managed));
     provider_rules.push(zcode_marionette_provider_rule(port, models));
-    provider_rules_root.insert(
-        "providerRules".to_string(),
-        Value::Array(provider_rules),
-    );
+    provider_rules_root.insert("providerRules".to_string(), Value::Array(provider_rules));
     config.insert(
         "providerConfigRules".to_string(),
         Value::Object(provider_rules_root),
@@ -1062,9 +1107,8 @@ fn zcode_merge_provider_config(
         .remove("providerModelRules")
         .and_then(|value| value.as_array().cloned())
         .unwrap_or_default();
-    provider_model_rules.retain(|rule| {
-        rule.get("providerId").and_then(Value::as_str) != Some(managed)
-    });
+    provider_model_rules
+        .retain(|rule| rule.get("providerId").and_then(Value::as_str) != Some(managed));
     provider_model_rules.extend(zcode_marionette_model_rules(models));
     model_rules_root.insert(
         "providerModelRules".to_string(),
@@ -1104,21 +1148,36 @@ fn zcode_remove_marionette_at(path: &Path) -> Result<bool, String> {
     let original = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(crate::ts!("读取 provider_config.json 失败: {error}", "Failed to read provider_config.json: {error}")),
+        Err(error) => {
+            return Err(crate::ts!(
+                "读取 provider_config.json 失败: {error}",
+                "Failed to read provider_config.json: {error}"
+            ))
+        }
     };
     if original.trim().is_empty() {
         return Ok(false);
     }
-    let mut root = serde_json::from_str::<Value>(&original)
-        .map_err(|e| crate::ts!("provider_config.json 解析失败（{e}）— 拒绝写入半截", "provider_config.json parse failed ({e}) — refusing a partial write"))?;
+    let mut root = serde_json::from_str::<Value>(&original).map_err(|e| {
+        crate::ts!(
+            "provider_config.json 解析失败（{e}）— 拒绝写入半截",
+            "provider_config.json parse failed ({e}) — refusing a partial write"
+        )
+    })?;
     let Some(root_obj) = root.as_object_mut() else {
-        return Err(crate::ts!("provider_config.json 不是 JSON object — 拒绝写入", "provider_config.json is not a JSON object — refusing to write"));
+        return Err(crate::ts!(
+            "provider_config.json 不是 JSON object — 拒绝写入",
+            "provider_config.json is not a JSON object — refusing to write"
+        ));
     };
     let managed = crate::dsh_bridge::MARIONETTE_PROVIDER;
     let mut touched = false;
 
     if let Some(config) = root_obj.get_mut("config").and_then(Value::as_object_mut) {
-        if let Some(order) = config.get_mut("providerOrder").and_then(Value::as_array_mut) {
+        if let Some(order) = config
+            .get_mut("providerOrder")
+            .and_then(Value::as_array_mut)
+        {
             let before = order.len();
             order.retain(|value| value.as_str() != Some(managed));
             if order.len() != before {
@@ -1132,9 +1191,7 @@ fn zcode_remove_marionette_at(path: &Path) -> Result<bool, String> {
             .and_then(Value::as_array_mut)
         {
             let before = rules.len();
-            rules.retain(|rule| {
-                rule.get("providerId").and_then(Value::as_str) != Some(managed)
-            });
+            rules.retain(|rule| rule.get("providerId").and_then(Value::as_str) != Some(managed));
             if rules.len() != before {
                 touched = true;
             }
@@ -1146,9 +1203,7 @@ fn zcode_remove_marionette_at(path: &Path) -> Result<bool, String> {
             .and_then(Value::as_array_mut)
         {
             let before = rules.len();
-            rules.retain(|rule| {
-                rule.get("providerId").and_then(Value::as_str) != Some(managed)
-            });
+            rules.retain(|rule| rule.get("providerId").and_then(Value::as_str) != Some(managed));
             if rules.len() != before {
                 touched = true;
             }
@@ -1172,17 +1227,23 @@ pub fn refresh_zcode_marionette_route() -> Result<bool, String> {
     let _guard = BRIDGE_WRITE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let path = zcode_provider_config_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    let path = zcode_provider_config_path()
+        .ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     match crate::engine::status() {
         crate::engine::EngineStatus::Running { port, .. } => {
-            let models = crate::engine::catalog_direct_entries();
+            let models = crate::engine::catalog_direct_or_cached_entries().0;
             if models.is_empty() {
                 return Ok(false);
             }
             let existing = match fs::read_to_string(&path) {
                 Ok(text) => Some(text),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => return Err(crate::ts!("读取 provider_config.json 失败: {error}", "Failed to read provider_config.json: {error}")),
+                Err(error) => {
+                    return Err(crate::ts!(
+                        "读取 provider_config.json 失败: {error}",
+                        "Failed to read provider_config.json: {error}"
+                    ))
+                }
             };
             // 半写坏 / 非 object 的原文不能静默整体替换（用户自建 provider
             // 会丢）——先改名留档，再当作新文件合并。
@@ -1199,8 +1260,9 @@ pub fn refresh_zcode_marionette_route() -> Result<bool, String> {
             }
             Ok(true)
         }
-        crate::engine::EngineStatus::Starting
-        | crate::engine::EngineStatus::Downloading { .. } => Ok(false),
+        crate::engine::EngineStatus::Starting | crate::engine::EngineStatus::Downloading { .. } => {
+            Ok(false)
+        }
         crate::engine::EngineStatus::Absent | crate::engine::EngineStatus::Failed { .. } => {
             zcode_remove_marionette_at(&path)?;
             Ok(false)
@@ -1417,7 +1479,9 @@ struct FingerprintFile {
 /// 零写入。任何失败只 warn，不影响目录本身。
 pub(crate) fn note_catalog_drift(result: &BridgeModelsResult) {
     let Some(home) = home_dir() else { return };
-    let path = home.join(".marionette").join("bridge-model-fingerprints.json");
+    let path = home
+        .join(".marionette")
+        .join("bridge-model-fingerprints.json");
     if let Err(error) = note_catalog_drift_at(&path, result) {
         crate::debug_log::append(
             "bridge",
@@ -1431,9 +1495,11 @@ pub(crate) fn note_catalog_drift(result: &BridgeModelsResult) {
 
 fn note_catalog_drift_at(path: &Path, result: &BridgeModelsResult) -> Result<(), String> {
     let previous: HashMap<String, Vec<String>> = match fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str::<FingerprintFile>(&text)
-            .map_err(|e| format!("指纹存档解析失败: {e}"))?
-            .sources,
+        Ok(text) => {
+            serde_json::from_str::<FingerprintFile>(&text)
+                .map_err(|e| format!("指纹存档解析失败: {e}"))?
+                .sources
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
         Err(e) => return Err(format!("指纹存档读取失败: {e}")),
     };
@@ -1616,7 +1682,9 @@ pub(crate) struct CatalogModelRow {
 /// 元数据（`context_window > 0`）时才是真的「不收图」——magpie 对没有任何元数据的条目
 /// 会把 `images` 默认成 false，那是「不知道」，不能当「不能」往外报（本机实测：
 /// `deepseek-v4.1-local` 这类 0 窗口条目全是这样）。
-pub(crate) fn image_flags_from_rows(rows: &[CatalogModelRow]) -> std::collections::HashMap<String, bool> {
+pub(crate) fn image_flags_from_rows(
+    rows: &[CatalogModelRow],
+) -> std::collections::HashMap<String, bool> {
     rows.iter()
         .filter(|row| row.images || row.context_window > 0)
         .map(|row| (row.id.clone(), row.images))
@@ -1637,11 +1705,7 @@ pub(crate) fn parse_models_catalog_rows(text: &str) -> Vec<CatalogModelRow> {
     };
     let positive = |item: &serde_json::Value, keys: &[&str]| -> u64 {
         keys.iter()
-            .find_map(|key| {
-                item.get(*key)
-                    .and_then(|v| v.as_u64())
-                    .filter(|v| *v > 0)
-            })
+            .find_map(|key| item.get(*key).and_then(|v| v.as_u64()).filter(|v| *v > 0))
             .unwrap_or(0)
     };
     let mut out: Vec<CatalogModelRow> = Vec::new();
@@ -1655,7 +1719,10 @@ pub(crate) fn parse_models_catalog_rows(text: &str) -> Vec<CatalogModelRow> {
         }
         out.push(CatalogModelRow {
             id: id.to_string(),
-            context_window: positive(item, &["context_window", "context_length", "max_input_tokens"]),
+            context_window: positive(
+                item,
+                &["context_window", "context_length", "max_input_tokens"],
+            ),
             max_output: positive(item, &["max_output_tokens", "max_tokens"]),
             images: catalog_item_takes_images(item),
         });
@@ -1801,13 +1868,18 @@ fn temp_sibling(path: &Path) -> PathBuf {
 
 fn write_text_atomic(path: &Path, body: &str) -> Result<(), String> {
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(|e| crate::ts!("创建目录失败: {e}", "Failed to create directory: {e}"))?;
+        fs::create_dir_all(dir)
+            .map_err(|e| crate::ts!("创建目录失败: {e}", "Failed to create directory: {e}"))?;
     }
     let temp = temp_sibling(path);
-    fs::write(&temp, body).map_err(|e| crate::ts!("写入临时文件失败: {e}", "Failed to write temp file: {e}"))?;
+    fs::write(&temp, body)
+        .map_err(|e| crate::ts!("写入临时文件失败: {e}", "Failed to write temp file: {e}"))?;
     if let Err(error) = fs::rename(&temp, path) {
         let _ = fs::remove_file(&temp);
-        return Err(crate::ts!("重命名临时文件失败: {error}", "Failed to rename temp file: {error}"));
+        return Err(crate::ts!(
+            "重命名临时文件失败: {error}",
+            "Failed to rename temp file: {error}"
+        ));
     }
     Ok(())
 }
@@ -1848,8 +1920,12 @@ fn archive_corrupt(path: &Path) -> Result<PathBuf, String> {
         candidate = path.with_file_name(format!("{stem}.corrupt-{ts}-{n}.json"));
         n += 1;
     }
-    fs::rename(path, &candidate)
-        .map_err(|e| crate::ts!("{name} 已损坏且留档失败（{e}）— 已中止", "{name} is corrupt and archiving failed ({e}) — aborted"))?;
+    fs::rename(path, &candidate).map_err(|e| {
+        crate::ts!(
+            "{name} 已损坏且留档失败（{e}）— 已中止",
+            "{name} is corrupt and archiving failed ({e}) — aborted"
+        )
+    })?;
     Ok(candidate)
 }
 
@@ -1873,8 +1949,12 @@ pub fn load_bindings_at(path: &Path) -> Result<BindingFile, String> {
     if !path.is_file() {
         return Ok(empty_bindings());
     }
-    let text =
-        fs::read_to_string(path).map_err(|e| crate::ts!("读取 bridge-bindings.json 失败: {e}", "Failed to read bridge-bindings.json: {e}"))?;
+    let text = fs::read_to_string(path).map_err(|e| {
+        crate::ts!(
+            "读取 bridge-bindings.json 失败: {e}",
+            "Failed to read bridge-bindings.json: {e}"
+        )
+    })?;
     if text.trim().is_empty() {
         return Ok(empty_bindings());
     }
@@ -1888,8 +1968,12 @@ pub fn load_bindings_at(path: &Path) -> Result<BindingFile, String> {
 }
 
 pub fn save_bindings_at(path: &Path, file: &BindingFile) -> Result<(), String> {
-    let body = serde_json::to_string_pretty(file)
-        .map_err(|e| crate::ts!("序列化 bridge-bindings.json 失败: {e}", "Failed to serialize bridge-bindings.json: {e}"))?;
+    let body = serde_json::to_string_pretty(file).map_err(|e| {
+        crate::ts!(
+            "序列化 bridge-bindings.json 失败: {e}",
+            "Failed to serialize bridge-bindings.json: {e}"
+        )
+    })?;
     write_text_atomic(path, &format!("{body}\n"))
 }
 
@@ -1917,7 +2001,9 @@ pub fn drop_auto_bindings() {
             "bridge",
             "info",
             "",
-            &format!("dropped {removed} auto/* binding(s) — auto is hidden from catalogs (2026-11-06)"),
+            &format!(
+                "dropped {removed} auto/* binding(s) — auto is hidden from catalogs (2026-11-06)"
+            ),
             None,
         ),
         Ok(_) => {}
@@ -1946,7 +2032,8 @@ pub fn drop_dead_bindings_at(
         return Ok(0);
     }
     let before = file.bindings.len();
-    file.bindings.retain(|session_id, _| alive.contains(session_id));
+    file.bindings
+        .retain(|session_id, _| alive.contains(session_id));
     let removed = before - file.bindings.len();
     if removed > 0 {
         save_bindings_at(path, &file)?;
@@ -1957,7 +2044,9 @@ pub fn drop_dead_bindings_at(
 /// `drop_dead_bindings_at` 的默认路径包装（main.rs setup，紧跟 auto 清扫）。
 pub fn drop_dead_bindings() {
     let Some(path) = bindings_path() else { return };
-    let Ok(storage) = crate::storage::StorageService::new() else { return };
+    let Ok(storage) = crate::storage::StorageService::new() else {
+        return;
+    };
     let alive = storage.known_session_ids();
     match drop_dead_bindings_at(&path, &alive) {
         Ok(removed) if removed > 0 => crate::debug_log::append(
@@ -1999,7 +2088,8 @@ fn put_binding_at(
     let mut file = load_bindings_at(path)?;
     let previous = file.bindings.remove(session_id);
     if let Some(selection) = selection {
-        file.bindings.insert(session_id.to_string(), selection.clone());
+        file.bindings
+            .insert(session_id.to_string(), selection.clone());
     }
     save_bindings_at(path, &file)?;
     Ok(previous)
@@ -2011,9 +2101,12 @@ pub fn bind_session(
     agent_id: Option<&str>,
     selection: Option<BridgeSelection>,
 ) -> Result<(), String> {
-    let bindings = bindings_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
-    let credentials = credentials_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
-    let grok_config = grok_config_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    let bindings = bindings_path()
+        .ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    let credentials = credentials_path()
+        .ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    let grok_config = grok_config_path()
+        .ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     let scan = crate::credentials::scan_opencode();
     bind_session_at(
         &bindings,
@@ -2080,8 +2173,10 @@ pub fn bind_session_at(
             if previous.is_none() {
                 return Ok(());
             }
-            let was_grok =
-                matches!(classify_agent(agent_id.unwrap_or("")), BridgeAgent::GrokBuild);
+            let was_grok = matches!(
+                classify_agent(agent_id.unwrap_or("")),
+                BridgeAgent::GrokBuild
+            );
             let was_codex = matches!(classify_agent(agent_id.unwrap_or("")), BridgeAgent::Codex);
             if was_grok {
                 match remove_grok_model_tables_at(grok_config_path) {
@@ -2114,7 +2209,13 @@ pub fn bind_session_at(
                 );
             } else {
                 // claude 是 env 注入，进程退出即消失，无需还原（§4.4）。
-                crate::debug_log::append("bridge", "info", session_id, "model bridge unbound", None);
+                crate::debug_log::append(
+                    "bridge",
+                    "info",
+                    session_id,
+                    "model bridge unbound",
+                    None,
+                );
             }
             Ok(())
         }
@@ -2152,17 +2253,21 @@ fn resolve_bound_preset(
                 kind_str(entry.kind)
             ));
         }
-        let preset_id = entry
-            .preset
-            .as_deref()
-            .ok_or_else(|| crate::ts!("凭证 `{entry_id}` 缺少 preset", "Credential `{entry_id}` is missing its preset"))?;
+        let preset_id = entry.preset.as_deref().ok_or_else(|| {
+            crate::ts!(
+                "凭证 `{entry_id}` 缺少 preset",
+                "Credential `{entry_id}` is missing its preset"
+            )
+        })?;
         let preset = find_preset(preset_id)
             .ok_or_else(|| crate::ts!("凭证 `{entry_id}` 的 preset `{preset_id}` 不在预设表内", "Credential `{entry_id}` uses preset `{preset_id}`, which is not in the preset table"))?;
         return Ok(BoundPreset::Store(preset));
     }
-    if let Some(entry) = opencode_scan.entries.iter().find(|entry| {
-        entry.id == entry_id && entry.kind == CredentialKind::Reference
-    }) {
+    if let Some(entry) = opencode_scan
+        .entries
+        .iter()
+        .find(|entry| entry.id == entry_id && entry.kind == CredentialKind::Reference)
+    {
         let provider = ref_path_provider(entry.ref_path.as_deref()).ok_or_else(|| {
             crate::ts!("凭证 `{entry_id}` 的 ref 路径解析不出 provider-id，无法直连", "Cannot parse a provider id from the ref path of credential `{entry_id}`; cannot connect directly")
         })?;
@@ -2241,7 +2346,12 @@ fn grok_table_header(name: &str) -> String {
 /// 我们想要的 owned 块全文（标记行 + 表头 + 五个字段）。
 /// `base_url` 由调用方给：生产路径是 grok_dialect 规整器的环回地址（剥离
 /// `model_id` 方言字段后再转发到 preset 的 chat 端点），测试可传任意字面量。
-fn grok_owned_block(model_id: &str, preset: &ProviderPreset, base_url: &str, key_env_name: &str) -> String {
+fn grok_owned_block(
+    model_id: &str,
+    preset: &ProviderPreset,
+    base_url: &str,
+    key_env_name: &str,
+) -> String {
     format!(
         concat!(
             "{marker}\n",
@@ -2397,9 +2507,7 @@ fn parse_quoted_key(part: &str) -> Option<String> {
     } else if let Some(literal) = part.strip_prefix('\'') {
         literal.split_once('\'').map(|(name, _)| name.to_string())
     } else {
-        part.split('.')
-            .next()
-            .map(|bare| bare.trim().to_string())
+        part.split('.').next().map(|bare| bare.trim().to_string())
     }
 }
 
@@ -2432,7 +2540,11 @@ pub(crate) const GROK_BRIDGE_EFFORT_MENU: &[(&str, &str, bool)] = &[
     ("max", "Maximum reasoning for the hardest tasks", false),
 ];
 
-fn grok_engine_owned_block(model_id: &str, base_url: &str, row: Option<&CatalogModelRow>) -> String {
+fn grok_engine_owned_block(
+    model_id: &str,
+    base_url: &str,
+    row: Option<&CatalogModelRow>,
+) -> String {
     let menu: String = GROK_BRIDGE_EFFORT_MENU
         .iter()
         .map(|(id, desc, default)| {
@@ -2529,11 +2641,20 @@ fn ensure_grok_block_at(
     let original = match fs::read_to_string(config_path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(crate::ts!("读取 grok config.toml 失败: {error}", "Failed to read grok config.toml: {error}")),
+        Err(error) => {
+            return Err(crate::ts!(
+                "读取 grok config.toml 失败: {error}",
+                "Failed to read grok config.toml: {error}"
+            ))
+        }
     };
     if !original.trim().is_empty() {
-        toml::from_str::<toml::Value>(&original)
-            .map_err(|e| crate::ts!("grok config.toml 解析失败（{e}）— 拒绝写入半截", "grok config.toml parse failed ({e}) — refusing a partial write"))?;
+        toml::from_str::<toml::Value>(&original).map_err(|e| {
+            crate::ts!(
+                "grok config.toml 解析失败（{e}）— 拒绝写入半截",
+                "grok config.toml parse failed ({e}) — refusing a partial write"
+            )
+        })?;
     }
 
     let mut blocks = split_blocks(&original);
@@ -2585,8 +2706,12 @@ fn ensure_grok_block_at(
     }
 
     let output = blocks_to_text(&blocks);
-    toml::from_str::<toml::Value>(&output)
-        .map_err(|e| crate::ts!("生成的 grok config.toml 未通过 TOML 校验（{e}）— 已放弃写入", "Generated grok config.toml failed TOML validation ({e}) — write abandoned"))?;
+    toml::from_str::<toml::Value>(&output).map_err(|e| {
+        crate::ts!(
+            "生成的 grok config.toml 未通过 TOML 校验（{e}）— 已放弃写入",
+            "Generated grok config.toml failed TOML validation ({e}) — write abandoned"
+        )
+    })?;
     write_text_atomic(config_path, &output)?;
     Ok(true)
 }
@@ -2644,23 +2769,32 @@ pub fn remove_grok_model_tables_at(config_path: &Path) -> Result<bool, String> {
     let original = match fs::read_to_string(config_path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(crate::ts!("读取 grok config.toml 失败: {error}", "Failed to read grok config.toml: {error}")),
+        Err(error) => {
+            return Err(crate::ts!(
+                "读取 grok config.toml 失败: {error}",
+                "Failed to read grok config.toml: {error}"
+            ))
+        }
     };
     if original.trim().is_empty() {
         return Ok(false);
     }
-    toml::from_str::<toml::Value>(&original)
-        .map_err(|e| crate::ts!("grok config.toml 解析失败（{e}）— 拒绝写入半截", "grok config.toml parse failed ({e}) — refusing a partial write"))?;
+    toml::from_str::<toml::Value>(&original).map_err(|e| {
+        crate::ts!(
+            "grok config.toml 解析失败（{e}）— 拒绝写入半截",
+            "grok config.toml parse failed ({e}) — refusing a partial write"
+        )
+    })?;
 
     let mut blocks = split_blocks(&original);
     // 只删 marionette/ 前缀的 model 表；序言、非 model 表（[cli]/[models]/
     // [marketplace]/用户自定义表）一律保留。
-    blocks.retain(|block| {
-        match block.header.as_deref().and_then(model_table_name) {
+    blocks.retain(
+        |block| match block.header.as_deref().and_then(model_table_name) {
             Some(name) => !name.starts_with(GROK_MODEL_PREFIX),
             None => true,
-        }
-    });
+        },
+    );
     for block in &mut blocks {
         block.lines.retain(|line| line.trim() != GROK_OWNED_MARKER);
     }
@@ -2682,7 +2816,10 @@ pub fn remove_grok_model_tables_at(config_path: &Path) -> Result<bool, String> {
     }
     if !output.trim().is_empty() {
         toml::from_str::<toml::Value>(&output).map_err(|e| {
-            crate::ts!("生成的 grok config.toml 未通过 TOML 校验（{e}）— 已放弃写入", "Generated grok config.toml failed TOML validation ({e}) — write abandoned")
+            crate::ts!(
+                "生成的 grok config.toml 未通过 TOML 校验（{e}）— 已放弃写入",
+                "Generated grok config.toml failed TOML validation ({e}) — write abandoned"
+            )
         })?;
     }
     write_text_atomic(config_path, &output)?;
@@ -2693,7 +2830,8 @@ pub fn remove_grok_model_tables_at(config_path: &Path) -> Result<bool, String> {
 /// 绑定走 `preset_id == "engine"` 分支 —— base_url 指引擎的 `/v1`、api_key
 /// 用字面量令牌（acp.rs 的 SpawnInjection::GrokTable 传进来的就是它）。
 pub fn ensure_grok_model_table(model_id: &str, preset_id: &str) -> Result<bool, String> {
-    let path = grok_config_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    let path = grok_config_path()
+        .ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     if preset_id == crate::engine::ENGINE_PRESET_ID {
         let base_url = crate::engine::engine_v1_url().ok_or_else(|| {
             crate::ts!("翻译引擎未在运行，无法写 grok 引擎表（绑定已降级）", "The translation engine is not running; cannot write the grok engine table (binding downgraded)")
@@ -2703,7 +2841,8 @@ pub fn ensure_grok_model_table(model_id: &str, preset_id: &str) -> Result<bool, 
             .find(|row| row.id == model_id);
         return ensure_grok_engine_table_at(&path, model_id, &base_url, row.as_ref());
     }
-    let preset = find_preset(preset_id).ok_or_else(|| crate::ts!("未知 preset `{preset_id}`", "Unknown preset `{preset_id}`"))?;
+    let preset = find_preset(preset_id)
+        .ok_or_else(|| crate::ts!("未知 preset `{preset_id}`", "Unknown preset `{preset_id}`"))?;
     ensure_grok_model_table_at(&path, model_id, preset, GROK_KEY_ENV)
 }
 
@@ -2712,7 +2851,8 @@ pub fn ensure_grok_model_table(model_id: &str, preset_id: &str) -> Result<bool, 
 /// 是为了给未来的全局清理（如设置页「移除全部跨用表」）一个直接入口。
 #[allow(dead_code)]
 pub fn remove_grok_model_tables() -> Result<bool, String> {
-    let path = grok_config_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    let path = grok_config_path()
+        .ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     remove_grok_model_tables_at(&path)
 }
 
@@ -2728,7 +2868,8 @@ const ZHIPU_CODING_CHAT: &str = "https://open.bigmodel.cn/api/coding/paas/v4";
 /// 只动匹配到套餐钥匙的表；按量钥匙、`$ENV` 展开（我们自己的 owned 表）、
 /// 已经是 coding 端点的，一律不碰。失败不阻塞 spawn。
 pub fn rewrite_grok_zhipu_coding_plan_bases() -> Result<bool, String> {
-    let path = grok_config_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    let path = grok_config_path()
+        .ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     rewrite_grok_zhipu_coding_plan_bases_at(&path, &glm_coding_plan_keys())
 }
 
@@ -2742,13 +2883,22 @@ pub fn rewrite_grok_zhipu_coding_plan_bases_at(
     let original = match fs::read_to_string(config_path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(crate::ts!("读取 grok config.toml 失败: {error}", "Failed to read grok config.toml: {error}")),
+        Err(error) => {
+            return Err(crate::ts!(
+                "读取 grok config.toml 失败: {error}",
+                "Failed to read grok config.toml: {error}"
+            ))
+        }
     };
     if original.trim().is_empty() {
         return Ok(false);
     }
-    toml::from_str::<toml::Value>(&original)
-        .map_err(|e| crate::ts!("grok config.toml 解析失败（{e}）— 拒绝写入半截", "grok config.toml parse failed ({e}) — refusing a partial write"))?;
+    toml::from_str::<toml::Value>(&original).map_err(|e| {
+        crate::ts!(
+            "grok config.toml 解析失败（{e}）— 拒绝写入半截",
+            "grok config.toml parse failed ({e}) — refusing a partial write"
+        )
+    })?;
 
     let keys: HashSet<&str> = coding_plan_keys
         .iter()
@@ -2794,7 +2944,10 @@ pub fn rewrite_grok_zhipu_coding_plan_bases_at(
 
     let output = blocks_to_text(&blocks);
     toml::from_str::<toml::Value>(&output).map_err(|e| {
-        crate::ts!("生成的 grok config.toml 未通过 TOML 校验（{e}）— 已放弃写入", "Generated grok config.toml failed TOML validation ({e}) — write abandoned")
+        crate::ts!(
+            "生成的 grok config.toml 未通过 TOML 校验（{e}）— 已放弃写入",
+            "Generated grok config.toml failed TOML validation ({e}) — write abandoned"
+        )
     })?;
     write_text_atomic(config_path, &output)?;
     Ok(true)
@@ -2835,8 +2988,11 @@ fn is_zhipu_payg_chat(url: &str) -> bool {
 }
 
 fn rewrite_zhipu_payg_line(line: &str) -> String {
-    line.replace(&format!("{ZHIPU_PAYG_CHAT}/"), &format!("{ZHIPU_CODING_CHAT}/"))
-        .replace(ZHIPU_PAYG_CHAT, ZHIPU_CODING_CHAT)
+    line.replace(
+        &format!("{ZHIPU_PAYG_CHAT}/"),
+        &format!("{ZHIPU_CODING_CHAT}/"),
+    )
+    .replace(ZHIPU_PAYG_CHAT, ZHIPU_CODING_CHAT)
 }
 
 fn toml_field_name(line: &str) -> Option<&str> {
@@ -2885,17 +3041,11 @@ fn toml_unquote(value: &str) -> &str {
 pub enum SpawnInjection {
     /// claude-code：三个 env（base / token / model）。§4.8：跨用会话**不发**
     /// set_model，模型由 env 钉住。
-    ClaudeEnv {
-        base_url: String,
-        model: String,
-    },
+    ClaudeEnv { base_url: String, model: String },
     /// grok：先 ensure_grok_model_table（`marionette/<model_id>` 表），再 env
     /// MARIONETTE_PROVIDER_KEY=key（表里的 `$MARIONETTE_PROVIDER_KEY` 展开）。
     /// §4.8：grok 相反，**必须发** set_model 选 `marionette/<model>`（前端职责）。
-    GrokTable {
-        model_id: String,
-        preset_id: String,
-    },
+    GrokTable { model_id: String, preset_id: String },
 }
 
 /// 按注入策略把 (preset, agent, model) 解析成注入形态。
@@ -2934,7 +3084,8 @@ pub fn injection_for_agent(
     entry_id: &str,
     model_id: &str,
 ) -> Result<Option<SpawnInjection>, String> {
-    let path = credentials_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    let path = credentials_path()
+        .ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     let scan = crate::credentials::scan_opencode();
     injection_for_agent_at(&path, &scan, agent_id, entry_id, model_id)
 }
@@ -2963,7 +3114,10 @@ pub fn injection_for_agent_at(
             ));
         }
         let Some(port) = crate::engine::running_base().map(|(port, _)| port) else {
-            return Err(crate::ts!("翻译引擎状态不可用 — 降级为普通会话", "Translation engine status unavailable — falling back to a regular session"));
+            return Err(crate::ts!(
+                "翻译引擎状态不可用 — 降级为普通会话",
+                "Translation engine status unavailable — falling back to a regular session"
+            ));
         };
         return Ok(match agent {
             BridgeAgent::ClaudeCode => Some(SpawnInjection::ClaudeEnv {
@@ -2994,22 +3148,43 @@ pub fn injection_for_agent_at(
 /// 条目拒绝（直连需要真 API key），key 有效性规则与 `auth_key_for` 一致。
 /// 读到的明文**绝不打日志、绝不落盘**，只进调用方注入的子进程 env（§5）。
 pub fn peek_reference_secret(entry: &CredentialEntry) -> Result<String, String> {
-    let ref_path = entry
-        .ref_path
-        .as_deref()
-        .ok_or_else(|| crate::ts!("reference `{}` 没有 ref 路径", "Reference `{}` has no ref path", entry.id))?;
-    let (path, provider) = ref_path
-        .rsplit_once('#')
-        .ok_or_else(|| crate::ts!("ref 路径不是 `文件路径#provider-id` 形态: {ref_path}", "Ref path is not in `file path#provider-id` form: {ref_path}"))?;
-    let text = fs::read_to_string(path)
-        .map_err(|e| crate::ts!("读取 reference 源文件失败（`{provider}`）: {e}", "Failed to read the reference source file (`{provider}`): {e}"))?;
-    let auth: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| crate::ts!("reference 源文件解析失败（`{provider}`）: {e}", "Failed to parse the reference source file (`{provider}`): {e}"))?;
-    let value = auth
-        .get(provider)
-        .ok_or_else(|| crate::ts!("`{provider}` 条目已不在 reference 源文件里", "`{provider}` entry no longer exists in the reference source file"))?;
-    crate::provider_usage::strict_api_key_of(value)
-        .map_err(|e| crate::ts!("`{provider}` 的 key 现场读失败: {e}", "Failed to read the key for `{provider}` on the spot: {e}"))
+    let ref_path = entry.ref_path.as_deref().ok_or_else(|| {
+        crate::ts!(
+            "reference `{}` 没有 ref 路径",
+            "Reference `{}` has no ref path",
+            entry.id
+        )
+    })?;
+    let (path, provider) = ref_path.rsplit_once('#').ok_or_else(|| {
+        crate::ts!(
+            "ref 路径不是 `文件路径#provider-id` 形态: {ref_path}",
+            "Ref path is not in `file path#provider-id` form: {ref_path}"
+        )
+    })?;
+    let text = fs::read_to_string(path).map_err(|e| {
+        crate::ts!(
+            "读取 reference 源文件失败（`{provider}`）: {e}",
+            "Failed to read the reference source file (`{provider}`): {e}"
+        )
+    })?;
+    let auth: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        crate::ts!(
+            "reference 源文件解析失败（`{provider}`）: {e}",
+            "Failed to parse the reference source file (`{provider}`): {e}"
+        )
+    })?;
+    let value = auth.get(provider).ok_or_else(|| {
+        crate::ts!(
+            "`{provider}` 条目已不在 reference 源文件里",
+            "`{provider}` entry no longer exists in the reference source file"
+        )
+    })?;
+    crate::provider_usage::strict_api_key_of(value).map_err(|e| {
+        crate::ts!(
+            "`{provider}` 的 key 现场读失败: {e}",
+            "Failed to read the key for `{provider}` on the spot: {e}"
+        )
+    })
 }
 
 /// spawn 注入的钥匙统一解析（acp.rs 的注入段调用）：key-plan → 凭据库 DPAPI
@@ -3162,8 +3337,7 @@ fn sync_codex_engine_alias_at(
 }
 
 pub(crate) fn session_has_engine_binding(session_id: &str) -> bool {
-    binding_for(session_id)
-        .is_some_and(|s| s.entry_id == crate::engine::ENGINE_ENTRY_ID)
+    binding_for(session_id).is_some_and(|s| s.entry_id == crate::engine::ENGINE_ENTRY_ID)
 }
 
 /// initialize 应答是否声明了 `agentCapabilities.providers`（providers/set 的
@@ -3206,9 +3380,15 @@ mod tests {
             "vendor/m1"
         );
         // 哈希段后没有斜杠（不该发生）→ 原样。
-        assert_eq!(engine_model_label("source-73800e7663517058"), "source-73800e7663517058");
+        assert_eq!(
+            engine_model_label("source-73800e7663517058"),
+            "source-73800e7663517058"
+        );
         // 非 source 前缀（官方源 / openrouter）原样。
-        assert_eq!(engine_model_label("deepseek/deepseek-v4-pro"), "deepseek/deepseek-v4-pro");
+        assert_eq!(
+            engine_model_label("deepseek/deepseek-v4-pro"),
+            "deepseek/deepseek-v4-pro"
+        );
         assert_eq!(
             engine_model_label("openrouter/google/gemini-4-carbon"),
             "openrouter/google/gemini-4-carbon"
@@ -3238,15 +3418,24 @@ mod tests {
         let mut file = load_bindings_at(&path).unwrap();
         file.bindings.insert(
             "s1".into(),
-            BridgeSelection { entry_id: "engine".into(), model_id: "auto/gpt-6-luna".into() },
+            BridgeSelection {
+                entry_id: "engine".into(),
+                model_id: "auto/gpt-6-luna".into(),
+            },
         );
         file.bindings.insert(
             "s2".into(),
-            BridgeSelection { entry_id: "engine".into(), model_id: "codex/gpt-6-luna".into() },
+            BridgeSelection {
+                entry_id: "engine".into(),
+                model_id: "codex/gpt-6-luna".into(),
+            },
         );
         file.bindings.insert(
             "s3".into(),
-            BridgeSelection { entry_id: "opencode/deepseek".into(), model_id: "deepseek-flash".into() },
+            BridgeSelection {
+                entry_id: "opencode/deepseek".into(),
+                model_id: "deepseek-flash".into(),
+            },
         );
         save_bindings_at(&path, &file).unwrap();
 
@@ -3268,15 +3457,24 @@ mod tests {
         let mut file = load_bindings_at(&path).unwrap();
         file.bindings.insert(
             "alive-1".into(),
-            BridgeSelection { entry_id: "engine".into(), model_id: "codex/gpt-6-luna".into() },
+            BridgeSelection {
+                entry_id: "engine".into(),
+                model_id: "codex/gpt-6-luna".into(),
+            },
         );
         file.bindings.insert(
             "dead-1".into(),
-            BridgeSelection { entry_id: "engine".into(), model_id: "auto/gpt-6-luna".into() },
+            BridgeSelection {
+                entry_id: "engine".into(),
+                model_id: "auto/gpt-6-luna".into(),
+            },
         );
         file.bindings.insert(
             "dead-2".into(),
-            BridgeSelection { entry_id: "opencode/deepseek".into(), model_id: "deepseek-flash".into() },
+            BridgeSelection {
+                entry_id: "opencode/deepseek".into(),
+                model_id: "deepseek-flash".into(),
+            },
         );
         save_bindings_at(&path, &file).unwrap();
 
@@ -3317,17 +3515,34 @@ mod tests {
                 "preset `{}` 两个端点都是 None —— 至少要有一个核实过的 base",
                 preset.id
             );
-            assert!(!preset.last_verified.is_empty(), "preset `{}` 缺 last_verified", preset.id);
+            assert!(
+                !preset.last_verified.is_empty(),
+                "preset `{}` 缺 last_verified",
+                preset.id
+            );
         }
-        for required in ["deepseek", "opencode-go", "glm", "kimi", "openrouter", "xai"] {
+        for required in [
+            "deepseek",
+            "opencode-go",
+            "glm",
+            "kimi",
+            "openrouter",
+            "xai",
+        ] {
             assert!(find_preset(required).is_some(), "缺 preset `{required}`");
         }
         let deepseek = find_preset("deepseek").unwrap();
-        assert_eq!(deepseek.anthropic_base, Some("https://api.deepseek.com/anthropic"));
+        assert_eq!(
+            deepseek.anthropic_base,
+            Some("https://api.deepseek.com/anthropic")
+        );
         assert_eq!(deepseek.chat_base, Some("https://api.deepseek.com/v1"));
         // 端点必须是 https 绝对 URL（要写进 grok 表 / claude env 的东西）。
         for preset in table {
-            for base in [preset.anthropic_base, preset.chat_base].into_iter().flatten() {
+            for base in [preset.anthropic_base, preset.chat_base]
+                .into_iter()
+                .flatten()
+            {
                 assert!(
                     base.starts_with("https://"),
                     "preset `{}` 的 base 不是 https: {base}",
@@ -3355,8 +3570,13 @@ mod tests {
         let credentials = dir.join("credentials.json");
         // 假 opencode home（本测试没有 auth.json fixture → 空扫描，足矣）。
         let scan = crate::credentials::scan_opencode_at(&dir);
-        crate::credentials::add_key_plan_at(&credentials, "opencode-go", "OpenCode Go", "sk-bind-9f2c11")
-            .unwrap();
+        crate::credentials::add_key_plan_at(
+            &credentials,
+            "opencode-go",
+            "OpenCode Go",
+            "sk-bind-9f2c11",
+        )
+        .unwrap();
 
         // 绑定 → 文件是 camelCase schema。
         let selection = BridgeSelection {
@@ -3380,12 +3600,18 @@ mod tests {
             "camelCase schema 缺失: {raw}"
         );
         assert!(raw.contains("\"version\": 1"));
-        assert_eq!(binding_for_at(&bindings, "sess-1").unwrap().as_ref(), Some(&selection));
+        assert_eq!(
+            binding_for_at(&bindings, "sess-1").unwrap().as_ref(),
+            Some(&selection)
+        );
 
         // 绑定记了 touch_last_used。
         let store = crate::credentials::load_store_at(&credentials).unwrap();
         assert!(
-            store.entries.iter().any(|entry| entry.last_used_at.is_some()),
+            store
+                .entries
+                .iter()
+                .any(|entry| entry.last_used_at.is_some()),
             "绑定应记 touch_last_used"
         );
 
@@ -3404,7 +3630,10 @@ mod tests {
             Some(selection2.clone()),
         )
         .unwrap();
-        assert_eq!(binding_for_at(&bindings, "sess-1").unwrap().as_ref(), Some(&selection2));
+        assert_eq!(
+            binding_for_at(&bindings, "sess-1").unwrap().as_ref(),
+            Some(&selection2)
+        );
 
         // 校验：未知 entry / 非 key-plan / 空 model 拒绝且文件不动。
         let before = fs::read_to_string(&bindings).unwrap();
@@ -3459,7 +3688,11 @@ mod tests {
             })
         )
         .is_err());
-        assert_eq!(fs::read_to_string(&bindings).unwrap(), before, "校验失败不能动文件");
+        assert_eq!(
+            fs::read_to_string(&bindings).unwrap(),
+            before,
+            "校验失败不能动文件"
+        );
 
         // 解绑 → 绑定清空；再解绑（原本没有）也 OK。
         bind_session_at(
@@ -3514,8 +3747,13 @@ mod tests {
         let credentials = dir.join("credentials.json");
         let grok_config = dir.join("config.toml");
         let scan = crate::credentials::scan_opencode_at(&dir);
-        crate::credentials::add_key_plan_at(&credentials, "deepseek", "DeepSeek", "sk-unbind-aabb99")
-            .unwrap();
+        crate::credentials::add_key_plan_at(
+            &credentials,
+            "deepseek",
+            "DeepSeek",
+            "sk-unbind-aabb99",
+        )
+        .unwrap();
         let selection = BridgeSelection {
             entry_id: "deepseek".to_string(),
             model_id: "deepseek-flash".to_string(),
@@ -3547,7 +3785,9 @@ mod tests {
         )
         .unwrap();
         assert!(
-            !fs::read_to_string(&grok_config).unwrap().contains("marionette/"),
+            !fs::read_to_string(&grok_config)
+                .unwrap()
+                .contains("marionette/"),
             "grok 解绑应移除 owned 表"
         );
 
@@ -3577,7 +3817,9 @@ mod tests {
         )
         .unwrap();
         assert!(
-            fs::read_to_string(&grok_config).unwrap().contains("marionette/"),
+            fs::read_to_string(&grok_config)
+                .unwrap()
+                .contains("marionette/"),
             "claude 解绑不该动 grok 的 owned 表"
         );
 
@@ -3615,7 +3857,9 @@ official_marketplace_auto_installed = true\n";
         fs::write(&config, USER_CONFIG).unwrap();
 
         let preset = find_preset("deepseek").unwrap();
-        assert!(ensure_grok_model_table_at(&config, "deepseek-flash", preset, GROK_KEY_ENV).unwrap());
+        assert!(
+            ensure_grok_model_table_at(&config, "deepseek-flash", preset, GROK_KEY_ENV).unwrap()
+        );
 
         // 期望的 base：方言规整器的环回地址（剥 model_id 后转发到 chat 端点）。
         let expected_base = crate::grok_dialect::channel_base_url("deepseek").unwrap();
@@ -3649,7 +3893,10 @@ official_marketplace_auto_installed = true\n";
             value["model"]["marionette/deepseek-flash"]["api_key"],
             toml::Value::from("$MARIONETTE_PROVIDER_KEY")
         );
-        assert_eq!(value["model"]["home-qwen"]["api_key"], toml::Value::from("user-own-key"));
+        assert_eq!(
+            value["model"]["home-qwen"]["api_key"],
+            toml::Value::from("user-own-key")
+        );
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -3675,10 +3922,14 @@ official_marketplace_auto_installed = true\n";
         let config = dir.join("config.toml");
         fs::write(&config, USER_CONFIG).unwrap();
         let preset = find_preset("deepseek").unwrap();
-        assert!(ensure_grok_model_table_at(&config, "deepseek-flash", preset, GROK_KEY_ENV).unwrap());
+        assert!(
+            ensure_grok_model_table_at(&config, "deepseek-flash", preset, GROK_KEY_ENV).unwrap()
+        );
         let after_first = fs::read_to_string(&config).unwrap();
         // 幂等：已存在且一致 → 零写入（返回 false，文件字节不动）。
-        assert!(!ensure_grok_model_table_at(&config, "deepseek-flash", preset, GROK_KEY_ENV).unwrap());
+        assert!(
+            !ensure_grok_model_table_at(&config, "deepseek-flash", preset, GROK_KEY_ENV).unwrap()
+        );
         assert_eq!(fs::read_to_string(&config).unwrap(), after_first);
         fs::remove_dir_all(&dir).ok();
     }
@@ -3698,10 +3949,13 @@ official_marketplace_auto_installed = true\n";
             .unwrap()
             .replace(&current_base, "https://old.example.invalid/v1");
         fs::write(&config, stale).unwrap();
-        assert!(ensure_grok_model_table_at(&config, "deepseek-flash", deepseek, GROK_KEY_ENV).unwrap());
+        assert!(
+            ensure_grok_model_table_at(&config, "deepseek-flash", deepseek, GROK_KEY_ENV).unwrap()
+        );
         let text = fs::read_to_string(&config).unwrap();
         assert_eq!(
-            text.matches("[model.\"marionette/deepseek-flash\"]").count(),
+            text.matches("[model.\"marionette/deepseek-flash\"]")
+                .count(),
             1,
             "同名的表只能有一张"
         );
@@ -3742,11 +3996,16 @@ official_marketplace_auto_installed = true\n";
         // 内容漂移（key env 变了）+ 并发新增共存：替换我们的块，保留新增。
         let drifted = text.replace("$MARIONETTE_PROVIDER_KEY", "$OLD_ENV");
         fs::write(&config, drifted).unwrap();
-        assert!(ensure_grok_model_table_at(&config, "deepseek-flash", preset, GROK_KEY_ENV).unwrap());
+        assert!(
+            ensure_grok_model_table_at(&config, "deepseek-flash", preset, GROK_KEY_ENV).unwrap()
+        );
         let text = fs::read_to_string(&config).unwrap();
         assert!(text.contains("$MARIONETTE_PROVIDER_KEY"));
         assert!(!text.contains("$OLD_ENV"));
-        assert!(text.contains("privacy_banner_acked"), "替换路径也不能丢并发新增");
+        assert!(
+            text.contains("privacy_banner_acked"),
+            "替换路径也不能丢并发新增"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -3758,10 +4017,14 @@ official_marketplace_auto_installed = true\n";
         let broken = "[model.\"x\"\nbroken = = toml\n";
         fs::write(&config, broken).unwrap();
         let preset = find_preset("deepseek").unwrap();
-        let error =
-            ensure_grok_model_table_at(&config, "deepseek-flash", preset, GROK_KEY_ENV).unwrap_err();
+        let error = ensure_grok_model_table_at(&config, "deepseek-flash", preset, GROK_KEY_ENV)
+            .unwrap_err();
         assert!(error.contains("解析失败"), "unexpected: {error}");
-        assert_eq!(fs::read_to_string(&config).unwrap(), broken, "失败路径不能动文件");
+        assert_eq!(
+            fs::read_to_string(&config).unwrap(),
+            broken,
+            "失败路径不能动文件"
+        );
         // remove 同样拒绝。
         let error = remove_grok_model_tables_at(&config).unwrap_err();
         assert!(error.contains("解析失败"), "unexpected: {error}");
@@ -3784,9 +4047,18 @@ official_marketplace_auto_installed = true\n";
 
         assert!(remove_grok_model_tables_at(&config).unwrap());
         let text = fs::read_to_string(&config).unwrap();
-        assert!(!text.contains("marionette/"), "所有 marionette/ 表都应删除:\n{text}");
-        assert!(!text.contains(GROK_OWNED_MARKER), "孤立标记行也应删除:\n{text}");
-        assert!(text.trim().is_empty(), "这个文件里只有我们的东西，删完应为空:\n{text}");
+        assert!(
+            !text.contains("marionette/"),
+            "所有 marionette/ 表都应删除:\n{text}"
+        );
+        assert!(
+            !text.contains(GROK_OWNED_MARKER),
+            "孤立标记行也应删除:\n{text}"
+        );
+        assert!(
+            text.trim().is_empty(),
+            "这个文件里只有我们的东西，删完应为空:\n{text}"
+        );
         // 幂等：再删零写入。
         assert!(!remove_grok_model_tables_at(&config).unwrap());
 
@@ -3837,7 +4109,10 @@ official_marketplace_auto_installed = true\n";
         // remove 只删真表（伪表头在字符串值里，不是 model 下的表）。
         assert!(remove_grok_model_tables_at(&config).unwrap());
         let text = fs::read_to_string(&config).unwrap();
-        assert!(text.contains("marionette/fake"), "用户字符串里的伪表头必须保留");
+        assert!(
+            text.contains("marionette/fake"),
+            "用户字符串里的伪表头必须保留"
+        );
         assert!(!text.contains("[model.\"marionette/deepseek-flash\"]"));
         fs::remove_dir_all(&dir).ok();
     }
@@ -3848,7 +4123,9 @@ official_marketplace_auto_installed = true\n";
         let config = dir.join("config.toml");
         fs::write(&config, USER_CONFIG).unwrap();
         let plan = "sk-zhipu-plan";
-        let text = fs::read_to_string(&config).unwrap().replace("user-own-key", plan);
+        let text = fs::read_to_string(&config)
+            .unwrap()
+            .replace("user-own-key", plan);
         fs::write(&config, &text).unwrap();
 
         assert!(rewrite_grok_zhipu_coding_plan_bases_at(&config, &[plan.to_string()]).unwrap());
@@ -3858,7 +4135,10 @@ official_marketplace_auto_installed = true\n";
             !text.contains("https://open.bigmodel.cn/api/paas/v4\""),
             "pay-as-you-go chat URL must be gone:\n{text}"
         );
-        assert!(text.contains("http://100.94.137.45:8082/v1"), "unrelated tables stay");
+        assert!(
+            text.contains("http://100.94.137.45:8082/v1"),
+            "unrelated tables stay"
+        );
         assert!(text.contains("default = \"grok-4.6\""));
         // 幂等
         assert!(!rewrite_grok_zhipu_coding_plan_bases_at(&config, &[plan.to_string()]).unwrap());
@@ -3870,11 +4150,10 @@ official_marketplace_auto_installed = true\n";
         let dir = temp_dir("grok_zhipu_payg");
         let config = dir.join("config.toml");
         fs::write(&config, USER_CONFIG).unwrap();
-        assert!(!rewrite_grok_zhipu_coding_plan_bases_at(
-            &config,
-            &["sk-other-plan".to_string()]
-        )
-        .unwrap());
+        assert!(
+            !rewrite_grok_zhipu_coding_plan_bases_at(&config, &["sk-other-plan".to_string()])
+                .unwrap()
+        );
         let text = fs::read_to_string(&config).unwrap();
         assert!(text.contains("https://open.bigmodel.cn/api/paas/v4"));
         assert!(!text.contains("/api/coding/paas/v4"));
@@ -3932,7 +4211,12 @@ official_marketplace_auto_installed = true\n";
     /// 一个与真实密文形态一致的假 secret（前缀对、内容非空；用不上解密 —
     /// 列表模型不走 maskedKey）。跨平台测试里 peek 失败也无妨。
     fn path_ok_secret() -> String {
-        if cfg!(windows) { "dpapi:QUJDRA==" } else { "plain:QUJDRA==" }.to_string()
+        if cfg!(windows) {
+            "dpapi:QUJDRA=="
+        } else {
+            "plain:QUJDRA=="
+        }
+        .to_string()
     }
 
     #[test]
@@ -3953,7 +4237,10 @@ official_marketplace_auto_installed = true\n";
             // 测试态引擎未 Running → 引擎指引 note（2026-10-17 起：明说订阅族
             // 缺席的原因，而不是静默少一组）。
             assert!(
-                result.note.as_deref().is_some_and(|n| n.contains("模型共享未运行")),
+                result
+                    .note
+                    .as_deref()
+                    .is_some_and(|n| n.contains("模型共享未运行")),
                 "agent {agent}: note = {:?}",
                 result.note
             );
@@ -3975,7 +4262,10 @@ official_marketplace_auto_installed = true\n";
                 .iter()
                 .all(|m| m.entry_id == "opencode-go" || m.entry_id == "glm"));
             // reference / subscription 一概不出现。
-            assert!(result.models.iter().all(|m| m.entry_id != "opencode/deepseek"));
+            assert!(result
+                .models
+                .iter()
+                .all(|m| m.entry_id != "opencode/deepseek"));
             assert!(result.models.iter().all(|m| m.entry_id != "grok/login"));
         }
 
@@ -4037,8 +4327,14 @@ official_marketplace_auto_installed = true\n";
             created_at: "0".into(),
             last_used_at: None,
         };
-        assert!(!entry_visible_to(&host, BridgeAgent::Opencode), "宿主自己不可见");
-        assert!(entry_visible_to(&host, BridgeAgent::ClaudeCode), "别的 agent 可见（M2 用）");
+        assert!(
+            !entry_visible_to(&host, BridgeAgent::Opencode),
+            "宿主自己不可见"
+        );
+        assert!(
+            entry_visible_to(&host, BridgeAgent::ClaudeCode),
+            "别的 agent 可见（M2 用）"
+        );
         assert!(
             !entry_visible_to(
                 &crate::credentials::CredentialEntry {
@@ -4084,16 +4380,32 @@ official_marketplace_auto_installed = true\n";
         let dir = temp_dir("inject");
         let credentials = dir.join("credentials.json");
         let scan = crate::credentials::scan_opencode_at(&dir);
-        crate::credentials::add_key_plan_at(&credentials, "opencode-go", "OpenCode Go", "sk-inject-4f9a2c")
-            .unwrap();
-        crate::credentials::add_key_plan_at(&credentials, "deepseek", "DeepSeek", "sk-inject-ds-9933")
-            .unwrap();
+        crate::credentials::add_key_plan_at(
+            &credentials,
+            "opencode-go",
+            "OpenCode Go",
+            "sk-inject-4f9a2c",
+        )
+        .unwrap();
+        crate::credentials::add_key_plan_at(
+            &credentials,
+            "deepseek",
+            "DeepSeek",
+            "sk-inject-ds-9933",
+        )
+        .unwrap();
 
         // claude → env 形态（base 走规整器：opencode-go 的 anthropic 端点要求
         // 会话头，claude 不自带，由规整器按 preset 叠加）。
         assert_eq!(
-            injection_for_agent_at(&credentials, &scan, "claude-code", "opencode-go", "deepseek-v4-pro")
-                .unwrap(),
+            injection_for_agent_at(
+                &credentials,
+                &scan,
+                "claude-code",
+                "opencode-go",
+                "deepseek-v4-pro"
+            )
+            .unwrap(),
             Some(SpawnInjection::ClaudeEnv {
                 base_url: crate::grok_dialect::channel_base_url("opencode-go").unwrap(),
                 model: "deepseek-v4-pro".into(),
@@ -4101,13 +4413,21 @@ official_marketplace_auto_installed = true\n";
         );
         // 别名 claude 同样命中。
         assert!(matches!(
-            injection_for_agent_at(&credentials, &scan, "claude", "deepseek", "deepseek-flash").unwrap(),
+            injection_for_agent_at(&credentials, &scan, "claude", "deepseek", "deepseek-flash")
+                .unwrap(),
             Some(SpawnInjection::ClaudeEnv { .. })
         ));
 
         // grok → owned 表形态（chat base）。
         assert_eq!(
-            injection_for_agent_at(&credentials, &scan, "grok-build", "deepseek", "deepseek-flash").unwrap(),
+            injection_for_agent_at(
+                &credentials,
+                &scan,
+                "grok-build",
+                "deepseek",
+                "deepseek-flash"
+            )
+            .unwrap(),
             Some(SpawnInjection::GrokTable {
                 model_id: "deepseek-flash".into(),
                 preset_id: "deepseek".into(),
@@ -4115,9 +4435,16 @@ official_marketplace_auto_installed = true\n";
         );
 
         // 非 M1 agent → None；引用死条目 → Err（带线索）。
-        assert_eq!(injection_for_agent_at(&credentials, &scan, "codex", "deepseek", "x").unwrap(), None);
-        assert_eq!(injection_for_agent_at(&credentials, &scan, "deepseek", "deepseek", "x").unwrap(), None);
-        let error = injection_for_agent_at(&credentials, &scan, "claude-code", "ghost", "x").unwrap_err();
+        assert_eq!(
+            injection_for_agent_at(&credentials, &scan, "codex", "deepseek", "x").unwrap(),
+            None
+        );
+        assert_eq!(
+            injection_for_agent_at(&credentials, &scan, "deepseek", "deepseek", "x").unwrap(),
+            None
+        );
+        let error =
+            injection_for_agent_at(&credentials, &scan, "claude-code", "ghost", "x").unwrap_err();
         assert!(error.contains("不存在"), "unexpected: {error}");
 
         fs::remove_dir_all(&dir).ok();
@@ -4229,7 +4556,9 @@ official_marketplace_auto_installed = true\n";
         assert!(engine_models.iter().any(|m| m.model_id == "tail/grok-4.5"));
         assert!(engine_models.iter().any(|m| m.model_id == "tail/grok-4.6"));
         assert!(
-            engine_models.iter().all(|m| !m.model_id.starts_with("group/")),
+            engine_models
+                .iter()
+                .all(|m| !m.model_id.starts_with("group/")),
             "路由组不进跨用菜单"
         );
 
@@ -4264,7 +4593,8 @@ official_marketplace_auto_installed = true\n";
         .unwrap_err();
         assert!(error.contains("未在运行"), "unexpected: {error}");
         assert!(binding_for_at(&bindings, "s1").unwrap().is_none());
-        let error = injection_for_agent_at(&credentials, &scan, "claude-code", "engine", "x").unwrap_err();
+        let error =
+            injection_for_agent_at(&credentials, &scan, "claude-code", "engine", "x").unwrap_err();
         assert!(error.contains("降级"), "unexpected: {error}");
         drop(absent);
 
@@ -4292,8 +4622,14 @@ official_marketplace_auto_installed = true\n";
 
         // claude 臂：env 形态，base 是引擎根（引擎在根上服务 /v1/messages）。
         assert_eq!(
-            injection_for_agent_at(&credentials, &scan, "claude-code", "engine", "grok/grok-4.7")
-                .unwrap(),
+            injection_for_agent_at(
+                &credentials,
+                &scan,
+                "claude-code",
+                "engine",
+                "grok/grok-4.7"
+            )
+            .unwrap(),
             Some(SpawnInjection::ClaudeEnv {
                 base_url: "http://127.0.0.1:39999".into(),
                 model: "grok/grok-4.7".into(),
@@ -4337,7 +4673,11 @@ official_marketplace_auto_installed = true\n";
         let result = list_models_at(&credentials, &scan, "codex");
         assert!(result.models.is_empty());
         assert!(
-            result.note.as_deref().unwrap_or_default().contains("翻译引擎"),
+            result
+                .note
+                .as_deref()
+                .unwrap_or_default()
+                .contains("翻译引擎"),
             "unexpected note: {:?}",
             result.note
         );
@@ -4353,11 +4693,7 @@ official_marketplace_auto_installed = true\n";
             let result = list_models_at(&credentials, &scan, agent);
             assert_eq!(result.sources.len(), 1, "codex 只列引擎源");
             assert_eq!(result.sources[0].entry_id, crate::engine::ENGINE_ENTRY_ID);
-            let ids: Vec<&str> = result
-                .models
-                .iter()
-                .map(|m| m.model_id.as_str())
-                .collect();
+            let ids: Vec<&str> = result.models.iter().map(|m| m.model_id.as_str()).collect();
             assert_eq!(ids, vec!["alpha/grok-4.7", "kimi/k2.6"]);
             assert!(result.note.is_none(), "unexpected note: {:?}", result.note);
         }
@@ -4418,13 +4754,25 @@ official_marketplace_auto_installed = true\n";
             entry_id: crate::engine::ENGINE_ENTRY_ID.into(),
             model_id: "source-demo/deepseek-v4.1-flash:1017".into(),
         };
-        assert_eq!(codex_engine_context_window("codex", &engine, &rows), Some(1_048_576));
-        assert_eq!(codex_engine_context_window("codex-acp", &engine, &rows), Some(1_048_576));
-        assert_eq!(codex_engine_context_window("claude-code", &engine, &rows), None);
+        assert_eq!(
+            codex_engine_context_window("codex", &engine, &rows),
+            Some(1_048_576)
+        );
+        assert_eq!(
+            codex_engine_context_window("codex-acp", &engine, &rows),
+            Some(1_048_576)
+        );
+        assert_eq!(
+            codex_engine_context_window("claude-code", &engine, &rows),
+            None
+        );
         assert_eq!(
             codex_engine_context_window(
                 "codex",
-                &BridgeSelection { entry_id: "deepseek".into(), ..engine.clone() },
+                &BridgeSelection {
+                    entry_id: "deepseek".into(),
+                    ..engine.clone()
+                },
                 &rows
             ),
             None
@@ -4432,7 +4780,10 @@ official_marketplace_auto_installed = true\n";
         assert_eq!(
             codex_engine_context_window(
                 "codex",
-                &BridgeSelection { model_id: "unknown/model".into(), ..engine },
+                &BridgeSelection {
+                    model_id: "unknown/model".into(),
+                    ..engine
+                },
                 &rows
             ),
             None
@@ -4462,15 +4813,16 @@ official_marketplace_auto_installed = true\n";
         let calls: std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>> =
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let recorder = calls.clone();
-        let _engine = crate::engine::test_running_with_cli(Vec::new(), std::sync::Arc::new(
-            move |args| {
+        let _engine = crate::engine::test_running_with_cli(
+            Vec::new(),
+            std::sync::Arc::new(move |args| {
                 recorder
                     .lock()
                     .unwrap()
                     .push(args.iter().map(|s| s.to_string()).collect());
                 Ok(())
-            },
-        ));
+            }),
+        );
 
         // 非 codex / 无当前模型 / 未绑定的会话 → 零 CLI。
         sync_codex_engine_alias_at(&bindings, "s1", Some("claude-code"), Some("m"), None);
@@ -4503,7 +4855,11 @@ official_marketplace_auto_installed = true\n";
             Some("gpt-5.2-codex"),
             Some("xhigh"),
         );
-        assert_eq!(calls.lock().unwrap().len(), 2, "effort re-pin must rewrite the group");
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            2,
+            "effort re-pin must rewrite the group"
+        );
         assert!(
             calls.lock().unwrap()[1]
                 .iter()
@@ -4513,12 +4869,24 @@ official_marketplace_auto_installed = true\n";
         );
 
         // 解绑（None）→ codex 分支清别名（无人引用即删组）。
-        bind_session_at(&bindings, &credentials, &grok_config, &scan, "s1", Some("codex"), None)
-            .unwrap();
+        bind_session_at(
+            &bindings,
+            &credentials,
+            &grok_config,
+            &scan,
+            "s1",
+            Some("codex"),
+            None,
+        )
+        .unwrap();
         let calls = calls.lock().unwrap();
         assert_eq!(
             calls[2],
-            vec!["group".to_string(), "rm".to_string(), "gpt-5.2-codex".to_string()]
+            vec![
+                "group".to_string(),
+                "rm".to_string(),
+                "gpt-5.2-codex".to_string()
+            ]
         );
 
         fs::remove_dir_all(&dir).ok();
@@ -4533,7 +4901,7 @@ official_marketplace_auto_installed = true\n";
         let source = BridgeSource {
             entry_id: "engine".to_string(),
             preset: "engine".to_string(),
-label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)"),
+            label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)"),
             from_scan: false,
         };
         let result_of = |ids: &[&str]| BridgeModelsResult {
@@ -4572,7 +4940,11 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
         let empty_path = dir.join("empty.json");
         note_catalog_drift_at(
             &empty_path,
-            &BridgeModelsResult { models: Vec::new(), sources: Vec::new(), note: None },
+            &BridgeModelsResult {
+                models: Vec::new(),
+                sources: Vec::new(),
+                note: None,
+            },
         )
         .unwrap();
         assert!(!empty_path.exists());
@@ -4594,13 +4966,22 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
         fs::write(&config, USER_CONFIG).unwrap();
         let _engine = crate::engine::test_running(Vec::new());
 
-        assert!(ensure_grok_engine_table_at(&config, "grok/grok-4.7", "http://127.0.0.1:39999/v1", None).unwrap());
+        assert!(ensure_grok_engine_table_at(
+            &config,
+            "grok/grok-4.7",
+            "http://127.0.0.1:39999/v1",
+            None
+        )
+        .unwrap());
         let text = fs::read_to_string(&config).unwrap();
         assert!(text.contains("[model.\"marionette/grok/grok-4.7\"]"));
         assert!(text.contains("model = \"grok/grok-4.7\""));
         assert!(text.contains("base_url = \"http://127.0.0.1:39999/v1\""));
         assert!(text.contains(&format!("api_key = \"{}\"", crate::engine::ENGINE_TOKEN)));
-        assert!(!text.contains("$MARIONETTE_PROVIDER_KEY"), "引擎表不用 env 引用");
+        assert!(
+            !text.contains("$MARIONETTE_PROVIDER_KEY"),
+            "引擎表不用 env 引用"
+        );
         assert!(text.contains("user-own-key"), "用户内容原样保留");
         // 菜单四档 + default 落 high（内联数组，单块手术不变）。
         assert!(text.contains("reasoning_efforts = ["));
@@ -4615,7 +4996,11 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
             .lines()
             .filter(|line| line.starts_with("default ="))
             .collect();
-        assert_eq!(top_defaults, ["default = \"grok-4.6\""], "绝不新增 [models] default");
+        assert_eq!(
+            top_defaults,
+            ["default = \"grok-4.6\""],
+            "绝不新增 [models] default"
+        );
         toml::from_str::<toml::Value>(&text).unwrap();
 
         // 菜单读回：grok_bridge_effort_menu 拿到四档（acp.rs 的门控数据源）。
@@ -4624,8 +5009,20 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
         assert_eq!(ids, ["low", "medium", "high", "max"]);
 
         // 幂等；端口漂移 → 原位替换（引擎换了端口，表跟着走）。
-        assert!(!ensure_grok_engine_table_at(&config, "grok/grok-4.7", "http://127.0.0.1:39999/v1", None).unwrap());
-        assert!(ensure_grok_engine_table_at(&config, "grok/grok-4.7", "http://127.0.0.1:40001/v1", None).unwrap());
+        assert!(!ensure_grok_engine_table_at(
+            &config,
+            "grok/grok-4.7",
+            "http://127.0.0.1:39999/v1",
+            None
+        )
+        .unwrap());
+        assert!(ensure_grok_engine_table_at(
+            &config,
+            "grok/grok-4.7",
+            "http://127.0.0.1:40001/v1",
+            None
+        )
+        .unwrap());
         let text = fs::read_to_string(&config).unwrap();
         assert!(text.contains("40001"));
         assert!(!text.contains("39999"));
@@ -4639,7 +5036,13 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
             ),
         )
         .unwrap();
-        assert!(ensure_grok_engine_table_at(&config, "legacy/m1", "http://127.0.0.1:39999/v1", None).unwrap());
+        assert!(ensure_grok_engine_table_at(
+            &config,
+            "legacy/m1",
+            "http://127.0.0.1:39999/v1",
+            None
+        )
+        .unwrap());
         assert!(
             grok_bridge_effort_menu_at(&config, "marionette/legacy/m1").is_some(),
             "旧表升级后带菜单"
@@ -4688,8 +5091,19 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
 
         // 0 值不写；纯文本模型 vision=false 也直写（grok 文档：false 会让它
         // 不把附图发给模型——正好）。
-        let blind = CatalogModelRow { id: "x/m".into(), context_window: 0, max_output: 0, images: false };
-        assert!(ensure_grok_engine_table_at(&config, "x/m", "http://127.0.0.1:39999/v1", Some(&blind)).unwrap());
+        let blind = CatalogModelRow {
+            id: "x/m".into(),
+            context_window: 0,
+            max_output: 0,
+            images: false,
+        };
+        assert!(ensure_grok_engine_table_at(
+            &config,
+            "x/m",
+            "http://127.0.0.1:39999/v1",
+            Some(&blind)
+        )
+        .unwrap());
         let text = fs::read_to_string(&config).unwrap();
         let block = text.split("[model.\"marionette/x/m\"]").nth(1).unwrap();
         assert!(!block.contains("context_window"), "0 不写");
@@ -4716,7 +5130,13 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
             models: &[],
             last_verified: "2026-11-13",
         };
-        assert!(ensure_grok_model_table_at(&config, "probe/model", &preset, "MARIONETTE_PROVIDER_KEY").unwrap());
+        assert!(ensure_grok_model_table_at(
+            &config,
+            "probe/model",
+            &preset,
+            "MARIONETTE_PROVIDER_KEY"
+        )
+        .unwrap());
         let text = fs::read_to_string(&config).unwrap();
         assert!(!text.contains("reasoning_efforts"), "preset 直连不写菜单");
         assert!(grok_bridge_effort_menu_at(&config, "marionette/probe/model").is_none());
@@ -4731,7 +5151,11 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
     /// 优先的规则归登录态）。key 全是假 key，仅测试用。
     fn fixture_opencode_home(dir: &Path) -> PathBuf {
         let home = dir.join("opencode-home");
-        let auth = home.join(".local").join("share").join("opencode").join("auth.json");
+        let auth = home
+            .join(".local")
+            .join("share")
+            .join("opencode")
+            .join("auth.json");
         fs::create_dir_all(auth.parent().unwrap()).unwrap();
         fs::write(
             &auth,
@@ -4763,6 +5187,7 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
     /// provider 保留），坏 JSON 整体替换。
     #[test]
     fn opencode_engine_config_merges_and_shapes() {
+        let _absent = crate::engine::test_absent_guard();
         let content = opencode_engine_config_content(
             3425,
             &[
@@ -4790,13 +5215,28 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
         assert_eq!(provider["options"]["apiKey"], crate::engine::ENGINE_TOKEN);
         // 模型 id 原样、名字取最后一段。
         assert_eq!(provider["models"]["grok/grok-4.7"]["name"], "grok-4.7");
-        assert_eq!(provider["models"]["codex/gpt-5.6-luna"]["name"], "gpt-5.6-luna");
+        assert_eq!(
+            provider["models"]["codex/gpt-5.6-luna"]["name"],
+            "gpt-5.6-luna"
+        );
         assert_eq!(provider["models"]["opencode-go/glm-5.3"]["name"], "glm-5.3");
         // 窗口/输出上限写进 limit —— 不写 opencode 就退回它自己的 200K 默认。
-        assert_eq!(provider["models"]["grok/grok-4.7"]["limit"]["context"], 2_000_000);
-        assert_eq!(provider["models"]["grok/grok-4.7"]["limit"]["output"], 64_000);
-        assert_eq!(provider["models"]["opencode-go/glm-5.3"]["limit"]["context"], 200_000);
-        assert_eq!(provider["models"]["opencode-go/glm-5.3"]["limit"]["output"], 32_000);
+        assert_eq!(
+            provider["models"]["grok/grok-4.7"]["limit"]["context"],
+            2_000_000
+        );
+        assert_eq!(
+            provider["models"]["grok/grok-4.7"]["limit"]["output"],
+            64_000
+        );
+        assert_eq!(
+            provider["models"]["opencode-go/glm-5.3"]["limit"]["context"],
+            200_000
+        );
+        assert_eq!(
+            provider["models"]["opencode-go/glm-5.3"]["limit"]["output"],
+            32_000
+        );
         // 窗口已知、输出未知：成对补 fallback，不能只写 context（schema 会拒整份配置）。
         assert_eq!(
             provider["models"]["grok/grok-4.7@500k"]["limit"]["context"],
@@ -4807,7 +5247,9 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
             OPENCODE_LIMIT_OUTPUT_FALLBACK
         );
         // 窗口输出都是 0（不知道）→ 不写 limit，别编窗口。
-        assert!(provider["models"]["codex/gpt-5.6-luna"].get("limit").is_none());
+        assert!(provider["models"]["codex/gpt-5.6-luna"]
+            .get("limit")
+            .is_none());
         // 图片能力（2026-11-13 审计批）：schema 的 attachment 真值直写，
         // 不写按默认（text）办——附图会被当文本模型处理。
         assert_eq!(provider["models"]["grok/grok-4.7"]["attachment"], false);
@@ -4822,12 +5264,14 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
             true
         );
         assert_eq!(
-            provider["models"]["source-eb6e68d5c47ab23e/deepseek-v4.1-flash:1017"]["modalities"]["input"],
+            provider["models"]["source-eb6e68d5c47ab23e/deepseek-v4.1-flash:1017"]["modalities"]
+                ["input"],
             serde_json::json!(["text", "image"])
         );
 
         // 坏 JSON existing → 整体替换（只剩 marionette）。
-        let replaced = opencode_engine_config_content(3425, &[row("grok/grok-4.7", 0, 0)], Some("not json"));
+        let replaced =
+            opencode_engine_config_content(3425, &[row("grok/grok-4.7", 0, 0)], Some("not json"));
         let parsed: serde_json::Value = serde_json::from_str(&replaced).unwrap();
         assert!(parsed.get("autoupdate").is_none());
         assert!(parsed["provider"]["marionette"]["models"]["grok/grok-4.7"].is_object());
@@ -4992,7 +5436,10 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
             .iter()
             .map(|v| v.as_str().unwrap())
             .collect();
-        assert_eq!(order, vec!["58062756-dead-beef", "bigmodel-api", "marionette"]);
+        assert_eq!(
+            order,
+            vec!["58062756-dead-beef", "bigmodel-api", "marionette"]
+        );
 
         // 用户 provider 规则原样 + 托管规则在列、字段形状对齐官方模板。
         let rules = parsed["config"]["providerConfigRules"]["providerRules"]
@@ -5044,7 +5491,10 @@ label: crate::ts!("翻译引擎（订阅）", "Translation engine (subscription)
             glm_rule["config"]["properties"]["inputFormat"]["supportsImage"],
             true
         );
-        assert_eq!(glm_rule["config"]["optionSpecs"]["maxOutputTokens"]["max"], 65536);
+        assert_eq!(
+            glm_rule["config"]["optionSpecs"]["maxOutputTokens"]["max"],
+            65536
+        );
         let grok_rule = managed_rules
             .iter()
             .find(|r| r["modelId"] == "grok-4.7")
@@ -5415,7 +5865,10 @@ Connection: close
         let result = list_models_at(&credentials, &scan, "grok-build");
         // 测试态引擎未 Running → 引擎指引 note（2026-10-17 起）。
         assert!(
-            result.note.as_deref().is_some_and(|n| n.contains("模型共享未运行")),
+            result
+                .note
+                .as_deref()
+                .is_some_and(|n| n.contains("模型共享未运行")),
             "note = {:?}",
             result.note
         );
@@ -5427,9 +5880,15 @@ Connection: close
         let ids: Vec<&str> = ds.iter().map(|m| m.model_id.as_str()).collect();
         assert!(ids.contains(&"deepseek-chat"), "ids = {ids:?}");
         assert!(ids.contains(&"deepseek-reasoner"), "ids = {ids:?}");
-        assert!(ids.contains(&"deepseek-flash"), "静态清单要并集保留: {ids:?}");
+        assert!(
+            ids.contains(&"deepseek-flash"),
+            "静态清单要并集保留: {ids:?}"
+        );
         for model in &ds {
-            assert_eq!(model.label, model.model_id, "label 必须是模型 id，不是 preset 名");
+            assert_eq!(
+                model.label, model.model_id,
+                "label 必须是模型 id，不是 preset 名"
+            );
         }
         fs::remove_dir_all(&dir).ok();
     }
@@ -5469,7 +5928,10 @@ Connection: close
                 images: false,
             }
         );
-        assert_eq!(rows[1].context_window, 0, "没说的窗口是 0（不写 contextWindow）");
+        assert_eq!(
+            rows[1].context_window, 0,
+            "没说的窗口是 0（不写 contextWindow）"
+        );
         assert_eq!(rows[1].max_output, 0);
         assert_eq!(rows[2].context_window, 500_000);
         assert_eq!(rows[2].max_output, 0, "max_output_tokens 0 = 未披露");
@@ -5479,13 +5941,33 @@ Connection: close
     #[test]
     fn image_flags_skip_unknowns_but_keep_real_noes() {
         let rows = vec![
-            CatalogModelRow { id: "p/vision".into(), context_window: 1_000_000, max_output: 1, images: true },
+            CatalogModelRow {
+                id: "p/vision".into(),
+                context_window: 1_000_000,
+                max_output: 1,
+                images: true,
+            },
             // metadata present + images false = the catalog really says text-only
-            CatalogModelRow { id: "p/text".into(), context_window: 1_000_000, max_output: 1, images: false },
+            CatalogModelRow {
+                id: "p/text".into(),
+                context_window: 1_000_000,
+                max_output: 1,
+                images: false,
+            },
             // no metadata at all: magpie defaults images to false — that is "unknown", not "no"
-            CatalogModelRow { id: "src/local".into(), context_window: 0, max_output: 0, images: false },
+            CatalogModelRow {
+                id: "src/local".into(),
+                context_window: 0,
+                max_output: 0,
+                images: false,
+            },
             // images true is a positive statement even without a window
-            CatalogModelRow { id: "src/odd".into(), context_window: 0, max_output: 0, images: true },
+            CatalogModelRow {
+                id: "src/odd".into(),
+                context_window: 0,
+                max_output: 0,
+                images: true,
+            },
         ];
         let flags = image_flags_from_rows(&rows);
         assert_eq!(flags.get("p/vision"), Some(&true));
@@ -5507,7 +5989,8 @@ Connection: close
                 {"id":"array/m1","modalities":["text","image"]}
             ]}"#,
         );
-        let images: Vec<(String, bool)> = rows.into_iter().map(|row| (row.id, row.images)).collect();
+        let images: Vec<(String, bool)> =
+            rows.into_iter().map(|row| (row.id, row.images)).collect();
         assert_eq!(
             images,
             vec![
@@ -5545,7 +6028,10 @@ Connection: close
             let result = list_models_at(&credentials, &scan, agent);
             // 测试态引擎未 Running → 引擎指引 note（2026-10-17 起）。
             assert!(
-                result.note.as_deref().is_some_and(|n| n.contains("模型共享未运行")),
+                result
+                    .note
+                    .as_deref()
+                    .is_some_and(|n| n.contains("模型共享未运行")),
                 "{agent}: note = {:?}",
                 result.note
             );
@@ -5559,15 +6045,26 @@ Connection: close
                 vec!["opencode/deepseek", "opencode/openrouter", "xai"],
                 "{agent}"
             );
-            assert!(result.sources.iter().any(|s| s.entry_id == "opencode/deepseek"
-                && s.preset == "deepseek"
-                && s.from_scan));
-            assert!(result.sources.iter().any(|s| s.entry_id == "xai" && !s.from_scan));
+            assert!(result
+                .sources
+                .iter()
+                .any(|s| s.entry_id == "opencode/deepseek"
+                    && s.preset == "deepseek"
+                    && s.from_scan));
+            assert!(result
+                .sources
+                .iter()
+                .any(|s| s.entry_id == "xai" && !s.from_scan));
             // google（未映射）、anthropic / hybrid（OAuth）一概不出现。
             // 模型：xai 的 grok-4.7 + deepseek 的两个，各自挂在 entry 上。
-            let mut model_ids: Vec<&str> = result.models.iter().map(|m| m.model_id.as_str()).collect();
+            let mut model_ids: Vec<&str> =
+                result.models.iter().map(|m| m.model_id.as_str()).collect();
             model_ids.sort_unstable();
-            assert_eq!(model_ids, vec!["deepseek-flash", "deepseek-v4-pro", "grok-4.7"], "{agent}");
+            assert_eq!(
+                model_ids,
+                vec!["deepseek-flash", "deepseek-v4-pro", "grok-4.7"],
+                "{agent}"
+            );
             assert!(result
                 .models
                 .iter()
@@ -5576,9 +6073,15 @@ Connection: close
             // 序列化无明文（reference 不带 key，key-plan 是密文）；契约字段名
             // （camelCase）逐字钉住 —— 前端并行开发中。
             let leaked = serde_json::to_string(&result).unwrap();
-            assert!(!leaked.contains("sk-fixture"), "{agent} 的结果泄漏了明文 key");
+            assert!(
+                !leaked.contains("sk-fixture"),
+                "{agent} 的结果泄漏了明文 key"
+            );
             assert!(leaked.contains("\"sources\":"), "{agent}: {leaked}");
-            assert!(leaked.contains("\"entryId\":\"opencode/deepseek\""), "{agent}");
+            assert!(
+                leaked.contains("\"entryId\":\"opencode/deepseek\""),
+                "{agent}"
+            );
             assert!(leaked.contains("\"fromScan\":true"), "{agent}");
         }
 
@@ -5586,15 +6089,27 @@ Connection: close
         // （无缓存）+ 原生管理文案（去重规则不变）。
         let self_view = list_models_at(&credentials, &scan, "opencode");
         assert!(self_view.models.is_empty());
-        assert_eq!(self_view.sources.len(), 1, "引擎源应恒在: {:?}", self_view.sources);
-        assert_eq!(self_view.sources[0].entry_id, crate::engine::ENGINE_ENTRY_ID);
+        assert_eq!(
+            self_view.sources.len(),
+            1,
+            "引擎源应恒在: {:?}",
+            self_view.sources
+        );
+        assert_eq!(
+            self_view.sources[0].entry_id,
+            crate::engine::ENGINE_ENTRY_ID
+        );
         assert_eq!(
             self_view.note.as_deref(),
             Some("模型共享未运行 — Grok/GPT 等订阅模型暂不可见；点左下角模型共享按钮启动后重开此菜单")
         );
 
         // 扫描失败（auth.json 损坏）→ 静默跳过该家，store 条目照常。
-        let auth = home.join(".local").join("share").join("opencode").join("auth.json");
+        let auth = home
+            .join(".local")
+            .join("share")
+            .join("opencode")
+            .join("auth.json");
         fs::write(&auth, "{broken").unwrap();
         let broken = crate::credentials::scan_opencode_at(&home);
         assert!(broken.error.is_some(), "损坏的 auth.json 应报 error");
@@ -5603,11 +6118,18 @@ Connection: close
         assert_eq!(source_ids, vec!["xai"], "扫描坏了不该连 store 条目也没了");
         assert!(result.models.iter().all(|m| m.entry_id == "xai"));
         // 测试态引擎未 Running → 引擎指引 note（2026-10-17 起）。
-        assert!(result.note.as_deref().is_some_and(|n| n.contains("模型共享未运行")));
+        assert!(result
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("模型共享未运行")));
 
         // 只有「模型列表为空」的来源时：models 空 + 说明，但来源在。
         let home_or = dir.join("opencode-or-only");
-        let or_auth = home_or.join(".local").join("share").join("opencode").join("auth.json");
+        let or_auth = home_or
+            .join(".local")
+            .join("share")
+            .join("opencode")
+            .join("auth.json");
         fs::create_dir_all(or_auth.parent().unwrap()).unwrap();
         fs::write(
             &or_auth,
@@ -5643,7 +6165,11 @@ Connection: close
         let _absent = crate::engine::test_absent_guard();
         let dir = temp_dir("zhipu-ref");
         let home = dir.join("opencode-home");
-        let auth = home.join(".local").join("share").join("opencode").join("auth.json");
+        let auth = home
+            .join(".local")
+            .join("share")
+            .join("opencode")
+            .join("auth.json");
         fs::create_dir_all(auth.parent().unwrap()).unwrap();
         fs::write(
             &auth,
@@ -5720,7 +6246,10 @@ Connection: close
             error.contains("未映射") && error.contains("L1"),
             "unexpected: {error}"
         );
-        assert!(binding_for_at(&bindings, "s2").unwrap().is_none(), "失败的绑定不能落盘");
+        assert!(
+            binding_for_at(&bindings, "s2").unwrap().is_none(),
+            "失败的绑定不能落盘"
+        );
 
         // OAuth 条目 / 混合条目（扫描侧归 subscription，不是 reference）与
         // 彻底消失的条目 → 一律按「不存在」拒。
@@ -5751,7 +6280,11 @@ Connection: close
     fn peek_reference_secret_reads_api_and_rejects_oauth() {
         let dir = temp_dir("refpeek");
         let home = fixture_opencode_home(&dir);
-        let auth = home.join(".local").join("share").join("opencode").join("auth.json");
+        let auth = home
+            .join(".local")
+            .join("share")
+            .join("opencode")
+            .join("auth.json");
         let scan = crate::credentials::scan_opencode_at(&home);
 
         let ref_entry = |provider: &str| CredentialEntry {
@@ -5784,8 +6317,10 @@ Connection: close
         assert!(error.contains("已不在"), "unexpected: {error}");
         // 文件缺失 → Err。
         let mut missing = ref_entry("deepseek");
-        missing.ref_path =
-            Some(format!("{}#deepseek", dir.join("no-such-file.json").display()));
+        missing.ref_path = Some(format!(
+            "{}#deepseek",
+            dir.join("no-such-file.json").display()
+        ));
         let error = peek_reference_secret(&missing).unwrap_err();
         assert!(error.contains("读取"), "unexpected: {error}");
         // 缺 ref / 坏格式（没有 #）→ Err。
@@ -5802,12 +6337,20 @@ Connection: close
             .iter()
             .find(|entry| entry.id == "opencode/deepseek")
             .expect("扫描应含 opencode/deepseek");
-        assert_eq!(peek_reference_secret(scanned).unwrap(), "sk-fixture-ds-0a1b2c");
+        assert_eq!(
+            peek_reference_secret(scanned).unwrap(),
+            "sk-fixture-ds-0a1b2c"
+        );
 
         // peek_spawn_key：key-plan 走 store DPAPI，reference 现场读。
         let credentials = dir.join("credentials.json");
-        crate::credentials::add_key_plan_at(&credentials, "deepseek", "DeepSeek", "sk-fixture-store-ds")
-            .unwrap();
+        crate::credentials::add_key_plan_at(
+            &credentials,
+            "deepseek",
+            "DeepSeek",
+            "sk-fixture-store-ds",
+        )
+        .unwrap();
         assert_eq!(
             peek_spawn_key_at(&credentials, &scan, "deepseek").unwrap(),
             "sk-fixture-store-ds"
@@ -5816,7 +6359,10 @@ Connection: close
             peek_spawn_key_at(&credentials, &scan, "opencode/deepseek").unwrap(),
             "sk-fixture-ds-0a1b2c"
         );
-        assert_eq!(peek_spawn_key_at(&credentials, &scan, "opencode/ghost"), None);
+        assert_eq!(
+            peek_spawn_key_at(&credentials, &scan, "opencode/ghost"),
+            None
+        );
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -5828,33 +6374,59 @@ Connection: close
     fn reference_injection_matches_key_plan_shape() {
         let dir = temp_dir("refinject");
         let home = fixture_opencode_home(&dir);
-        let auth = home.join(".local").join("share").join("opencode").join("auth.json");
+        let auth = home
+            .join(".local")
+            .join("share")
+            .join("opencode")
+            .join("auth.json");
         let scan = crate::credentials::scan_opencode_at(&home);
         let credentials = dir.join("credentials.json");
-        crate::credentials::add_key_plan_at(&credentials, "deepseek", "DeepSeek", "sk-fixture-store-77aa")
-            .unwrap();
+        crate::credentials::add_key_plan_at(
+            &credentials,
+            "deepseek",
+            "DeepSeek",
+            "sk-fixture-store-77aa",
+        )
+        .unwrap();
 
         // 同一个 preset（deepseek）：reference 与 key-plan 的注入逐字段相等。
         for agent in ["claude-code", "grok-build", "claude", "grok"] {
-            let via_reference =
-                injection_for_agent_at(&credentials, &scan, agent, "opencode/deepseek", "deepseek-flash")
-                    .unwrap();
+            let via_reference = injection_for_agent_at(
+                &credentials,
+                &scan,
+                agent,
+                "opencode/deepseek",
+                "deepseek-flash",
+            )
+            .unwrap();
             let via_store =
                 injection_for_agent_at(&credentials, &scan, agent, "deepseek", "deepseek-flash")
                     .unwrap();
             assert_eq!(via_reference, via_store, "agent {agent}");
         }
         assert_eq!(
-            injection_for_agent_at(&credentials, &scan, "claude-code", "opencode/deepseek", "deepseek-flash")
-                .unwrap(),
+            injection_for_agent_at(
+                &credentials,
+                &scan,
+                "claude-code",
+                "opencode/deepseek",
+                "deepseek-flash"
+            )
+            .unwrap(),
             Some(SpawnInjection::ClaudeEnv {
                 base_url: crate::grok_dialect::channel_base_url("deepseek").unwrap(),
                 model: "deepseek-flash".into(),
             })
         );
         assert_eq!(
-            injection_for_agent_at(&credentials, &scan, "grok-build", "opencode/deepseek", "deepseek-flash")
-                .unwrap(),
+            injection_for_agent_at(
+                &credentials,
+                &scan,
+                "grok-build",
+                "opencode/deepseek",
+                "deepseek-flash"
+            )
+            .unwrap(),
             Some(SpawnInjection::GrokTable {
                 model_id: "deepseek-flash".into(),
                 preset_id: "deepseek".into(),
@@ -5873,7 +6445,10 @@ Connection: close
                 .unwrap()
                 .is_some()
         );
-        assert_eq!(peek_spawn_key_at(&credentials, &gone, "opencode/deepseek"), None);
+        assert_eq!(
+            peek_spawn_key_at(&credentials, &gone, "opencode/deepseek"),
+            None
+        );
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -5917,8 +6492,13 @@ Connection: close
     fn entries_are_masked_and_never_carry_plaintext() {
         let dir = temp_dir("views");
         let credentials = dir.join("credentials.json");
-        crate::credentials::add_key_plan_at(&credentials, "deepseek", "DeepSeek", "sk-view-77aa21zz")
-            .unwrap();
+        crate::credentials::add_key_plan_at(
+            &credentials,
+            "deepseek",
+            "DeepSeek",
+            "sk-view-77aa21zz",
+        )
+        .unwrap();
 
         let views = list_entries_at(&credentials).unwrap();
         assert_eq!(views.len(), 1);

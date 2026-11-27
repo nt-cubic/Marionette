@@ -26,7 +26,10 @@ pub fn resolve_launch(agent_id: &str) -> Result<(String, Vec<String>), String> {
     if meta.cmd.is_empty() {
         return Err(format!("unknown agent `{agent_id}`"));
     }
-    Ok((meta.cmd.to_string(), meta.args.iter().map(|s| s.to_string()).collect()))
+    Ok((
+        meta.cmd.to_string(),
+        meta.args.iter().map(|s| s.to_string()).collect(),
+    ))
 }
 
 fn acp_of(app: &AppHandle) -> AcpService {
@@ -78,13 +81,9 @@ pub fn apply_model(app: &AppHandle, session_id: &str, model: &str) -> Result<(),
         .update_session(session_id, json!({ "model": model }))
         .map(|_| ());
     match &result {
-        Ok(()) => crate::debug_log::append(
-            "chief",
-            "info",
-            session_id,
-            "model applied",
-            Some(model),
-        ),
+        Ok(()) => {
+            crate::debug_log::append("chief", "info", session_id, "model applied", Some(model))
+        }
         Err(error) => crate::debug_log::append(
             "chief",
             "warn",
@@ -104,13 +103,9 @@ pub fn apply_effort(app: &AppHandle, session_id: &str, effort: &str) -> Result<(
         .update_session(session_id, json!({ "effortId": effort }))
         .map(|_| ());
     match &result {
-        Ok(()) => crate::debug_log::append(
-            "chief",
-            "info",
-            session_id,
-            "effort applied",
-            Some(effort),
-        ),
+        Ok(()) => {
+            crate::debug_log::append("chief", "info", session_id, "effort applied", Some(effort))
+        }
         Err(error) => crate::debug_log::append(
             "chief",
             "warn",
@@ -133,7 +128,8 @@ pub fn effort_will_be_ignored(
     agent_id: &str,
     model: &str,
 ) -> bool {
-    if crate::model_bridge::classify_agent(agent_id) != crate::model_bridge::BridgeAgent::GrokBuild {
+    if crate::model_bridge::classify_agent(agent_id) != crate::model_bridge::BridgeAgent::GrokBuild
+    {
         return false;
     }
     let is_bridge = model.starts_with("marionette/")
@@ -189,11 +185,7 @@ pub fn enforce_read_only(app: &AppHandle, session_id: &str) -> Result<(), String
 }
 
 /// 发一条 prompt（发射后即返回 accepted；等待回合用 [`wait_turn_idle`]）。
-pub fn send_prompt(
-    app: &AppHandle,
-    session_id: &str,
-    text: &str,
-) -> Result<Value, String> {
+pub fn send_prompt(app: &AppHandle, session_id: &str, text: &str) -> Result<Value, String> {
     acp_of(app).send_prompt(session_id, text.to_string(), Vec::new(), Vec::new())
 }
 
@@ -221,7 +213,10 @@ pub fn wait_turn_idle_checked(
 
 /// 会话是否真的还有进程（区别于 turn_idle 的"缺席视为空闲"）。
 pub fn session_alive(app: &AppHandle, session_id: &str) -> bool {
-    app.state::<AppState>().acp.agent_session_id(session_id).is_some()
+    app.state::<AppState>()
+        .acp
+        .agent_session_id(session_id)
+        .is_some()
 }
 
 /// 当前是否无进行中的回合（进程缺席视为空闲）。

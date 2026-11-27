@@ -153,7 +153,10 @@ pub fn observe_acp_event(
     }
     let label = if matches!(
         method,
-        Some("turn/complete") | Some("permission/prompt") | Some("question/prompt") | Some("plan/approval")
+        Some("turn/complete")
+            | Some("permission/prompt")
+            | Some("question/prompt")
+            | Some("plan/approval")
     ) {
         session_label(app, session_id)
     } else {
@@ -162,7 +165,9 @@ pub fn observe_acp_event(
     let label = label.as_deref();
     match method {
         Some("session/update") => {
-            if data.pointer("/params/update/sessionUpdate").and_then(Value::as_str)
+            if data
+                .pointer("/params/update/sessionUpdate")
+                .and_then(Value::as_str)
                 == Some("agent_message_chunk")
             {
                 if let Ok(mut turns) = replied_turns().lock() {
@@ -188,11 +193,29 @@ pub fn observe_acp_event(
             let failed = kind == "error" || matches!(stop_reason, "error" | "refusal");
             if failed {
                 let detail = error_detail(data).unwrap_or_else(|| "Agent error".to_string());
-                raise(app, target_window, Kind::Error, &with_label(label, &detail), false);
+                raise(
+                    app,
+                    target_window,
+                    Kind::Error,
+                    &with_label(label, &detail),
+                    false,
+                );
             } else if !replied {
-                raise(app, target_window, Kind::Reply, &with_label(label, "agent stopped"), true);
+                raise(
+                    app,
+                    target_window,
+                    Kind::Reply,
+                    &with_label(label, "agent stopped"),
+                    true,
+                );
             } else {
-                raise(app, target_window, Kind::Reply, &with_label(label, "Reply ready"), true);
+                raise(
+                    app,
+                    target_window,
+                    Kind::Reply,
+                    &with_label(label, "Reply ready"),
+                    true,
+                );
             }
         }
         Some("permission/prompt") => {
@@ -212,7 +235,13 @@ pub fn observe_acp_event(
                 let detail = string_field(data, "detail")
                     .or_else(|| string_field(data, "title"))
                     .unwrap_or_else(|| "Permission required".to_string());
-                raise(app, target_window, Kind::Permission, &with_label(label, &detail), false);
+                raise(
+                    app,
+                    target_window,
+                    Kind::Permission,
+                    &with_label(label, &detail),
+                    false,
+                );
             }
         }
         Some("question/prompt") => {
@@ -222,7 +251,13 @@ pub fn observe_acp_event(
                 .map(compact_detail)
                 .or_else(|| string_field(data, "title"))
                 .unwrap_or_else(|| "Agent has a question".to_string());
-            raise(app, target_window, Kind::Question, &with_label(label, &detail), false);
+            raise(
+                app,
+                target_window,
+                Kind::Question,
+                &with_label(label, &detail),
+                false,
+            );
         }
         Some("plan/approval") => {
             raise(

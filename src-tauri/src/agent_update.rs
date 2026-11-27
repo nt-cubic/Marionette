@@ -93,7 +93,9 @@ pub fn parse_version(text: &str) -> Option<String> {
             if end < bytes.len() && (bytes[end] == b'-' || bytes[end] == b'+') {
                 end += 1;
                 while end < bytes.len()
-                    && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'.' || bytes[end] == b'-')
+                    && (bytes[end].is_ascii_alphanumeric()
+                        || bytes[end] == b'.'
+                        || bytes[end] == b'-')
                 {
                     end += 1;
                 }
@@ -186,7 +188,10 @@ pub fn version_info(agent: &AgentConfig, check_registry: bool) -> AgentVersionIn
             installed: Some(env!("CARGO_PKG_VERSION").into()),
             latest: None,
             update_available: false,
-            note: Some(crate::ts!("内置网页聊天桥，随 Marionette 更新", "Built-in web chat bridge; updates with Marionette")),
+            note: Some(crate::ts!(
+                "内置网页聊天桥，随 Marionette 更新",
+                "Built-in web chat bridge; updates with Marionette"
+            )),
         };
     }
     // Binary agents (Antigravity): the version is the install dir name and
@@ -198,10 +203,7 @@ pub fn version_info(agent: &AgentConfig, check_registry: bool) -> AgentVersionIn
         let (latest, note) = if check_registry {
             match crate::antigravity_support::registry_latest() {
                 Some((version, _, _)) => (Some(version), None),
-                None => (
-                    None,
-                    Some("Could not reach the ACP registry".to_string()),
-                ),
+                None => (None, Some("Could not reach the ACP registry".to_string())),
             }
         } else {
             (None, None)
@@ -285,13 +287,19 @@ mod tests {
     #[test]
     fn parses_version_out_of_noisy_cli_output() {
         assert_eq!(parse_version("1.2.3").as_deref(), Some("1.2.3"));
-        assert_eq!(parse_version("opencode 0.14.7\n").as_deref(), Some("0.14.7"));
+        assert_eq!(
+            parse_version("opencode 0.14.7\n").as_deref(),
+            Some("0.14.7")
+        );
         assert_eq!(
             parse_version("codex-acp v2.10.0-beta.3 (build 99)").as_deref(),
             Some("2.10.0-beta.3")
         );
         // A two-part number is not a version — keep looking.
-        assert_eq!(parse_version("node 22 / tool 3.4.5").as_deref(), Some("3.4.5"));
+        assert_eq!(
+            parse_version("node 22 / tool 3.4.5").as_deref(),
+            Some("3.4.5")
+        );
         assert_eq!(parse_version("no numbers here"), None);
         assert_eq!(parse_version("only 12 and 3.4"), None);
     }
@@ -312,8 +320,7 @@ mod tests {
         cmd.stdin(std::process::Stdio::null());
 
         let started = std::time::Instant::now();
-        let got =
-            crate::process_util::output_with_kill_timeout(cmd, Duration::from_millis(300));
+        let got = crate::process_util::output_with_kill_timeout(cmd, Duration::from_millis(300));
 
         assert!(got.is_err(), "a silent CLI must report no version");
         assert!(
@@ -330,7 +337,10 @@ mod tests {
         assert!(!is_newer("1.2.3", "1.2.3"));
         assert!(!is_newer("1.2.2", "1.2.3"));
         assert!(is_newer("1.2", "1.1.9"), "short versions pad with zeros");
-        assert!(is_newer("1.2.3", "1.2.3-beta.1"), "release beats its prerelease");
+        assert!(
+            is_newer("1.2.3", "1.2.3-beta.1"),
+            "release beats its prerelease"
+        );
         assert!(!is_newer("1.2.3-beta.1", "1.2.3"));
     }
 }

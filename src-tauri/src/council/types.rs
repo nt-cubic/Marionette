@@ -330,7 +330,13 @@ pub enum RunPhase {
 
 impl RunPhase {
     pub fn is_terminal(self) -> bool {
-        matches!(self, RunPhase::Completed | RunPhase::Cancelled | RunPhase::Failed | RunPhase::BudgetExhausted)
+        matches!(
+            self,
+            RunPhase::Completed
+                | RunPhase::Cancelled
+                | RunPhase::Failed
+                | RunPhase::BudgetExhausted
+        )
     }
 
     pub fn is_running(self) -> bool {
@@ -358,7 +364,12 @@ pub fn validate_spec(spec: &CouncilSpec) -> Result<(), String> {
     }
     let mut ids = std::collections::HashSet::new();
     for m in &spec.members {
-        if m.id.trim().is_empty() || !m.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+        if m.id.trim().is_empty()
+            || !m
+                .id
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
             return Err(format!("成员 id 只能是小写字母/数字/横线:{}", m.id));
         }
         if !ids.insert(m.id.clone()) {
@@ -447,7 +458,11 @@ pub(crate) mod tests {
             ],
             rounds: 2,
             max_concurrent: 4,
-            budget: Budget { max_requests: Some(40), max_tokens: Some(200_000), wall_clock_secs: None },
+            budget: Budget {
+                max_requests: Some(40),
+                max_tokens: Some(200_000),
+                wall_clock_secs: None,
+            },
             created_at: now_millis(),
             project_id: None,
             cwd: None,

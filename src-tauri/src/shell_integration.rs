@@ -345,7 +345,11 @@ fn windows_is_registered() -> bool {
 }
 
 #[cfg(windows)]
-pub(crate) fn reg_set_string(subkey: &str, value_name: Option<&str>, data: &str) -> Result<(), String> {
+pub(crate) fn reg_set_string(
+    subkey: &str,
+    value_name: Option<&str>,
+    data: &str,
+) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::System::Registry::{
@@ -429,15 +433,8 @@ fn reg_key_exists(subkey: &str) -> bool {
         .chain(std::iter::once(0))
         .collect();
     let mut hkey = std::ptr::null_mut();
-    let status = unsafe {
-        RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            sub_w.as_ptr(),
-            0,
-            KEY_READ,
-            &mut hkey,
-        )
-    };
+    let status =
+        unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, sub_w.as_ptr(), 0, KEY_READ, &mut hkey) };
     if status == ERROR_SUCCESS {
         unsafe {
             let _ = RegCloseKey(hkey);

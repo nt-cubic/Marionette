@@ -50,6 +50,10 @@ pub struct Session {
     /// Parent dialog when this session was created via `@` delegate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
+    /// Persistent delegated-thread lineage. Unlike `parent_session_id`, this
+    /// stays on a top-level worker session and survives task-ledger pruning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<SessionLineage>,
     /// `"user"` | `"delegate"` | `"import"` — optional for legacy rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
@@ -63,6 +67,15 @@ pub struct Session {
     /// the recency list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionLineage {
+    pub parent_session_id: String,
+    pub root_session_id: String,
+    /// Currently always `subagent`; string keeps old clients forward-compatible.
+    pub relationship: String,
 }
 
 /// A CLI the ACP bridge shells out to (installed separately from the bridge).
@@ -374,5 +387,3 @@ pub struct ChangedFile {
     pub path: String,
     pub change_type: String,
 }
-
-

@@ -3,7 +3,7 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime, type BridgeModel, type BridgeModelsResult } from "./api";
 import { bridgePresetLabel, engineProviderLabel, invalidateBridgeModels } from "./bridge";
-import { modelProviderGroup } from "./modelLabel";
+import { modelProviderGroup, modelSourceProviderLabel } from "./modelLabel";
 import { previewSourceScan } from "./mockData";
 import type { ModelDef } from "./types";
 
@@ -188,7 +188,9 @@ export function libraryGroups(agentId: string, native: ModelDef[], catalog: Brid
     if (vendor) vendorLabels.set(source.id, vendor);
   }
   const sourceLabel = (source: ModelSource | undefined, fallback: string) =>
-    (source ? vendorLabels.get(source.id) ?? source.label : fallback);
+    (source
+      ? vendorLabels.get(source.id) ?? modelSourceProviderLabel(source) ?? source.label
+      : fallback);
   for (const source of catalog?.sources ?? []) {
     if (source.entryId !== "engine") { const key=aliases[`entry:${source.entryId}`] ?? `entry:${source.entryId}`; groups.set(key, { key, label: source.label, rows: [] }); }
   }

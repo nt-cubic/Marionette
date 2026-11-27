@@ -98,13 +98,17 @@ mod tests {
     #[test]
     fn set_value_carries_the_ref_and_value_as_json() {
         let expression = set_value_call("3.1", "e12", &json!("hello \"world\""));
-        assert!(expression.contains("setValue(\"3.1\", \"e12\", \"hello \\\"world\\\"\")"), "{expression}");
+        assert!(
+            expression.contains("setValue(\"3.1\", \"e12\", \"hello \\\"world\\\"\")"),
+            "{expression}"
+        );
         // A boolean and an array travel as their JSON shapes, not stringified
         // text — the probe compares them against `checked` and option values.
-        assert!(set_value_call("1.0", "e3", &json!(true)).contains("setValue(\"1.0\", \"e3\", true)"));
         assert!(
-            set_value_call("1.0", "e4", &json!(["a", "b"])).contains("setValue(\"1.0\", \"e4\", [\"a\",\"b\"])")
+            set_value_call("1.0", "e3", &json!(true)).contains("setValue(\"1.0\", \"e3\", true)")
         );
+        assert!(set_value_call("1.0", "e4", &json!(["a", "b"]))
+            .contains("setValue(\"1.0\", \"e4\", [\"a\",\"b\"])"));
     }
 
     #[test]
@@ -119,7 +123,10 @@ mod tests {
     #[test]
     fn wait_ref_state_quotes_generation_and_ref() {
         let expression = wait_ref_state_call("G.7.3.2", "e12");
-        assert!(expression.contains("refState(\"G.7.3.2\", \"e12\")"), "{expression}");
+        assert!(
+            expression.contains("refState(\"G.7.3.2\", \"e12\")"),
+            "{expression}"
+        );
         // A quote in the ref cannot escape into the expression.
         let sneaky = wait_ref_state_call("G.1.1.1.1", "e12\"); globalThis.evil();//");
         assert!(sneaky.contains("refState(\"G.1.1.1.1\", \"e12\\\"); globalThis.evil();//\")"));

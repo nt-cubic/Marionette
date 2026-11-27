@@ -85,7 +85,11 @@ impl Reply {
 /// 在 `addr` 上监听并逐连接开线程（argv/合同套件形态：进程由外部杀，
 /// 没有停止钮——`serve_on` 的 shutdown 传一个永不置位的标志）。
 /// `token`：Bearer 闸（2026-11-22 安全批）；None = 不鉴权（仅测试用）。
-pub fn serve(addr: &str, gateway: std::sync::Arc<Gateway>, token: Option<String>) -> Result<(), String> {
+pub fn serve(
+    addr: &str,
+    gateway: std::sync::Arc<Gateway>,
+    token: Option<String>,
+) -> Result<(), String> {
     let listener = TcpListener::bind(addr).map_err(|e| format!("bind {addr}: {e}"))?;
     let bound = listener.local_addr().map_err(|e| e.to_string())?;
     println!("magpie gateway on http://{}", bound);
@@ -168,7 +172,10 @@ fn handle(stream: TcpStream, gateway: &Gateway, token: Option<&str>) -> std::io:
         super::cors::Verdict::Pass => {}
         super::cors::Verdict::PassWith(h) => extra = h,
         super::cors::Verdict::Preflight(h) => {
-            let reply = Reply::Json { status: 204, body: Vec::new() };
+            let reply = Reply::Json {
+                status: 204,
+                body: Vec::new(),
+            };
             return write_reply(&mut stream, reply, &h);
         }
         super::cors::Verdict::Refuse(message) => {
@@ -202,7 +209,12 @@ fn handle(stream: TcpStream, gateway: &Gateway, token: Option<&str>) -> std::io:
     if body.decoded {
         headers.retain(|(k, _)| k != "content-encoding");
     }
-    let request = Request { method: head.method, path: head.path, headers, body: body.bytes };
+    let request = Request {
+        method: head.method,
+        path: head.path,
+        headers,
+        body: body.bytes,
+    };
     clear_passthrough();
     let reply = super::routes::route(&request, gateway);
     extra.extend(take_passthrough());
@@ -387,7 +399,11 @@ fn read_head<R: BufRead>(reader: &mut R) -> Option<Head> {
             headers.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
         }
     }
-    Some(Head { method, path, headers })
+    Some(Head {
+        method,
+        path,
+        headers,
+    })
 }
 
 enum Codec {
@@ -428,9 +444,18 @@ fn read_body<R: BufRead>(reader: &mut R, headers: &[(String, String)]) -> Result
         read_exact_growing(reader, length)?
     };
     match codec {
-        Codec::Identity => Ok(Body { bytes: wire, decoded: false }),
-        Codec::Zstd => Ok(Body { bytes: unzstd(&wire, MAX_BODY_BYTES)?, decoded: true }),
-        Codec::Gzip => Ok(Body { bytes: ungzip(&wire, MAX_BODY_BYTES)?, decoded: true }),
+        Codec::Identity => Ok(Body {
+            bytes: wire,
+            decoded: false,
+        }),
+        Codec::Zstd => Ok(Body {
+            bytes: unzstd(&wire, MAX_BODY_BYTES)?,
+            decoded: true,
+        }),
+        Codec::Gzip => Ok(Body {
+            bytes: ungzip(&wire, MAX_BODY_BYTES)?,
+            decoded: true,
+        }),
     }
 }
 
@@ -506,7 +531,12 @@ fn parse(stream: TcpStream) -> Option<Request> {
     let mut reader = BufReader::new(stream);
     let head = read_head(&mut reader)?;
     let body = read_body(&mut reader, &head.headers).ok()?;
-    Some(Request { method: head.method, path: head.path, headers: head.headers, body: body.bytes })
+    Some(Request {
+        method: head.method,
+        path: head.path,
+        headers: head.headers,
+        body: body.bytes,
+    })
 }
 
 /// 解码 chunked 传输体（RFC 7230 §4.1）：尺寸行（hex，可带 `;扩展`）→ 数据
@@ -591,7 +621,8 @@ fn status_text(status: u16) -> &'static str {
 /// 额外应答头（CORS / 上游透传）序列化成 `Name: value\r\n` 串；名或值含控制
 /// 字符的丢弃（应答拆分防护）。
 fn extra_header_lines(extra: &[(String, String)]) -> String {
-    let clean = |s: &str| !s.is_empty() && !s.bytes().any(|b| (b < 0x20 && b != b'\t') || b == 0x7f);
+    let clean =
+        |s: &str| !s.is_empty() && !s.bytes().any(|b| (b < 0x20 && b != b'\t') || b == 0x7f);
     let mut out = String::new();
     for (k, v) in extra {
         if clean(k) && !k.contains(':') && clean(v) {
@@ -622,7 +653,11 @@ fn write_reply(
             stream.write_all(head.as_bytes())?;
             stream.write_all(&body)?;
         }
-        Reply::Stream { status, content_type, mut reader } => {
+        Reply::Stream {
+            status,
+            content_type,
+            mut reader,
+        } => {
             let head = format!(
                 "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nCache-Control: no-cache\r\n{}Connection: close\r\n\r\n",
                 status,
@@ -659,8 +694,13 @@ mod tests {
 
     #[test]
     fn chunked_decodes_basic() {
-        let mut r = BufReader::new(Cursor::new(b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n".to_vec()));
-        assert_eq!(decode_chunked(&mut r, 1024).as_deref(), Some(b"Wikipedia".as_slice()));
+        let mut r = BufReader::new(Cursor::new(
+            b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n".to_vec(),
+        ));
+        assert_eq!(
+            decode_chunked(&mut r, 1024).as_deref(),
+            Some(b"Wikipedia".as_slice())
+        );
     }
 
     #[test]
@@ -668,7 +708,10 @@ mod tests {
         let mut r = BufReader::new(Cursor::new(b"0\r\n\r\n".to_vec()));
         assert_eq!(decode_chunked(&mut r, 1024), Some(Vec::new()));
         let mut r = BufReader::new(Cursor::new(b"5\r\nhello\r\n0\r\n\r\n".to_vec()));
-        assert_eq!(decode_chunked(&mut r, 1024).as_deref(), Some(b"hello".as_slice()));
+        assert_eq!(
+            decode_chunked(&mut r, 1024).as_deref(),
+            Some(b"hello".as_slice())
+        );
     }
 
     #[test]
@@ -705,8 +748,9 @@ mod tests {
         let mut r = BufReader::new(Cursor::new(raw));
         assert_eq!(decode_chunked(&mut r, 15), None);
         // 尺寸行数值溢出 usize 也不许 panic（from_str_radix 拒掉）
-        let mut r =
-            BufReader::new(Cursor::new(b"FFFFFFFFFFFFFFFFFFFF\r\nx\r\n0\r\n\r\n".to_vec()));
+        let mut r = BufReader::new(Cursor::new(
+            b"FFFFFFFFFFFFFFFFFFFF\r\nx\r\n0\r\n\r\n".to_vec(),
+        ));
         assert_eq!(decode_chunked(&mut r, 1024), None);
     }
 
@@ -739,8 +783,10 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let client = std::thread::spawn(move || {
             let mut c = TcpStream::connect(addr).unwrap();
-            c.write_all(b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\nhi")
-                .unwrap();
+            c.write_all(
+                b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\nhi",
+            )
+            .unwrap();
         });
         let (server, _) = listener.accept().unwrap();
         let req = parse(server).expect("parse content-length request");
@@ -789,9 +835,15 @@ mod tests {
             assert!(body.contains("\"data\""), "models reply missing: {body}");
             // 置位 → serve_on 必须干净返回（轮询节拍 50ms，给 5s 余量）。
             shutdown.store(true, Ordering::Release);
-            server.join().expect("serve_on panicked").expect("serve_on error");
+            server
+                .join()
+                .expect("serve_on panicked")
+                .expect("serve_on error");
             // 端口已释放：同一地址能重新 bind（没有残监听挂着端口）。
-            assert!(TcpListener::bind(addr).is_ok(), "port {addr} still held after stop");
+            assert!(
+                TcpListener::bind(addr).is_ok(),
+                "port {addr} still held after stop"
+            );
         });
         match prior_xdg {
             Some(p) => std::env::set_var("XDG_CONFIG_HOME", p),
@@ -822,7 +874,10 @@ mod tests {
     }
 
     fn headers_of(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     fn body_of(headers: &[(&str, &str)], wire: &[u8]) -> Result<Body, BodyErr> {
@@ -835,11 +890,19 @@ mod tests {
         let json = br#"{"model":"deepseek/deepseek-v4","input":"hi"}"#;
         let wire = zstd_raw_frame(json);
         let len = wire.len().to_string();
-        let body = body_of(&[("content-encoding", "zstd"), ("content-length", &len)], &wire).unwrap();
+        let body = body_of(
+            &[("content-encoding", "zstd"), ("content-length", &len)],
+            &wire,
+        )
+        .unwrap();
         assert_eq!(body.bytes, json.to_vec());
         assert!(body.decoded);
         // 大小写 / 空白不敏感
-        let body = body_of(&[("content-encoding", " ZSTD "), ("content-length", &len)], &wire).unwrap();
+        let body = body_of(
+            &[("content-encoding", " ZSTD "), ("content-length", &len)],
+            &wire,
+        )
+        .unwrap();
         assert_eq!(body.bytes, json.to_vec());
     }
 
@@ -848,7 +911,11 @@ mod tests {
         let mut wire = zstd_raw_frame(b"hello ");
         wire.extend(zstd_raw_frame(b"world"));
         let len = wire.len().to_string();
-        let body = body_of(&[("content-encoding", "zstd"), ("content-length", &len)], &wire).unwrap();
+        let body = body_of(
+            &[("content-encoding", "zstd"), ("content-length", &len)],
+            &wire,
+        )
+        .unwrap();
         assert_eq!(body.bytes, b"hello world".to_vec());
     }
 
@@ -857,7 +924,11 @@ mod tests {
         let data = vec![b'x'; 1000];
         let wire = zstd_raw_frame(&data);
         let len = wire.len().to_string();
-        let body = body_of(&[("content-encoding", "zstd"), ("content-length", &len)], &wire).unwrap();
+        let body = body_of(
+            &[("content-encoding", "zstd"), ("content-length", &len)],
+            &wire,
+        )
+        .unwrap();
         assert_eq!(body.bytes, data);
     }
 
@@ -874,7 +945,11 @@ mod tests {
 
     #[test]
     fn zstd_garbage_is_a_400_not_a_panic() {
-        let err = body_of(&[("content-encoding", "zstd"), ("content-length", "5")], b"nope!").unwrap_err();
+        let err = body_of(
+            &[("content-encoding", "zstd"), ("content-length", "5")],
+            b"nope!",
+        )
+        .unwrap_err();
         assert_eq!(err.status(), 400);
         // 魔数对、内容坏
         let err = unzstd(&[0x28, 0xb5, 0x2f, 0xfd, 0xff, 0xff], 100).unwrap_err();
@@ -890,7 +965,11 @@ mod tests {
         let wire = enc.finish().unwrap();
         let len = wire.len().to_string();
         for name in ["gzip", "x-gzip"] {
-            let body = body_of(&[("content-encoding", name), ("content-length", &len)], &wire).unwrap();
+            let body = body_of(
+                &[("content-encoding", name), ("content-length", &len)],
+                &wire,
+            )
+            .unwrap();
             assert_eq!(body.bytes, json.to_vec());
             assert!(body.decoded);
         }
@@ -909,12 +988,17 @@ mod tests {
     fn unknown_encodings_are_415_before_the_body_is_read() {
         for enc in ["deflate", "br", "gzip, zstd"] {
             // 体根本没给：编码不认在读体前就拒（不会因读不到体变成 400）
-            let err = body_of(&[("content-encoding", enc), ("content-length", "10")], b"").unwrap_err();
+            let err =
+                body_of(&[("content-encoding", enc), ("content-length", "10")], b"").unwrap_err();
             assert_eq!(err.status(), 415, "{enc}");
             assert!(err.message().contains("identity, gzip or zstd"));
         }
         // identity = 没编码，不标 decoded
-        let body = body_of(&[("content-encoding", "identity"), ("content-length", "2")], b"hi").unwrap();
+        let body = body_of(
+            &[("content-encoding", "identity"), ("content-length", "2")],
+            b"hi",
+        )
+        .unwrap();
         assert_eq!(body.bytes, b"hi".to_vec());
         assert!(!body.decoded);
     }
@@ -928,7 +1012,10 @@ mod tests {
         assert!(err.message().contains("512 MB"));
         // 声明满额但体没给：读不满 = 400，且不会为声明值预分配 512MB
         let at = MAX_BODY_BYTES.to_string();
-        assert_eq!(body_of(&[("content-length", &at)], b"short").unwrap_err(), BodyErr::Malformed);
+        assert_eq!(
+            body_of(&[("content-length", &at)], b"short").unwrap_err(),
+            BodyErr::Malformed
+        );
     }
 
     #[test]
@@ -944,17 +1031,24 @@ mod tests {
         assert_eq!(decode_chunked_inner(&mut r, 1024), Err(BodyErr::TooLarge));
         // 上限内声明大块但数据不足 = Malformed
         let mut r = BufReader::new(Cursor::new(b"400\r\nxyz".to_vec()));
-        assert_eq!(decode_chunked_inner(&mut r, 1 << 20), Err(BodyErr::Malformed));
+        assert_eq!(
+            decode_chunked_inner(&mut r, 1 << 20),
+            Err(BodyErr::Malformed)
+        );
     }
 
     #[test]
     fn guard_errors_speak_the_inbound_dialect() {
-        let Reply::Json { status, body } = guard_error("/v1/messages", 413, "too big") else { panic!() };
+        let Reply::Json { status, body } = guard_error("/v1/messages", 413, "too big") else {
+            panic!()
+        };
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(status, 413);
         assert_eq!(v["type"], "error");
         assert_eq!(v["error"]["type"], "request_too_large");
-        let Reply::Json { body, .. } = guard_error("/v1/chat/completions?x=1", 403, "no") else { panic!() };
+        let Reply::Json { body, .. } = guard_error("/v1/chat/completions?x=1", 403, "no") else {
+            panic!()
+        };
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["error"]["type"], "permission_error");
         assert_eq!(v["error"]["message"], "no");
@@ -1038,7 +1132,10 @@ mod tests {
                     addr.port()
                 );
                 let reply = raw_exchange(addr, req.as_bytes());
-                assert!(reply.starts_with("HTTP/1.1 403"), "{method} {path}: {reply}");
+                assert!(
+                    reply.starts_with("HTTP/1.1 403"),
+                    "{method} {path}: {reply}"
+                );
                 assert!(reply.contains("permission_error"), "{reply}");
             }
             // 同一路由：没有 Origin 照常（models 是 200）
@@ -1072,8 +1169,14 @@ mod tests {
                   Access-Control-Request-Headers: content-type\r\n\r\n",
             );
             assert!(reply.starts_with("HTTP/1.1 204"), "{reply}");
-            assert!(reply.contains("Access-Control-Allow-Origin: app://obsidian.md"), "{reply}");
-            assert!(reply.contains("Access-Control-Allow-Headers: content-type"), "{reply}");
+            assert!(
+                reply.contains("Access-Control-Allow-Origin: app://obsidian.md"),
+                "{reply}"
+            );
+            assert!(
+                reply.contains("Access-Control-Allow-Headers: content-type"),
+                "{reply}"
+            );
             let reply = raw_exchange(
                 addr,
                 b"OPTIONS /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n\
@@ -1088,48 +1191,57 @@ mod tests {
     /// CORS 与令牌各管各的（外站 origin 拿着对令牌也 403）。
     #[test]
     fn live_bearer_gate_blocks_tokenless_and_serves_holders() {
-        with_live_gateway_opt(Some("test-gateway-token-48hex".to_string()), |addr, token| {
-            for (method, path) in [
-                ("GET", "/v1/models"),
-                ("GET", "/v1/magpie/quotas"),
-                ("POST", "/v1/chat/completions"),
-                ("POST", "/v1/responses"),
-                ("POST", "/v1/messages"),
-            ] {
-                // 缺 Authorization 头
-                let req = format!(
+        with_live_gateway_opt(
+            Some("test-gateway-token-48hex".to_string()),
+            |addr, token| {
+                for (method, path) in [
+                    ("GET", "/v1/models"),
+                    ("GET", "/v1/magpie/quotas"),
+                    ("POST", "/v1/chat/completions"),
+                    ("POST", "/v1/responses"),
+                    ("POST", "/v1/messages"),
+                ] {
+                    // 缺 Authorization 头
+                    let req = format!(
                     "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\n{{}}"
                 );
-                let reply = raw_exchange(addr, req.as_bytes());
-                assert!(reply.starts_with("HTTP/1.1 401"), "{method} {path}: {reply}");
-                assert!(reply.contains("authentication_error"), "{reply}");
-                // 错令牌同罪
-                let req = format!(
+                    let reply = raw_exchange(addr, req.as_bytes());
+                    assert!(
+                        reply.starts_with("HTTP/1.1 401"),
+                        "{method} {path}: {reply}"
+                    );
+                    assert!(reply.contains("authentication_error"), "{reply}");
+                    // 错令牌同罪
+                    let req = format!(
                     "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer magpie\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\n{{}}"
                 );
-                let reply = raw_exchange(addr, req.as_bytes());
-                assert!(reply.starts_with("HTTP/1.1 401"), "{method} {path}: {reply}");
-            }
-            // 对令牌：照常 200。
-            let req = format!(
+                    let reply = raw_exchange(addr, req.as_bytes());
+                    assert!(
+                        reply.starts_with("HTTP/1.1 401"),
+                        "{method} {path}: {reply}"
+                    );
+                }
+                // 对令牌：照常 200。
+                let req = format!(
                 "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
             );
-            let reply = raw_exchange(addr, req.as_bytes());
-            assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
-            // preflight 免令牌（CORS 规范）。
-            let reply = raw_exchange(
-                addr,
-                b"OPTIONS /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+                let reply = raw_exchange(addr, req.as_bytes());
+                assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+                // preflight 免令牌（CORS 规范）。
+                let reply = raw_exchange(
+                    addr,
+                    b"OPTIONS /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n\
                   Origin: app://obsidian.md\r\nAccess-Control-Request-Method: POST\r\n\r\n",
-            );
-            assert!(reply.starts_with("HTTP/1.1 204"), "{reply}");
-            // 外站 origin 即使带着对令牌也 403：CORS 判定在前。
-            let req = format!(
+                );
+                assert!(reply.starts_with("HTTP/1.1 204"), "{reply}");
+                // 外站 origin 即使带着对令牌也 403：CORS 判定在前。
+                let req = format!(
                 "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://evil.example\r\nAuthorization: Bearer {token}\r\n\r\n"
             );
-            let reply = raw_exchange(addr, req.as_bytes());
-            assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
-        });
+                let reply = raw_exchange(addr, req.as_bytes());
+                assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
+            },
+        );
     }
 
     #[test]
@@ -1170,7 +1282,10 @@ mod tests {
                 b"POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Encoding: br\r\nContent-Length: 3\r\n\r\nabc",
             );
             assert!(reply.starts_with("HTTP/1.1 415"), "{reply}");
-            assert!(reply.contains("\"type\":\"error\""), "anthropic shape: {reply}");
+            assert!(
+                reply.contains("\"type\":\"error\""),
+                "anthropic shape: {reply}"
+            );
         });
     }
 
@@ -1195,7 +1310,8 @@ mod tests {
     #[test]
     fn live_bodyprep_mends_bad_bytes_before_routing() {
         with_live_gateway(|addr| {
-            let mut body = br#"{"model":"zz-none/gbk-x","messages":[{"role":"user","content":""#.to_vec();
+            let mut body =
+                br#"{"model":"zz-none/gbk-x","messages":[{"role":"user","content":""#.to_vec();
             body.extend_from_slice(&[0xc4, 0xe3, 0xba, 0xc3]); // GBK「你好」
             body.extend_from_slice(b"\"}]}");
             let mut req = format!(

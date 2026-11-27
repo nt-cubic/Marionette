@@ -154,9 +154,10 @@ pub fn find_match<'a>(
         let row = rows.iter().find(|row| native_hits(row, &conv.native_id))?;
         return Some((row, MatchKind::NativeId));
     }
-    if let Some(row) = rows.iter().find(|row| {
-        row.agent_id == conv.agent_id && titles_match(&row.label, &conv.title)
-    }) {
+    if let Some(row) = rows
+        .iter()
+        .find(|row| row.agent_id == conv.agent_id && titles_match(&row.label, &conv.title))
+    {
         return Some((row, MatchKind::Title));
     }
     let first = cli_first_user.unwrap_or("").trim();
@@ -309,7 +310,14 @@ mod tests {
         }
     }
 
-    fn row(id: &str, agent: &str, label: &str, origin: &str, native: &[&str], first: &str) -> ExistingRow {
+    fn row(
+        id: &str,
+        agent: &str,
+        label: &str,
+        origin: &str,
+        native: &[&str],
+        first: &str,
+    ) -> ExistingRow {
         ExistingRow {
             id: id.into(),
             agent_id: agent.into(),
@@ -393,7 +401,14 @@ mod tests {
             Some(MatchKind::Title)
         );
 
-        let generic = vec![row("session-3", "grok-build", "New session", "user", &[], "")];
+        let generic = vec![row(
+            "session-3",
+            "grok-build",
+            "New session",
+            "user",
+            &[],
+            "",
+        )];
         let unnamed = conv("New session", "zzz", "grok-build");
         assert!(find_match(&generic, &unnamed, &import_id, None).is_none());
     }

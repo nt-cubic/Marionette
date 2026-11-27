@@ -79,12 +79,10 @@ impl AgentParser for ClineParser {
 
     fn load(&self, locator: &str) -> Result<Vec<Value>, String> {
         let dir = Path::new(locator);
-        let id = dir
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("cline");
+        let id = dir.file_name().and_then(|s| s.to_str()).unwrap_or("cline");
         let messages_path = dir.join(format!("{id}.messages.json"));
-        let Some(v) = read_json_file(&messages_path).or_else(|| read_json_file(&dir.join("messages.json")))
+        let Some(v) =
+            read_json_file(&messages_path).or_else(|| read_json_file(&dir.join("messages.json")))
         else {
             return Err(format!("Cline messages not found in {locator}"));
         };

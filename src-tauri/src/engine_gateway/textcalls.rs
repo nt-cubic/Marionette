@@ -47,7 +47,12 @@ use std::collections::HashSet;
 /// textCallMarks（textcalls.go:37）：正文书写的调用以什么开头（DSML 标记除外，
 /// `dsml_mark` 读它）。裸 `<invoke name=` 是 Claude 自家调用的形状（MiniMax 包一层
 /// `<minimax:tool_call>`，Claude 包 `<function_calls>`）。
-const TEXT_CALL_MARKS: [&str; 4] = ["<tool_call>", "<invoke name=", "<function_calls>", "<minimax:tool_call>"];
+const TEXT_CALL_MARKS: [&str; 4] = [
+    "<tool_call>",
+    "<invoke name=",
+    "<function_calls>",
+    "<minimax:tool_call>",
+];
 
 /// cutMark（textcalls.go:463-480）扫的闭合在前、开口在后的九个标记。
 const CUT_MARKS: [&str; 9] = [
@@ -158,7 +163,10 @@ fn ns_prefix(b: &[u8], i: usize) -> Option<usize> {
         _ => return None,
     }
     let mut j = i + 1;
-    while b.get(j).is_some_and(|&c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-') {
+    while b
+        .get(j)
+        .is_some_and(|&c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+    {
         j += 1;
     }
     if b.get(j) == Some(&b':') {
@@ -389,7 +397,13 @@ fn junk_match_at(b: &[u8], i: usize) -> Option<usize> {
         cands.push(after_slash);
         for cand in cands {
             // 名字按正则的左支顺序试；tool_calls 的 s? 贪心 = 长形先试
-            for name in ["invoke", "parameter", "function_calls", "tool_calls", "tool_call"] {
+            for name in [
+                "invoke",
+                "parameter",
+                "function_calls",
+                "tool_calls",
+                "tool_call",
+            ] {
                 if let Some(k) = lit(b, cand, name.as_bytes()) {
                     if matches!(b.get(k), Some(&c) if c.is_ascii_alphanumeric() || c == b'_') {
                         continue; // \b 失败
@@ -693,7 +707,10 @@ fn parse_json_number(b: &[u8], i: usize) -> Option<(JVal, usize)> {
             j += 1;
         }
     }
-    Some((JVal::Num(std::str::from_utf8(&b[start..j]).ok()?.to_string()), j))
+    Some((
+        JVal::Num(std::str::from_utf8(&b[start..j]).ok()?.to_string()),
+        j,
+    ))
 }
 
 /// Go `json.Marshal` 同款字符串转义：`"` `\\`、\b \f \n \r \t、其余 <0x20 走
@@ -932,16 +949,24 @@ fn dsml_invoke_at(b: &[u8], i: usize) -> Option<(usize, usize, usize)> {
     let after_ws = regex_ws_skip(b, i + 1);
     for cand in prefix_candidate_ends(b, after_ws) {
         // invoke \s+ name \s* = \s* " ([^"]+) " \s* >
-        let Some(j) = lit(b, cand, b"invoke") else { continue };
+        let Some(j) = lit(b, cand, b"invoke") else {
+            continue;
+        };
         if !is_regex_ws_at(b, j) {
             continue;
         }
         let j = regex_ws_skip(b, j);
-        let Some(j) = lit(b, j, b"name") else { continue };
+        let Some(j) = lit(b, j, b"name") else {
+            continue;
+        };
         let j = regex_ws_skip(b, j);
-        let Some(j) = expect(b, j, b'=') else { continue };
+        let Some(j) = expect(b, j, b'=') else {
+            continue;
+        };
         let j = regex_ws_skip(b, j);
-        let Some(j) = expect(b, j, b'"') else { continue };
+        let Some(j) = expect(b, j, b'"') else {
+            continue;
+        };
         let start = j;
         let mut k = j;
         while matches!(b.get(k), Some(&c) if c != b'"') {
@@ -976,7 +1001,9 @@ fn dsml_close_at(b: &[u8], i: usize) -> Option<usize> {
         return None;
     }
     let j = regex_ws_skip(b, i + 1);
-    let Some(j) = expect(b, j, b'/') else { return None };
+    let Some(j) = expect(b, j, b'/') else {
+        return None;
+    };
     let j = regex_ws_skip(b, j);
     for cand in prefix_candidate_ends(b, j) {
         if let Some(k) = lit(b, cand, b"invoke") {
@@ -1005,7 +1032,11 @@ fn dsml_param_find_all(s: &str) -> Vec<(String, String, String)> {
             cur = pos + 1;
             continue;
         };
-        out.push((s[ns..ne].to_string(), s[a0..a1].to_string(), s[open_end..cstart].to_string()));
+        out.push((
+            s[ns..ne].to_string(),
+            s[a0..a1].to_string(),
+            s[open_end..cstart].to_string(),
+        ));
         cur = cend;
     }
     out
@@ -1017,16 +1048,24 @@ fn dsml_param_at(b: &[u8], i: usize) -> Option<(usize, usize, usize, usize, usiz
     }
     let after_ws = regex_ws_skip(b, i + 1);
     for cand in prefix_candidate_ends(b, after_ws) {
-        let Some(j) = lit(b, cand, b"parameter") else { continue };
+        let Some(j) = lit(b, cand, b"parameter") else {
+            continue;
+        };
         if !is_regex_ws_at(b, j) {
             continue;
         }
         let j = regex_ws_skip(b, j);
-        let Some(j) = lit(b, j, b"name") else { continue };
+        let Some(j) = lit(b, j, b"name") else {
+            continue;
+        };
         let j = regex_ws_skip(b, j);
-        let Some(j) = expect(b, j, b'=') else { continue };
+        let Some(j) = expect(b, j, b'=') else {
+            continue;
+        };
         let j = regex_ws_skip(b, j);
-        let Some(j) = expect(b, j, b'"') else { continue };
+        let Some(j) = expect(b, j, b'"') else {
+            continue;
+        };
         let start = j;
         let mut k = j;
         while matches!(b.get(k), Some(&c) if c != b'"') {
@@ -1061,7 +1100,10 @@ fn attr_unit(b: &[u8], i: usize) -> Option<usize> {
         return None;
     }
     let mut j = j;
-    while b.get(j).is_some_and(|&c| c.is_ascii_alphanumeric() || c == b'_') {
+    while b
+        .get(j)
+        .is_some_and(|&c| c.is_ascii_alphanumeric() || c == b'_')
+    {
         j += 1;
     }
     let j = regex_ws_skip(b, j);
@@ -1191,22 +1233,41 @@ fn hermes_call(s: &str, names: Option<&HashSet<String>>) -> Option<(WrittenCall,
     if !offered(names, &name) {
         return None;
     }
-    let args_raw = v.get("arguments").or_else(|| v.get("parameters")).or_else(|| v.get("input"));
+    let args_raw = v
+        .get("arguments")
+        .or_else(|| v.get("parameters"))
+        .or_else(|| v.get("input"));
     let args = call_args(args_raw)?;
     let n = lead + grew_back(&grew, end_fixed);
     let rest = &s[n..];
-    let trimmed = rest.trim_start_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n' | '}' | ']' | '"' | '\'' | '>'));
+    let trimmed = rest.trim_start_matches(|c| {
+        matches!(c, ' ' | '\t' | '\r' | '\n' | '}' | ']' | '"' | '\'' | '>')
+    });
     let junk = rest.len() - trimmed.len();
     let next = &rest[junk..];
     if next.starts_with("</tool_call>") {
-        return Some((WrittenCall { name: name.to_string(), args }, n + junk + "</tool_call>".len()));
+        return Some((
+            WrittenCall {
+                name: name.to_string(),
+                args,
+            },
+            n + junk + "</tool_call>".len(),
+        ));
     }
-    if !trim_a_start(&rest[..junk]).is_empty() || (junk == 0 && !next.is_empty() && !next.starts_with('<')) {
+    if !trim_a_start(&rest[..junk]).is_empty()
+        || (junk == 0 && !next.is_empty() && !next.starts_with('<'))
+    {
         if next.contains("</tool_call>") {
             return None;
         }
     }
-    Some((WrittenCall { name: name.to_string(), args }, n))
+    Some((
+        WrittenCall {
+            name: name.to_string(),
+            args,
+        },
+        n,
+    ))
 }
 
 /// paramCall（textcalls.go:549-598）：DeepSeek 写的半 Hermes 半自家模板（#917）——
@@ -1248,7 +1309,13 @@ fn param_call(s: &str, names: Option<&HashSet<String>>) -> Option<(WrittenCall, 
     if t.starts_with("</tool_call>") {
         n = s.len() - t.len() + "</tool_call>".len();
     }
-    Some((WrittenCall { name, args: marshal_jval(&JVal::Obj(obj)) }, n))
+    Some((
+        WrittenCall {
+            name,
+            args: marshal_jval(&JVal::Obj(obj)),
+        },
+        n,
+    ))
 }
 
 /// glmCall（textcalls.go:611-645）：GLM 自家的调用（#906）——`<tool_call>` 后直接
@@ -1272,13 +1339,24 @@ fn glm_call(s: &str, names: Option<&HashSet<String>>) -> Option<(WrittenCall, us
     } else if !t.is_empty() && !t.starts_with("<tool_call>") {
         return None;
     }
-    Some((WrittenCall { name, args: marshal_jval(&JVal::Obj(obj)) }, n))
+    Some((
+        WrittenCall {
+            name,
+            args: marshal_jval(&JVal::Obj(obj)),
+        },
+        n,
+    ))
 }
 
 /// dsmlCall（textcalls.go:649-679）：DeepSeek 的 `<｜DSML｜invoke name="…">` 加
 /// 参数，读到闭合、下一个 invoke 或 s 的末尾。开了 `string="true"` 的参数按原
 /// 字符串收。
-fn dsml_call(s: &str, name: &str, open: usize, names: Option<&HashSet<String>>) -> Option<(WrittenCall, usize)> {
+fn dsml_call(
+    s: &str,
+    name: &str,
+    open: usize,
+    names: Option<&HashSet<String>>,
+) -> Option<(WrittenCall, usize)> {
     if !offered(names, name) {
         return None;
     }
@@ -1300,7 +1378,13 @@ fn dsml_call(s: &str, name: &str, open: usize, names: Option<&HashSet<String>>) 
         };
         obj_set(&mut obj, &pname, v);
     }
-    Some((WrittenCall { name: name.to_string(), args: marshal_jval(&JVal::Obj(obj)) }, end))
+    Some((
+        WrittenCall {
+            name: name.to_string(),
+            args: marshal_jval(&JVal::Obj(obj)),
+        },
+        end,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1327,7 +1411,10 @@ fn text_between(t: &str, calls: usize, left: &mut String) -> bool {
 /// parseTextCalls：读 s（以一个标记开头）里写下的调用。None = ok=false——除非
 /// 其中每一块都是「点了 offered 工具名、参数读得出」的调用，否则整个不算；
 /// rest 是其中不是调用也不是标签的文本（剥残渣后）。
-fn parse_text_calls(s: &str, names: Option<&HashSet<String>>) -> Option<(Vec<WrittenCall>, String)> {
+fn parse_text_calls(
+    s: &str,
+    names: Option<&HashSet<String>>,
+) -> Option<(Vec<WrittenCall>, String)> {
     let mut calls: Vec<WrittenCall> = Vec::new();
     let mut left = String::new();
     let mut s = s;
@@ -1364,7 +1451,9 @@ fn parse_text_calls(s: &str, names: Option<&HashSet<String>>) -> Option<(Vec<Wri
                 s = "";
                 continue;
             }
-            let Some((c, n)) = dsml_call(&s[dstart..], &dname, dend - dstart, names) else { return None };
+            let Some((c, n)) = dsml_call(&s[dstart..], &dname, dend - dstart, names) else {
+                return None;
+            };
             calls.push(c);
             s = &s[dstart + n..];
         } else {
@@ -1421,9 +1510,21 @@ impl TextCallScout {
         let names = if offered_tools.is_empty() {
             None
         } else {
-            Some(offered_tools.iter().filter(|n| !n.is_empty()).cloned().collect())
+            Some(
+                offered_tools
+                    .iter()
+                    .filter(|n| !n.is_empty())
+                    .cloned()
+                    .collect(),
+            )
         };
-        TextCallScout { names, pending: String::new(), held: String::new(), holding: false, native: false }
+        TextCallScout {
+            names,
+            pending: String::new(),
+            held: String::new(),
+            holding: false,
+            native: false,
+        }
     }
 
     /// 喂一片正文 delta，返回此刻可以放出的文本（可能为空——被持有了）。
@@ -1569,7 +1670,10 @@ mod tests {
         assert_eq!(released, "我先看看目录。\n\n");
         let f = sc.finish();
         assert_eq!(f.text, "");
-        assert_eq!(f.calls, vec![("bash".to_string(), "{\"command\":\"ls -la\"}".to_string())]);
+        assert_eq!(
+            f.calls,
+            vec![("bash".to_string(), "{\"command\":\"ls -la\"}".to_string())]
+        );
     }
 
     /// Go TestTextWrittenCallLeftAsText（textcalls_test.go:119-144）：点名的工具没
@@ -1631,7 +1735,11 @@ mod tests {
             );
             assert_eq!(released, "Listing it.\n", "tail {tail:?}");
             let f = sc.finish();
-            assert_eq!(f.calls, vec![("bash".to_string(), "{\"command\":\"ls\"}".to_string())], "tail {tail:?}");
+            assert_eq!(
+                f.calls,
+                vec![("bash".to_string(), "{\"command\":\"ls\"}".to_string())],
+                "tail {tail:?}"
+            );
             assert_eq!(f.text, "");
         }
         let mut sc = scout(&["bash", "edit"]);
@@ -1666,9 +1774,15 @@ mod tests {
         assert!(f.calls.is_empty());
 
         let mut sc = scout(&["bash", "edit"]);
-        feed_all(&mut sc, &["<tool_call>{\"name\":\"bash\",\"arguments\":{\"command\":\"ls\"}}\nDone."]);
+        feed_all(
+            &mut sc,
+            &["<tool_call>{\"name\":\"bash\",\"arguments\":{\"command\":\"ls\"}}\nDone."],
+        );
         let f = sc.finish();
-        assert_eq!(f.calls, vec![("bash".to_string(), "{\"command\":\"ls\"}".to_string())]);
+        assert_eq!(
+            f.calls,
+            vec![("bash".to_string(), "{\"command\":\"ls\"}".to_string())]
+        );
         assert!(!f.text.contains("Done."));
     }
 
@@ -1679,7 +1793,13 @@ mod tests {
     fn tags_only_dropped_and_wrapped_invoke() {
         let mut sc = scout(&["bash", "edit"]);
         assert_eq!(
-            feed_all(&mut sc, &["<tool_call>\n</｜DSML｜parameter>\n", "</｜DSML｜invoke>\n</"]),
+            feed_all(
+                &mut sc,
+                &[
+                    "<tool_call>\n</｜DSML｜parameter>\n",
+                    "</｜DSML｜invoke>\n</"
+                ]
+            ),
             ""
         );
         let f = sc.finish();
@@ -1693,7 +1813,10 @@ mod tests {
         );
         assert_eq!(released, "看一下。");
         let f = sc.finish();
-        assert_eq!(f.calls, vec![("bash".to_string(), "{\"command\":\"ls\"}".to_string())]);
+        assert_eq!(
+            f.calls,
+            vec![("bash".to_string(), "{\"command\":\"ls\"}".to_string())]
+        );
         assert_eq!(f.text, "");
     }
 
@@ -1711,16 +1834,31 @@ mod tests {
         );
         assert_eq!(released, "Running it.\n\n");
         let f = sc.finish();
-        assert_eq!(f.calls, vec![("bash".to_string(), "{\"command\":\"ls -la\",\"timeout\":30}".to_string())]);
+        assert_eq!(
+            f.calls,
+            vec![(
+                "bash".to_string(),
+                "{\"command\":\"ls -la\",\"timeout\":30}".to_string()
+            )]
+        );
         assert_eq!(f.text, "");
 
         // 无参数 → {}（Go "no parameters"）；截断的参数读不进 → 也 {}（Go "cut short"）
         let mut sc = scout(&["get_weather"]);
-        feed_all(&mut sc, &["<｜DSML｜invoke name=\"get_weather\"></｜DSML｜invoke>"]);
-        assert_eq!(sc.finish().calls, vec![("get_weather".to_string(), "{}".to_string())]);
+        feed_all(
+            &mut sc,
+            &["<｜DSML｜invoke name=\"get_weather\"></｜DSML｜invoke>"],
+        );
+        assert_eq!(
+            sc.finish().calls,
+            vec![("get_weather".to_string(), "{}".to_string())]
+        );
         let mut sc = scout(&["get_weather"]);
         feed_all(&mut sc, &["<｜DSML｜invoke name=\"get_weather\"><｜DSML｜parameter name=\"city\" string=\"true\">Beij"]);
-        assert_eq!(sc.finish().calls, vec![("get_weather".to_string(), "{}".to_string())]);
+        assert_eq!(
+            sc.finish().calls,
+            vec![("get_weather".to_string(), "{}".to_string())]
+        );
     }
 
     /// Go TestTextWrittenDSMLDoublePipe（textcalls_pipes_test.go:29-79）：全角双管道
@@ -1732,7 +1870,10 @@ mod tests {
         assert_eq!(feed_all(&mut sc, &[issue]), "");
         assert_eq!(
             sc.finish().calls,
-            vec![("get_weather".to_string(), "{\"city\":\"Beijing\"}".to_string())]
+            vec![(
+                "get_weather".to_string(),
+                "{\"city\":\"Beijing\"}".to_string()
+            )]
         );
 
         let observed = "<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"web_search\">\n<｜｜DSML｜｜ parameter name=\"query\" string=\"true\">current Python version latest stable release</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>";
@@ -1741,7 +1882,10 @@ mod tests {
         let f = sc.finish();
         assert_eq!(
             f.calls,
-            vec![("web_search".to_string(), "{\"query\":\"current Python version latest stable release\"}".to_string())]
+            vec![(
+                "web_search".to_string(),
+                "{\"query\":\"current Python version latest stable release\"}".to_string()
+            )]
         );
         assert_eq!(f.text, "");
     }
@@ -1796,7 +1940,14 @@ mod tests {
             let released = feed_all(&mut sc, &[&s[..i], &s[i..]]);
             assert_eq!(released, "Sure.\n", "cut at {i}");
             let f = sc.finish();
-            assert_eq!(f.calls, vec![("get_weather".to_string(), "{\"city\":\"Beijing\"}".to_string())], "cut at {i}");
+            assert_eq!(
+                f.calls,
+                vec![(
+                    "get_weather".to_string(),
+                    "{\"city\":\"Beijing\"}".to_string()
+                )],
+                "cut at {i}"
+            );
             assert_eq!(f.text, "", "cut at {i}");
         }
     }
@@ -1823,14 +1974,18 @@ mod tests {
         let glm_exec = "<tool_call>exec\n<arg_key>input</arg_key>\n<arg_value>const r = await tools.shell({cmd: \"ls\"});\nconsole.log(r);</arg_value>\n</tool_call>";
         let text = format!("Let me look.\n\n{glm_exec}");
         let mut sc = scout(&["exec"]);
-        let released = feed_all(&mut sc, &[&text[..20], &text[20..31], &text[31..52], &text[52..]]);
+        let released = feed_all(
+            &mut sc,
+            &[&text[..20], &text[20..31], &text[31..52], &text[52..]],
+        );
         assert_eq!(released, "Let me look.\n\n");
         let f = sc.finish();
         assert_eq!(
             f.calls,
             vec![(
                 "exec".to_string(),
-                "{\"input\":\"const r = await tools.shell({cmd: \\\"ls\\\"});\\nconsole.log(r);\"}".to_string()
+                "{\"input\":\"const r = await tools.shell({cmd: \\\"ls\\\"});\\nconsole.log(r);\"}"
+                    .to_string()
             )]
         );
         assert_eq!(f.text, "");
@@ -1853,7 +2008,11 @@ mod tests {
         assert_eq!(
             f.calls,
             vec![
-                ("shell".to_string(), "{\"command\":[\"ls\",\"-la\"],\"timeout_ms\":5000,\"workdir\":\"/tmp/x\"}".to_string()),
+                (
+                    "shell".to_string(),
+                    "{\"command\":[\"ls\",\"-la\"],\"timeout_ms\":5000,\"workdir\":\"/tmp/x\"}"
+                        .to_string()
+                ),
                 ("read".to_string(), "{\"path\":\"a.md\"}".to_string()),
             ]
         );
@@ -1861,7 +2020,10 @@ mod tests {
 
         let block = "<tool_call>rm_rf<arg_key>path</arg_key><arg_value>/</arg_value></tool_call>";
         let mut sc = scout(&["shell"]);
-        assert_eq!(feed_all(&mut sc, &[&format!("Like this: {block}")]), "Like this: ");
+        assert_eq!(
+            feed_all(&mut sc, &[&format!("Like this: {block}")]),
+            "Like this: "
+        );
         let f = sc.finish();
         assert_eq!(f.text, block);
         assert!(f.calls.is_empty());
@@ -1885,7 +2047,11 @@ mod tests {
         let f = sc.finish();
         assert_eq!(
             f.calls,
-            vec![("bash".to_string(), "{\"command\":\"cd /e/Project/synara \\u0026\\u0026 node .review-tmp\"}".to_string())]
+            vec![(
+                "bash".to_string(),
+                "{\"command\":\"cd /e/Project/synara \\u0026\\u0026 node .review-tmp\"}"
+                    .to_string()
+            )]
         );
 
         let mut sc = scout(&["bash", "edit"]);
@@ -1901,16 +2067,29 @@ mod tests {
         assert_eq!(
             f.calls,
             vec![
-                ("edit".to_string(), "{\"edits\":[{\"newText\":\"y\",\"oldText\":\"x\"}],\"path\":\"a.ts\"}".to_string()),
-                ("bash".to_string(), "{\"command\":\"for f in *; do\\n  echo \\\"$f\\\"\\ndone\"}".to_string()),
+                (
+                    "edit".to_string(),
+                    "{\"edits\":[{\"newText\":\"y\",\"oldText\":\"x\"}],\"path\":\"a.ts\"}"
+                        .to_string()
+                ),
+                (
+                    "bash".to_string(),
+                    "{\"command\":\"for f in *; do\\n  echo \\\"$f\\\"\\ndone\"}".to_string()
+                ),
             ]
         );
 
         let mut sc = scout(&["get_weather"]);
-        feed_all(&mut sc, &["<tool_call>{\"name\":\"get_weather\">\n<parameter name=\"city\">a < "]);
+        feed_all(
+            &mut sc,
+            &["<tool_call>{\"name\":\"get_weather\">\n<parameter name=\"city\">a < "],
+        );
         assert_eq!(
             sc.finish().calls,
-            vec![("get_weather".to_string(), "{\"city\":\"a \\u003c \"}".to_string())]
+            vec![(
+                "get_weather".to_string(),
+                "{\"city\":\"a \\u003c \"}".to_string()
+            )]
         );
 
         for block in [
@@ -1941,14 +2120,29 @@ mod tests {
             "*Result: Navigated to https://www.google.com — page title: \"Google\"*\n",
             "已用 magpie 的浏览器打开了谷歌 ..."
         );
-        let want = ("ToolSearch".to_string(), "{\"query\":\"select:mcp__magpie__magpie-browser__browser_navigate\"}".to_string());
-        let (calls, rest) = parse_text_calls(reported, nameset(&["ToolSearch", "Bash"]).as_ref()).unwrap();
-        assert_eq!(calls.iter().map(|c| (c.name.clone(), c.args.clone())).collect::<Vec<_>>(), vec![want.clone()]);
+        let want = (
+            "ToolSearch".to_string(),
+            "{\"query\":\"select:mcp__magpie__magpie-browser__browser_navigate\"}".to_string(),
+        );
+        let (calls, rest) =
+            parse_text_calls(reported, nameset(&["ToolSearch", "Bash"]).as_ref()).unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|c| (c.name.clone(), c.args.clone()))
+                .collect::<Vec<_>>(),
+            vec![want.clone()]
+        );
         assert_eq!(rest, "");
         // 浏览器工具也提供了：仍只有第一个——第二个跟在自编的结果后面
         let (calls, _) = parse_text_calls(
             reported,
-            nameset(&["ToolSearch", "Bash", "mcp__magpie__magpie-browser__browser_navigate"]).as_ref(),
+            nameset(&[
+                "ToolSearch",
+                "Bash",
+                "mcp__magpie__magpie-browser__browser_navigate",
+            ])
+            .as_ref(),
         )
         .unwrap();
         assert_eq!(calls.len(), 1);
@@ -1961,12 +2155,19 @@ mod tests {
         );
         assert_eq!(rest, "");
 
-        for (open, close) in [("<minimax:tool_call>", "</minimax:tool_call>"), ("<function_calls>", "</function_calls>")] {
+        for (open, close) in [
+            ("<minimax:tool_call>", "</minimax:tool_call>"),
+            ("<function_calls>", "</function_calls>"),
+        ] {
             let s = format!("{open}\n<invoke name=\"Bash\">\n<parameter name=\"command\">ls -la</parameter>\n</invoke>\n{close}");
             let (at, _) = text_call_at(&format!("先看看。\n{s}"));
             assert_eq!(at, Some("先看看。\n".len()), "{open}");
             let (calls, rest) = parse_text_calls(&s, nameset(&["Bash"]).as_ref()).unwrap();
-            assert_eq!(calls.iter().map(|c| c.args.clone()).collect::<Vec<_>>(), vec!["{\"command\":\"ls -la\"}"], "{open}");
+            assert_eq!(
+                calls.iter().map(|c| c.args.clone()).collect::<Vec<_>>(),
+                vec!["{\"command\":\"ls -la\"}"],
+                "{open}"
+            );
             assert_eq!(rest, "");
         }
 
@@ -2009,7 +2210,10 @@ mod tests {
         let f = sc.finish();
         assert_eq!(
             f.calls,
-            vec![("ToolSearch".to_string(), "{\"query\":\"select:mcp__magpie__magpie-browser__browser_navigate\"}".to_string())]
+            vec![(
+                "ToolSearch".to_string(),
+                "{\"query\":\"select:mcp__magpie__magpie-browser__browser_navigate\"}".to_string()
+            )]
         );
         assert_eq!(f.text, "");
     }

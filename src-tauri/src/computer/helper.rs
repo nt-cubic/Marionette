@@ -17,11 +17,11 @@ use std::path::PathBuf;
 use serde_json::{json, Value};
 use sha2::Digest;
 
+use super::keys::{self, Scope, Verdict};
 use super::protocol::{
     self, Frame, WindowAction, OP_ACT, OP_CAPTURE, OP_CLIPBOARD_READ, OP_CLIPBOARD_WRITE,
     OP_CONFIGURE, OP_HALT, OP_LIST_WINDOWS, OP_SNAPSHOT, PROTOCOL_VERSION,
 };
-use super::keys::{self, Scope, Verdict};
 use super::win;
 
 /// Helper data dir: the driver's per-launch homes live here too, one run
@@ -54,7 +54,8 @@ impl DriverProc {
         let mut file = std::fs::File::open(exe).map_err(|e| format!("driver open: {e}"))?;
         let mut buffer = [0u8; 64 * 1024];
         loop {
-            let read = std::io::Read::read(&mut file, &mut buffer).map_err(|e| format!("driver read: {e}"))?;
+            let read = std::io::Read::read(&mut file, &mut buffer)
+                .map_err(|e| format!("driver read: {e}"))?;
             if read == 0 {
                 break;
             }
@@ -69,8 +70,7 @@ impl DriverProc {
         // outlives the launch we can name).
         let base = data_dir();
         let run_dir = base.join(format!("run-{}", std::process::id()));
-        std::fs::create_dir_all(run_dir.join("tmp"))
-            .map_err(|e| format!("run dir: {e}"))?;
+        std::fs::create_dir_all(run_dir.join("tmp")).map_err(|e| format!("run dir: {e}"))?;
 
         let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
         let run = run_dir.to_string_lossy().to_string();
@@ -93,7 +93,10 @@ impl DriverProc {
             // Ten years: the driver's default idle kill (5 min) would reap a
             // session mid-conversation.
             .env("CUA_DRIVER_RS_SESSION_IDLE_TTL_SECS", "315360000")
-            .env("PATH", format!(r"{system_root}\System32;{system_root};{system_root}\System32\Wbem"))
+            .env(
+                "PATH",
+                format!(r"{system_root}\System32;{system_root};{system_root}\System32\Wbem"),
+            )
             .env("SystemRoot", &system_root)
             .env("windir", &system_root)
             .env("TEMP", &tmp)
@@ -115,15 +118,16 @@ impl DriverProc {
         Ok(driver)
     }
 
-    fn call_raw(&mut self, method: &str, params: &Value, timeout_secs: u64) -> Result<Value, String> {
+    fn call_raw(
+        &mut self,
+        method: &str,
+        params: &Value,
+        timeout_secs: u64,
+    ) -> Result<Value, String> {
         let id = self.next_id;
         self.next_id += 1;
         let message = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
-        let stdin = self
-            .child
-            .stdin
-            .as_mut()
-            .ok_or("driver stdin is gone")?;
+        let stdin = self.child.stdin.as_mut().ok_or("driver stdin is gone")?;
         let line = format!("{message}\n");
         stdin
             .write_all(line.as_bytes())
@@ -131,11 +135,7 @@ impl DriverProc {
             .map_err(|e| format!("driver write: {e}"))?;
         // Single in flight: read lines until our id answers (skipping any
         // server notifications).
-        let stdout = self
-            .child
-            .stdout
-            .as_mut()
-            .ok_or("driver stdout is gone")?;
+        let stdout = self.child.stdout.as_mut().ok_or("driver stdout is gone")?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
         let mut reader = std::io::BufReader::new(stdout);
         loop {
@@ -177,7 +177,8 @@ impl DriverProc {
         }
         // notifications/initialized (no id, no answer expected).
         if let Some(stdin) = self.child.stdin.as_mut() {
-            let _ = stdin.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n");
+            let _ = stdin
+                .write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n");
             let _ = stdin.flush();
         }
         Ok(())
@@ -190,13 +191,20 @@ impl DriverProc {
             timeout_secs,
         )?;
         if let Some(error) = answer.get("error") {
-            return Ok(ToolResult { is_error: true, structured: Some(error.clone()), image: None });
+            return Ok(ToolResult {
+                is_error: true,
+                structured: Some(error.clone()),
+                image: None,
+            });
         }
         let result = answer
             .get("result")
             .cloned()
             .ok_or_else(|| "driver answer had no result".to_string())?;
-        let is_error = result.get("isError").and_then(Value::as_bool).unwrap_or(false);
+        let is_error = result
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         // MCP 2025-06-18 puts structured output in `structuredContent`; the
         // driver's refusals/errors ride inside it at /refusal/code or
         // /error/code (codeg ToolResult).
@@ -211,11 +219,18 @@ impl DriverProc {
             .and_then(|items| {
                 items.iter().find_map(|item| {
                     let data = item.get("data").and_then(Value::as_str)?;
-                    let mime = item.get("mimeType").and_then(Value::as_str).unwrap_or("image/png");
+                    let mime = item
+                        .get("mimeType")
+                        .and_then(Value::as_str)
+                        .unwrap_or("image/png");
                     Some((data.to_string(), mime.to_string()))
                 })
             });
-        Ok(ToolResult { is_error, structured, image })
+        Ok(ToolResult {
+            is_error,
+            structured,
+            image,
+        })
     }
 
     fn shutdown(&mut self) {
@@ -254,7 +269,11 @@ fn err(code: &str, message: impl std::fmt::Display) -> Value {
 
 impl Helper {
     fn new() -> Helper {
-        Helper { driver: None, driver_path: None, agent_clipboard_seq: None }
+        Helper {
+            driver: None,
+            driver_path: None,
+            agent_clipboard_seq: None,
+        }
     }
 
     fn ensure_driver(&mut self) -> Result<&mut DriverProc, Value> {
@@ -305,7 +324,10 @@ impl Helper {
             .tool("list_windows", &args, LIST_TIMEOUT_SECS)
             .map_err(|e| err("driver-unavailable", &e))?;
         if result.is_error {
-            return Err(err("driver-failed", &tool_error_text("list_windows", &result)));
+            return Err(err(
+                "driver-failed",
+                &tool_error_text("list_windows", &result),
+            ));
         }
         let structured = result.structured.clone();
         let windows = structured
@@ -316,11 +338,14 @@ impl Helper {
             .unwrap_or_default();
         let mut out = Vec::new();
         for window in windows {
-            let Some(pid) = window.get("pid").and_then(Value::as_u64) else { continue };
+            let Some(pid) = window.get("pid").and_then(Value::as_u64) else {
+                continue;
+            };
             let facts = win::process_facts(pid as u32);
             let grantable = match &facts {
                 Some(facts) => {
-                    !win::is_own_image(&facts.image_path, &own_exe) && !win::is_blocklisted(&facts.image_path)
+                    !win::is_own_image(&facts.image_path, &own_exe)
+                        && !win::is_blocklisted(&facts.image_path)
                 }
                 None => false,
             };
@@ -365,10 +390,17 @@ impl Helper {
             return Err(err("occluded", "the window returned no picture"));
         };
         if mime != "image/png" {
-            return Err(err("capture-failed", format!("capture came back as {mime}")));
+            return Err(err(
+                "capture-failed",
+                format!("capture came back as {mime}"),
+            ));
         }
-        let max_width = params.get("maxWidth").and_then(Value::as_u64).unwrap_or(1568) as u32;
-        let shrunk = shrink_png_to_jpeg(&png_base64, max_width).map_err(|e| err("capture-failed", &e))?;
+        let max_width = params
+            .get("maxWidth")
+            .and_then(Value::as_u64)
+            .unwrap_or(1568) as u32;
+        let shrunk =
+            shrink_png_to_jpeg(&png_base64, max_width).map_err(|e| err("capture-failed", &e))?;
         Ok(json!({
             "dataUrl": shrunk.0,
             "width": shrunk.1,
@@ -395,12 +427,12 @@ impl Helper {
             )
             .map_err(|e| err("driver-unavailable", &e))?;
         if result.is_error {
-            return Err(err("read-failed", &tool_error_text("get_window_state", &result)));
+            return Err(err(
+                "read-failed",
+                &tool_error_text("get_window_state", &result),
+            ));
         }
-        let mut structured = result
-            .structured
-            .clone()
-            .unwrap_or_else(|| json!({}));
+        let mut structured = result.structured.clone().unwrap_or_else(|| json!({}));
         // Direct the agent at the tokens the driver mints.
         if let Some(object) = structured.as_object_mut() {
             object.insert("windowId".to_string(), json!(window_id));
@@ -453,7 +485,10 @@ impl Helper {
             let enter = driver_call(
                 pid,
                 window_id,
-                &WindowAction::Press { key: "Enter".to_string(), token: None },
+                &WindowAction::Press {
+                    key: "Enter".to_string(),
+                    token: None,
+                },
             );
             let _ = driver.tool(&enter.0, &enter.1, ACT_TIMEOUT_SECS);
         }
@@ -521,7 +556,14 @@ fn driver_call(pid: u64, window_id: u64, action: &WindowAction) -> (String, Valu
         "delivery_mode": "background",
     });
     match action {
-        WindowAction::Click { x, y, token, button, count, modifiers } => {
+        WindowAction::Click {
+            x,
+            y,
+            token,
+            button,
+            count,
+            modifiers,
+        } => {
             let tool = match (button.as_deref().unwrap_or("left"), count.unwrap_or(1)) {
                 ("left", 1) | ("middle", 1) => "click",
                 ("left", 2) => "double_click",
@@ -542,7 +584,13 @@ fn driver_call(pid: u64, window_id: u64, action: &WindowAction) -> (String, Valu
             }
             (tool.to_string(), args)
         }
-        WindowAction::Drag { from_x, from_y, to_x, to_y, duration_ms } => {
+        WindowAction::Drag {
+            from_x,
+            from_y,
+            to_x,
+            to_y,
+            duration_ms,
+        } => {
             let duration = duration_ms.unwrap_or(300);
             args["from_x"] = json!(from_x.floor());
             args["from_y"] = json!(from_y.floor());
@@ -553,7 +601,14 @@ fn driver_call(pid: u64, window_id: u64, action: &WindowAction) -> (String, Valu
             args["steps"] = json!((duration / 50).clamp(1, 40));
             ("drag".to_string(), args)
         }
-        WindowAction::Scroll { direction, amount, unit, x, y, token } => {
+        WindowAction::Scroll {
+            direction,
+            amount,
+            unit,
+            x,
+            y,
+            token,
+        } => {
             args["direction"] = json!(direction);
             args["amount"] = json!((*amount).clamp(1, 100));
             args["by"] = json!(if unit == "page" { "page" } else { "line" });
@@ -597,15 +652,22 @@ fn shrink_png_to_jpeg(png_base64: &str, max_width: u32) -> Result<(String, u32, 
         .map_err(|e| format!("decode: {e}"))?;
     let mut image = image::load_from_memory(&bytes).map_err(|e| format!("decode png: {e}"))?;
     if image.width() > max_width {
-        let height =
-            ((f64::from(image.height()) / f64::from(image.width())) * f64::from(max_width)).round().max(1.0) as u32;
+        let height = ((f64::from(image.height()) / f64::from(image.width())) * f64::from(max_width))
+            .round()
+            .max(1.0) as u32;
         image = image.resize_exact(max_width, height, image::imageops::FilterType::Lanczos3);
     }
     let mut jpeg = Vec::new();
     let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85);
-    image.write_with_encoder(encoder).map_err(|e| format!("encode: {e}"))?;
+    image
+        .write_with_encoder(encoder)
+        .map_err(|e| format!("encode: {e}"))?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(&jpeg);
-    Ok((format!("data:image/jpeg;base64,{encoded}"), image.width(), image.height()))
+    Ok((
+        format!("data:image/jpeg;base64,{encoded}"),
+        image.width(),
+        image.height(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -619,7 +681,14 @@ pub fn run_helper() -> i32 {
     let _ = std::env::set_current_dir(&dir);
     let mut stdout = std::io::stdout();
     let mut stdin = std::io::stdin();
-    if protocol::write_frame(&mut stdout, &Frame::Ready { protocol: PROTOCOL_VERSION }).is_err() {
+    if protocol::write_frame(
+        &mut stdout,
+        &Frame::Ready {
+            protocol: PROTOCOL_VERSION,
+        },
+    )
+    .is_err()
+    {
         return 2;
     }
     let mut helper = Helper::new();
@@ -653,8 +722,18 @@ pub fn run_helper() -> i32 {
             }
         };
         let frame = match reply {
-            Ok(result) => Frame::Reply { id, ok: true, result: Some(result), error: None },
-            Err(error) => Frame::Reply { id, ok: false, result: None, error: Some(error) },
+            Ok(result) => Frame::Reply {
+                id,
+                ok: true,
+                result: Some(result),
+                error: None,
+            },
+            Err(error) => Frame::Reply {
+                id,
+                ok: false,
+                result: None,
+                error: Some(error),
+            },
         };
         if protocol::write_frame(&mut stdout, &frame).is_err() {
             break;

@@ -76,7 +76,11 @@ impl Part {
         }
     }
 
-    fn image(media_type: impl Into<String>, data: impl Into<String>, url: impl Into<String>) -> Part {
+    fn image(
+        media_type: impl Into<String>,
+        data: impl Into<String>,
+        url: impl Into<String>,
+    ) -> Part {
         Part {
             kind: PartKind::Image,
             text: String::new(),
@@ -93,7 +97,11 @@ impl Part {
     }
 
     fn thinking(s: impl Into<String>) -> Part {
-        Part { kind: PartKind::Thinking, text: s.into(), ..Part::text("") }
+        Part {
+            kind: PartKind::Thinking,
+            text: s.into(),
+            ..Part::text("")
+        }
     }
 
     fn tool_call(id: impl Into<String>, name: impl Into<String>, args: Value) -> Part {
@@ -198,7 +206,11 @@ fn parse_args(s: &str) -> Value {
 
 /// magpie argsOf：参数恒为对象，空/Null 补 {}（anthropic 的 input 拒绝空）。
 fn args_of(p: &Part) -> Value {
-    if p.args.is_null() { json!({}) } else { p.args.clone() }
+    if p.args.is_null() {
+        json!({})
+    } else {
+        p.args.clone()
+    }
 }
 
 fn args_string(p: &Part) -> String {
@@ -344,14 +356,20 @@ fn parse_chat(body: &Value) -> Result<Ir, String> {
             .unwrap_or(0),
         temperature: body.get("temperature").and_then(|v| v.as_f64()),
         top_p: body.get("top_p").and_then(|v| v.as_f64()),
-        stream: body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false),
+        stream: body
+            .get("stream")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         effort: super::effort::requested(super::effort::Proto::Chat, body).unwrap_or_default(),
         ..Default::default()
     };
     match body.get("stop") {
         Some(Value::String(s)) => ir.stop = vec![s.clone()],
         Some(Value::Array(a)) => {
-            ir.stop = a.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+            ir.stop = a
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
         }
         _ => {}
     }
@@ -385,10 +403,17 @@ fn parse_chat(body: &Value) -> Result<Ir, String> {
                             .pointer("/function/arguments")
                             .and_then(|a| a.as_str())
                             .unwrap_or_default();
-                        parts.push(Part::tool_call(get_str(tc, "id").unwrap_or_default(), name, parse_args(&args)));
+                        parts.push(Part::tool_call(
+                            get_str(tc, "id").unwrap_or_default(),
+                            name,
+                            parse_args(&args),
+                        ));
                     }
                 }
-                ir.messages.push(Message { role: "assistant".into(), parts });
+                ir.messages.push(Message {
+                    role: "assistant".into(),
+                    parts,
+                });
             }
             "tool" => {
                 // chat 的 tool 消息在 IR 里是一条 user 消息的 tool_result 块
@@ -427,7 +452,10 @@ fn parse_chat(body: &Value) -> Result<Ir, String> {
                     .and_then(|d| d.as_str())
                     .unwrap_or_default()
                     .into(),
-                schema: t.pointer("/function/parameters").cloned().unwrap_or(Value::Null),
+                schema: t
+                    .pointer("/function/parameters")
+                    .cloned()
+                    .unwrap_or(Value::Null),
             });
         }
     }
@@ -453,7 +481,10 @@ pub(crate) fn openai_format(raw: &Value) -> Option<Value> {
         "json_object" => Some(json!({"type": "json_object"})),
         "json_schema" => {
             // chat 形态把字段包在 json_schema 里；responses 形态平铺
-            let inner = raw.get("json_schema").filter(|j| j.is_object()).unwrap_or(raw);
+            let inner = raw
+                .get("json_schema")
+                .filter(|j| j.is_object())
+                .unwrap_or(raw);
             let schema = inner.get("schema").filter(|s| !s.is_null());
             let Some(schema) = schema else {
                 return Some(json!({"type": "json_object"}));
@@ -464,7 +495,11 @@ pub(crate) fn openai_format(raw: &Value) -> Option<Value> {
                 .filter(|n| !n.is_empty())
                 .unwrap_or("response");
             let mut js = json!({"name": name, "schema": schema});
-            if let Some(d) = inner.get("description").and_then(|d| d.as_str()).filter(|d| !d.is_empty()) {
+            if let Some(d) = inner
+                .get("description")
+                .and_then(|d| d.as_str())
+                .filter(|d| !d.is_empty())
+            {
                 js["description"] = json!(d);
             }
             if let Some(strict) = inner.get("strict").and_then(|s| s.as_bool()) {
@@ -499,7 +534,10 @@ fn parse_anthropic(body: &Value) -> Result<Ir, String> {
         ..Default::default()
     };
     if let Some(stops) = body.get("stop_sequences").and_then(|s| s.as_array()) {
-        ir.stop = stops.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+        ir.stop = stops
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
     }
     let messages = body
         .get("messages")
@@ -507,7 +545,11 @@ fn parse_anthropic(body: &Value) -> Result<Ir, String> {
         .ok_or("invalid request: messages")?;
     for m in messages {
         // anthropic 只认 user/assistant；其余（system 消息等罕见形态）按 user 收
-        let role = if get_str(m, "role").as_deref() == Some("assistant") { "assistant" } else { "user" };
+        let role = if get_str(m, "role").as_deref() == Some("assistant") {
+            "assistant"
+        } else {
+            "user"
+        };
         let mut parts = Vec::new();
         match m.get("content") {
             Some(Value::String(s)) => {
@@ -522,7 +564,11 @@ fn parse_anthropic(body: &Value) -> Result<Ir, String> {
                         "image" => {
                             if let Some(src) = b.get("source") {
                                 if get_str(src, "type").as_deref() == Some("url") {
-                                    parts.push(Part::image("", "", get_str(src, "url").unwrap_or_default()));
+                                    parts.push(Part::image(
+                                        "",
+                                        "",
+                                        get_str(src, "url").unwrap_or_default(),
+                                    ));
                                 } else {
                                     parts.push(Part::image(
                                         get_str(src, "media_type").unwrap_or_default(),
@@ -536,7 +582,10 @@ fn parse_anthropic(body: &Value) -> Result<Ir, String> {
                             get_str(b, "id").unwrap_or_default(),
                             get_str(b, "name").unwrap_or_default(),
                             // input 恒为对象；缺/坏时补 {}（argsOf 兜底）
-                            b.get("input").cloned().filter(|v| v.is_object()).unwrap_or_else(|| json!({})),
+                            b.get("input")
+                                .cloned()
+                                .filter(|v| v.is_object())
+                                .unwrap_or_else(|| json!({})),
                         )),
                         "tool_result" => {
                             let (text, images) =
@@ -546,7 +595,8 @@ fn parse_anthropic(body: &Value) -> Result<Ir, String> {
                                 text,
                                 images,
                             );
-                            p.is_error = b.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
+                            p.is_error =
+                                b.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
                             parts.push(p);
                         }
                         // thinking 文本留成 Thinking 块（Go readAnthropic 保留
@@ -568,7 +618,10 @@ fn parse_anthropic(body: &Value) -> Result<Ir, String> {
             }
             _ => {}
         }
-        ir.messages.push(Message { role: role.into(), parts });
+        ir.messages.push(Message {
+            role: role.into(),
+            parts,
+        });
     }
     if let Some(tools) = body.get("tools").and_then(|t| t.as_array()) {
         for t in tools {
@@ -645,14 +698,18 @@ pub type ToolTable = HashMap<String, NsTool>;
 const TOOL_SEARCH: &str = "tool_search";
 /// Codex Responses Lite 把自家工具归在这个命名空间里（Go liteNamespace）。
 const LITE_NAMESPACE: &str = "functions";
-const UNAVAILABLE_RESULT: &str = "[The result of this tool call is unavailable: the turn was interrupted.]";
+const UNAVAILABLE_RESULT: &str =
+    "[The result of this tool call is unavailable: the turn was interrupted.]";
 
 fn tool_char_ok(c: u8) -> bool {
     c == b'_' || c == b'-' || c.is_ascii_alphanumeric()
 }
 
 fn short_hash(s: &str) -> String {
-    Sha256::digest(s.as_bytes())[..4].iter().map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(s.as_bytes())[..4]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Go provider.FlatName：`namespace__name`，≤64 字符；超长截 55 + `_` + sha256
@@ -663,8 +720,11 @@ pub(crate) fn flat_name(namespace: &str, name: &str) -> String {
     if raw.len() <= 64 && raw.bytes().all(tool_char_ok) {
         return raw;
     }
-    let clean: String =
-        raw.bytes().take(55).map(|c| if tool_char_ok(c) { c as char } else { '_' }).collect();
+    let clean: String = raw
+        .bytes()
+        .take(55)
+        .map(|c| if tool_char_ok(c) { c as char } else { '_' })
+        .collect();
     format!("{clean}_{}", short_hash(&format!("{namespace}\0{name}")))
 }
 
@@ -677,7 +737,10 @@ fn custom_schema() -> Value {
 
 /// Go customDescription：自带描述 + 输入说明 + 语法（grammar）。
 fn custom_description(t: &Value) -> String {
-    let mut d = get_str(t, "description").unwrap_or_default().trim().to_string();
+    let mut d = get_str(t, "description")
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if !d.is_empty() {
         d.push_str("\n\n");
     }
@@ -685,8 +748,13 @@ fn custom_description(t: &Value) -> String {
     if let Some(f) = t.get("format") {
         let def = get_str(f, "definition").unwrap_or_default();
         if get_str(f, "type").as_deref() == Some("grammar") && !def.trim().is_empty() {
-            let syntax = get_str(f, "syntax").filter(|s| !s.is_empty()).unwrap_or_else(|| "the".into());
-            d.push_str(&format!("\n\nThe input follows this {syntax} grammar:\n{}", def.trim()));
+            let syntax = get_str(f, "syntax")
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "the".into());
+            d.push_str(&format!(
+                "\n\nThe input follows this {syntax} grammar:\n{}",
+                def.trim()
+            ));
         }
     }
     d
@@ -737,7 +805,12 @@ fn search_found(tools: &[Value], flat_of: &dyn Fn(&str, &str) -> String) -> Stri
             Some("function") => names.push(get_str(t, "name").unwrap_or_default()),
             Some("namespace") => {
                 let ns = get_str(t, "name").unwrap_or_default();
-                for nt in t.get("tools").and_then(|x| x.as_array()).into_iter().flatten() {
+                for nt in t
+                    .get("tools")
+                    .and_then(|x| x.as_array())
+                    .into_iter()
+                    .flatten()
+                {
                     if get_str(nt, "type").as_deref() == Some("function") {
                         names.push(flat_of(&ns, &get_str(nt, "name").unwrap_or_default()));
                     }
@@ -749,7 +822,10 @@ fn search_found(tools: &[Value], flat_of: &dyn Fn(&str, &str) -> String) -> Stri
     if names.is_empty() {
         "No tools matched the search.".into()
     } else {
-        format!("These tools are now available to call: {}", names.join(", "))
+        format!(
+            "These tools are now available to call: {}",
+            names.join(", ")
+        )
     }
 }
 
@@ -772,7 +848,10 @@ impl ToolSet {
         }
         let key = ns.as_ref().map(|n| (n.namespace.clone(), n.name.clone()));
         if ns.is_some() && self.used.contains(&def.name) {
-            let seed = key.as_ref().map(|(a, b)| format!("{a}\0{b}")).unwrap_or_default();
+            let seed = key
+                .as_ref()
+                .map(|(a, b)| format!("{a}\0{b}"))
+                .unwrap_or_default();
             let base: String = def.name.chars().take(55).collect();
             let mut cand = format!("{base}_{}", short_hash(&seed));
             let mut n = 2;
@@ -828,13 +907,26 @@ impl ToolSet {
                     return;
                 }
                 self.offer(
-                    ToolDef { name: name.clone(), description: custom_description(t), schema: custom_schema() },
-                    Some(NsTool { name, custom: true, ..Default::default() }),
+                    ToolDef {
+                        name: name.clone(),
+                        description: custom_description(t),
+                        schema: custom_schema(),
+                    },
+                    Some(NsTool {
+                        name,
+                        custom: true,
+                        ..Default::default()
+                    }),
                     found,
                 );
             }
             "namespace" => {
-                for nt in t.get("tools").and_then(|x| x.as_array()).into_iter().flatten() {
+                for nt in t
+                    .get("tools")
+                    .and_then(|x| x.as_array())
+                    .into_iter()
+                    .flatten()
+                {
                     let nname = get_str(nt, "name").unwrap_or_default();
                     if nname.is_empty() {
                         continue;
@@ -847,12 +939,25 @@ impl ToolSet {
                                 description: get_str(nt, "description").unwrap_or_default(),
                                 schema: nt.get("parameters").map(unsealed).unwrap_or(Value::Null),
                             },
-                            Some(NsTool { namespace: name.clone(), name: nname, ..Default::default() }),
+                            Some(NsTool {
+                                namespace: name.clone(),
+                                name: nname,
+                                ..Default::default()
+                            }),
                             found,
                         ),
                         Some("custom") => self.offer(
-                            ToolDef { name: flat, description: custom_description(nt), schema: custom_schema() },
-                            Some(NsTool { namespace: name.clone(), name: nname, custom: true, ..Default::default() }),
+                            ToolDef {
+                                name: flat,
+                                description: custom_description(nt),
+                                schema: custom_schema(),
+                            },
+                            Some(NsTool {
+                                namespace: name.clone(),
+                                name: nname,
+                                custom: true,
+                                ..Default::default()
+                            }),
                             found,
                         ),
                         _ => {}
@@ -867,7 +972,10 @@ impl ToolSet {
                             description: get_str(t, "description").unwrap_or_default(),
                             schema: t.get("parameters").cloned().unwrap_or(Value::Null),
                         },
-                        Some(NsTool { search: true, ..Default::default() }),
+                        Some(NsTool {
+                            search: true,
+                            ..Default::default()
+                        }),
                         found,
                     );
                 }
@@ -884,8 +992,14 @@ impl ToolSet {
 ///   namespace -> `function_call` + 原名 + `namespace`
 ///   其余      -> `function_call` + 原名
 pub(crate) fn call_to(item: &mut Value, flat: &str, table: &ToolTable) {
-    let args = item.get("arguments").and_then(|a| a.as_str()).unwrap_or("").to_string();
-    let Some(map) = item.as_object_mut() else { return };
+    let args = item
+        .get("arguments")
+        .and_then(|a| a.as_str())
+        .unwrap_or("")
+        .to_string();
+    let Some(map) = item.as_object_mut() else {
+        return;
+    };
     match table.get(flat) {
         Some(q) if q.search => {
             map.remove("name");
@@ -897,7 +1011,14 @@ pub(crate) fn call_to(item: &mut Value, flat: &str, table: &ToolTable) {
             map.remove("arguments");
             map.insert("type".into(), json!("custom_tool_call"));
             map.insert("name".into(), json!(q.name));
-            map.insert("input".into(), json!(if args.is_empty() { String::new() } else { custom_input(&args) }));
+            map.insert(
+                "input".into(),
+                json!(if args.is_empty() {
+                    String::new()
+                } else {
+                    custom_input(&args)
+                }),
+            );
             if !q.namespace.is_empty() {
                 map.insert("namespace".into(), json!(q.namespace));
             }
@@ -929,7 +1050,10 @@ fn is_call_item(t: &str) -> bool {
 }
 
 fn is_result_item(t: &str) -> bool {
-    matches!(t, "function_call_output" | "custom_tool_call_output" | "tool_search_output")
+    matches!(
+        t,
+        "function_call_output" | "custom_tool_call_output" | "tool_search_output"
+    )
 }
 
 fn call_args_of(it: &Value) -> Value {
@@ -948,10 +1072,16 @@ fn parse_responses(body: &Value) -> Result<Ir, String> {
     let mut ir = Ir {
         model: get_str(body, "model").unwrap_or_default(),
         system: get_str(body, "instructions").unwrap_or_default(),
-        max_tokens: body.get("max_output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+        max_tokens: body
+            .get("max_output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
         temperature: body.get("temperature").and_then(|v| v.as_f64()),
         top_p: body.get("top_p").and_then(|v| v.as_f64()),
-        stream: body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false),
+        stream: body
+            .get("stream")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         effort: super::effort::requested(super::effort::Proto::Responses, body).unwrap_or_default(),
         parallel: body.get("parallel_tool_calls").and_then(|v| v.as_bool()),
         format: body.pointer("/text/format").and_then(openai_format),
@@ -964,25 +1094,39 @@ fn parse_responses(body: &Value) -> Result<Ir, String> {
     // 请求自带的 tools，加 Responses Lite 的 additional_tools（Go
     // liftAdditionalTools：提到 tools 里，`functions` 命名空间的拆成普通工具），
     // 再加 tool_search_output 找到的（Codex 不会再发一遍，排在后面）。
-    let mut sent: Vec<Value> = body.get("tools").and_then(|t| t.as_array()).cloned().unwrap_or_default();
+    let mut sent: Vec<Value> = body
+        .get("tools")
+        .and_then(|t| t.as_array())
+        .cloned()
+        .unwrap_or_default();
     let mut found: Vec<Value> = Vec::new();
     let mut lite = false;
     for it in items.into_iter().flatten() {
         match get_str(it, "type").as_deref() {
             Some("additional_tools") => {
                 lite = true;
-                for t in it.get("tools").and_then(|x| x.as_array()).into_iter().flatten() {
+                for t in it
+                    .get("tools")
+                    .and_then(|x| x.as_array())
+                    .into_iter()
+                    .flatten()
+                {
                     let lite_ns = get_str(t, "type").as_deref() == Some("namespace")
                         && get_str(t, "name").as_deref() == Some(LITE_NAMESPACE);
                     let more: Vec<Value> = if lite_ns {
-                        t.get("tools").and_then(|x| x.as_array()).cloned().unwrap_or_default()
+                        t.get("tools")
+                            .and_then(|x| x.as_array())
+                            .cloned()
+                            .unwrap_or_default()
                     } else {
                         vec![t.clone()]
                     };
                     for m in more {
                         let n = get_str(&m, "name").unwrap_or_default();
                         let dup = !n.is_empty()
-                            && sent.iter().any(|s| get_str(s, "name").as_deref() == Some(n.as_str()));
+                            && sent
+                                .iter()
+                                .any(|s| get_str(s, "name").as_deref() == Some(n.as_str()));
                         if !dup {
                             sent.push(m);
                         }
@@ -990,7 +1134,12 @@ fn parse_responses(body: &Value) -> Result<Ir, String> {
                 }
             }
             Some("tool_search_output") => {
-                found.extend(it.get("tools").and_then(|x| x.as_array()).cloned().unwrap_or_default());
+                found.extend(
+                    it.get("tools")
+                        .and_then(|x| x.as_array())
+                        .cloned()
+                        .unwrap_or_default(),
+                );
             }
             _ => {}
         }
@@ -1005,19 +1154,27 @@ fn parse_responses(body: &Value) -> Result<Ir, String> {
 
     match body.get("input") {
         Some(Value::String(s)) => {
-            ir.messages.push(Message { role: "user".into(), parts: vec![Part::text(s.clone())] });
+            ir.messages.push(Message {
+                role: "user".into(),
+                parts: vec![Part::text(s.clone())],
+            });
         }
         Some(Value::Array(items)) => {
             let mut sys: Vec<String> = vec![ir.system.clone()];
             let orphan = |it: &Value| {
-                matches!(get_str(it, "type").as_deref(), Some("function_call_output" | "custom_tool_call_output"))
-                    && get_str(it, "call_id").unwrap_or_default().is_empty()
+                matches!(
+                    get_str(it, "type").as_deref(),
+                    Some("function_call_output" | "custom_tool_call_output")
+                ) && get_str(it, "call_id").unwrap_or_default().is_empty()
             };
             // 在场的结果：没有结果的调用补一条合成结果（Go pairToolItems）
             let mut answered: HashSet<String> = items
                 .iter()
                 .filter(|it| {
-                    matches!(get_str(it, "type").as_deref(), Some("function_call_output" | "custom_tool_call_output"))
+                    matches!(
+                        get_str(it, "type").as_deref(),
+                        Some("function_call_output" | "custom_tool_call_output")
+                    )
                 })
                 .filter_map(|it| get_str(it, "call_id"))
                 .filter(|c| !c.is_empty())
@@ -1058,8 +1215,15 @@ fn parse_responses(body: &Value) -> Result<Ir, String> {
                             }
                             break 'item;
                         }
-                        let role = if role == "assistant" { "assistant" } else { "user" };
-                        ir.messages.push(Message { role: role.into(), parts });
+                        let role = if role == "assistant" {
+                            "assistant"
+                        } else {
+                            "user"
+                        };
+                        ir.messages.push(Message {
+                            role: role.into(),
+                            parts,
+                        });
                         break 'item;
                     }
                     if is_call_item(&ty) {
@@ -1091,14 +1255,21 @@ fn parse_responses(body: &Value) -> Result<Ir, String> {
                             answered.insert(call_id.clone());
                             synthetic.push(Message {
                                 role: "user".into(),
-                                parts: vec![Part::tool_result(call_id, UNAVAILABLE_RESULT, Vec::new())],
+                                parts: vec![Part::tool_result(
+                                    call_id,
+                                    UNAVAILABLE_RESULT,
+                                    Vec::new(),
+                                )],
                             });
                         }
                         break 'item;
                     }
                     if ty == "tool_search_output" {
-                        let tools: Vec<Value> =
-                            it.get("tools").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+                        let tools: Vec<Value> = it
+                            .get("tools")
+                            .and_then(|x| x.as_array())
+                            .cloned()
+                            .unwrap_or_default();
                         let text = search_found(&tools, &|ns, n| ts.flat_of(ns, n));
                         ir.messages.push(Message {
                             role: "user".into(),
@@ -1122,7 +1293,10 @@ fn parse_responses(body: &Value) -> Result<Ir, String> {
                             if parts.is_empty() {
                                 parts.push(Part::text("Tool result received."));
                             }
-                            let m = Message { role: "user".into(), parts };
+                            let m = Message {
+                                role: "user".into(),
+                                parts,
+                            };
                             if in_calls {
                                 pending.push(m); // chat 不许 tool_calls 与结果之间夹 user 消息
                             } else {
@@ -1178,14 +1352,21 @@ fn parse_responses(body: &Value) -> Result<Ir, String> {
                 };
                 if !synthetic.is_empty()
                     && exch(it)
-                    && !items[i + 1..].iter().find(|n| !orphan(n)).map_or(false, |n| exch(n))
+                    && !items[i + 1..]
+                        .iter()
+                        .find(|n| !orphan(n))
+                        .map_or(false, |n| exch(n))
                 {
                     ir.messages.append(&mut synthetic);
                 }
             }
             ir.messages.append(&mut pending);
             ir.messages.append(&mut synthetic);
-            ir.system = sys.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n");
+            ir.system = sys
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n");
         }
         _ => return Err("invalid request: input".into()),
     }
@@ -1342,13 +1523,15 @@ fn build_chat(ir: &Ir) -> Value {
             tool_msgs.push(json!({"role": "tool", "tool_call_id": p.call_id, "content": content}));
         }
         messages.append(&mut tool_msgs);
-        let content_parts: Vec<&Part> =
-            m.parts.iter().filter(|p| p.kind != PartKind::ToolResult).collect();
+        let content_parts: Vec<&Part> = m
+            .parts
+            .iter()
+            .filter(|p| p.kind != PartKind::ToolResult)
+            .collect();
         if !content_parts.is_empty() {
             if content_parts.iter().all(|p| p.kind == PartKind::Text) {
                 // 纯文本：content 收成字符串（与 OpenAI 客户端的常见形态一致）
-                let text: String =
-                    content_parts.iter().map(|p| p.text.as_str()).collect();
+                let text: String = content_parts.iter().map(|p| p.text.as_str()).collect();
                 messages.push(json!({"role": "user", "content": text}));
             } else {
                 let content: Vec<Value> = content_parts
@@ -1422,7 +1605,11 @@ fn build_anthropic(ir: &Ir) -> Value {
     // 未配对的 tool_use）
     let mut msgs: Vec<(String, Vec<Value>)> = Vec::new();
     for m in &ir.messages {
-        let role = if m.role == "assistant" { "assistant" } else { "user" };
+        let role = if m.role == "assistant" {
+            "assistant"
+        } else {
+            "user"
+        };
         let mut results: Vec<Value> = Vec::new();
         let mut rest: Vec<Value> = Vec::new();
         for p in &m.parts {
@@ -1452,8 +1639,7 @@ fn build_anthropic(ir: &Ir) -> Value {
                         }
                         Value::Array(blocks)
                     };
-                    let mut b =
-                        json!({"type": "tool_result", "tool_use_id": p.call_id, "content": content});
+                    let mut b = json!({"type": "tool_result", "tool_use_id": p.call_id, "content": content});
                     if p.is_error {
                         b["is_error"] = json!(true);
                     }
@@ -1484,7 +1670,11 @@ fn build_anthropic(ir: &Ir) -> Value {
         out["system"] = json!([{"type": "text", "text": ir.system}]);
     }
     // max_tokens 必填：没带就兜底
-    out["max_tokens"] = json!(if ir.max_tokens > 0 { ir.max_tokens } else { ANTHROPIC_MAX_TOKENS_FLOOR });
+    out["max_tokens"] = json!(if ir.max_tokens > 0 {
+        ir.max_tokens
+    } else {
+        ANTHROPIC_MAX_TOKENS_FLOOR
+    });
     if let Some(t) = ir.temperature {
         out["temperature"] = json!(t);
     }
@@ -1508,12 +1698,12 @@ fn build_anthropic(ir: &Ir) -> Value {
             .iter()
             .map(|t| {
                 json!({"name": t.name, "description": t.description,
-                    "input_schema": if t.schema.is_null() {
-                        // anthropic 拒绝缺 schema 的工具定义（Go 补空对象同款）
-                        json!({"type": "object", "properties": {}})
-                    } else {
-                        t.schema.clone()
-                    }})
+                "input_schema": if t.schema.is_null() {
+                    // anthropic 拒绝缺 schema 的工具定义（Go 补空对象同款）
+                    json!({"type": "object", "properties": {}})
+                } else {
+                    t.schema.clone()
+                }})
             })
             .collect();
         out["tools"] = Value::Array(tools);
@@ -1529,19 +1719,29 @@ fn build_anthropic(ir: &Ir) -> Value {
 fn build_responses(ir: &Ir) -> Value {
     let mut input: Vec<Value> = Vec::new();
     for m in &ir.messages {
-        let role = if m.role == "assistant" { "assistant" } else { "user" };
+        let role = if m.role == "assistant" {
+            "assistant"
+        } else {
+            "user"
+        };
         // 正文块攒进本条消息的 message item；工具项是独立 item，出现时
         // 先冲刷正文（responses 的 item 是平铺的，一条消息一项）
         fn flush(input: &mut Vec<Value>, role: &str, content: &mut Vec<Value>) {
             if !content.is_empty() {
-                input.push(json!({"type": "message", "role": role, "content": std::mem::take(content)}));
+                input.push(
+                    json!({"type": "message", "role": role, "content": std::mem::take(content)}),
+                );
             }
         }
         let mut content: Vec<Value> = Vec::new();
         for p in &m.parts {
             match p.kind {
                 PartKind::Text => {
-                    let t = if role == "assistant" { "output_text" } else { "input_text" };
+                    let t = if role == "assistant" {
+                        "output_text"
+                    } else {
+                        "input_text"
+                    };
                     content.push(json!({"type": t, "text": p.text}));
                 }
                 PartKind::Image => {
@@ -1552,8 +1752,10 @@ fn build_responses(ir: &Ir) -> Value {
                 }
                 PartKind::ToolCall => {
                     flush(&mut input, role, &mut content);
-                    input.push(json!({"type": "function_call", "call_id": p.id, "name": p.name,
-                        "arguments": args_string(p)}));
+                    input.push(
+                        json!({"type": "function_call", "call_id": p.id, "name": p.name,
+                        "arguments": args_string(p)}),
+                    );
                 }
                 // 其它协议的思考文本不塞进 responses（reasoning item 要它自己的 id/加密体）
                 PartKind::Thinking => {}
@@ -1659,7 +1861,11 @@ pub fn responses_to_chat_with_tools(body: &Value) -> Result<(Value, ToolTable), 
 
 /// 一条 anthropic SSE 事件的完整帧（event: 行 + data: 行）。
 fn sse_block(event: &str, data: &Value) -> String {
-    format!("event: {}\ndata: {}", event, serde_json::to_string(data).unwrap_or_default())
+    format!(
+        "event: {}\ndata: {}",
+        event,
+        serde_json::to_string(data).unwrap_or_default()
+    )
 }
 
 /// chat 的 stop_reason → anthropic 的（stopToAnthropic 同款）。
@@ -1710,7 +1916,11 @@ pub(crate) fn anthropic_usage(u: Option<&Value>) -> Value {
     let mut read = num(u.pointer("/prompt_tokens_details/cached_tokens"));
     let mut write = num(u.pointer("/prompt_tokens_details/cache_write_tokens"));
     if read == 0 {
-        for key in ["prompt_cache_hit_tokens", "cached_tokens", "num_cached_tokens"] {
+        for key in [
+            "prompt_cache_hit_tokens",
+            "cached_tokens",
+            "num_cached_tokens",
+        ] {
             if read == 0 {
                 read = num(u.get(key));
             }
@@ -1722,7 +1932,11 @@ pub(crate) fn anthropic_usage(u: Option<&Value>) -> Value {
         write = num(u.get("cache_creation_input_tokens"));
         whole = prompt >= read + write;
     }
-    let input = if whole { prompt.saturating_sub(read + write) } else { prompt };
+    let input = if whole {
+        prompt.saturating_sub(read + write)
+    } else {
+        prompt
+    };
     let mut out = json!({
         "input_tokens": input,
         "output_tokens": num(u.get("completion_tokens")),
@@ -1834,10 +2048,17 @@ pub fn sse_anthropic_to_chat(event_data: &str) -> Option<String> {
         )
     };
     match ty {
-        "message_start" => Some(chunk(json!({"role": "assistant", "content": ""}), None, None)),
+        "message_start" => Some(chunk(
+            json!({"role": "assistant", "content": ""}),
+            None,
+            None,
+        )),
         "content_block_delta" => {
             let is_text = v.pointer("/delta/type").and_then(|t| t.as_str()) == Some("text_delta");
-            let text = v.pointer("/delta/text").and_then(|t| t.as_str()).unwrap_or("");
+            let text = v
+                .pointer("/delta/text")
+                .and_then(|t| t.as_str())
+                .unwrap_or("");
             if is_text && !text.is_empty() {
                 Some(chunk(json!({"content": text}), None, None))
             } else {
@@ -1909,9 +2130,15 @@ impl ChatToolAccum {
     /// 数组位次当 index（Go chatDecoder 同款兜底）。
     pub fn feed(&mut self, tool_calls: &[Value]) {
         for (pos, tc) in tool_calls.iter().enumerate() {
-            let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(pos as u64);
+            let index = tc
+                .get("index")
+                .and_then(|i| i.as_u64())
+                .unwrap_or(pos as u64);
             let id = tc.get("id").and_then(|i| i.as_str()).unwrap_or("");
-            let name = tc.pointer("/function/name").and_then(|n| n.as_str()).unwrap_or("");
+            let name = tc
+                .pointer("/function/name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("");
             let args = tc
                 .pointer("/function/arguments")
                 .and_then(|a| a.as_str())
@@ -2001,7 +2228,10 @@ pub fn anthropic_to_responses(body: &Value) -> Result<Value, String> {
 fn responses_usage_to_chat(u: &Value) -> Value {
     let input = u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
     let output = u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-    let total = u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(input + output);
+    let total = u
+        .get("total_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(input + output);
     let mut out = json!({
         "prompt_tokens": input,
         "completion_tokens": output,
@@ -2010,7 +2240,10 @@ fn responses_usage_to_chat(u: &Value) -> Value {
             "cached_tokens": u.pointer("/input_tokens_details/cached_tokens").and_then(|v| v.as_u64()).unwrap_or(0)
         },
     });
-    if let Some(r) = u.pointer("/output_tokens_details/reasoning_tokens").and_then(|v| v.as_u64()) {
+    if let Some(r) = u
+        .pointer("/output_tokens_details/reasoning_tokens")
+        .and_then(|v| v.as_u64())
+    {
         out["completion_tokens_details"] = json!({ "reasoning_tokens": r });
     }
     out
@@ -2019,7 +2252,10 @@ fn responses_usage_to_chat(u: &Value) -> Value {
 /// responses 终态 → chat finish_reason。
 fn responses_finish_reason(resp: &Value, saw_tool: bool) -> &'static str {
     if resp.get("status").and_then(|s| s.as_str()) == Some("incomplete") {
-        match resp.pointer("/incomplete_details/reason").and_then(|r| r.as_str()) {
+        match resp
+            .pointer("/incomplete_details/reason")
+            .and_then(|r| r.as_str())
+        {
             Some("max_output_tokens") => return "length",
             Some("content_filter") => return "content_filter",
             _ => {}
@@ -2088,7 +2324,10 @@ impl ResponsesToChat {
             "model": self.model,
             "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
         });
-        format!("data: {}\n\n", serde_json::to_string(&v).unwrap_or_default())
+        format!(
+            "data: {}\n\n",
+            serde_json::to_string(&v).unwrap_or_default()
+        )
     }
 
     fn start(&mut self, out: &mut Vec<String>) {
@@ -2101,7 +2340,13 @@ impl ResponsesToChat {
     fn error_frames(&mut self, message: &str, code: &str) -> Vec<String> {
         self.finished = true;
         let v = json!({"error": {"message": message, "type": "upstream_error", "code": code}});
-        vec![format!("data: {}\n\n", serde_json::to_string(&v).unwrap_or_default()), "data: [DONE]\n\n".into()]
+        vec![
+            format!(
+                "data: {}\n\n",
+                serde_json::to_string(&v).unwrap_or_default()
+            ),
+            "data: [DONE]\n\n".into(),
+        ]
     }
 
     fn tool_start(&mut self, out_index: u64, item: &Value, out: &mut Vec<String>) {
@@ -2119,7 +2364,10 @@ impl ResponsesToChat {
             .filter(|c| !c.is_empty())
             .or_else(|| item.get("id").and_then(|c| c.as_str()))
             .unwrap_or("");
-        let name = name_back(&self.back, item.get("name").and_then(|n| n.as_str()).unwrap_or(""));
+        let name = name_back(
+            &self.back,
+            item.get("name").and_then(|n| n.as_str()).unwrap_or(""),
+        );
         self.start(out);
         out.push(self.frame(
             json!({"tool_calls": [{"index": idx, "id": id, "type": "function",
@@ -2129,12 +2377,17 @@ impl ResponsesToChat {
     }
 
     fn tool_args(&mut self, out_index: u64, args: &str, out: &mut Vec<String>) {
-        let Some(&idx) = self.tools.get(&out_index) else { return };
+        let Some(&idx) = self.tools.get(&out_index) else {
+            return;
+        };
         if args.is_empty() {
             return;
         }
         self.args_sent.insert(out_index);
-        out.push(self.frame(json!({"tool_calls": [{"index": idx, "function": {"arguments": args}}]}), None));
+        out.push(self.frame(
+            json!({"tool_calls": [{"index": idx, "function": {"arguments": args}}]}),
+            None,
+        ));
     }
 
     pub fn feed(&mut self, data: &str) -> Vec<String> {
@@ -2142,7 +2395,9 @@ impl ResponsesToChat {
         if self.finished {
             return out;
         }
-        let Ok(ev) = serde_json::from_str::<Value>(data.trim()) else { return out };
+        let Ok(ev) = serde_json::from_str::<Value>(data.trim()) else {
+            return out;
+        };
         let ty = ev.get("type").and_then(|t| t.as_str()).unwrap_or("");
         let out_index = ev.get("output_index").and_then(|i| i.as_u64());
         match ty {
@@ -2167,7 +2422,10 @@ impl ResponsesToChat {
                 }
             }
             "response.output_item.added" => {
-                if let Some(item) = ev.get("item").filter(|i| i.get("type").and_then(|t| t.as_str()) == Some("function_call")) {
+                if let Some(item) = ev
+                    .get("item")
+                    .filter(|i| i.get("type").and_then(|t| t.as_str()) == Some("function_call"))
+                {
                     let oi = out_index.unwrap_or(self.next_tool as u64);
                     self.tool_start(oi, item, &mut out);
                 }
@@ -2179,7 +2437,10 @@ impl ResponsesToChat {
                 }
             }
             "response.output_item.done" => {
-                if let Some(item) = ev.get("item").filter(|i| i.get("type").and_then(|t| t.as_str()) == Some("function_call")) {
+                if let Some(item) = ev
+                    .get("item")
+                    .filter(|i| i.get("type").and_then(|t| t.as_str()) == Some("function_call"))
+                {
                     let oi = out_index.unwrap_or(self.next_tool as u64);
                     // 没见过 added（直接给整项）：补开头
                     self.tool_start(oi, item, &mut out);
@@ -2200,7 +2461,10 @@ impl ResponsesToChat {
                             "id": self.id, "object": "chat.completion.chunk", "created": 0,
                             "model": self.model, "choices": [], "usage": responses_usage_to_chat(u),
                         });
-                        out.push(format!("data: {}\n\n", serde_json::to_string(&v).unwrap_or_default()));
+                        out.push(format!(
+                            "data: {}\n\n",
+                            serde_json::to_string(&v).unwrap_or_default()
+                        ));
                     }
                 }
                 out.push("data: [DONE]\n\n".into());
@@ -2212,7 +2476,11 @@ impl ResponsesToChat {
                     .and_then(|m| m.as_str())
                     .unwrap_or("Codex response failed")
                     .to_string();
-                let code = ev.pointer("/response/error/code").and_then(|m| m.as_str()).unwrap_or("response_failed").to_string();
+                let code = ev
+                    .pointer("/response/error/code")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("response_failed")
+                    .to_string();
                 return self.error_frames(&msg, &code);
             }
             "error" => {
@@ -2222,7 +2490,12 @@ impl ResponsesToChat {
                     .and_then(|m| m.as_str())
                     .unwrap_or("Codex stream error")
                     .to_string();
-                let code = ev.get("code").or_else(|| ev.pointer("/error/code")).and_then(|m| m.as_str()).unwrap_or("stream_error").to_string();
+                let code = ev
+                    .get("code")
+                    .or_else(|| ev.pointer("/error/code"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("stream_error")
+                    .to_string();
                 return self.error_frames(&msg, &code);
             }
             _ => {}
@@ -2235,7 +2508,10 @@ impl ResponsesToChat {
         if self.finished {
             return Vec::new();
         }
-        self.error_frames("Codex stream ended before response.completed", "stream_truncated")
+        self.error_frames(
+            "Codex stream ended before response.completed",
+            "stream_truncated",
+        )
     }
 }
 
@@ -2249,8 +2525,17 @@ pub struct ResponsesToChatReader {
 }
 
 impl ResponsesToChatReader {
-    pub fn new(reader: Box<dyn std::io::Read + Send>, conv: ResponsesToChat) -> ResponsesToChatReader {
-        ResponsesToChatReader { inner: std::io::BufReader::new(reader), conv, out: Vec::new(), pos: 0, done: false }
+    pub fn new(
+        reader: Box<dyn std::io::Read + Send>,
+        conv: ResponsesToChat,
+    ) -> ResponsesToChatReader {
+        ResponsesToChatReader {
+            inner: std::io::BufReader::new(reader),
+            conv,
+            out: Vec::new(),
+            pos: 0,
+            done: false,
+        }
     }
 }
 
@@ -2299,7 +2584,9 @@ impl std::io::Read for ResponsesToChatReader {
                 }
             }
             let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-            let Some(data) = trimmed.strip_prefix("data:") else { continue };
+            let Some(data) = trimmed.strip_prefix("data:") else {
+                continue;
+            };
             for f in self.conv.feed(data.trim()) {
                 self.out.extend_from_slice(f.as_bytes());
             }
@@ -2312,7 +2599,12 @@ pub fn responses_object_to_chat(resp: &Value, model: &str, back: &NamesBack) -> 
     let mut text = String::new();
     let mut reasoning = String::new();
     let mut calls: Vec<Value> = Vec::new();
-    for item in resp.get("output").and_then(|o| o.as_array()).into_iter().flatten() {
+    for item in resp
+        .get("output")
+        .and_then(|o| o.as_array())
+        .into_iter()
+        .flatten()
+    {
         match item.get("type").and_then(|t| t.as_str()).unwrap_or("") {
             "message" => match item.get("content") {
                 Some(Value::String(s)) => text.push_str(s),
@@ -2320,7 +2612,11 @@ pub fn responses_object_to_chat(resp: &Value, model: &str, back: &NamesBack) -> 
                     for p in parts {
                         match p.get("type").and_then(|t| t.as_str()) {
                             Some("output_text") | Some("refusal") | Some("text") => {
-                                if let Some(t) = p.get("text").or_else(|| p.get("refusal")).and_then(|t| t.as_str()) {
+                                if let Some(t) = p
+                                    .get("text")
+                                    .or_else(|| p.get("refusal"))
+                                    .and_then(|t| t.as_str())
+                                {
                                     text.push_str(t);
                                 }
                             }
@@ -2331,7 +2627,12 @@ pub fn responses_object_to_chat(resp: &Value, model: &str, back: &NamesBack) -> 
                 _ => {}
             },
             "reasoning" => {
-                for p in item.get("summary").and_then(|s| s.as_array()).into_iter().flatten() {
+                for p in item
+                    .get("summary")
+                    .and_then(|s| s.as_array())
+                    .into_iter()
+                    .flatten()
+                {
                     if let Some(t) = p.get("text").and_then(|t| t.as_str()) {
                         if !reasoning.is_empty() {
                             reasoning.push_str("\n\n");
@@ -2347,7 +2648,10 @@ pub fn responses_object_to_chat(resp: &Value, model: &str, back: &NamesBack) -> 
                     .filter(|c| !c.is_empty())
                     .or_else(|| item.get("id").and_then(|c| c.as_str()))
                     .unwrap_or("");
-                let name = name_back(back, item.get("name").and_then(|n| n.as_str()).unwrap_or(""));
+                let name = name_back(
+                    back,
+                    item.get("name").and_then(|n| n.as_str()).unwrap_or(""),
+                );
                 let args = item.get("arguments").and_then(|a| a.as_str()).unwrap_or("");
                 calls.push(json!({"id": id, "type": "function",
                                   "function": {"name": name, "arguments": args}}));
@@ -2415,9 +2719,18 @@ mod tests {
 
         let back = anthropic_to_chat(&anth).unwrap();
         assert_eq!(back["model"], json!("prov/m"));
-        assert_eq!(back["messages"][0], json!({"role": "system", "content": "be nice"}));
-        assert_eq!(back["messages"][1], json!({"role": "user", "content": "hi"}));
-        assert_eq!(back["messages"][2], json!({"role": "assistant", "content": "hello"}));
+        assert_eq!(
+            back["messages"][0],
+            json!({"role": "system", "content": "be nice"})
+        );
+        assert_eq!(
+            back["messages"][1],
+            json!({"role": "user", "content": "hi"})
+        );
+        assert_eq!(
+            back["messages"][2],
+            json!({"role": "assistant", "content": "hello"})
+        );
         assert_eq!(back["max_tokens"], json!(123));
         assert_eq!(back["temperature"], json!(0.3));
         assert_eq!(back["stop"], json!(["X"]));
@@ -2426,10 +2739,16 @@ mod tests {
     #[test]
     fn anthropic_max_tokens_floor() {
         // chat 不带 max_tokens：anthropic 侧必填，兜 8192
-        let anth = chat_to_anthropic(&v(r#"{"model":"m","messages":[{"role":"user","content":"x"}]}"#)).unwrap();
+        let anth = chat_to_anthropic(&v(
+            r#"{"model":"m","messages":[{"role":"user","content":"x"}]}"#,
+        ))
+        .unwrap();
         assert_eq!(anth["max_tokens"], json!(8192));
         // 带了就原样
-        let anth = chat_to_anthropic(&v(r#"{"model":"m","max_tokens":7,"messages":[{"role":"user","content":"x"}]}"#)).unwrap();
+        let anth = chat_to_anthropic(&v(
+            r#"{"model":"m","max_tokens":7,"messages":[{"role":"user","content":"x"}]}"#,
+        ))
+        .unwrap();
         assert_eq!(anth["max_tokens"], json!(7));
     }
 
@@ -2461,8 +2780,7 @@ mod tests {
 
     #[test]
     fn tools_and_calls_round_trip_chat_anthropic() {
-        let chat = v(
-            r#"{"model":"prov/m","max_tokens":512,"temperature":0.5,
+        let chat = v(r#"{"model":"prov/m","max_tokens":512,"temperature":0.5,
                 "messages":[
                     {"role":"system","content":"sys"},
                     {"role":"user","content":"weather?"},
@@ -2476,12 +2794,14 @@ mod tests {
                 "tools":[{"type":"function","function":{
                     "name":"get_weather","description":"weather",
                     "parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}],
-                "tool_choice":"auto"}"#,
-        );
+                "tool_choice":"auto"}"#);
         let anth = chat_to_anthropic(&chat).unwrap();
         // tools 定义映射
         assert_eq!(anth["tools"][0]["name"], "get_weather");
-        assert_eq!(anth["tools"][0]["input_schema"]["properties"]["city"]["type"], "string");
+        assert_eq!(
+            anth["tools"][0]["input_schema"]["properties"]["city"]["type"],
+            "string"
+        );
         assert_eq!(anth["tool_choice"], json!({"type": "auto"}));
         let msgs = anth["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 3);
@@ -2506,10 +2826,18 @@ mod tests {
         assert_eq!(bm[2]["tool_calls"][0]["id"], "call_1");
         assert_eq!(bm[2]["tool_calls"][0]["function"]["name"], "get_weather");
         assert_eq!(
-            serde_json::from_str::<Value>(bm[2]["tool_calls"][0]["function"]["arguments"].as_str().unwrap()).unwrap(),
+            serde_json::from_str::<Value>(
+                bm[2]["tool_calls"][0]["function"]["arguments"]
+                    .as_str()
+                    .unwrap()
+            )
+            .unwrap(),
             json!({"city": "Berlin"})
         );
-        assert_eq!(bm[3], json!({"role": "tool", "tool_call_id": "call_1", "content": "sunny"}));
+        assert_eq!(
+            bm[3],
+            json!({"role": "tool", "tool_call_id": "call_1", "content": "sunny"})
+        );
         assert_eq!(bm[4], json!({"role": "user", "content": "thanks"}));
     }
 
@@ -2529,14 +2857,12 @@ mod tests {
 
     #[test]
     fn text_round_trip_chat_responses() {
-        let chat = v(
-            r#"{"model":"m","max_tokens":99,
+        let chat = v(r#"{"model":"m","max_tokens":99,
                 "messages":[
                     {"role":"system","content":"sys"},
                     {"role":"user","content":"hi"},
                     {"role":"assistant","content":"hello"}
-                ]}"#,
-        );
+                ]}"#);
         let resp = chat_to_responses(&chat).unwrap();
         assert_eq!(resp["instructions"], "sys");
         assert_eq!(resp["max_output_tokens"], json!(99));
@@ -2550,15 +2876,23 @@ mod tests {
         assert_eq!(items[1]["content"][0]["type"], "output_text");
 
         let back = responses_to_chat(&resp).unwrap();
-        assert_eq!(back["messages"][0], json!({"role": "system", "content": "sys"}));
-        assert_eq!(back["messages"][1], json!({"role": "user", "content": "hi"}));
-        assert_eq!(back["messages"][2], json!({"role": "assistant", "content": "hello"}));
+        assert_eq!(
+            back["messages"][0],
+            json!({"role": "system", "content": "sys"})
+        );
+        assert_eq!(
+            back["messages"][1],
+            json!({"role": "user", "content": "hi"})
+        );
+        assert_eq!(
+            back["messages"][2],
+            json!({"role": "assistant", "content": "hello"})
+        );
     }
 
     #[test]
     fn function_call_round_trip_chat_responses() {
-        let chat = v(
-            r#"{"model":"m","max_tokens":50,
+        let chat = v(r#"{"model":"m","max_tokens":50,
                 "messages":[
                     {"role":"user","content":"run it"},
                     {"role":"assistant","content":null,"tool_calls":[
@@ -2568,8 +2902,7 @@ mod tests {
                 ],
                 "tools":[{"type":"function","function":{
                     "name":"exec","description":"e","parameters":{"type":"object"}}}],
-                "tool_choice":{"type":"function","function":{"name":"exec"}}}"#,
-        );
+                "tool_choice":{"type":"function","function":{"name":"exec"}}}"#);
         let resp = chat_to_responses(&chat).unwrap();
         let items = resp["input"].as_array().unwrap();
         assert_eq!(items[0]["type"], "message");
@@ -2583,37 +2916,50 @@ mod tests {
         // tools + 具名 tool_choice
         assert_eq!(resp["tools"][0]["type"], "function");
         assert_eq!(resp["tools"][0]["name"], "exec");
-        assert_eq!(resp["tool_choice"], json!({"type": "function", "name": "exec"}));
+        assert_eq!(
+            resp["tool_choice"],
+            json!({"type": "function", "name": "exec"})
+        );
 
         let back = responses_to_chat(&resp).unwrap();
         let bm = back["messages"].as_array().unwrap();
         assert_eq!(bm[0], json!({"role": "user", "content": "run it"}));
         assert_eq!(bm[1]["role"], "assistant");
         assert_eq!(bm[1]["tool_calls"][0]["function"]["name"], "exec");
-        assert_eq!(bm[1]["tool_calls"][0]["function"]["arguments"], "{\"cmd\":\"dir\"}");
-        assert_eq!(bm[2], json!({"role": "tool", "tool_call_id": "call_9", "content": "done"}));
+        assert_eq!(
+            bm[1]["tool_calls"][0]["function"]["arguments"],
+            "{\"cmd\":\"dir\"}"
+        );
+        assert_eq!(
+            bm[2],
+            json!({"role": "tool", "tool_call_id": "call_9", "content": "done"})
+        );
         assert_eq!(back["tools"][0]["function"]["name"], "exec");
     }
 
     #[test]
     fn responses_input_string_and_image() {
-        let resp = v(
-            r#"{"model":"m","instructions":"sys","input":[
+        let resp = v(r#"{"model":"m","instructions":"sys","input":[
                 {"type":"message","role":"user","content":[
                     {"type":"input_text","text":"see"},
                     {"type":"input_image","image_url":"data:image/jpeg;base64,eA=="}
                 ]}
-            ]}"#,
-        );
+            ]}"#);
         let chat = responses_to_chat(&resp).unwrap();
-        assert_eq!(chat["messages"][0], json!({"role": "system", "content": "sys"}));
+        assert_eq!(
+            chat["messages"][0],
+            json!({"role": "system", "content": "sys"})
+        );
         let c = &chat["messages"][1]["content"];
         assert_eq!(c[0]["type"], "text");
         assert_eq!(c[1]["image_url"]["url"], "data:image/jpeg;base64,eA==");
         // 纯字符串 input
         let resp = v(r#"{"model":"m","input":"plain"}"#);
         let chat = responses_to_chat(&resp).unwrap();
-        assert_eq!(chat["messages"][0], json!({"role": "user", "content": "plain"}));
+        assert_eq!(
+            chat["messages"][0],
+            json!({"role": "user", "content": "plain"})
+        );
     }
 
     #[test]
@@ -2633,7 +2979,10 @@ mod tests {
         assert_eq!(peel_agent_model_mark("gpt-5.6-luna[XHigh]"), "gpt-5.6-luna");
         assert_eq!(peel_agent_model_mark("gpt-5.6-luna"), "gpt-5.6-luna");
         // 首尾空白先裁（Go TrimSpace 同款）
-        assert_eq!(peel_agent_model_mark("  gpt-5.6-luna[max] "), "gpt-5.6-luna");
+        assert_eq!(
+            peel_agent_model_mark("  gpt-5.6-luna[max] "),
+            "gpt-5.6-luna"
+        );
         // MemberEfforts 全表（Go 原表含 none/minimal）
         assert_eq!(peel_agent_model_mark("m[minimal]"), "m");
         assert_eq!(peel_agent_model_mark("m[none]"), "m");
@@ -2652,7 +3001,12 @@ mod tests {
         )
         .unwrap();
         assert!(out.starts_with("event: content_block_delta\ndata: "));
-        let data = out.splitn(2, '\n').nth(1).unwrap().strip_prefix("data: ").unwrap();
+        let data = out
+            .splitn(2, '\n')
+            .nth(1)
+            .unwrap()
+            .strip_prefix("data: ")
+            .unwrap();
         let ev: Value = serde_json::from_str(data).unwrap();
         assert_eq!(ev["type"], "content_block_delta");
         assert_eq!(ev["index"], json!(0));
@@ -2675,10 +3029,16 @@ mod tests {
         let out = sse_chat_to_anthropic("[DONE]").unwrap();
         assert!(out.starts_with("event: message_stop"));
         // 纯 usage 帧（include_usage 的空 choices 末帧）
-        let out = sse_chat_to_anthropic(r#"{"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1}}"#).unwrap();
+        let out = sse_chat_to_anthropic(
+            r#"{"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1}}"#,
+        )
+        .unwrap();
         assert!(out.starts_with("event: message_delta"));
         // 无对应事件
-        assert!(sse_chat_to_anthropic(r#"{"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}"#).is_none());
+        assert!(sse_chat_to_anthropic(
+            r#"{"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}"#
+        )
+        .is_none());
     }
 
     #[test]
@@ -2704,7 +3064,10 @@ mod tests {
         assert!(out.contains("\"prompt_tokens\":5"), "{out}");
         assert!(out.contains("\"cached_tokens\":2"));
 
-        assert_eq!(sse_anthropic_to_chat(r#"{"type":"message_stop"}"#).unwrap(), "data: [DONE]");
+        assert_eq!(
+            sse_anthropic_to_chat(r#"{"type":"message_stop"}"#).unwrap(),
+            "data: [DONE]"
+        );
         // 非文本 delta（input_json_delta）没有对应
         assert!(sse_anthropic_to_chat(
             r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"x"}}"#
@@ -2762,8 +3125,14 @@ mod tests {
         acc.feed(&[frag(1, "", "", r#""}"#)]);
         let calls = acc.take();
         assert_eq!(calls.len(), 2);
-        assert_eq!((calls[0].id.as_str(), calls[0].name.as_str()), ("call_a", "read"));
-        assert_eq!((calls[1].id.as_str(), calls[1].name.as_str()), ("call_b", "write"));
+        assert_eq!(
+            (calls[0].id.as_str(), calls[0].name.as_str()),
+            ("call_a", "read")
+        );
+        assert_eq!(
+            (calls[1].id.as_str(), calls[1].name.as_str()),
+            ("call_b", "write")
+        );
         assert_eq!(calls[1].arguments, r#"{"p":"x"}"#);
     }
 
@@ -2831,7 +3200,10 @@ mod tests {
     }
 
     fn chat_tool_names(chat: &Value) -> Vec<String> {
-        chat["tools"].as_array().unwrap().iter()
+        chat["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
             .map(|t| t["function"]["name"].as_str().unwrap().to_string())
             .collect()
     }
@@ -2847,7 +3219,11 @@ mod tests {
         assert_ne!(a, flat_name(&long_ns, "y"));
         // 非法字符换 _，仍合法；不同原名不撞
         let b = flat_name("my.ns", "do it");
-        assert!(b.bytes().all(|c| c == b'_' || c == b'-' || c.is_ascii_alphanumeric()), "{b}");
+        assert!(
+            b.bytes()
+                .all(|c| c == b'_' || c == b'-' || c.is_ascii_alphanumeric()),
+            "{b}"
+        );
         assert_ne!(b, flat_name("my_ns", "do_it"));
     }
 
@@ -2858,25 +3234,53 @@ mod tests {
         // web_search / image_generation / local_shell 有意丢弃；其余各一条函数
         assert_eq!(
             chat_tool_names(&chat),
-            vec!["shell", "apply_patch", "mcp__marionette____browser_open", "mcp__marionette____freeform", "tool_search"]
+            vec![
+                "shell",
+                "apply_patch",
+                "mcp__marionette____browser_open",
+                "mcp__marionette____freeform",
+                "tool_search"
+            ]
         );
         for n in chat_tool_names(&chat) {
-            assert!(n.len() <= 64 && n.bytes().all(|c| c == b'_' || c == b'-' || c.is_ascii_alphanumeric()), "{n}");
+            assert!(
+                n.len() <= 64
+                    && n.bytes()
+                        .all(|c| c == b'_' || c == b'-' || c.is_ascii_alphanumeric()),
+                "{n}"
+            );
         }
         // custom：一个字符串 input 的函数 + grammar 写进描述
         let patch = &chat["tools"][1]["function"];
         assert_eq!(patch["parameters"]["required"], json!(["input"]));
         let d = patch["description"].as_str().unwrap();
-        assert!(d.starts_with("edit files") && d.contains("lark grammar") && d.contains("start: /.+/"), "{d}");
+        assert!(
+            d.starts_with("edit files") && d.contains("lark grammar") && d.contains("start: /.+/"),
+            "{d}"
+        );
         // 普通 function 工具原样
         assert_eq!(chat["tools"][0]["function"]["name"], "shell");
-        assert_eq!(chat["tools"][0]["function"]["parameters"]["properties"]["cmd"]["type"], "string");
+        assert_eq!(
+            chat["tools"][0]["function"]["parameters"]["properties"]["cmd"]["type"],
+            "string"
+        );
         // 还原表：普通工具不进表
         assert!(!table.contains_key("shell"));
-        assert_eq!(table["apply_patch"], NsTool { name: "apply_patch".into(), custom: true, ..Default::default() });
+        assert_eq!(
+            table["apply_patch"],
+            NsTool {
+                name: "apply_patch".into(),
+                custom: true,
+                ..Default::default()
+            }
+        );
         assert_eq!(
             table["mcp__marionette____browser_open"],
-            NsTool { namespace: "mcp__marionette__".into(), name: "browser_open".into(), ..Default::default() }
+            NsTool {
+                namespace: "mcp__marionette__".into(),
+                name: "browser_open".into(),
+                ..Default::default()
+            }
         );
         assert!(table["mcp__marionette____freeform"].custom);
         assert!(table["tool_search"].search);
@@ -2901,8 +3305,11 @@ mod tests {
             "tool_choice": "auto"});
         let (chat, table) = responses_to_chat_with_tools(&body).unwrap();
         assert!(table.is_empty());
-        assert_eq!(chat["tools"][0], json!({"type": "function", "function": {"name": "get_weather",
-            "description": "w", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}));
+        assert_eq!(
+            chat["tools"][0],
+            json!({"type": "function", "function": {"name": "get_weather",
+            "description": "w", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}})
+        );
         assert_eq!(chat["tool_choice"], "auto");
         assert!(chat.get("parallel_tool_calls").is_none());
     }
@@ -2936,19 +3343,35 @@ mod tests {
         let (chat, table) = responses_to_chat_with_tools(&body).unwrap();
         let msgs = chat["messages"].as_array().unwrap();
         // user, assistant(3 个调用并成一条 tool_calls 的前两条之间有 tool 消息 -> 分开)
-        let calls: Vec<&Value> = msgs.iter().filter_map(|m| m.get("tool_calls")).flat_map(|c| c.as_array().unwrap()).collect();
+        let calls: Vec<&Value> = msgs
+            .iter()
+            .filter_map(|m| m.get("tool_calls"))
+            .flat_map(|c| c.as_array().unwrap())
+            .collect();
         assert_eq!(calls.len(), 3);
-        assert_eq!(calls[0]["function"]["name"], "mcp__marionette____browser_open");
+        assert_eq!(
+            calls[0]["function"]["name"],
+            "mcp__marionette____browser_open"
+        );
         assert_eq!(calls[0]["function"]["arguments"], "{\"url\":\"http://x\"}");
         assert_eq!(calls[1]["function"]["name"], "apply_patch");
-        assert_eq!(calls[1]["function"]["arguments"], "{\"input\":\"*** Begin Patch\"}");
+        assert_eq!(
+            calls[1]["function"]["arguments"],
+            "{\"input\":\"*** Begin Patch\"}"
+        );
         assert_eq!(calls[2]["function"]["name"], "tool_search");
-        assert_eq!(calls[2]["function"]["arguments"], "{\"query\":\"calendar\"}");
+        assert_eq!(
+            calls[2]["function"]["arguments"],
+            "{\"query\":\"calendar\"}"
+        );
         // 三个结果都按 call id 配成 tool 消息；tool_search 的结果讲「现在可调的名字」
         let tool_msgs: Vec<&Value> = msgs.iter().filter(|m| m["role"] == "tool").collect();
         assert_eq!(tool_msgs.len(), 3);
         assert_eq!(tool_msgs[2]["tool_call_id"], "c3");
-        assert_eq!(tool_msgs[2]["content"], "These tools are now available to call: mcp__cal____list_events");
+        assert_eq!(
+            tool_msgs[2]["content"],
+            "These tools are now available to call: mcp__cal____list_events"
+        );
         // 搜到的工具排在请求自带工具之后被提供，并进还原表
         let names = chat_tool_names(&chat);
         assert_eq!(names.last().unwrap(), "mcp__cal____list_events");
@@ -2973,7 +3396,11 @@ mod tests {
         let tail: String = msgs[3..].iter().map(|m| m["content"].to_string()).collect();
         assert!(tail.contains("notification from another thread"), "{tail}");
         assert!(tail.contains("Tool result received."), "{tail}");
-        assert!(msgs.iter().all(|m| m["role"] != "tool" || m["tool_call_id"] == "a"), "孤儿不得带假 call_id");
+        assert!(
+            msgs.iter()
+                .all(|m| m["role"] != "tool" || m["tool_call_id"] == "a"),
+            "孤儿不得带假 call_id"
+        );
     }
 
     #[test]
@@ -2999,7 +3426,10 @@ mod tests {
         // 点名命名空间里的函数 -> flat 名
         let c = responses_to_chat(&json!({"model": "m", "input": "x", "tools": tools,
             "tool_choice": {"type": "function", "namespace": "mcp__marionette__", "name": "browser_open"}})).unwrap();
-        assert_eq!(c["tool_choice"]["function"]["name"], "mcp__marionette____browser_open");
+        assert_eq!(
+            c["tool_choice"]["function"]["name"],
+            "mcp__marionette____browser_open"
+        );
         // allowed_tools：mode 成为 tool_choice，清单收窄
         let c = responses_to_chat(&json!({"model": "m", "input": "x", "tools": tools,
             "tool_choice": {"type": "allowed_tools", "mode": "required", "tools": [
@@ -3007,8 +3437,11 @@ mod tests {
         assert_eq!(c["tool_choice"], "required");
         assert_eq!(chat_tool_names(&c), vec!["shell", "apply_patch"]);
         // 非法 mode 报错
-        assert!(responses_to_chat(&json!({"model": "m", "input": "x", "tools": tools,
-            "tool_choice": {"type": "allowed_tools", "mode": "bogus", "tools": []}})).is_err());
+        assert!(
+            responses_to_chat(&json!({"model": "m", "input": "x", "tools": tools,
+            "tool_choice": {"type": "allowed_tools", "mode": "bogus", "tools": []}}))
+            .is_err()
+        );
     }
 
     #[test]
@@ -3024,7 +3457,10 @@ mod tests {
         let (chat, table) = responses_to_chat_with_tools(&body).unwrap();
         assert_eq!(chat_tool_names(&chat), vec!["exec_command"]);
         assert!(table.is_empty());
-        assert_eq!(chat["messages"][1]["tool_calls"][0]["function"]["name"], "exec_command");
+        assert_eq!(
+            chat["messages"][1]["tool_calls"][0]["function"]["name"],
+            "exec_command"
+        );
     }
 
     #[test]
@@ -3047,8 +3483,14 @@ mod tests {
         // 命名空间 custom
         let mut it = mk("{\"input\":\"z\"}");
         call_to(&mut it, "mcp__marionette____freeform", &table);
-        assert_eq!((it["type"].as_str().unwrap(), it["namespace"].as_str().unwrap(), it["name"].as_str().unwrap()),
-            ("custom_tool_call", "mcp__marionette__", "freeform"));
+        assert_eq!(
+            (
+                it["type"].as_str().unwrap(),
+                it["namespace"].as_str().unwrap(),
+                it["name"].as_str().unwrap()
+            ),
+            ("custom_tool_call", "mcp__marionette__", "freeform")
+        );
         // 命名空间 function：原名 + namespace
         let mut it = mk("{\"url\":\"u\"}");
         call_to(&mut it, "mcp__marionette____browser_open", &table);
@@ -3068,7 +3510,10 @@ mod tests {
         // 普通工具：只补原名
         let mut it = mk("{}");
         call_to(&mut it, "shell", &table);
-        assert_eq!((it["type"].as_str().unwrap(), it["name"].as_str().unwrap()), ("function_call", "shell"));
+        assert_eq!(
+            (it["type"].as_str().unwrap(), it["name"].as_str().unwrap()),
+            ("function_call", "shell")
+        );
         assert!(it.get("namespace").is_none());
     }
 }

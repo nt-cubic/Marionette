@@ -134,7 +134,12 @@ impl AgentParser for PiParser {
     }
 
     fn list(&self, project_root: &str) -> Result<Vec<ExternalConversation>, String> {
-        list_pi_like(self.source(), self.agent_id(), &pi_sessions_dir(), project_root)
+        list_pi_like(
+            self.source(),
+            self.agent_id(),
+            &pi_sessions_dir(),
+            project_root,
+        )
     }
 
     fn load(&self, locator: &str) -> Result<Vec<Value>, String> {
@@ -318,13 +323,7 @@ pub fn load_pi_jsonl(path: &Path, agent_id: &str) -> Result<Vec<Value>, String> 
                     .and_then(|x| x.as_str())
                     .unwrap_or("tool");
                 let detail = extract_text(msg.get("content"));
-                events.push(tool_event(
-                    &session_id,
-                    id,
-                    name,
-                    &created,
-                    Some(&detail),
-                ));
+                events.push(tool_event(&session_id, id, name, &created, Some(&detail)));
             }
             _ => {}
         }
@@ -339,7 +338,11 @@ fn omp_sessions_dir() -> Option<PathBuf> {
     env_dir("OMP_HOME")
         .map(|p| p.join("sessions"))
         .filter(|p| p.is_dir())
-        .or_else(|| home_join(".omp").map(|p| p.join("sessions")).filter(|p| p.is_dir()))
+        .or_else(|| {
+            home_join(".omp")
+                .map(|p| p.join("sessions"))
+                .filter(|p| p.is_dir())
+        })
         .or_else(|| {
             home_join(".oh-my-pi")
                 .map(|p| p.join("sessions"))
@@ -356,7 +359,12 @@ impl AgentParser for OmpParser {
         "omp"
     }
     fn list(&self, project_root: &str) -> Result<Vec<ExternalConversation>, String> {
-        list_pi_like(self.source(), self.agent_id(), &omp_sessions_dir(), project_root)
+        list_pi_like(
+            self.source(),
+            self.agent_id(),
+            &omp_sessions_dir(),
+            project_root,
+        )
     }
     fn load(&self, locator: &str) -> Result<Vec<Value>, String> {
         load_pi_jsonl(Path::new(locator), "omp")

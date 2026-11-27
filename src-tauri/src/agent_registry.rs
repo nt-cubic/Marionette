@@ -84,8 +84,16 @@ fn dist_label(d: DistributionKind) -> &'static str {
 pub fn harness_meta(agent_id: &str) -> AgentHarnessMeta {
     match agent_id {
         "web-chatgpt" | "web-deepseek" => AgentHarnessMeta {
-            id: if agent_id == "web-chatgpt" { "web-chatgpt" } else { "web-deepseek" },
-            label: if agent_id == "web-chatgpt" { crate::ts!("ChatGPT 网页版", "ChatGPT (web)").leak() } else { crate::ts!("DeepSeek 网页版", "DeepSeek (web)").leak() },
+            id: if agent_id == "web-chatgpt" {
+                "web-chatgpt"
+            } else {
+                "web-deepseek"
+            },
+            label: if agent_id == "web-chatgpt" {
+                crate::ts!("ChatGPT 网页版", "ChatGPT (web)").leak()
+            } else {
+                crate::ts!("DeepSeek 网页版", "DeepSeek (web)").leak()
+            },
             subagent_transcript: false,
             mcp_wire: McpWirePolicy::SkipForward,
             mcp_wire_label: mcp_label(McpWirePolicy::SkipForward),
@@ -293,7 +301,11 @@ pub fn build_client_capabilities_json(agent_id: Option<&str>) -> Value {
             "capabilities": ["sessionFailure"]
         }),
     );
-    if meta.as_ref().map(|m| m.subagent_transcript).unwrap_or(false) {
+    if meta
+        .as_ref()
+        .map(|m| m.subagent_transcript)
+        .unwrap_or(false)
+    {
         meta_obj.insert("subagent-transcript".into(), json!(true));
     }
     // OpenCode v2: opt into `opencode/session/child_update` so Task child
@@ -428,6 +440,4 @@ mod tests {
             assert_eq!(caps["fs"]["writeTextFile"], json!(true));
         }
     }
-
-
 }

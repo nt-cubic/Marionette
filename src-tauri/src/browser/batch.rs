@@ -50,17 +50,44 @@ pub const LOAD_STATES: &[&str] = &["domcontentloaded", "load"];
 /// the schema did not whitelist never reaches this enum.
 #[derive(Debug, PartialEq)]
 pub enum BatchStep {
-    Click { target: String, count: Option<u8> },
-    Hover { target: String },
-    Type { target: String, text: String, submit: bool },
-    SetValue { target: String, value: Value },
-    PressKey { key: String, target: Option<String> },
-    SelectOption { target: String, values: Vec<String> },
-    WaitForSelector { target: String, state: &'static str, timeout_ms: u64 },
-    WaitForLoadState { state: &'static str, timeout_ms: u64 },
+    Click {
+        target: String,
+        count: Option<u8>,
+    },
+    Hover {
+        target: String,
+    },
+    Type {
+        target: String,
+        text: String,
+        submit: bool,
+    },
+    SetValue {
+        target: String,
+        value: Value,
+    },
+    PressKey {
+        key: String,
+        target: Option<String>,
+    },
+    SelectOption {
+        target: String,
+        values: Vec<String>,
+    },
+    WaitForSelector {
+        target: String,
+        state: &'static str,
+        timeout_ms: u64,
+    },
+    WaitForLoadState {
+        state: &'static str,
+        timeout_ms: u64,
+    },
     PageState,
     PageReady,
-    Snapshot { max_chars: u64 },
+    Snapshot {
+        max_chars: u64,
+    },
 }
 
 impl BatchStep {
@@ -131,10 +158,7 @@ fn as_str_field(step: &Value, key: &str, op: &str) -> Result<String, String> {
 }
 
 fn wait_ms_field(step: &Value, key: &str, default: u64, max: u64) -> u64 {
-    step[key]
-        .as_u64()
-        .unwrap_or(default)
-        .clamp(100, max)
+    step[key].as_u64().unwrap_or(default).clamp(100, max)
 }
 
 fn wait_state_field(
@@ -175,7 +199,10 @@ pub fn validate(steps: &Value) -> Result<Vec<BatchStep>, String> {
         return Err("batch needs at least one step".to_string());
     }
     if items.len() > MAX_STEPS {
-        return Err(format!("batch accepts at most {MAX_STEPS} steps, got {}", items.len()));
+        return Err(format!(
+            "batch accepts at most {MAX_STEPS} steps, got {}",
+            items.len()
+        ));
     }
     let last = items.len() - 1;
     let mut out = Vec::with_capacity(items.len());
@@ -192,7 +219,9 @@ pub fn validate(steps: &Value) -> Result<Vec<BatchStep>, String> {
             }
             "hover" => {
                 reject_unknown_fields(step, op, &["op", "ref"])?;
-                BatchStep::Hover { target: as_str_field(step, "ref", op)? }
+                BatchStep::Hover {
+                    target: as_str_field(step, "ref", op)?,
+                }
             }
             "type" => {
                 reject_unknown_fields(step, op, &["op", "ref", "text", "submit"])?;
@@ -231,9 +260,14 @@ pub fn validate(steps: &Value) -> Result<Vec<BatchStep>, String> {
                     })
                     .unwrap_or_default();
                 if values.is_empty() {
-                    return Err("batch step selectOption needs a non-empty `values` array".to_string());
+                    return Err(
+                        "batch step selectOption needs a non-empty `values` array".to_string()
+                    );
                 }
-                BatchStep::SelectOption { target: as_str_field(step, "ref", op)?, values }
+                BatchStep::SelectOption {
+                    target: as_str_field(step, "ref", op)?,
+                    values,
+                }
             }
             "waitForSelector" => {
                 reject_unknown_fields(step, op, &["op", "ref", "state", "timeoutMs"])?;
@@ -247,7 +281,12 @@ pub fn validate(steps: &Value) -> Result<Vec<BatchStep>, String> {
                 reject_unknown_fields(step, op, &["op", "state", "timeoutMs"])?;
                 BatchStep::WaitForLoadState {
                     state: wait_state_field(step, "state", LOAD_STATES, "load")?,
-                    timeout_ms: wait_ms_field(step, "timeoutMs", DEFAULT_LOAD_WAIT_MS, MAX_LOAD_WAIT_MS),
+                    timeout_ms: wait_ms_field(
+                        step,
+                        "timeoutMs",
+                        DEFAULT_LOAD_WAIT_MS,
+                        MAX_LOAD_WAIT_MS,
+                    ),
                 }
             }
             "pageState" => {
@@ -290,16 +329,29 @@ pub fn validate(steps: &Value) -> Result<Vec<BatchStep>, String> {
 /// dispatch arms (press without a ref acts on whatever has focus).
 pub fn action_request(step: &BatchStep, generation: &str) -> Option<ActionRequest> {
     let (target, action) = match step {
-        BatchStep::Click { target, count } => (Some(target.clone()), ActionKind::Click { count: *count }),
+        BatchStep::Click { target, count } => {
+            (Some(target.clone()), ActionKind::Click { count: *count })
+        }
         BatchStep::Hover { target } => (Some(target.clone()), ActionKind::Hover),
-        BatchStep::Type { target, text, submit } => (
+        BatchStep::Type {
+            target,
+            text,
+            submit,
+        } => (
             Some(target.clone()),
-            ActionKind::Type { text: text.clone(), submit: *submit },
+            ActionKind::Type {
+                text: text.clone(),
+                submit: *submit,
+            },
         ),
-        BatchStep::PressKey { key, target } => (target.clone(), ActionKind::Press { key: key.clone() }),
+        BatchStep::PressKey { key, target } => {
+            (target.clone(), ActionKind::Press { key: key.clone() })
+        }
         BatchStep::SelectOption { target, values } => (
             Some(target.clone()),
-            ActionKind::Select { values: values.clone() },
+            ActionKind::Select {
+                values: values.clone(),
+            },
         ),
         BatchStep::SetValue { .. } => return None, // rides set_control_value instead
         _ => return None,
@@ -315,8 +367,14 @@ pub fn action_request(step: &BatchStep, generation: &str) -> Option<ActionReques
 /// carries summaries, not full payloads.
 pub fn condense(index: usize, step: &BatchStep, value: &mut Value) {
     let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(false);
-    let error = value.get("error").and_then(Value::as_str).map(str::to_string);
-    let detail = value.get("detail").and_then(Value::as_str).map(str::to_string);
+    let error = value
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let detail = value
+        .get("detail")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let mut record = json!({ "index": index, "op": step.op(), "ok": ok });
     if let Some(error) = error {
         record["error"] = json!(error);
@@ -348,11 +406,27 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(out.len(), 6);
-        assert_eq!(out[0], BatchStep::WaitForSelector { target: "e12".into(), state: "visible", timeout_ms: 3000 });
-        assert_eq!(out[2], BatchStep::SetValue { target: "e18".into(), value: json!("demo@example.com") });
+        assert_eq!(
+            out[0],
+            BatchStep::WaitForSelector {
+                target: "e12".into(),
+                state: "visible",
+                timeout_ms: 3000
+            }
+        );
+        assert_eq!(
+            out[2],
+            BatchStep::SetValue {
+                target: "e18".into(),
+                value: json!("demo@example.com")
+            }
+        );
         assert_eq!(
             out[3],
-            BatchStep::PressKey { key: "Enter".into(), target: None }
+            BatchStep::PressKey {
+                key: "Enter".into(),
+                target: None
+            }
         );
         assert_eq!(out[5], BatchStep::Snapshot { max_chars: 20000 });
     }
@@ -366,9 +440,29 @@ mod tests {
             { "op": "pageState" },
         ]))
         .unwrap();
-        assert_eq!(out[0], BatchStep::WaitForSelector { target: "e1".into(), state: "visible", timeout_ms: DEFAULT_WAIT_MS });
-        assert_eq!(out[1], BatchStep::WaitForLoadState { state: "load", timeout_ms: DEFAULT_LOAD_WAIT_MS });
-        assert_eq!(out[2], BatchStep::Type { target: "e2".into(), text: "hi".into(), submit: false });
+        assert_eq!(
+            out[0],
+            BatchStep::WaitForSelector {
+                target: "e1".into(),
+                state: "visible",
+                timeout_ms: DEFAULT_WAIT_MS
+            }
+        );
+        assert_eq!(
+            out[1],
+            BatchStep::WaitForLoadState {
+                state: "load",
+                timeout_ms: DEFAULT_LOAD_WAIT_MS
+            }
+        );
+        assert_eq!(
+            out[2],
+            BatchStep::Type {
+                target: "e2".into(),
+                text: "hi".into(),
+                submit: false
+            }
+        );
     }
 
     #[test]
@@ -406,18 +500,36 @@ mod tests {
 
     #[test]
     fn wait_states_and_timeouts_are_clamped() {
-        let error = steps(json!([{ "op": "waitForSelector", "ref": "e1", "state": "networkidle" }]))
-            .unwrap_err();
-        assert!(error.contains("attached|visible|hidden|detached"), "{error}");
-        let error = steps(json!([{ "op": "waitForLoadState", "state": "networkidle" }])).unwrap_err();
+        let error =
+            steps(json!([{ "op": "waitForSelector", "ref": "e1", "state": "networkidle" }]))
+                .unwrap_err();
+        assert!(
+            error.contains("attached|visible|hidden|detached"),
+            "{error}"
+        );
+        let error =
+            steps(json!([{ "op": "waitForLoadState", "state": "networkidle" }])).unwrap_err();
         assert!(error.contains("domcontentloaded|load"), "{error}");
         let out = steps(json!([
             { "op": "waitForSelector", "ref": "e1", "timeoutMs": 999_999 },
             { "op": "waitForLoadState", "timeoutMs": 1 },
         ]))
         .unwrap();
-        assert_eq!(out[0], BatchStep::WaitForSelector { target: "e1".into(), state: "visible", timeout_ms: MAX_WAIT_MS });
-        assert_eq!(out[1], BatchStep::WaitForLoadState { state: "load", timeout_ms: 100 });
+        assert_eq!(
+            out[0],
+            BatchStep::WaitForSelector {
+                target: "e1".into(),
+                state: "visible",
+                timeout_ms: MAX_WAIT_MS
+            }
+        );
+        assert_eq!(
+            out[1],
+            BatchStep::WaitForLoadState {
+                state: "load",
+                timeout_ms: 100
+            }
+        );
     }
 
     #[test]
@@ -434,7 +546,12 @@ mod tests {
             { "op": "snapshot", "maxChars": 5_000_000 },
         ]))
         .unwrap();
-        assert_eq!(out[1], BatchStep::Snapshot { max_chars: SNAPSHOT_MAX_MAX_CHARS });
+        assert_eq!(
+            out[1],
+            BatchStep::Snapshot {
+                max_chars: SNAPSHOT_MAX_MAX_CHARS
+            }
+        );
     }
 
     #[test]
@@ -489,10 +606,16 @@ mod tests {
         let request = action_request(&out[0], "G.1.4.2").unwrap();
         assert_eq!(request.generation, "G.1.4.2");
         assert_eq!(request.target.as_deref(), Some("e12"));
-        assert!(matches!(request.action, ActionKind::Click { count: Some(2) }));
+        assert!(matches!(
+            request.action,
+            ActionKind::Click { count: Some(2) }
+        ));
         let request = action_request(&out[1], "G.1.4.2").unwrap();
         assert_eq!(request.target, None, "press without ref acts on focus");
-        assert!(action_request(&out[2], "G.1.4.2").is_none(), "setValue rides set_control_value");
+        assert!(
+            action_request(&out[2], "G.1.4.2").is_none(),
+            "setValue rides set_control_value"
+        );
         assert!(action_request(&out[3], "G.1.4.2").is_none());
     }
 
@@ -502,10 +625,14 @@ mod tests {
         let mut value = json!({ "ok": true, "url": "https://x.test/", "generation": "G.1.4.2" });
         condense(3, &out[0], &mut value);
         assert_eq!(value, json!({ "index": 3, "op": "click", "ok": true }));
-        let mut value = json!({ "ok": false, "url": "https://x.test/", "error": "stale", "detail": "moved" });
+        let mut value =
+            json!({ "ok": false, "url": "https://x.test/", "error": "stale", "detail": "moved" });
         condense(1, &out[0], &mut value);
         assert_eq!(value["error"], "stale");
         assert_eq!(value["detail"], "moved");
-        assert!(value.get("url").is_none(), "page-controlled fields stay out of the audit record");
+        assert!(
+            value.get("url").is_none(),
+            "page-controlled fields stay out of the audit record"
+        );
     }
 }

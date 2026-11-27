@@ -85,11 +85,10 @@ pub fn save_proxy_config(config: &ProxyConfig) -> Result<(), String> {
         return Err("cannot locate home directory".to_string());
     };
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| format!("create ~/.marionette: {e}"))?;
+        std::fs::create_dir_all(dir).map_err(|e| format!("create ~/.marionette: {e}"))?;
     }
-    let raw = serde_json::to_string_pretty(config)
-        .map_err(|e| format!("serialize proxy config: {e}"))?;
+    let raw =
+        serde_json::to_string_pretty(config).map_err(|e| format!("serialize proxy config: {e}"))?;
     std::fs::write(&path, raw).map_err(|e| format!("write proxy config: {e}"))?;
     Ok(())
 }
@@ -101,12 +100,18 @@ pub fn save_proxy_config(config: &ProxyConfig) -> Result<(), String> {
 pub fn validate_proxy_url(url: &str) -> Result<(), String> {
     let url = url.trim();
     if url.is_empty() {
-        return Err(crate::ts!("代理地址不能为空", "Proxy address cannot be empty"));
+        return Err(crate::ts!(
+            "代理地址不能为空",
+            "Proxy address cannot be empty"
+        ));
     }
     if !url.starts_with("http://") && !url.starts_with("https://") {
         // Allow bare host:port (ureq treats it as http), but still require a port.
         if !url.contains(':') {
-            return Err(crate::ts!("代理地址缺少端口，例如 http://127.0.0.1:7890", "Proxy address is missing a port, e.g. http://127.0.0.1:7890"));
+            return Err(crate::ts!(
+                "代理地址缺少端口，例如 http://127.0.0.1:7890",
+                "Proxy address is missing a port, e.g. http://127.0.0.1:7890"
+            ));
         }
     }
     ureq_proxy(url)
@@ -125,7 +130,9 @@ pub fn validate_proxy_url(url: &str) -> Result<(), String> {
 pub fn ureq_proxy(url: &str) -> Result<ureq::Proxy, ureq::Error> {
     let url = url.trim();
     let normalized = match url.split_once("://") {
-        Some((scheme, rest)) if scheme.eq_ignore_ascii_case("socks5h") => format!("socks5://{rest}"),
+        Some((scheme, rest)) if scheme.eq_ignore_ascii_case("socks5h") => {
+            format!("socks5://{rest}")
+        }
         Some((scheme, rest)) => format!("{}://{rest}", scheme.to_ascii_lowercase()),
         None => url.to_string(),
     };
@@ -155,8 +162,7 @@ pub fn test_proxy(url: &str) -> Result<ProxyTestResult, String> {
 /// `test_proxy` with a caller-chosen target (tests use a loopback server; the
 /// UI always goes through [`test_proxy`]).
 fn test_proxy_against(url: &str, target: &str) -> Result<ProxyTestResult, String> {
-    let proxy = ureq_proxy(url)
-        .map_err(|e| format!("代理地址无效: {e}"))?;
+    let proxy = ureq_proxy(url).map_err(|e| format!("代理地址无效: {e}"))?;
     let connector = ureq::native_tls::TlsConnector::new()
         .map_err(|e| format!("TLS init failed (schannel): {e}"))?;
     let agent = ureq::AgentBuilder::new()
@@ -180,7 +186,10 @@ fn test_proxy_against(url: &str, target: &str) -> Result<ProxyTestResult, String
             let ms = started.elapsed().as_millis() as u64;
             Ok(ProxyTestResult {
                 ok: true,
-                message: crate::ts!("代理连通（HTTP {code}）· {ms}ms", "Proxy reachable (HTTP {code}) · {ms}ms"),
+                message: crate::ts!(
+                    "代理连通（HTTP {code}）· {ms}ms",
+                    "Proxy reachable (HTTP {code}) · {ms}ms"
+                ),
                 latency_ms: Some(ms),
             })
         }
@@ -250,7 +259,11 @@ mod tests {
         let mut head = Vec::new();
         let mut byte = [0u8; 1];
         while !head.ends_with(b"\r\n\r\n") {
-            assert_eq!(stream.read(&mut byte).unwrap(), 1, "request head ended early");
+            assert_eq!(
+                stream.read(&mut byte).unwrap(),
+                1,
+                "request head ended early"
+            );
             head.push(byte[0]);
             assert!(head.len() < 64 * 1024, "request head too large");
         }
@@ -271,7 +284,10 @@ mod tests {
                 let methods = read_exact(&mut stream, methods[1] as usize);
                 let mut creds = Vec::new();
                 if require_password {
-                    assert!(methods.contains(&0x02), "client must offer username/password");
+                    assert!(
+                        methods.contains(&0x02),
+                        "client must offer username/password"
+                    );
                     stream.write_all(&[0x05, 0x02]).unwrap();
                     let head = read_exact(&mut stream, 2);
                     let mut rest = read_exact(&mut stream, head[1] as usize);
@@ -287,15 +303,24 @@ mod tests {
                 }
                 let head = read_exact(&mut stream, 4);
                 let target = match head[3] {
-                    0x01 => read_exact(&mut stream, 4).iter().map(|b| b.to_string()).collect::<Vec<_>>().join("."),
+                    0x01 => read_exact(&mut stream, 4)
+                        .iter()
+                        .map(|b| b.to_string())
+                        .collect::<Vec<_>>()
+                        .join("."),
                     0x03 => {
                         let len = read_exact(&mut stream, 1)[0] as usize;
                         String::from_utf8(read_exact(&mut stream, len)).unwrap()
-                    },
+                    }
                     other => panic!("unexpected ATYP {other}"),
                 };
-                let port = u16::from_be_bytes([read_exact(&mut stream, 1)[0], read_exact(&mut stream, 1)[0]]);
-                stream.write_all(&[0x05, reply, 0x00, 0x01, 127, 0, 0, 1, 0, 80]).unwrap();
+                let port = u16::from_be_bytes([
+                    read_exact(&mut stream, 1)[0],
+                    read_exact(&mut stream, 1)[0],
+                ]);
+                stream
+                    .write_all(&[0x05, reply, 0x00, 0x01, 127, 0, 0, 1, 0, 80])
+                    .unwrap();
                 if reply == 0 {
                     read_http_head(&mut stream);
                     stream.write_all(OK_RESPONSE.as_bytes()).unwrap();
@@ -316,7 +341,8 @@ mod tests {
                 let mut stream = stream.unwrap();
                 let head = read_http_head(&mut stream);
                 stream.write_all(response.as_bytes()).unwrap();
-                tx.send(head.lines().next().unwrap_or("").to_string()).unwrap();
+                tx.send(head.lines().next().unwrap_or("").to_string())
+                    .unwrap();
             }
         });
         (port, rx)
@@ -332,14 +358,19 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{scheme}: {e}"));
             assert!(result.ok, "{scheme}: {}", result.message);
             assert!(result.latency_ms.is_some(), "{scheme}");
-            assert_eq!(seen.recv().unwrap(), ("example.invalid:80".to_string(), Vec::new()), "{scheme}");
+            assert_eq!(
+                seen.recv().unwrap(),
+                ("example.invalid:80".to_string(), Vec::new()),
+                "{scheme}"
+            );
         }
     }
 
     #[test]
     fn socks5_proxy_with_credentials_negotiates_username_password() {
         let (port, seen) = mock_socks5(0x00, true);
-        let result = test_proxy_against(&format!("socks5://john:1234@127.0.0.1:{port}"), TARGET).unwrap();
+        let result =
+            test_proxy_against(&format!("socks5://john:1234@127.0.0.1:{port}"), TARGET).unwrap();
         assert!(result.ok, "{}", result.message);
         let (target, creds) = seen.recv().unwrap();
         assert_eq!(target, "example.invalid:80");
@@ -366,10 +397,19 @@ mod tests {
     fn http_proxy_path_still_reaches_the_proxy() {
         let (port, seen) = mock_http_proxy(OK_RESPONSE);
         let result = test_proxy_against(&format!("http://127.0.0.1:{port}"), TARGET).unwrap();
-        assert!(result.ok && result.latency_ms.is_some(), "{}", result.message);
-        assert!(seen.recv().unwrap().starts_with("GET "), "absolute or origin form both fine");
+        assert!(
+            result.ok && result.latency_ms.is_some(),
+            "{}",
+            result.message
+        );
+        assert!(
+            seen.recv().unwrap().starts_with("GET "),
+            "absolute or origin form both fine"
+        );
 
-        let (port, _seen) = mock_http_proxy("HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n");
+        let (port, _seen) = mock_http_proxy(
+            "HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n",
+        );
         let result = test_proxy_against(&format!("http://127.0.0.1:{port}"), TARGET).unwrap();
         assert!(result.ok, "{}", result.message);
         assert!(result.message.contains("407"), "{}", result.message);
@@ -383,18 +423,33 @@ mod tests {
         assert!(!result.ok, "{}", result.message);
         let zh = "代理端口没有响应";
         let en = "proxy port did not answer";
-        assert!(result.message.contains(zh) || result.message.contains(en), "{}", result.message);
+        assert!(
+            result.message.contains(zh) || result.message.contains(en),
+            "{}",
+            result.message
+        );
     }
 
     #[test]
     fn validate_accepts_socks_and_rejects_https_proxies() {
-        for url in ["socks5://127.0.0.1:7891", "socks5h://127.0.0.1:7891", "SOCKS5://127.0.0.1:7891", "socks://127.0.0.1:7891", "socks4://127.0.0.1:1080", "http://127.0.0.1:7890", "127.0.0.1:7890"] {
+        for url in [
+            "socks5://127.0.0.1:7891",
+            "socks5h://127.0.0.1:7891",
+            "SOCKS5://127.0.0.1:7891",
+            "socks://127.0.0.1:7891",
+            "socks4://127.0.0.1:1080",
+            "http://127.0.0.1:7890",
+            "127.0.0.1:7890",
+        ] {
             validate_proxy_url(url).unwrap_or_else(|e| panic!("{url}: {e}"));
         }
         // ureq 2 不会跟代理说 TLS：如实拒绝，不让「保存成功」掩盖一条走不通的配置。
         assert!(validate_proxy_url("https://127.0.0.1:8080").is_err());
         assert!(validate_proxy_url("").is_err());
-        assert!(validate_proxy_url("127.0.0.1").is_err(), "bare host without a port");
+        assert!(
+            validate_proxy_url("127.0.0.1").is_err(),
+            "bare host without a port"
+        );
         assert!(validate_proxy_url("ftp://127.0.0.1:21").is_err());
     }
 }

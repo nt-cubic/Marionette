@@ -81,7 +81,10 @@ pub fn can_resume(state: &CouncilState) -> Result<RunPhase, String> {
     }
     match state.paused_from {
         Some(target) if target.is_running() => Ok(target),
-        Some(target) => Err(format!("暂停记录的目标状态 {} 不可恢复", phase_name(target))),
+        Some(target) => Err(format!(
+            "暂停记录的目标状态 {} 不可恢复",
+            phase_name(target)
+        )),
         None => Err("暂停记录缺失恢复目标".into()),
     }
 }
@@ -101,18 +104,35 @@ pub fn apply_transition(
         } else {
             let target = can_resume(state)?;
             if to != target {
-                return Err(format!("暂停只能恢复到 {}(请求 {})", phase_name(target), phase_name(to)));
+                return Err(format!(
+                    "暂停只能恢复到 {}(请求 {})",
+                    phase_name(target),
+                    phase_name(to)
+                ));
             }
         }
     } else if from.is_terminal() {
         return Err(format!("终态 {} 不可再转移", phase_name(from)));
     } else if !can_transition(from, to) {
-        return Err(format!("非法转移:{} → {}", phase_name(from), phase_name(to)));
+        return Err(format!(
+            "非法转移:{} → {}",
+            phase_name(from),
+            phase_name(to)
+        ));
     }
-    state.paused_from = if to == RunPhase::Paused { Some(from) } else { None };
+    state.paused_from = if to == RunPhase::Paused {
+        Some(from)
+    } else {
+        None
+    };
     state.phase = to;
     state.updated_at = now_millis();
-    Ok(TransitionRecord { at: state.updated_at, from, to, reason: reason.map(|s| s.to_string()) })
+    Ok(TransitionRecord {
+        at: state.updated_at,
+        from,
+        to,
+        reason: reason.map(|s| s.to_string()),
+    })
 }
 
 pub fn phase_name(p: RunPhase) -> &'static str {
@@ -163,7 +183,13 @@ mod tests {
     #[test]
     fn happy_path_transitions() {
         let mut s = state_at(RunPhase::Created);
-        for to in [RunPhase::Analyzing, RunPhase::Proposing, RunPhase::Reviewing, RunPhase::Revising, RunPhase::Revising] {
+        for to in [
+            RunPhase::Analyzing,
+            RunPhase::Proposing,
+            RunPhase::Reviewing,
+            RunPhase::Revising,
+            RunPhase::Revising,
+        ] {
             // Revising→Revising 非法,单独跳过
             if to == RunPhase::Revising && s.phase == RunPhase::Revising {
                 let rec = apply_transition(&mut s, RunPhase::Reviewing, None).unwrap();
@@ -172,7 +198,13 @@ mod tests {
             }
             apply_transition(&mut s, to, None).unwrap();
         }
-        for to in [RunPhase::Synthesizing, RunPhase::PlanReady, RunPhase::Executing, RunPhase::Verifying, RunPhase::Completed] {
+        for to in [
+            RunPhase::Synthesizing,
+            RunPhase::PlanReady,
+            RunPhase::Executing,
+            RunPhase::Verifying,
+            RunPhase::Completed,
+        ] {
             apply_transition(&mut s, to, None).unwrap();
         }
         assert!(s.phase.is_terminal());
@@ -199,7 +231,12 @@ mod tests {
 
     #[test]
     fn terminal_states_frozen() {
-        for t in [RunPhase::Completed, RunPhase::Cancelled, RunPhase::Failed, RunPhase::BudgetExhausted] {
+        for t in [
+            RunPhase::Completed,
+            RunPhase::Cancelled,
+            RunPhase::Failed,
+            RunPhase::BudgetExhausted,
+        ] {
             let mut s = state_at(t);
             assert!(apply_transition(&mut s, RunPhase::Paused, None).is_err());
             assert!(apply_transition(&mut s, RunPhase::Analyzing, None).is_err());
@@ -228,11 +265,23 @@ mod tests {
     #[test]
     fn verification_attention_gate_edges() {
         // 拦截门:Verifying 可挂起等人工,人工裁决后回 Verifying。
-        assert!(can_transition(RunPhase::Verifying, RunPhase::AwaitingApproval));
-        assert!(can_transition(RunPhase::AwaitingApproval, RunPhase::Verifying));
+        assert!(can_transition(
+            RunPhase::Verifying,
+            RunPhase::AwaitingApproval
+        ));
+        assert!(can_transition(
+            RunPhase::AwaitingApproval,
+            RunPhase::Verifying
+        ));
         // 挂起态不能直达完成/执行(裁决必须回 Verifying 重验)。
-        assert!(!can_transition(RunPhase::AwaitingApproval, RunPhase::Completed));
+        assert!(!can_transition(
+            RunPhase::AwaitingApproval,
+            RunPhase::Completed
+        ));
         // 修复回路入口保留(拒绝放行 → 重验失败 → Executing)。
-        assert!(can_transition(RunPhase::AwaitingApproval, RunPhase::Executing));
+        assert!(can_transition(
+            RunPhase::AwaitingApproval,
+            RunPhase::Executing
+        ));
     }
 }

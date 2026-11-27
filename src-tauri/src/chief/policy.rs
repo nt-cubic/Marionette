@@ -30,7 +30,9 @@ impl Decision {
     pub fn into_value(self) -> Value {
         match self {
             Decision::Grant { .. } => json!({ "ok": true }),
-            Decision::Reject { error, note } => json!({ "ok": false, "error": error, "note": note }),
+            Decision::Reject { error, note } => {
+                json!({ "ok": false, "error": error, "note": note })
+            }
         }
     }
 }
@@ -55,7 +57,10 @@ pub fn validate_task_start(
     if !policy.enabled || policy.remote_mode == RemoteMode::Blocked {
         return Decision::Reject {
             error: "project_blocked",
-            note: format!("项目 {project_id} 当前被禁用（remoteMode={}）。", format!("{:?}", policy.remote_mode).to_lowercase()),
+            note: format!(
+                "项目 {project_id} 当前被禁用（remoteMode={}）。",
+                format!("{:?}", policy.remote_mode).to_lowercase()
+            ),
         };
     }
 
@@ -91,7 +96,9 @@ pub fn validate_task_start(
         };
     }
 
-    let model = requested_model.or(policy.default_model.as_deref()).map(str::to_string);
+    let model = requested_model
+        .or(policy.default_model.as_deref())
+        .map(str::to_string);
 
     Decision::Grant {
         project_id: project_id.to_string(),
@@ -145,13 +152,20 @@ pub fn validate_task_access_for_staff(
             if task.status.is_terminal() {
                 return Err((
                     "task_finished",
-                    format!("任务 {} 已结束（{}），不能再发补充指令。", task.task_id, format!("{:?}", task.status).to_lowercase()),
+                    format!(
+                        "任务 {} 已结束（{}），不能再发补充指令。",
+                        task.task_id,
+                        format!("{:?}", task.status).to_lowercase()
+                    ),
                 ));
             }
             if task.status == TaskStatus::Proposed || task.status == TaskStatus::Starting {
                 return Err((
                     "task_not_running",
-                    format!("任务 {} 还没进入运行态，等启动完成后才能追加指令。", task.task_id),
+                    format!(
+                        "任务 {} 还没进入运行态，等启动完成后才能追加指令。",
+                        task.task_id
+                    ),
                 ));
             }
         }
@@ -162,7 +176,11 @@ pub fn validate_task_access_for_staff(
             if task.status.is_terminal() {
                 return Err((
                     "task_finished",
-                    format!("任务 {} 已是终态（{}），无需取消。", task.task_id, format!("{:?}", task.status).to_lowercase()),
+                    format!(
+                        "任务 {} 已是终态（{}），无需取消。",
+                        task.task_id,
+                        format!("{:?}", task.status).to_lowercase()
+                    ),
                 ));
             }
         }
@@ -211,8 +229,13 @@ mod tests {
 
     #[test]
     fn agent_allowlist_is_enforced() {
-        let config = config_with("project_a", RemoteMode::ApproveWrites, vec!["claude-code".into()]);
-        let decision = validate_task_start(&config, "project_a", Some("codex"), None, &["codex".into()]);
+        let config = config_with(
+            "project_a",
+            RemoteMode::ApproveWrites,
+            vec!["claude-code".into()],
+        );
+        let decision =
+            validate_task_start(&config, "project_a", Some("codex"), None, &["codex".into()]);
         match decision {
             Decision::Reject { error, .. } => assert_eq!(error, "agent_not_allowed"),
             _ => panic!("must reject"),
@@ -222,7 +245,13 @@ mod tests {
     #[test]
     fn unknown_agent_fails_closed() {
         let config = config_with("project_a", RemoteMode::ApproveWrites, vec![]);
-        let decision = validate_task_start(&config, "project_a", Some("ghost-agent"), None, &["codex".into()]);
+        let decision = validate_task_start(
+            &config,
+            "project_a",
+            Some("ghost-agent"),
+            None,
+            &["codex".into()],
+        );
         match decision {
             Decision::Reject { error, .. } => assert_eq!(error, "agent_unavailable"),
             _ => panic!("must reject"),

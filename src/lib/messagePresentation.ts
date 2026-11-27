@@ -11,6 +11,7 @@ export type ReplyMetadata = {
   agentLabel?: string;
   modelId?: string;
   modelLabel?: string;
+  providerLabel?: string;
   modeLabel?: string;
   effortLabel?: string;
   durationMs?: number;
@@ -154,6 +155,7 @@ function buildReplyMetadata(
     agentLabel: lastValue<string>(assistants, "agentLabel"),
     modelId: lastValue<string>(assistants, "modelId"),
     modelLabel: lastValue<string>(assistants, "modelLabel"),
+    providerLabel: lastValue<string>(assistants, "providerLabel"),
     modeLabel: lastValue<string>(assistants, "modeLabel"),
     effortLabel: lastValue<string>(assistants, "effortLabel"),
     ...(durationMs > 0 ? { durationMs } : {}),

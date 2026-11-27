@@ -3,6 +3,11 @@
  * docs/plans/plan-agent-delegation.md 第一期「拆门」。
  */
 export const zh = {
+  "session.subtaskDefaultEffort": "\u9ed8\u8ba4",
+  "session.subtaskOpen": "\u6253\u5f00\u5b50\u4ee3\u7406",
+  "agents.title": "\u5b50\u4ee3\u7406",
+  "agents.fromParent": "\u6765\u81ea {name}",
+  "agents.backToParent": "\u8fd4\u56de\u7236\u5bf9\u8bdd",
   "shelf.agentWorkerOrigin": "AI 派活",
   "session.subtaskAgentChip": "AI 派活",
   "session.subtaskAgentRunning": "已派出，干完会回来汇报",

@@ -69,7 +69,11 @@ fn now_ms() -> u64 {
 }
 
 fn next_entry_id() -> String {
-    format!("m{}-{}", now_ms(), ENTRY_COUNTER.fetch_add(1, Ordering::Relaxed))
+    format!(
+        "m{}-{}",
+        now_ms(),
+        ENTRY_COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 pub fn mark_updated(entry: &mut MemoryEntry) {
@@ -121,10 +125,7 @@ fn load_at(path: &Path) -> MemoryStore {
             Ok(store) => store,
             Err(_) => {
                 // 损坏留档重建（镜像 credentials.rs 的立场），绝不 panic。
-                let backup = path.with_extension(format!(
-                    "json.corrupt-{}",
-                    now_ms()
-                ));
+                let backup = path.with_extension(format!("json.corrupt-{}", now_ms()));
                 let _ = fs::copy(path, &backup);
                 MemoryStore::fresh()
             }
@@ -157,12 +158,19 @@ fn save_at(path: &Path, store: &MemoryStore) -> Result<(), String> {
 }
 
 pub fn load() -> MemoryStore {
-    store_path().map(|p| load_at(&p)).unwrap_or_else(MemoryStore::fresh)
+    store_path()
+        .map(|p| load_at(&p))
+        .unwrap_or_else(MemoryStore::fresh)
 }
 
 pub fn save(store: &MemoryStore) -> Result<(), String> {
     store_path()
-        .ok_or_else(|| crate::ts!("无法定位用户目录（USERPROFILE/HOME 均缺失）", "Could not locate the user directory (neither USERPROFILE nor HOME is set)"))
+        .ok_or_else(|| {
+            crate::ts!(
+                "无法定位用户目录（USERPROFILE/HOME 均缺失）",
+                "Could not locate the user directory (neither USERPROFILE nor HOME is set)"
+            )
+        })
         .and_then(|p| save_at(&p, store))
 }
 
@@ -204,12 +212,19 @@ pub fn compose_card_from(store: &MemoryStore) -> Option<String> {
     for entry in entries {
         let section = format!(
             "\n## {}（来源：{}）\n{}\n",
-            if entry.title.is_empty() { "（无标题）" } else { &entry.title },
+            if entry.title.is_empty() {
+                "（无标题）"
+            } else {
+                &entry.title
+            },
             source_label(&entry.source),
             entry.text.trim()
         );
         if body.len() + section.len() + 24 > 6000 {
-            body.push_str(&crate::ts!("\n（记忆过长，其余条目已截断）\n", "\n(Memory too long; remaining entries truncated)\n"));
+            body.push_str(&crate::ts!(
+                "\n（记忆过长，其余条目已截断）\n",
+                "\n(Memory too long; remaining entries truncated)\n"
+            ));
             break;
         }
         body.push_str(&section);
@@ -262,7 +277,11 @@ fn import_title(title: &str) -> String {
 }
 
 const IMPORT_SPECS: &[ImportSpec] = &[
-    ImportSpec { source: "claude", title: "Claude", rel_paths: &[".claude/CLAUDE.md"] },
+    ImportSpec {
+        source: "claude",
+        title: "Claude",
+        rel_paths: &[".claude/CLAUDE.md"],
+    },
     ImportSpec {
         source: "codex",
         title: "Codex",
@@ -271,7 +290,10 @@ const IMPORT_SPECS: &[ImportSpec] = &[
     ImportSpec {
         source: "codex-mem",
         title: "Codex 记忆",
-        rel_paths: &[".codex/memories/MEMORY.md", ".codex/memories/memory_summary.md"],
+        rel_paths: &[
+            ".codex/memories/MEMORY.md",
+            ".codex/memories/memory_summary.md",
+        ],
     },
     ImportSpec {
         source: "grok",
@@ -370,11 +392,12 @@ fn read_first_content(home: &Path, rels: &[&str]) -> Option<(PathBuf, u64, u64, 
 fn pretty_project_slug(slug: &str) -> String {
     let trimmed = slug.trim_matches('-');
     let bytes = trimmed.as_bytes();
-    let stripped = if bytes.len() >= 3 && bytes[1] == b'-' && bytes[2] == b'-' && bytes[0].is_ascii() {
-        &trimmed[3..]
-    } else {
-        trimmed
-    };
+    let stripped =
+        if bytes.len() >= 3 && bytes[1] == b'-' && bytes[2] == b'-' && bytes[0].is_ascii() {
+            &trimmed[3..]
+        } else {
+            trimmed
+        };
     stripped.trim_matches('-').to_string()
 }
 
@@ -407,7 +430,11 @@ fn scan_claude_auto(home: &Path) -> Vec<ScanHit> {
         };
         hits.push(ScanHit {
             source: "claude-auto",
-            title: crate::ts!("Claude 记忆 · {}", "Claude memory · {}", pretty_project_slug(&slug)),
+            title: crate::ts!(
+                "Claude 记忆 · {}",
+                "Claude memory · {}",
+                pretty_project_slug(&slug)
+            ),
             path: memory_dir.display().to_string(),
             stable_id: format!("import-claude-auto-{slug}"),
             bytes: text.len() as u64,
@@ -466,15 +493,19 @@ fn preview_rows(home: &Path, hits: &[ScanHit]) -> Vec<ImportSource> {
             excerpt: hit.map(|h| excerpt_of(&h.text)).unwrap_or_default(),
         });
         if spec.source == "claude" {
-            out.extend(hits.iter().filter(|h| h.source == "claude-auto").map(|h| ImportSource {
-                source: h.source.to_string(),
-                title: h.title.clone(),
-                path: h.path.clone(),
-                exists: true,
-                bytes: h.bytes,
-                mtime_ms: h.mtime_ms,
-                excerpt: excerpt_of(&h.text),
-            }));
+            out.extend(
+                hits.iter()
+                    .filter(|h| h.source == "claude-auto")
+                    .map(|h| ImportSource {
+                        source: h.source.to_string(),
+                        title: h.title.clone(),
+                        path: h.path.clone(),
+                        exists: true,
+                        bytes: h.bytes,
+                        mtime_ms: h.mtime_ms,
+                        excerpt: excerpt_of(&h.text),
+                    }),
+            );
         }
     }
     out
@@ -520,8 +551,7 @@ fn sync_imports() -> Result<(Vec<String>, Vec<String>, Vec<String>, Vec<ImportSo
         // 稳定 id 优先；旧版曾用随机 id 写入，按 source + origin_path 认回。
         let existing = store.entries.iter_mut().find(|e| {
             e.id == hit.stable_id
-                || (e.source == hit.source
-                    && e.origin_path.as_deref() == Some(hit.path.as_str()))
+                || (e.source == hit.source && e.origin_path.as_deref() == Some(hit.path.as_str()))
         });
         match existing {
             Some(entry) => {
@@ -660,15 +690,25 @@ pub fn distill_with_deepseek(digest: &str) -> Result<String, String> {
         .send_string(&body)
         .map_err(|e| crate::ts!("DeepSeek 请求失败: {e}", "DeepSeek request failed: {e}"))?;
     let status = resp.status();
-    let text = resp
-        .into_string()
-        .map_err(|e| crate::ts!("读取 DeepSeek 应答失败: {e}", "Failed to read the DeepSeek response: {e}"))?;
+    let text = resp.into_string().map_err(|e| {
+        crate::ts!(
+            "读取 DeepSeek 应答失败: {e}",
+            "Failed to read the DeepSeek response: {e}"
+        )
+    })?;
     if !(200..300).contains(&status) {
         let head: String = text.chars().take(200).collect();
-        return Err(crate::ts!("DeepSeek 返回 {status}: {head}", "DeepSeek returned {status}: {head}"));
+        return Err(crate::ts!(
+            "DeepSeek 返回 {status}: {head}",
+            "DeepSeek returned {status}: {head}"
+        ));
     }
-    let body: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| crate::ts!("解析 DeepSeek 应答失败: {e}", "Failed to parse the DeepSeek response: {e}"))?;
+    let body: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        crate::ts!(
+            "解析 DeepSeek 应答失败: {e}",
+            "Failed to parse the DeepSeek response: {e}"
+        )
+    })?;
     let content = body
         .pointer("/choices/0/message/content")
         .and_then(|c| c.as_str())
@@ -676,7 +716,10 @@ pub fn distill_with_deepseek(digest: &str) -> Result<String, String> {
         .trim()
         .to_string();
     if content.is_empty() {
-        return Err(crate::ts!("DeepSeek 返回了空内容", "DeepSeek returned empty content"));
+        return Err(crate::ts!(
+            "DeepSeek 返回了空内容",
+            "DeepSeek returned empty content"
+        ));
     }
     Ok(content)
 }
@@ -695,7 +738,9 @@ mod tests {
     fn card_skips_disabled_and_empty() {
         let mut store = MemoryStore::fresh();
         assert!(compose_card_from(&store).is_none());
-        store.entries.push(new_entry("manual", "偏好", "用中文回复", None, None));
+        store
+            .entries
+            .push(new_entry("manual", "偏好", "用中文回复", None, None));
         assert!(compose_card_from(&store).is_some());
         // 全局开关不再挡注入；只看条目勾选。
         store.enabled = false;
@@ -738,8 +783,12 @@ mod tests {
     fn card_truncates_long_entries() {
         let mut store = MemoryStore::fresh();
         let long = "很".repeat(4000);
-        store.entries.push(new_entry("manual", "长", &long, None, None));
-        store.entries.push(new_entry("manual", "第二条", "短", None, None));
+        store
+            .entries
+            .push(new_entry("manual", "长", &long, None, None));
+        store
+            .entries
+            .push(new_entry("manual", "第二条", "短", None, None));
         let card = compose_card_from(&store).unwrap();
         assert!(card.len() < 6400);
         assert!(card.contains("已截断"));
@@ -749,7 +798,9 @@ mod tests {
     fn save_load_roundtrip_and_corrupt_recovery() {
         let path = temp_path("roundtrip");
         let mut store = MemoryStore::fresh();
-        store.entries.push(new_entry("manual", "t", "hello", None, None));
+        store
+            .entries
+            .push(new_entry("manual", "t", "hello", None, None));
         save_at(&path, &store).unwrap();
         let back = load_at(&path);
         assert_eq!(back.entries.len(), 1);
@@ -827,7 +878,9 @@ mod tests {
         let hits = scan_imports_at(&home);
         let grok = hits.iter().find(|h| h.source == "grok").unwrap();
         assert!(grok.text.contains("真实偏好"));
-        assert!(grok.path.ends_with("memory\\MEMORY.md") || grok.path.ends_with("memory/MEMORY.md"));
+        assert!(
+            grok.path.ends_with("memory\\MEMORY.md") || grok.path.ends_with("memory/MEMORY.md")
+        );
     }
 
     #[test]
@@ -845,7 +898,10 @@ mod tests {
 
     #[test]
     fn pretty_slug_strips_drive_prefix() {
-        assert_eq!(pretty_project_slug("D--Projects-Unity-Jingzhe"), "Projects-Unity-Jingzhe");
+        assert_eq!(
+            pretty_project_slug("D--Projects-Unity-Jingzhe"),
+            "Projects-Unity-Jingzhe"
+        );
         assert_eq!(pretty_project_slug("-C--Users-user-"), "Users-user");
         assert_eq!(pretty_project_slug("项目目录"), "项目目录");
     }

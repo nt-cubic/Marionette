@@ -51,7 +51,9 @@ pub fn parse_chord(chord: &str) -> (Vec<String>, String) {
             "ctrl" | "control" => modifiers.push("ctrl".to_string()),
             "alt" | "option" => modifiers.push("alt".to_string()),
             "shift" => modifiers.push("shift".to_string()),
-            "win" | "windows" | "meta" | "super" | "cmd" | "command" => modifiers.push("win".to_string()),
+            "win" | "windows" | "meta" | "super" | "cmd" | "command" => {
+                modifiers.push("win".to_string())
+            }
             _ => key = lower,
         }
     }
@@ -67,7 +69,10 @@ fn is_function_key(key: &str) -> bool {
 }
 
 fn is_arrow(key: &str) -> bool {
-    matches!(key, "up" | "down" | "left" | "right" | "arrowup" | "arrowdown" | "arrowleft" | "arrowright")
+    matches!(
+        key,
+        "up" | "down" | "left" | "right" | "arrowup" | "arrowdown" | "arrowleft" | "arrowright"
+    )
 }
 
 /// Window-level rule: bare keys go (except F-keys and shift+delete — Windows
@@ -132,7 +137,10 @@ fn never_chord(modifiers: &[String], key: &str) -> bool {
     if has(modifiers, "win") && matches!(key, "l" | "tab") {
         return true;
     }
-    if has(modifiers, "ctrl") && has(modifiers, "alt") && matches!(key, "delete" | "backspace" | "tab") {
+    if has(modifiers, "ctrl")
+        && has(modifiers, "alt")
+        && matches!(key, "delete" | "backspace" | "tab")
+    {
         return true;
     }
     false
@@ -184,7 +192,10 @@ mod tests {
         assert_eq!(classify(Scope::Window, "Control+Shift+a"), Verdict::Denied);
         assert_eq!(classify(Scope::Window, "Control+z"), Verdict::Allowed);
         assert_eq!(classify(Scope::Window, "Control+y"), Verdict::Allowed);
-        assert_eq!(classify(Scope::Window, "Control+ArrowLeft"), Verdict::Allowed);
+        assert_eq!(
+            classify(Scope::Window, "Control+ArrowLeft"),
+            Verdict::Allowed
+        );
         assert_eq!(classify(Scope::Window, "Control+p"), Verdict::Denied);
         assert_eq!(classify(Scope::Window, "Alt+F4"), Verdict::Denied);
     }
@@ -209,7 +220,10 @@ mod tests {
     fn screen_scope_blocks_lock_and_secure_attention_only() {
         assert_eq!(classify(Scope::Screen, "Win+l"), Verdict::Denied);
         assert_eq!(classify(Scope::Screen, "Win+Tab"), Verdict::Denied);
-        assert_eq!(classify(Scope::Screen, "Control+Alt+Delete"), Verdict::Denied);
+        assert_eq!(
+            classify(Scope::Screen, "Control+Alt+Delete"),
+            Verdict::Denied
+        );
         assert_eq!(classify(Scope::Screen, "Control+p"), Verdict::Allowed);
         assert_eq!(classify(Scope::Screen, "Alt+Tab"), Verdict::Allowed);
     }

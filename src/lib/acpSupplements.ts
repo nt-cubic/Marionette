@@ -351,6 +351,58 @@ export function modelAssertForEffortRefresh(
   return null;
 }
 
+/**
+ * A saved effort id outlives the model it was picked for: "max" comes from grok
+ * or a codex model, then the user switches to an opencode / pi model whose live
+ * `thought`/`effort` menu stops at `high`. Pushing "max" gets
+ * `-32602 effort not found: max`, the whole pre-prompt sync fails, and the chip
+ * keeps advertising a level the agent never applied (2026-11-27 doctor line).
+ *
+ * Clamp to the advertised menu: exact id, then case-insensitive, then the same
+ * rung on a known scale (max/high/medium/low), then whatever the agent already
+ * reports, then the first option. An EMPTY menu means the agent advertised no
+ * levels at all (Claude / Codex / menu-less bridge models) - the value is sent
+ * verbatim there, because those harnesses validate it themselves.
+ */
+export function clampEffortIdToLiveMenu(
+  effortId: string,
+  caps: Pick<CapabilitySnapshot, "effortOptions" | "currentEffortId"> | null,
+): string {
+  const options = caps?.effortOptions ?? [];
+  if (options.length === 0) return effortId;
+  const wanted = effortId.trim();
+  const exact = options.find((option) => option.id === wanted);
+  if (exact) return exact.id;
+  const lower = wanted.toLowerCase();
+  const ci = options.find((option) => option.id.trim().toLowerCase() === lower);
+  if (ci) return ci.id;
+
+  const scale = ["none", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
+  const target = scale.indexOf(lower);
+  if (target >= 0) {
+    let best: { id: string; distance: number } | null = null;
+    for (const option of options) {
+      const rank = scale.indexOf(option.id.trim().toLowerCase());
+      if (rank < 0) continue;
+      const distance = Math.abs(rank - target);
+      // Ties go to the stronger level, which is what a user asking for a
+      // top tier means when the exact rung is missing.
+      if (!best || distance < best.distance) best = { id: option.id, distance };
+      else if (distance === best.distance && rank > scale.indexOf(best.id.trim().toLowerCase())) {
+        best = { id: option.id, distance };
+      }
+    }
+    if (best) return best.id;
+  }
+
+  const current = caps?.currentEffortId?.trim();
+  if (current) {
+    const held = options.find((option) => option.id === current);
+    if (held) return held.id;
+  }
+  return options[0]?.id ?? effortId;
+}
+
 /** Expand a UI patch into one or more ACP set_config payloads to try. */
 export function expandAcpConfigAttempts(
   agentId: string,
@@ -413,7 +465,10 @@ export function expandAcpConfigAttempts(
   // Preferred path: explicit string effort id (Claude)
   // Only attempt when the live session actually advertised an effort config.
   if (typeof patch.effortId === "string" && caps?.effortConfigId) {
-    attempts.push({ configId: caps.effortConfigId, value: patch.effortId });
+    attempts.push({
+      configId: caps.effortConfigId,
+      value: clampEffortIdToLiveMenu(patch.effortId, caps),
+    });
   } else if (typeof patch.thinkingEffort === "number" && caps?.effortConfigId) {
     const n = patch.thinkingEffort;
     const effortOptions = caps.effortOptions ?? [];

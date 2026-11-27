@@ -76,7 +76,13 @@ const MAX_HEAD: usize = 64 * 1024;
 /// SHA-1 摘要。测试向量：FIPS/RFC 3174 的 "" / "abc" / fox 句子 + RFC 6455
 /// 的 GUID 拼接（见 tests）。
 pub(crate) fn sha1(data: &[u8]) -> [u8; 20] {
-    let mut h: [u32; 5] = [0x6745_2301, 0xEFCD_AB89, 0x98BA_DCFE, 0x1032_5476, 0xC3D2_E1F0];
+    let mut h: [u32; 5] = [
+        0x6745_2301,
+        0xEFCD_AB89,
+        0x98BA_DCFE,
+        0x1032_5476,
+        0xC3D2_E1F0,
+    ];
     // 填充：0x80 + 0…0 + 8 字节大端位长，到 64 字节对齐的 56 偏移。
     let bit_len = (data.len() as u64) * 8;
     let mut msg = data.to_vec();
@@ -145,7 +151,12 @@ fn entropy(n: usize) -> Vec<u8> {
     while out.len() < n {
         let mut h = std::collections::hash_map::RandomState::new().build_hasher();
         h.write_u64(counter);
-        h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+        h.write_u128(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        );
         h.write_u64(started.elapsed().as_nanos() as u64);
         h.write_usize(&counter as *const u64 as usize);
         counter = counter.wrapping_add(1);
@@ -241,7 +252,9 @@ pub(crate) fn read_message<S: Read + Write>(stream: &mut S) -> Result<Incoming, 
             return Err("ws protocol: server frame must not be masked".into());
         }
         let mut payload = vec![0u8; len as usize];
-        stream.read_exact(&mut payload).map_err(|e| format!("ws read: {e}"))?;
+        stream
+            .read_exact(&mut payload)
+            .map_err(|e| format!("ws read: {e}"))?;
         match opcode {
             OP_PING => {
                 // §5.5.2：控制帧 FIN=1 且 ≤125 字节；回 pong 带同载荷。
@@ -250,7 +263,9 @@ pub(crate) fn read_message<S: Read + Write>(stream: &mut S) -> Result<Incoming, 
                 }
                 let mask: [u8; 4] = entropy(4).try_into().unwrap();
                 let pong = encode_client_frame(OP_PONG, &payload, mask);
-                stream.write_all(&pong).map_err(|e| format!("ws pong: {e}"))?;
+                stream
+                    .write_all(&pong)
+                    .map_err(|e| format!("ws pong: {e}"))?;
                 continue;
             }
             OP_PONG => continue,
@@ -269,7 +284,11 @@ pub(crate) fn read_message<S: Read + Write>(stream: &mut S) -> Result<Incoming, 
                 if !fin {
                     return Err("ws protocol: fragmented frame not supported".into());
                 }
-                return Ok(if opcode == OP_TEXT { Incoming::Text(payload) } else { Incoming::Binary(payload) });
+                return Ok(if opcode == OP_TEXT {
+                    Incoming::Text(payload)
+                } else {
+                    Incoming::Binary(payload)
+                });
             }
             OP_CONTINUATION => {
                 return Err("ws protocol: continuation frame without a start".into());
@@ -311,14 +330,20 @@ pub(crate) fn handshake_over<S: Read + Write>(
         req.push_str(&format!("{k}: {v}\r\n"));
     }
     req.push_str("\r\n");
-    stream.write_all(req.as_bytes()).map_err(|e| format!("ws handshake write: {e}"))?;
-    stream.flush().map_err(|e| format!("ws handshake write: {e}"))?;
+    stream
+        .write_all(req.as_bytes())
+        .map_err(|e| format!("ws handshake write: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("ws handshake write: {e}"))?;
 
     // 头读到 \r\n\r\n 为止（上限 MAX_HEAD）。
     let mut head: Vec<u8> = Vec::new();
     let mut byte = [0u8; 1];
     loop {
-        let n = stream.read(&mut byte).map_err(|e| format!("ws handshake read: {e}"))?;
+        let n = stream
+            .read(&mut byte)
+            .map_err(|e| format!("ws handshake read: {e}"))?;
         if n == 0 {
             return Err("ws handshake: connection closed before 101".into());
         }
@@ -378,7 +403,9 @@ impl WsConn {
     pub(crate) fn send_text(&mut self, payload: &[u8]) -> Result<(), String> {
         let mask: [u8; 4] = entropy(4).try_into().unwrap();
         let frame = encode_client_frame(OP_TEXT, payload, mask);
-        self.stream.write_all(&frame).map_err(|e| format!("ws write: {e}"))?;
+        self.stream
+            .write_all(&frame)
+            .map_err(|e| format!("ws write: {e}"))?;
         self.stream.flush().map_err(|e| format!("ws write: {e}"))
     }
 
@@ -404,7 +431,9 @@ struct Target {
 }
 
 fn parse_ws_url(url: &str) -> Result<Target, String> {
-    let (scheme, rest) = url.split_once("://").ok_or_else(|| format!("ws url: no scheme in {url}"))?;
+    let (scheme, rest) = url
+        .split_once("://")
+        .ok_or_else(|| format!("ws url: no scheme in {url}"))?;
     let secure = match scheme.to_ascii_lowercase().as_str() {
         "wss" => true,
         "ws" => false,
@@ -419,13 +448,21 @@ fn parse_ws_url(url: &str) -> Result<Target, String> {
     }
     // IPv6 字面量 [::1]:port；我们的 URL 不带 userinfo。
     let (host, port) = if let Some(authority) = authority.strip_prefix('[') {
-        let (h, r) = authority.split_once(']').ok_or_else(|| format!("ws url: unterminated IPv6 in {url}"))?;
-        let port = r.strip_prefix(':').map(|p| p.parse::<u16>()).transpose().map_err(|_| format!("ws url: bad port in {url}"))?;
+        let (h, r) = authority
+            .split_once(']')
+            .ok_or_else(|| format!("ws url: unterminated IPv6 in {url}"))?;
+        let port = r
+            .strip_prefix(':')
+            .map(|p| p.parse::<u16>())
+            .transpose()
+            .map_err(|_| format!("ws url: bad port in {url}"))?;
         (h.to_string(), port)
     } else {
         match authority.rsplit_once(':') {
             Some((h, p)) if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => {
-                let port = p.parse::<u16>().map_err(|_| format!("ws url: bad port in {url}"))?;
+                let port = p
+                    .parse::<u16>()
+                    .map_err(|_| format!("ws url: bad port in {url}"))?;
                 (h.to_string(), Some(port))
             }
             // 带了冒号却不是数字端口 = 坏 URL（不静默当 host 名）。
@@ -434,12 +471,20 @@ fn parse_ws_url(url: &str) -> Result<Target, String> {
         }
     };
     let port = port.unwrap_or(if secure { 443 } else { 80 });
-    Ok(Target { secure, host, port, path })
+    Ok(Target {
+        secure,
+        host,
+        port,
+        path,
+    })
 }
 
 fn tcp_connect(host: &str, port: u16, timeout: Duration) -> io::Result<TcpStream> {
     let addrs: Vec<SocketAddr> = (host, port).to_socket_addrs()?.collect();
-    let mut last = io::Error::new(io::ErrorKind::AddrNotAvailable, format!("{host}:{port}: no address resolved"));
+    let mut last = io::Error::new(
+        io::ErrorKind::AddrNotAvailable,
+        format!("{host}:{port}: no address resolved"),
+    );
     for addr in addrs {
         match TcpStream::connect_timeout(&addr, timeout) {
             Ok(s) => {
@@ -462,11 +507,17 @@ enum ProxyScheme {
 /// 代理地址 → (协议, 主机, 端口, userinfo)。端口缺省：http 80 / socks5 1080。
 /// scheme 大小写不敏感；`socks5h` / `socks` 是 `socks5` 的同义写法。
 fn parse_proxy_url(proxy_url: &str) -> Result<(ProxyScheme, String, u16, Option<&str>), String> {
-    let (scheme, rest) = proxy_url.split_once("://").ok_or_else(|| format!("proxy url: no scheme in {proxy_url}"))?;
+    let (scheme, rest) = proxy_url
+        .split_once("://")
+        .ok_or_else(|| format!("proxy url: no scheme in {proxy_url}"))?;
     let scheme = match scheme.to_ascii_lowercase().as_str() {
         "http" => ProxyScheme::Http,
         "socks" | "socks5" | "socks5h" => ProxyScheme::Socks5,
-        other => return Err(format!("ws proxy: {other} proxy is not supported (http or socks5)")),
+        other => {
+            return Err(format!(
+                "ws proxy: {other} proxy is not supported (http or socks5)"
+            ))
+        }
     };
     let authority = match rest.find('/') {
         Some(i) => &rest[..i],
@@ -477,11 +528,17 @@ fn parse_proxy_url(proxy_url: &str) -> Result<(ProxyScheme, String, u16, Option<
         Some((u, h)) => (Some(u), h),
         None => (None, authority),
     };
-    let default_port = if scheme == ProxyScheme::Socks5 { 1080 } else { 80 };
+    let default_port = if scheme == ProxyScheme::Socks5 {
+        1080
+    } else {
+        80
+    };
     let bad_port = || format!("proxy url: bad port in {proxy_url}");
     let (host, port) = if let Some(bracketed) = hostport.strip_prefix('[') {
         // IPv6 字面量：[::1] 或 [::1]:port。
-        let (h, tail) = bracketed.split_once(']').ok_or_else(|| format!("proxy url: unterminated IPv6 in {proxy_url}"))?;
+        let (h, tail) = bracketed
+            .split_once(']')
+            .ok_or_else(|| format!("proxy url: unterminated IPv6 in {proxy_url}"))?;
         let port = match tail.strip_prefix(':') {
             Some(p) => p.parse::<u16>().map_err(|_| bad_port())?,
             None => default_port,
@@ -507,21 +564,36 @@ fn parse_proxy_url(proxy_url: &str) -> Result<(ProxyScheme, String, u16, Option<
 ///   先走 RFC 1929 用户名/密码。目标**域名原样交给代理解析**（ureq 的
 ///   socks5 就是这个语义，`socks5h` 在这里只是同义写法）；
 /// - 其余（socks4、https 代理）不支持：如实报错，调用方回退 HTTP 路径。
-fn connect_via_proxy(proxy_url: &str, host: &str, port: u16, timeout: Duration) -> Result<TcpStream, String> {
+fn connect_via_proxy(
+    proxy_url: &str,
+    host: &str,
+    port: u16,
+    timeout: Duration,
+) -> Result<TcpStream, String> {
     let (scheme, phost, pport, userinfo) = parse_proxy_url(proxy_url)?;
-    let mut stream = tcp_connect(&phost, pport, timeout).map_err(|e| format!("proxy connect: {e}"))?;
-    stream.set_read_timeout(Some(timeout)).map_err(|e| format!("proxy: {e}"))?;
+    let mut stream =
+        tcp_connect(&phost, pport, timeout).map_err(|e| format!("proxy connect: {e}"))?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|e| format!("proxy: {e}"))?;
     match scheme {
         ProxyScheme::Socks5 => socks5_connect(&mut stream, host, port, userinfo)?,
         ProxyScheme::Http => http_connect(&mut stream, host, port, userinfo)?,
     }
-    stream.set_read_timeout(None).map_err(|e| format!("proxy: {e}"))?;
+    stream
+        .set_read_timeout(None)
+        .map_err(|e| format!("proxy: {e}"))?;
     Ok(stream)
 }
 
 /// HTTP CONNECT 隧道：写 CONNECT、读到应答头，任何 2xx 都算隧道建立
 /// （RFC 7231 CONNECT 的成功类）。
-fn http_connect(stream: &mut TcpStream, host: &str, port: u16, userinfo: Option<&str>) -> Result<(), String> {
+fn http_connect(
+    stream: &mut TcpStream,
+    host: &str,
+    port: u16,
+    userinfo: Option<&str>,
+) -> Result<(), String> {
     let target = format!("{host}:{port}");
     let mut req = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
     if let Some(user) = userinfo {
@@ -529,11 +601,15 @@ fn http_connect(stream: &mut TcpStream, host: &str, port: u16, userinfo: Option<
         req.push_str(&format!("Proxy-Authorization: Basic {cred}\r\n"));
     }
     req.push_str("\r\n");
-    stream.write_all(req.as_bytes()).map_err(|e| format!("proxy write: {e}"))?;
+    stream
+        .write_all(req.as_bytes())
+        .map_err(|e| format!("proxy write: {e}"))?;
     let mut head: Vec<u8> = Vec::new();
     let mut byte = [0u8; 1];
     loop {
-        let n = stream.read(&mut byte).map_err(|e| format!("proxy read: {e}"))?;
+        let n = stream
+            .read(&mut byte)
+            .map_err(|e| format!("proxy read: {e}"))?;
         if n == 0 {
             return Err("proxy: connection closed before CONNECT answer".into());
         }
@@ -556,7 +632,12 @@ fn http_connect(stream: &mut TcpStream, host: &str, port: u16, userinfo: Option<
 /// SOCKS5 握手（RFC 1928；userinfo 时加 RFC 1929 用户名/密码）。成功后
 /// `stream` 就是通向 `host:port` 的裸隧道。域名走 ATYP=DOMAIN 交给代理解析，
 /// IP 字面量按 v4/v6 原样发。stdlib 手写——本模块不加 crate。
-fn socks5_connect(stream: &mut TcpStream, host: &str, port: u16, userinfo: Option<&str>) -> Result<(), String> {
+fn socks5_connect(
+    stream: &mut TcpStream,
+    host: &str,
+    port: u16,
+    userinfo: Option<&str>,
+) -> Result<(), String> {
     let creds = userinfo.map(str::trim).filter(|c| !c.is_empty());
     let (user, pass) = match creds {
         Some(c) => {
@@ -569,11 +650,20 @@ fn socks5_connect(stream: &mut TcpStream, host: &str, port: u16, userinfo: Optio
         None => (&[][..], &[][..]),
     };
     // 1) 方法协商：有凭据才提供用户名/密码（0x02），无凭据只报「无认证」（0x00）。
-    let greeting: &[u8] = if creds.is_some() { &[0x05, 0x02, 0x00, 0x02] } else { &[0x05, 0x01, 0x00] };
-    stream.write_all(greeting).map_err(|e| format!("socks5 proxy write: {e}"))?;
+    let greeting: &[u8] = if creds.is_some() {
+        &[0x05, 0x02, 0x00, 0x02]
+    } else {
+        &[0x05, 0x01, 0x00]
+    };
+    stream
+        .write_all(greeting)
+        .map_err(|e| format!("socks5 proxy write: {e}"))?;
     let chosen = read_exact_vec(stream, 2).map_err(|e| format!("socks5 proxy read: {e}"))?;
     if chosen[0] != 0x05 {
-        return Err(format!("socks5 proxy: not a SOCKS5 reply (version {})", chosen[0]));
+        return Err(format!(
+            "socks5 proxy: not a SOCKS5 reply (version {})",
+            chosen[0]
+        ));
     }
     match chosen[1] {
         0x00 => {}
@@ -582,14 +672,21 @@ fn socks5_connect(stream: &mut TcpStream, host: &str, port: u16, userinfo: Optio
             auth.extend_from_slice(user);
             auth.push(pass.len() as u8);
             auth.extend_from_slice(pass);
-            stream.write_all(&auth).map_err(|e| format!("socks5 proxy write: {e}"))?;
-            let verdict = read_exact_vec(stream, 2).map_err(|e| format!("socks5 proxy read: {e}"))?;
+            stream
+                .write_all(&auth)
+                .map_err(|e| format!("socks5 proxy write: {e}"))?;
+            let verdict =
+                read_exact_vec(stream, 2).map_err(|e| format!("socks5 proxy read: {e}"))?;
             if verdict[0] != 0x01 || verdict[1] != 0x00 {
                 return Err("socks5 proxy: username/password rejected".into());
             }
         }
         0xFF => return Err("socks5 proxy: no acceptable authentication method".into()),
-        other => return Err(format!("socks5 proxy: unsupported authentication method {other}")),
+        other => {
+            return Err(format!(
+                "socks5 proxy: unsupported authentication method {other}"
+            ))
+        }
     }
     // 2) CONNECT：CMD=1，地址按字面量类型选 ATYP。
     let mut req = vec![0x05, 0x01, 0x00];
@@ -602,17 +699,24 @@ fn socks5_connect(stream: &mut TcpStream, host: &str, port: u16, userinfo: Optio
     } else {
         let bytes = host.as_bytes();
         if bytes.is_empty() || bytes.len() > 255 {
-            return Err(format!("socks5 proxy: host {host} is not a sendable domain name"));
+            return Err(format!(
+                "socks5 proxy: host {host} is not a sendable domain name"
+            ));
         }
         req.push(0x03);
         req.push(bytes.len() as u8);
         req.extend_from_slice(bytes);
     }
     req.extend_from_slice(&port.to_be_bytes());
-    stream.write_all(&req).map_err(|e| format!("socks5 proxy write: {e}"))?;
+    stream
+        .write_all(&req)
+        .map_err(|e| format!("socks5 proxy write: {e}"))?;
     let head = read_exact_vec(stream, 4).map_err(|e| format!("socks5 proxy read: {e}"))?;
     if head[0] != 0x05 {
-        return Err(format!("socks5 proxy: not a SOCKS5 reply (version {})", head[0]));
+        return Err(format!(
+            "socks5 proxy: not a SOCKS5 reply (version {})",
+            head[0]
+        ));
     }
     // REP 码 → 人话（RFC 1928 §6）。
     let refusal = match head[1] {
@@ -634,7 +738,9 @@ fn socks5_connect(stream: &mut TcpStream, host: &str, port: u16, userinfo: Optio
     let skip = match head[3] {
         0x01 => 4,
         0x04 => 16,
-        0x03 => usize::from(read_exact_vec(stream, 1).map_err(|e| format!("socks5 proxy read: {e}"))?[0]),
+        0x03 => usize::from(
+            read_exact_vec(stream, 1).map_err(|e| format!("socks5 proxy read: {e}"))?[0],
+        ),
         other => return Err(format!("socks5 proxy: bad bound address type {other}")),
     };
     read_exact_vec(stream, skip + 2).map_err(|e| format!("socks5 proxy read: {e}"))?;
@@ -693,16 +799,22 @@ pub(crate) fn dial(
     let host_port = format!("{}:{}", t.host, t.port);
     let stream = match super::outbound_proxy() {
         Some(p) if !p.trim().is_empty() => connect_via_proxy(&p, &t.host, t.port, connect_timeout)?,
-        _ => tcp_connect(&t.host, t.port, connect_timeout).map_err(|e| format!("ws connect {host_port}: {e}"))?,
+        _ => tcp_connect(&t.host, t.port, connect_timeout)
+            .map_err(|e| format!("ws connect {host_port}: {e}"))?,
     };
     // 握手阶段限时（Go codexSocketDial :69 的 30s 同义）；完成后撤读超时
     // ——长回合帧间隔可以分钟级（HTTP 路径同款不设限）。
-    stream.set_read_timeout(Some(handshake_timeout)).map_err(|e| format!("ws: {e}"))?;
+    stream
+        .set_read_timeout(Some(handshake_timeout))
+        .map_err(|e| format!("ws: {e}"))?;
     let wire = if t.secure {
         // ureq 的 native-tls 转出口（mod.rs outbound_agent 2026-11-18 真机
         // 实锤的同款连接器；schannel 走系统根证书）。
-        let connector = ureq::native_tls::TlsConnector::new().map_err(|e| format!("ws tls: {e}"))?;
-        let tls = connector.connect(&t.host, stream).map_err(|e| format!("ws tls {}: {e}", t.host))?;
+        let connector =
+            ureq::native_tls::TlsConnector::new().map_err(|e| format!("ws tls: {e}"))?;
+        let tls = connector
+            .connect(&t.host, stream)
+            .map_err(|e| format!("ws tls {}: {e}", t.host))?;
         Wire::Tls(tls)
     } else {
         Wire::Plain(stream)
@@ -733,14 +845,19 @@ mod tests {
     fn sha1_public_vectors() {
         // FIPS 180-1 / RFC 3174 附录的三个经典向量。
         assert_eq!(hex(&sha1(b"")), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
-        assert_eq!(hex(&sha1(b"abc")), "a9993e364706816aba3e25717850c26c9cd0d89d");
+        assert_eq!(
+            hex(&sha1(b"abc")),
+            "a9993e364706816aba3e25717850c26c9cd0d89d"
+        );
         assert_eq!(
             hex(&sha1(b"The quick brown fox jumps over the lazy dog")),
             "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12"
         );
         // >64 字节（两个压缩块）与恰好 55/56/64 字节边界的填充路径。
         assert_eq!(
-            hex(&sha1(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")),
+            hex(&sha1(
+                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+            )),
             "84983e441c3bd26ebaae4aa1f95129e5e54670f1"
         );
         let fifty_five = vec![b'a'; 55];
@@ -752,7 +869,10 @@ mod tests {
     #[test]
     fn accept_for_rfc6455_sample() {
         // RFC 6455 §1.3 的握手样例：这个 Key 应得这个 Accept。
-        assert_eq!(accept_for("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+        assert_eq!(
+            accept_for("dGhlIHNhbXBsZSBub25jZQ=="),
+            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+        );
     }
 
     /// RFC 6455 §5.7「a single-frame masked text message」向量。
@@ -805,7 +925,13 @@ mod tests {
 
         /// 保留写侧句柄（send_text 的出站字节断言用）。
         fn with_sink(sent: std::sync::Arc<std::sync::Mutex<Vec<u8>>>, response: Vec<u8>) -> Duplex {
-            Duplex { sent, served: response, cursor: 0, respond: None, response: None }
+            Duplex {
+                sent,
+                served: response,
+                cursor: 0,
+                respond: None,
+                response: None,
+            }
         }
 
         fn sent_string(&self) -> String {
@@ -867,10 +993,18 @@ mod tests {
         let headers = vec![
             ("Authorization".to_string(), "Bearer tok".to_string()),
             ("originator".to_string(), "codex_cli_rs".to_string()),
-            ("OpenAI-Beta".to_string(), "responses_websockets=2026-02-06".to_string()),
+            (
+                "OpenAI-Beta".to_string(),
+                "responses_websockets=2026-02-06".to_string(),
+            ),
         ];
-        handshake_over(&mut dup, "chatgpt.com", "/backend-api/codex/responses", &headers)
-            .expect("handshake ok");
+        handshake_over(
+            &mut dup,
+            "chatgpt.com",
+            "/backend-api/codex/responses",
+            &headers,
+        )
+        .expect("handshake ok");
         let sent = dup.sent_string();
         // 请求行的形状。
         assert!(sent.starts_with("GET /backend-api/codex/responses HTTP/1.1\r\n"));
@@ -904,7 +1038,8 @@ mod tests {
 
         // Accept 不对（不是这个 Key 的 SHA1）。
         let mut dup = Duplex::with(
-            b"HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: bogusbogusbogus=\r\n\r\n".to_vec(),
+            b"HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: bogusbogusbogus=\r\n\r\n"
+                .to_vec(),
         );
         let err = handshake_over(&mut dup, "h", "/x", &[]).unwrap_err();
         assert!(err.contains("Accept mismatch"), "{err}");
@@ -977,7 +1112,11 @@ mod tests {
         assert_eq!(bytes[0], 0x81);
         assert_eq!(bytes[1], 0x80 | 8);
         let mask: [u8; 4] = bytes[2..6].try_into().unwrap();
-        let decoded: Vec<u8> = bytes[6..].iter().enumerate().map(|(i, b)| b ^ mask[i & 3]).collect();
+        let decoded: Vec<u8> = bytes[6..]
+            .iter()
+            .enumerate()
+            .map(|(i, b)| b ^ mask[i & 3])
+            .collect();
         assert_eq!(decoded, b"payload!");
     }
 
@@ -990,14 +1129,23 @@ mod tests {
         assert_eq!(bytes[0], 0x88); // FIN|CLOSE
         assert_eq!(bytes[1], 0x80 | 2); // masked, len 2
         let mask: [u8; 4] = bytes[2..6].try_into().unwrap();
-        let decoded: Vec<u8> = bytes[6..].iter().enumerate().map(|(i, b)| b ^ mask[i & 3]).collect();
+        let decoded: Vec<u8> = bytes[6..]
+            .iter()
+            .enumerate()
+            .map(|(i, b)| b ^ mask[i & 3])
+            .collect();
         assert_eq!(decoded, 1000u16.to_be_bytes().to_vec());
     }
 
     #[test]
     fn url_parsing() {
         let t = parse_ws_url("wss://chatgpt.com/backend-api/codex/responses").unwrap();
-        assert!(t.secure && t.host == "chatgpt.com" && t.port == 443 && t.path == "/backend-api/codex/responses");
+        assert!(
+            t.secure
+                && t.host == "chatgpt.com"
+                && t.port == 443
+                && t.path == "/backend-api/codex/responses"
+        );
         let t = parse_ws_url("ws://127.0.0.1:9/codex/responses").unwrap();
         assert!(!t.secure && t.host == "127.0.0.1" && t.port == 9 && t.path == "/codex/responses");
         let t = parse_ws_url("wss://example.test").unwrap();
@@ -1100,7 +1248,11 @@ mod tests {
                     }
                     if op == OP_TEXT {
                         seen_c.lock().unwrap().push(payload.clone());
-                        let reply = if payload == b"turn-1" { b"reply-1" } else { b"reply-2" };
+                        let reply = if payload == b"turn-1" {
+                            b"reply-1"
+                        } else {
+                            b"reply-2"
+                        };
                         let _ = stream.write_all(&encode_server_frame(OP_TEXT, reply));
                         let _ = stream.flush();
                     }
@@ -1109,7 +1261,8 @@ mod tests {
         });
 
         let url = format!("ws://127.0.0.1:{port}/keep");
-        let mut conn = dial(&url, &[], Duration::from_secs(5), Duration::from_secs(5)).expect("dial");
+        let mut conn =
+            dial(&url, &[], Duration::from_secs(5), Duration::from_secs(5)).expect("dial");
         // 第一回合。
         conn.send_text(b"turn-1").expect("send 1");
         assert!(matches!(conn.read_message(), Ok(Incoming::Text(ref t)) if t == b"reply-1"));
@@ -1118,8 +1271,15 @@ mod tests {
         assert!(matches!(conn.read_message(), Ok(Incoming::Text(ref t)) if t == b"reply-2"));
         conn.close_normally();
 
-        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 1, "one connection, one handshake");
-        assert_eq!(*seen.lock().unwrap(), vec![b"turn-1".to_vec(), b"turn-2".to_vec()]);
+        assert_eq!(
+            accepted.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "one connection, one handshake"
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![b"turn-1".to_vec(), b"turn-2".to_vec()]
+        );
     }
 
     /// 对端 close 后连接必须「可判死」：读到 close 帧（含 1009），再读写都
@@ -1149,15 +1309,22 @@ mod tests {
         });
 
         let url = format!("ws://127.0.0.1:{port}/keep");
-        let mut conn = dial(&url, &[], Duration::from_secs(5), Duration::from_secs(5)).expect("dial");
+        let mut conn =
+            dial(&url, &[], Duration::from_secs(5), Duration::from_secs(5)).expect("dial");
         conn.send_text(b"turn-1").expect("send");
         assert!(matches!(conn.read_message(), Ok(Incoming::Text(ref t)) if t == b"reply"));
         // close 帧带 1009 上来。
-        assert!(matches!(conn.read_message(), Ok(Incoming::Close(Some(1009)))));
+        assert!(matches!(
+            conn.read_message(),
+            Ok(Incoming::Close(Some(1009)))
+        ));
         // 此后连接已死：写可能进 OS 缓冲（也可能直接失败），读必然失败——
         // 池的复用方以此判定回收，绝不能把死连接当可用。
         let _ = conn.send_text(b"again");
-        assert!(conn.read_message().is_err(), "read on a peer-closed connection must fail");
+        assert!(
+            conn.read_message().is_err(),
+            "read on a peer-closed connection must fail"
+        );
     }
 
     // ── 代理隧道（connect_via_proxy）──────────────────────────────────────
@@ -1166,7 +1333,11 @@ mod tests {
     /// CONNECT，按 `reply` 回应。把收到的 CONNECT 请求与凭据子协商字节交回
     /// 调用方判定；`reply == 0` 时在同一连接上写一个标记字节——证明客户端
     /// 拿到的是通向「目标」的那条流。
-    fn serve_socks5(stream: &mut TcpStream, require_password: bool, reply: u8) -> (Vec<u8>, Vec<u8>) {
+    fn serve_socks5(
+        stream: &mut TcpStream,
+        require_password: bool,
+        reply: u8,
+    ) -> (Vec<u8>, Vec<u8>) {
         let methods = read_exact_vec(stream, 2).unwrap();
         let methods = read_exact_vec(stream, methods[1] as usize).unwrap();
         let mut creds = Vec::new();
@@ -1202,7 +1373,9 @@ mod tests {
         };
         request.extend(read_exact_vec(stream, alen + 2).unwrap());
         // BND.ADDR = 127.0.0.1:80（IPv4 形态），客户端必须按 ATYP 跳过。
-        stream.write_all(&[0x05, reply, 0x00, 0x01, 127, 0, 0, 1, 0, 80]).unwrap();
+        stream
+            .write_all(&[0x05, reply, 0x00, 0x01, 127, 0, 0, 1, 0, 80])
+            .unwrap();
         if reply == 0 {
             stream.write_all(b"T").unwrap();
             // 客户端读完标记前别让连接被回收。
@@ -1228,16 +1401,30 @@ mod tests {
                 let (mut stream, _) = listener.accept().unwrap();
                 tx.send(serve_socks5(&mut stream, false, 0x00)).unwrap();
             });
-            let mut stream =
-                connect_via_proxy(&format!("{scheme}://127.0.0.1:{port}"), "chatgpt.com", 443, Duration::from_secs(5))
-                    .unwrap_or_else(|e| panic!("{scheme}: {e}"));
+            let mut stream = connect_via_proxy(
+                &format!("{scheme}://127.0.0.1:{port}"),
+                "chatgpt.com",
+                443,
+                Duration::from_secs(5),
+            )
+            .unwrap_or_else(|e| panic!("{scheme}: {e}"));
             // 握手后的读超时已撤（长回合帧间隔可以是分钟级）。
-            assert_eq!(stream.read_timeout().unwrap(), None, "{scheme}: tunnel read timeout must be cleared");
+            assert_eq!(
+                stream.read_timeout().unwrap(),
+                None,
+                "{scheme}: tunnel read timeout must be cleared"
+            );
             let mut marker = [0u8; 1];
-            stream.read_exact(&mut marker).expect("marker through the tunnel");
+            stream
+                .read_exact(&mut marker)
+                .expect("marker through the tunnel");
             assert_eq!(&marker, b"T", "{scheme}");
             // 域名原样发出（ATYP=DOMAIN，由代理解析 DNS）——不是本机解析后的 IP。
-            assert_eq!(rx.recv().unwrap().0, connect_request("chatgpt.com", 443), "{scheme}");
+            assert_eq!(
+                rx.recv().unwrap().0,
+                connect_request("chatgpt.com", 443),
+                "{scheme}"
+            );
         }
     }
 
@@ -1254,13 +1441,30 @@ mod tests {
             }
         });
         let timeout = Duration::from_secs(5);
-        connect_via_proxy(&format!("socks5://127.0.0.1:{port}"), "1.2.3.4", 8443, timeout).unwrap();
+        connect_via_proxy(
+            &format!("socks5://127.0.0.1:{port}"),
+            "1.2.3.4",
+            8443,
+            timeout,
+        )
+        .unwrap();
         let mut expected = vec![0x05, 0x01, 0x00, 0x01, 1, 2, 3, 4];
         expected.extend_from_slice(&8443u16.to_be_bytes());
         assert_eq!(rx.recv().unwrap(), expected, "ATYP=IPv4");
-        connect_via_proxy(&format!("socks5://127.0.0.1:{port}"), "2001:db8::1", 443, timeout).unwrap();
+        connect_via_proxy(
+            &format!("socks5://127.0.0.1:{port}"),
+            "2001:db8::1",
+            443,
+            timeout,
+        )
+        .unwrap();
         let mut expected = vec![0x05, 0x01, 0x00, 0x04];
-        expected.extend_from_slice(&"2001:db8::1".parse::<std::net::Ipv6Addr>().unwrap().octets());
+        expected.extend_from_slice(
+            &"2001:db8::1"
+                .parse::<std::net::Ipv6Addr>()
+                .unwrap()
+                .octets(),
+        );
         expected.extend_from_slice(&443u16.to_be_bytes());
         assert_eq!(rx.recv().unwrap(), expected, "ATYP=IPv6");
     }
@@ -1269,17 +1473,50 @@ mod tests {
     /// 大小写与路径尾巴。
     #[test]
     fn proxy_url_parsing() {
-        for url in ["socks5://h:1", "SOCKS5://h:1", "socks5h://h:1", "socks://h:1"] {
-            assert_eq!(parse_proxy_url(url), Ok((ProxyScheme::Socks5, "h".into(), 1, None)), "{url}");
+        for url in [
+            "socks5://h:1",
+            "SOCKS5://h:1",
+            "socks5h://h:1",
+            "socks://h:1",
+        ] {
+            assert_eq!(
+                parse_proxy_url(url),
+                Ok((ProxyScheme::Socks5, "h".into(), 1, None)),
+                "{url}"
+            );
         }
-        assert_eq!(parse_proxy_url("socks5://127.0.0.1"), Ok((ProxyScheme::Socks5, "127.0.0.1".into(), 1080, None)));
-        assert_eq!(parse_proxy_url("http://proxy"), Ok((ProxyScheme::Http, "proxy".into(), 80, None)));
-        assert_eq!(parse_proxy_url("http://u:p@proxy:8080/ignored?x"), Ok((ProxyScheme::Http, "proxy".into(), 8080, Some("u:p"))));
-        assert_eq!(parse_proxy_url("socks5://u@[::1]:1080"), Ok((ProxyScheme::Socks5, "::1".into(), 1080, Some("u"))));
-        assert_eq!(parse_proxy_url("socks5://[fe80::1]"), Ok((ProxyScheme::Socks5, "fe80::1".into(), 1080, None)));
-        assert!(parse_proxy_url("http://:8080").unwrap_err().contains("no host"));
-        assert!(parse_proxy_url("http://h:notaport").unwrap_err().contains("bad port"), "non-numeric port must not silently pass");
-        assert!(parse_proxy_url("http://[::1").unwrap_err().contains("unterminated IPv6"));
+        assert_eq!(
+            parse_proxy_url("socks5://127.0.0.1"),
+            Ok((ProxyScheme::Socks5, "127.0.0.1".into(), 1080, None))
+        );
+        assert_eq!(
+            parse_proxy_url("http://proxy"),
+            Ok((ProxyScheme::Http, "proxy".into(), 80, None))
+        );
+        assert_eq!(
+            parse_proxy_url("http://u:p@proxy:8080/ignored?x"),
+            Ok((ProxyScheme::Http, "proxy".into(), 8080, Some("u:p")))
+        );
+        assert_eq!(
+            parse_proxy_url("socks5://u@[::1]:1080"),
+            Ok((ProxyScheme::Socks5, "::1".into(), 1080, Some("u")))
+        );
+        assert_eq!(
+            parse_proxy_url("socks5://[fe80::1]"),
+            Ok((ProxyScheme::Socks5, "fe80::1".into(), 1080, None))
+        );
+        assert!(parse_proxy_url("http://:8080")
+            .unwrap_err()
+            .contains("no host"));
+        assert!(
+            parse_proxy_url("http://h:notaport")
+                .unwrap_err()
+                .contains("bad port"),
+            "non-numeric port must not silently pass"
+        );
+        assert!(parse_proxy_url("http://[::1")
+            .unwrap_err()
+            .contains("unterminated IPv6"));
     }
 
     #[test]
@@ -1292,8 +1529,17 @@ mod tests {
             tx.send(serve_socks5(&mut stream, true, 0x00)).unwrap();
         });
         // 无凭据的客户端只报「无认证」；服务端要密码时如实失败，不乱发空凭据。
-        let refused = connect_via_proxy(&format!("socks5://127.0.0.1:{port}"), "a.com", 443, Duration::from_secs(5)).unwrap_err();
-        assert!(refused.contains("no acceptable authentication method"), "{refused}");
+        let refused = connect_via_proxy(
+            &format!("socks5://127.0.0.1:{port}"),
+            "a.com",
+            443,
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+        assert!(
+            refused.contains("no acceptable authentication method"),
+            "{refused}"
+        );
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1302,7 +1548,13 @@ mod tests {
             let (mut stream, _) = listener.accept().unwrap();
             tx.send(serve_socks5(&mut stream, true, 0x00)).unwrap();
         });
-        connect_via_proxy(&format!("socks5://john:1234@127.0.0.1:{port}"), "a.com", 443, Duration::from_secs(5)).unwrap();
+        connect_via_proxy(
+            &format!("socks5://john:1234@127.0.0.1:{port}"),
+            "a.com",
+            443,
+            Duration::from_secs(5),
+        )
+        .unwrap();
         let (request, creds) = rx.recv().unwrap();
         // RFC 1929：VER=1、ulen、user、plen、pass。
         let mut expected = vec![0x01, 4];
@@ -1323,18 +1575,33 @@ mod tests {
                 let _ = serve_socks5(&mut stream, false, 0x05);
             }
         });
-        let err = connect_via_proxy(&format!("socks5://127.0.0.1:{port}"), "a.com", 443, Duration::from_secs(5)).unwrap_err();
-        assert!(err.contains("connection refused") && err.contains("a.com:443"), "{err}");
+        let err = connect_via_proxy(
+            &format!("socks5://127.0.0.1:{port}"),
+            "a.com",
+            443,
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("connection refused") && err.contains("a.com:443"),
+            "{err}"
+        );
     }
 
     #[test]
     fn unsupported_proxy_schemes_fail_before_dialing() {
         let timeout = Duration::from_secs(5);
-        for url in ["socks4://127.0.0.1:1080", "socks4a://127.0.0.1:1080", "https://127.0.0.1:8080"] {
+        for url in [
+            "socks4://127.0.0.1:1080",
+            "socks4a://127.0.0.1:1080",
+            "https://127.0.0.1:8080",
+        ] {
             let err = connect_via_proxy(url, "a.com", 443, timeout).unwrap_err();
             assert!(err.contains("is not supported"), "{url}: {err}");
         }
-        assert!(connect_via_proxy("127.0.0.1:1080", "a.com", 443, timeout).unwrap_err().contains("no scheme"));
+        assert!(connect_via_proxy("127.0.0.1:1080", "a.com", 443, timeout)
+            .unwrap_err()
+            .contains("no scheme"));
     }
 
     /// HTTP CONNECT 路径的回归（拆出 socks 时这条不许变）：CONNECT 行 →
@@ -1349,22 +1616,47 @@ mod tests {
                 let mut stream = stream.unwrap();
                 let head = read_http_head(&mut stream);
                 let ok = head.contains("example.com:443");
-                let body = if ok { "HTTP/1.1 200 Connection Established\r\n\r\nT" } else { "HTTP/1.1 407 Proxy Authentication Required\r\n\r\n" };
+                let body = if ok {
+                    "HTTP/1.1 200 Connection Established\r\n\r\nT"
+                } else {
+                    "HTTP/1.1 407 Proxy Authentication Required\r\n\r\n"
+                };
                 let _ = stream.write_all(body.as_bytes());
                 tx.send(head).unwrap();
                 std::thread::sleep(Duration::from_millis(300));
             }
         });
-        let mut stream = connect_via_proxy(&format!("http://u:p@127.0.0.1:{port}"), "example.com", 443, Duration::from_secs(5)).unwrap();
+        let mut stream = connect_via_proxy(
+            &format!("http://u:p@127.0.0.1:{port}"),
+            "example.com",
+            443,
+            Duration::from_secs(5),
+        )
+        .unwrap();
         let mut marker = [0u8; 1];
         stream.read_exact(&mut marker).unwrap();
         assert_eq!(&marker, b"T");
         let head = rx.recv().unwrap();
         let basic = base64::engine::general_purpose::STANDARD.encode("u:p");
-        assert!(head.starts_with("CONNECT example.com:443 HTTP/1.1\r\n"), "{head}");
-        assert!(head.contains(&format!("Proxy-Authorization: Basic {basic}")), "{head}");
+        assert!(
+            head.starts_with("CONNECT example.com:443 HTTP/1.1\r\n"),
+            "{head}"
+        );
+        assert!(
+            head.contains(&format!("Proxy-Authorization: Basic {basic}")),
+            "{head}"
+        );
 
-        let err = connect_via_proxy(&format!("http://127.0.0.1:{port}"), "other.com", 443, Duration::from_secs(5)).unwrap_err();
-        assert!(err.contains("CONNECT refused") && err.contains("407"), "{err}");
+        let err = connect_via_proxy(
+            &format!("http://127.0.0.1:{port}"),
+            "other.com",
+            443,
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("CONNECT refused") && err.contains("407"),
+            "{err}"
+        );
     }
 }

@@ -838,7 +838,10 @@ mod tests {
         std::fs::write(staff_path().unwrap(), "{broken").unwrap();
         let corrupt = load();
         assert!(corrupt.staff.is_empty());
-        assert_eq!(corrupt.legacy_migration_completed_at, CORRUPT_REGISTRY_MARKER);
+        assert_eq!(
+            corrupt.legacy_migration_completed_at,
+            CORRUPT_REGISTRY_MARKER
+        );
         assert!(corrupt.is_corrupt());
         set_root_override_for_tests(None);
         let _ = std::fs::remove_dir_all(root);
@@ -900,7 +903,13 @@ mod tests {
         save(&registry).unwrap();
         let loaded = load();
         assert!(loaded.paused_until_user_resumes);
-        assert!(loaded.get("staff_new").unwrap().policy.paused_until_user_resumes);
+        assert!(
+            loaded
+                .get("staff_new")
+                .unwrap()
+                .policy
+                .paused_until_user_resumes
+        );
         set_root_override_for_tests(None);
         let _ = std::fs::remove_dir_all(root);
     }

@@ -32,9 +32,7 @@ pub fn prompt_and_exit(err: &str) -> ! {
 mod windows {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        MessageBoxW, MB_ICONERROR, MB_OK,
-    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
 
     /// Show the failure and exit — the app cannot start without its data folder.
     pub fn message_and_exit(err: &str) -> ! {

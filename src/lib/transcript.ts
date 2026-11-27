@@ -118,6 +118,7 @@ export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
         ...(typeof e.agentLabel === "string" ? { agentLabel: e.agentLabel } : {}),
         ...(typeof e.modelId === "string" ? { modelId: e.modelId } : {}),
         ...(typeof e.modelLabel === "string" ? { modelLabel: e.modelLabel } : {}),
+        ...(typeof e.providerLabel === "string" ? { providerLabel: e.providerLabel } : {}),
         ...(typeof e.modeLabel === "string" ? { modeLabel: e.modeLabel } : {}),
         ...(typeof e.effortLabel === "string" ? { effortLabel: e.effortLabel } : {}),
         ...(typeof e.durationMs === "number" ? { durationMs: e.durationMs } : {}),
@@ -225,8 +226,14 @@ export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
         agentId: typeof e.agentId === "string" ? e.agentId : "",
         agentLabel: typeof e.agentLabel === "string" ? e.agentLabel : "",
         modelId: typeof e.modelId === "string" ? e.modelId : undefined,
+        displayModel: typeof e.displayModel === "string" ? e.displayModel : undefined,
+        providerLabel: typeof e.providerLabel === "string" ? e.providerLabel : undefined,
+        modelLabel: typeof e.modelLabel === "string" ? e.modelLabel : undefined,
+        effortLabel: typeof e.effortLabel === "string" ? e.effortLabel : undefined,
         prompt: typeof e.prompt === "string" ? e.prompt : "",
         createdAt,
+        ...(e.initiatedBy === "agent" ? { initiatedBy: "agent" as const } : {}),
+        ...(typeof e.taskId === "string" && e.taskId ? { taskId: e.taskId } : {}),
       });
       continue;
     }
@@ -243,9 +250,18 @@ export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
         agentId: typeof e.agentId === "string" ? e.agentId : "",
         status,
         summary: typeof e.summary === "string" ? e.summary : "",
+        displayModel: typeof e.displayModel === "string" ? e.displayModel : undefined,
+        providerLabel: typeof e.providerLabel === "string" ? e.providerLabel : undefined,
+        modelLabel: typeof e.modelLabel === "string" ? e.modelLabel : undefined,
+        effortLabel: typeof e.effortLabel === "string" ? e.effortLabel : undefined,
         durationMs: typeof e.durationMs === "number" ? e.durationMs : undefined,
         error: typeof e.error === "string" ? e.error : undefined,
         createdAt,
+        ...(e.initiatedBy === "agent" ? { initiatedBy: "agent" as const } : {}),
+        ...(typeof e.taskId === "string" && e.taskId ? { taskId: e.taskId } : {}),
+        ...(typeof e.checkpointBase === "string" && e.checkpointBase
+          ? { checkpointBase: e.checkpointBase }
+          : {}),
       });
       continue;
     }

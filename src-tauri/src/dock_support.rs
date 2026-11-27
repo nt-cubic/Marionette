@@ -9,9 +9,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{
-    AppHandle, Manager,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Manager,
 };
 
 static BACKGROUND_MODE: AtomicBool = AtomicBool::new(false);
@@ -187,8 +187,8 @@ pub fn fullscreen_active() -> bool {
     #[cfg(windows)]
     {
         use windows_sys::Win32::UI::Shell::{
-            QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
-            QUERY_USER_NOTIFICATION_STATE, SHQueryUserNotificationState,
+            SHQueryUserNotificationState, QUERY_USER_NOTIFICATION_STATE, QUNS_BUSY,
+            QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
         };
         let mut state: QUERY_USER_NOTIFICATION_STATE = 0;
         // S_OK == 0; any failure means "unknown", treat as not fullscreen.

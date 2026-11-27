@@ -92,7 +92,9 @@ impl AgentParser for GeminiParser {
                     } else {
                         native_id
                     };
-                    let title = json_str(&v, "title").unwrap_or("Gemini session").to_string();
+                    let title = json_str(&v, "title")
+                        .unwrap_or("Gemini session")
+                        .to_string();
                     out.push(ExternalConversation {
                         id: format!("gemini:{native_id}"),
                         source: "gemini".into(),

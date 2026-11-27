@@ -1969,6 +1969,20 @@ body.is-project-reordering .project-list {
   background: var(--editor-bg);
 }
 
+/* Worker breadcrumbs and the transcript form one grid row. Keeping them as
+   direct .center-workspace children made the breadcrumb consume the 1fr row. */
+.conversation-surface {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.conversation-surface > .session-view {
+  flex: 1;
+}
+
 .session-view > .session-stage {
   flex: 1;
   min-height: 0;

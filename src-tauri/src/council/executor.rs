@@ -67,13 +67,17 @@ impl TaskHarness for AcpHarness {
         )?;
         crate::desktop_notify::mark_silent_turn(&ctx.session_id);
         let prompt_result =
-            self.acp.send_prompt(&ctx.session_id, ctx.prompt.clone(), Vec::new(), Vec::new());
+            self.acp
+                .send_prompt(&ctx.session_id, ctx.prompt.clone(), Vec::new(), Vec::new());
         if let Err(e) = prompt_result {
             crate::desktop_notify::clear_turn_marks(&ctx.session_id);
             let _ = self.acp.stop(&ctx.session_id);
             return Err(format!("发送任务失败:{e}"));
         }
-        let idle = self.acp.wait_turn_idle(&ctx.session_id, std::time::Duration::from_secs(ctx.timeout_secs.max(1)));
+        let idle = self.acp.wait_turn_idle(
+            &ctx.session_id,
+            std::time::Duration::from_secs(ctx.timeout_secs.max(1)),
+        );
         let changes = crate::git_service::get_changed_files(Path::new(&ctx.cwd))
             .map(|files| files.len())
             .unwrap_or(0);
@@ -81,7 +85,10 @@ impl TaskHarness for AcpHarness {
         if !idle {
             return Err(format!("任务超时({}s)未完成", ctx.timeout_secs));
         }
-        Ok(StepOutcome { turn_completed: true, notes: format!("回合完成;工作区变更文件 {changes} 个") })
+        Ok(StepOutcome {
+            turn_completed: true,
+            notes: format!("回合完成;工作区变更文件 {changes} 个"),
+        })
     }
 }
 
@@ -110,13 +117,19 @@ impl TaskHarness for ScriptedHarness {
                     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
                 }
                 std::fs::write(&target, content).map_err(|e| format!("写入 {path} 失败:{e}"))?;
-                return Ok(StepOutcome { turn_completed: true, notes: format!("已写入 {path}") });
+                return Ok(StepOutcome {
+                    turn_completed: true,
+                    notes: format!("已写入 {path}"),
+                });
             }
         }
         if ctx.prompt.contains("FAIL_STEP") {
             return Err("注入的步骤失败".into());
         }
-        Ok(StepOutcome { turn_completed: true, notes: "脚本执行完成".into() })
+        Ok(StepOutcome {
+            turn_completed: true,
+            notes: "脚本执行完成".into(),
+        })
     }
 }
 
@@ -149,7 +162,11 @@ pub fn execute_ready_batch(
         "info",
         "",
         "execute batch",
-        Some(&format!("run={} harness={}", ctx.run_id, ctx.harness.name())),
+        Some(&format!(
+            "run={} harness={}",
+            ctx.run_id,
+            ctx.harness.name()
+        )),
     );
     let ready: Vec<PlanStep> = tasks::ready_steps(ctx.plan, tasks)
         .into_iter()
@@ -176,9 +193,19 @@ pub fn execute_ready_batch(
 
     // scope 并发执行整批(信号量在批内限流)。
     let sem = super::orchestrator::Semaphore::new(ctx.max_concurrent.max(1));
-    let results: std::sync::Mutex<Vec<(String, Result<StepOutcome, String>, Option<String>, Option<String>)>> =
-        std::sync::Mutex::new(Vec::new()); // (step_id, outcome, worktree, branch)
-    let worktree_root = ctx.project_root.parent().map(|p| p.join(".marionette-council-worktrees")).unwrap_or_else(|| ctx.project_root.clone());
+    let results: std::sync::Mutex<
+        Vec<(
+            String,
+            Result<StepOutcome, String>,
+            Option<String>,
+            Option<String>,
+        )>,
+    > = std::sync::Mutex::new(Vec::new()); // (step_id, outcome, worktree, branch)
+    let worktree_root = ctx
+        .project_root
+        .parent()
+        .map(|p| p.join(".marionette-council-worktrees"))
+        .unwrap_or_else(|| ctx.project_root.clone());
 
     std::thread::scope(|scope| {
         for step in &ready {
@@ -191,14 +218,21 @@ pub fn execute_ready_batch(
                     Err(e) => {
                         // worktree 建不了(并发窗口/权限):记录为该步失败,
                         // 不悄悄退回共享 cwd(那才是静默覆盖的温床)。
-                        results.lock().unwrap().push((step.id.clone(), Err(format!("创建隔离 worktree 失败:{e}")), None, None));
+                        results.lock().unwrap().push((
+                            step.id.clone(),
+                            Err(format!("创建隔离 worktree 失败:{e}")),
+                            None,
+                            None,
+                        ));
                         continue;
                     }
                 }
             } else {
                 (None, None)
             };
-            let cwd = worktree.clone().unwrap_or_else(|| ctx.project_root.to_string_lossy().to_string());
+            let cwd = worktree
+                .clone()
+                .unwrap_or_else(|| ctx.project_root.to_string_lossy().to_string());
             let session_id = format!("council-{}-{}", ctx.run_id, step.id);
             let prompt = step_prompt(ctx.plan, step, parallel);
             let step_ctx = StepContext {
@@ -212,13 +246,21 @@ pub fn execute_ready_batch(
             let cancel = ctx.cancel;
             scope.spawn(move || {
                 if cancel.load(std::sync::atomic::Ordering::SeqCst) {
-                    results.lock().unwrap().push((step.id.clone(), Err("已取消".into()), worktree, branch));
+                    results.lock().unwrap().push((
+                        step.id.clone(),
+                        Err("已取消".into()),
+                        worktree,
+                        branch,
+                    ));
                     return;
                 }
                 sem.acquire();
                 let out = ctx.harness.run_step(&step_ctx);
                 sem.release();
-                results.lock().unwrap().push((step.id.clone(), out, worktree, branch));
+                results
+                    .lock()
+                    .unwrap()
+                    .push((step.id.clone(), out, worktree, branch));
             });
         }
     });
@@ -232,7 +274,9 @@ pub fn execute_ready_batch(
         match outcome {
             Ok(out) if out.turn_completed => {
                 let changes = crate::git_service::get_changed_files(Path::new(
-                    worktree.as_deref().unwrap_or(&ctx.project_root.to_string_lossy()),
+                    worktree
+                        .as_deref()
+                        .unwrap_or(&ctx.project_root.to_string_lossy()),
                 ))
                 .map(|files| files.into_iter().map(|f| f.path).collect())
                 .unwrap_or_default();
@@ -243,8 +287,14 @@ pub fn execute_ready_batch(
                 progressed = true;
             }
             Ok(out) => {
-                let reason = if out.notes.is_empty() { "回合未完成".to_string() } else { out.notes };
-                prog.status = TaskStatus::Failed { reason: reason.clone() };
+                let reason = if out.notes.is_empty() {
+                    "回合未完成".to_string()
+                } else {
+                    out.notes
+                };
+                prog.status = TaskStatus::Failed {
+                    reason: reason.clone(),
+                };
                 prog.error = Some(reason);
                 if let (Some(w), Some(_b)) = (worktree.as_deref(), branch.as_deref()) {
                     let _ = crate::git_service::remove_worktree(&ctx.project_root, Path::new(w));
@@ -273,7 +323,10 @@ pub fn merge_staged(
     let mut merged = 0;
     let mut conflicts = 0;
     for step_id in tasks::merge_order(ctx.plan) {
-        let Some(prog) = tasks.iter_mut().find(|t| t.step_id == step_id && t.status == TaskStatus::Staged) else {
+        let Some(prog) = tasks
+            .iter_mut()
+            .find(|t| t.step_id == step_id && t.status == TaskStatus::Staged)
+        else {
             continue;
         };
         let Some(branch) = prog.branch.clone() else {
@@ -285,26 +338,38 @@ pub fn merge_staged(
         };
         let worktree = prog.worktree.clone().unwrap_or_default();
         let title = prog.title.clone();
-        match crate::git_service::merge_worktree_branch(&ctx.project_root, Path::new(&worktree), &branch, &format!("council({}): {}", ctx.run_id, title)) {
+        match crate::git_service::merge_worktree_branch(
+            &ctx.project_root,
+            Path::new(&worktree),
+            &branch,
+            &format!("council({}): {}", ctx.run_id, title),
+        ) {
             Ok(crate::git_service::MergeOutcome::Clean { files }) => {
                 prog.status = TaskStatus::Merged;
                 if !files.is_empty() {
                     prog.changes = files;
                 }
-                let _ = crate::git_service::remove_worktree(&ctx.project_root, Path::new(&worktree));
+                let _ =
+                    crate::git_service::remove_worktree(&ctx.project_root, Path::new(&worktree));
                 merged += 1;
             }
             Ok(crate::git_service::MergeOutcome::Conflict { files }) => {
                 // 验收 #10:并行改动冲突显式暴露,不静默覆盖。
-                prog.status = TaskStatus::Failed { reason: format!("合并冲突:{}", files.join(", ")) };
+                prog.status = TaskStatus::Failed {
+                    reason: format!("合并冲突:{}", files.join(", ")),
+                };
                 prog.error = Some(format!("合并冲突:{}", files.join(", ")));
-                let _ = crate::git_service::remove_worktree(&ctx.project_root, Path::new(&worktree));
+                let _ =
+                    crate::git_service::remove_worktree(&ctx.project_root, Path::new(&worktree));
                 conflicts += 1;
             }
             Err(e) => {
-                prog.status = TaskStatus::Failed { reason: format!("合并失败:{e}") };
+                prog.status = TaskStatus::Failed {
+                    reason: format!("合并失败:{e}"),
+                };
                 prog.error = Some(format!("合并失败:{e}"));
-                let _ = crate::git_service::remove_worktree(&ctx.project_root, Path::new(&worktree));
+                let _ =
+                    crate::git_service::remove_worktree(&ctx.project_root, Path::new(&worktree));
                 conflicts += 1;
             }
         }
@@ -317,7 +382,16 @@ pub fn merge_staged(
 pub fn step_prompt(plan: &super::types::PlanDoc, step: &PlanStep, parallel: bool) -> String {
     let mut deps = String::new();
     for s in &plan.steps {
-        deps.push_str(&format!("- [{}] {}({}依赖)\n", s.id, s.title, if s.depends_on.is_empty() { "无".into() } else { s.depends_on.join("+") }));
+        deps.push_str(&format!(
+            "- [{}] {}({}依赖)\n",
+            s.id,
+            s.title,
+            if s.depends_on.is_empty() {
+                "无".into()
+            } else {
+                s.depends_on.join("+")
+            }
+        ));
     }
     let scope = if parallel {
         "**你在一个隔离的 git worktree 里工作**,只改动本任务涉及的文件;其他任务并行进行,不要触碰它们负责的文件。"
@@ -352,23 +426,52 @@ mod tests {
     }
 
     fn doc(steps: Vec<PlanStep>) -> PlanDoc {
-        PlanDoc { summary: "s".into(), steps, open_questions: vec![], acceptance: vec![], verification: vec![] }
+        PlanDoc {
+            summary: "s".into(),
+            steps,
+            open_questions: vec![],
+            acceptance: vec![],
+            verification: vec![],
+        }
     }
 
     /// 真实 git 临时仓库端到端:两个并行任务写同一文件 → 合并冲突显式
     /// 上报(验收 #10);不同文件 → 双双合并成功。
     #[test]
     fn parallel_same_file_conflicts_are_explicit() {
-        let root = std::env::temp_dir().join(format!("marionette-council-exe-{}", crate::council::types::new_run_id()));
+        let root = std::env::temp_dir().join(format!(
+            "marionette-council-exe-{}",
+            crate::council::types::new_run_id()
+        ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(&root).status().unwrap().success());
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&root)
+            .status()
+            .unwrap()
+            .success());
         for cfg in [["user.email", "t@t"], ["user.name", "t"]] {
-            assert!(std::process::Command::new("git").args(["config", cfg[0], cfg[1]]).current_dir(&root).status().unwrap().success());
+            assert!(std::process::Command::new("git")
+                .args(["config", cfg[0], cfg[1]])
+                .current_dir(&root)
+                .status()
+                .unwrap()
+                .success());
         }
         std::fs::write(root.join("base.txt"), "base\n").unwrap();
-        assert!(std::process::Command::new("git").args(["add", "--all"]).current_dir(&root).status().unwrap().success());
-        assert!(std::process::Command::new("git").args(["commit", "-q", "-m", "init"]).current_dir(&root).status().unwrap().success());
+        assert!(std::process::Command::new("git")
+            .args(["add", "--all"])
+            .current_dir(&root)
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .args(["commit", "-q", "-m", "init"])
+            .current_dir(&root)
+            .status()
+            .unwrap()
+            .success());
 
         let plan = doc(vec![
             step("a", "WRITE same.txt|from-a\n", vec![]),
@@ -390,33 +493,73 @@ mod tests {
         let mut updates = 0;
         let progressed = execute_ready_batch(&ctx, &mut tasks, &mut |_| updates += 1);
         assert!(progressed);
-        assert_eq!(tasks.iter().filter(|t| t.status == TaskStatus::Staged).count(), 2, "两任务都应在各自 worktree 完成");
+        assert_eq!(
+            tasks
+                .iter()
+                .filter(|t| t.status == TaskStatus::Staged)
+                .count(),
+            2,
+            "两任务都应在各自 worktree 完成"
+        );
         // 各自的 worktree 里文件不同——隔离生效。
         let (merged, conflicts) = merge_staged(&ctx, &mut tasks, &mut |_| {});
         assert_eq!(merged, 1, "先合并的一方成功");
         assert_eq!(conflicts, 1, "后者必然冲突(显式,非静默覆盖)");
-        let failed = tasks.iter().find(|t| matches!(t.status, TaskStatus::Failed { .. })).unwrap();
-        assert!(failed.error.as_deref().unwrap().contains("same.txt"), "冲突证据点名文件:{:?}", failed.error);
+        let failed = tasks
+            .iter()
+            .find(|t| matches!(t.status, TaskStatus::Failed { .. }))
+            .unwrap();
+        assert!(
+            failed.error.as_deref().unwrap().contains("same.txt"),
+            "冲突证据点名文件:{:?}",
+            failed.error
+        );
         // 项目根的 same.txt 只含先合并方的内容(没有被覆盖成两份混合)。
         let content = std::fs::read_to_string(root.join("same.txt")).unwrap();
         let trimmed = content.trim_end();
-        assert!(trimmed == "from-a" || trimmed == "from-b", "内容应是单一来源:{content}");
+        assert!(
+            trimmed == "from-a" || trimmed == "from-b",
+            "内容应是单一来源:{content}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 端到端链路:两个不同文件的并行任务 → 全部合并;串行依赖解锁顺序。
     #[test]
     fn parallel_distinct_files_merge_cleanly() {
-        let root = std::env::temp_dir().join(format!("marionette-council-exe2-{}", crate::council::types::new_run_id()));
+        let root = std::env::temp_dir().join(format!(
+            "marionette-council-exe2-{}",
+            crate::council::types::new_run_id()
+        ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(&root).status().unwrap().success());
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&root)
+            .status()
+            .unwrap()
+            .success());
         for cfg in [["user.email", "t@t"], ["user.name", "t"]] {
-            assert!(std::process::Command::new("git").args(["config", cfg[0], cfg[1]]).current_dir(&root).status().unwrap().success());
+            assert!(std::process::Command::new("git")
+                .args(["config", cfg[0], cfg[1]])
+                .current_dir(&root)
+                .status()
+                .unwrap()
+                .success());
         }
         std::fs::write(root.join("base.txt"), "base\n").unwrap();
-        assert!(std::process::Command::new("git").args(["add", "--all"]).current_dir(&root).status().unwrap().success());
-        assert!(std::process::Command::new("git").args(["commit", "-q", "-m", "init"]).current_dir(&root).status().unwrap().success());
+        assert!(std::process::Command::new("git")
+            .args(["add", "--all"])
+            .current_dir(&root)
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .args(["commit", "-q", "-m", "init"])
+            .current_dir(&root)
+            .status()
+            .unwrap()
+            .success());
 
         let plan = doc(vec![
             step("a", "WRITE a.txt|A\n", vec![]),
@@ -444,7 +587,11 @@ mod tests {
         assert!(execute_ready_batch(&ctx, &mut tasks, &mut |_| {}));
         let (m2, c2) = merge_staged(&ctx, &mut tasks, &mut |_| {});
         assert_eq!((m2, c2), (1, 0));
-        assert!(root.join("a.txt").exists() && root.join("b.txt").exists() && root.join("c.txt").exists());
+        assert!(
+            root.join("a.txt").exists()
+                && root.join("b.txt").exists()
+                && root.join("c.txt").exists()
+        );
         assert!(!crate::council::tasks::work_remaining(&plan, &tasks));
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -457,7 +604,10 @@ mod tests {
             step("b", "WRITE b.txt|B\n", vec!["a"]),
         ]);
         let mut tasks = crate::council::tasks::build_task_progress(&plan).unwrap();
-        let root = std::env::temp_dir().join(format!("marionette-council-exe3-{}", crate::council::types::new_run_id()));
+        let root = std::env::temp_dir().join(format!(
+            "marionette-council-exe3-{}",
+            crate::council::types::new_run_id()
+        ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let cancel = std::sync::atomic::AtomicBool::new(false);
@@ -477,15 +627,25 @@ mod tests {
         // 路径);或者(单任务不隔离)FAIL_STEP 注入失败。二者必居其一,
         // 都不能是 Completed。
         let a = tasks.iter().find(|t| t.step_id == "a").unwrap();
-        assert!(matches!(a.status, TaskStatus::Failed { .. }), "a 必须失败:{:?}", a.status);
+        assert!(
+            matches!(a.status, TaskStatus::Failed { .. }),
+            "a 必须失败:{:?}",
+            a.status
+        );
         crate::council::tasks::finalize_skipped(&plan, &mut tasks);
-        assert!(matches!(tasks.iter().find(|t| t.step_id == "b").unwrap().status, TaskStatus::Skipped { .. }));
+        assert!(matches!(
+            tasks.iter().find(|t| t.step_id == "b").unwrap().status,
+            TaskStatus::Skipped { .. }
+        ));
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn step_prompt_contains_plan_and_constraints() {
-        let plan = doc(vec![step("s1", "做 X", vec![]), step("s2", "做 Y", vec!["s1"])]);
+        let plan = doc(vec![
+            step("s1", "做 X", vec![]),
+            step("s2", "做 Y", vec!["s1"]),
+        ]);
         let text = step_prompt(&plan, &plan.steps[1], true);
         assert!(text.contains("s2"));
         assert!(text.contains("隔离的 git worktree"));

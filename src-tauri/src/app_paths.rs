@@ -150,10 +150,7 @@ mod tests {
         // `D:\`, and an agent that derives it from a verbatim path dies.
         assert_eq!(plain_path(r"\\?\D:"), r"D:");
         assert_eq!(plain_path(r"\\?\D:\"), r"D:\");
-        assert_eq!(
-            plain_path(r"\\?\UNC\server\share\x"),
-            r"\\server\share\x"
-        );
+        assert_eq!(plain_path(r"\\?\UNC\server\share\x"), r"\\server\share\x");
         // Already plain, or POSIX, is left alone.
         assert_eq!(plain_path(r"D:\Projects\x"), r"D:\Projects\x");
         assert_eq!(plain_path("/home/x"), "/home/x");

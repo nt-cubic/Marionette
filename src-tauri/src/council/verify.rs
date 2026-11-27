@@ -161,7 +161,11 @@ pub fn run_all(
 
 /// 尚未裁决的破坏性命令(拦截挂起的候选集合)。
 pub fn pending_decisions(results: &[VerifyResult]) -> Vec<String> {
-    results.iter().filter(|r| r.needs_human).map(|r| r.command.clone()).collect()
+    results
+        .iter()
+        .filter(|r| r.needs_human)
+        .map(|r| r.command.clone())
+        .collect()
 }
 
 /// 结果渲染成 Evidence 消息正文。
@@ -279,7 +283,12 @@ mod tests {
     #[test]
     fn dangerous_commands_are_intercepted() {
         let dir = tmp("danger");
-        for cmd in ["git push origin main", "npm publish --access public", "rm -rf /tmp/x", "cargo publish"] {
+        for cmd in [
+            "git push origin main",
+            "npm publish --access public",
+            "rm -rf /tmp/x",
+            "cargo publish",
+        ] {
             let res = run_verification(&dir, cmd, 5, &[], &[]);
             assert!(res.skipped, "{cmd} 应被拦截");
             assert!(!res.ok);
@@ -315,9 +324,30 @@ mod tests {
     #[test]
     fn pending_decisions_filter() {
         let results = vec![
-            VerifyResult { command: "npm run build".into(), ok: true, skipped: false, needs_human: false, exit_code: Some(0), output: String::new() },
-            VerifyResult { command: "git push".into(), ok: false, skipped: true, needs_human: true, exit_code: None, output: String::new() },
-            VerifyResult { command: "cargo publish".into(), ok: false, skipped: true, needs_human: false, exit_code: None, output: String::new() },
+            VerifyResult {
+                command: "npm run build".into(),
+                ok: true,
+                skipped: false,
+                needs_human: false,
+                exit_code: Some(0),
+                output: String::new(),
+            },
+            VerifyResult {
+                command: "git push".into(),
+                ok: false,
+                skipped: true,
+                needs_human: true,
+                exit_code: None,
+                output: String::new(),
+            },
+            VerifyResult {
+                command: "cargo publish".into(),
+                ok: false,
+                skipped: true,
+                needs_human: false,
+                exit_code: None,
+                output: String::new(),
+            },
         ];
         assert_eq!(pending_decisions(&results), vec!["git push".to_string()]);
     }
@@ -325,8 +355,22 @@ mod tests {
     #[test]
     fn evidence_rendering() {
         let results = vec![
-            VerifyResult { command: "npm run build".into(), ok: true, skipped: false, needs_human: false, exit_code: Some(0), output: "built".into() },
-            VerifyResult { command: "cargo test".into(), ok: false, skipped: false, needs_human: false, exit_code: Some(101), output: "test failed".into() },
+            VerifyResult {
+                command: "npm run build".into(),
+                ok: true,
+                skipped: false,
+                needs_human: false,
+                exit_code: Some(0),
+                output: "built".into(),
+            },
+            VerifyResult {
+                command: "cargo test".into(),
+                ok: false,
+                skipped: false,
+                needs_human: false,
+                exit_code: Some(101),
+                output: "test failed".into(),
+            },
         ];
         let text = render_evidence(&results);
         assert!(text.contains("✓ 通过"));

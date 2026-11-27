@@ -48,7 +48,12 @@ pub(crate) fn discover_db() -> Option<PathBuf> {
     if let Some(dir) = crate::parsers::util::env_dir("XDG_DATA_HOME") {
         candidates.push(dir.join("opencode").join("opencode.db"));
     }
-    candidates.push(home.join(".local").join("share").join("opencode").join("opencode.db"));
+    candidates.push(
+        home.join(".local")
+            .join("share")
+            .join("opencode")
+            .join("opencode.db"),
+    );
     candidates.push(home.join(".config").join("opencode").join("opencode.db"));
     candidates.push(
         home.join("AppData")
@@ -114,7 +119,11 @@ pub(crate) fn parse_db(db: &Path, keep_from_ms: i64) -> Result<Vec<SessionFacts>
                 "SELECT id, {parent}, directory, title, time_created, time_updated, {compact} \
                  FROM {session_table}",
                 parent = if parent_col { "parent_id" } else { "NULL" },
-                compact = if compact_col { "time_compacting" } else { "NULL" },
+                compact = if compact_col {
+                    "time_compacting"
+                } else {
+                    "NULL"
+                },
             ))
             .map_err(|e| format!("query sessions: {e}"))?;
         let rows = stmt
@@ -185,7 +194,9 @@ pub(crate) fn parse_db(db: &Path, keep_from_ms: i64) -> Result<Vec<SessionFacts>
         match role.as_deref() {
             Some("user") => collector.push_turn(t_ms),
             Some("assistant") => {
-                let Some(tokens) = data.get("tokens") else { continue };
+                let Some(tokens) = data.get("tokens") else {
+                    continue;
+                };
                 let cache = tokens.get("cache").unwrap_or(&Value::Null);
                 let input = json_u64(tokens, "input").unwrap_or(0);
                 let output = json_u64(tokens, "output").unwrap_or(0);
@@ -358,7 +369,10 @@ mod tests {
             .unwrap();
             conn.execute(
                 "INSERT INTO session_message VALUES ('m3','ses_child','compaction',3,3000,3000,?1)",
-                [json!({"time": {"created": 3000}, "status": "completed", "reason": "manual"}).to_string()],
+                [
+                    json!({"time": {"created": 3000}, "status": "completed", "reason": "manual"})
+                        .to_string(),
+                ],
             )
             .unwrap();
             conn.execute(
@@ -382,7 +396,10 @@ mod tests {
         // reasoning added back into output
         assert_eq!(h.output, 422 + 30);
         assert_eq!(h.reasoning, 30);
-        assert_eq!(h.model.as_deref(), Some("opencode/deepseek-v4.1-flash-free"));
+        assert_eq!(
+            h.model.as_deref(),
+            Some("opencode/deepseek-v4.1-flash-free")
+        );
         assert_eq!(s.ctx_series[0][1], 16311 + 22656 + 100);
         std::fs::remove_dir_all(db.parent().unwrap()).ok();
     }
@@ -407,7 +424,8 @@ mod tests {
             conn.execute(
                 "INSERT INTO message VALUES ('m1','ses_old',1000,1000,?1)",
                 [json!({"role": "user", "time": {"created": 1000},
-                        "content": "hi"}).to_string()],
+                        "content": "hi"})
+                .to_string()],
             )
             .unwrap();
             conn.execute(
@@ -417,7 +435,8 @@ mod tests {
                     "time": {"created": 2000},
                     "tokens": {"input": 411, "output": 155, "reasoning": 0,
                                "total": 42230, "cache": {"read": 41664, "write": 0}}
-                }).to_string()],
+                })
+                .to_string()],
             )
             .unwrap();
         }
@@ -450,9 +469,12 @@ mod tests {
             .unwrap();
             conn.execute(
                 "INSERT INTO session_message VALUES ('m1','ses_a','assistant',1,1000,1000,?1)",
-                [json!({"time": {"created": 1000}, "model": {"id": "m1", "providerID": "p"},
+                [
+                    json!({"time": {"created": 1000}, "model": {"id": "m1", "providerID": "p"},
                          "tokens": {"input": 5, "output": 2, "reasoning": 0,
-                                    "cache": {"read": 0, "write": 0}}}).to_string()],
+                                    "cache": {"read": 0, "write": 0}}})
+                    .to_string(),
+                ],
             )
             .unwrap();
         }

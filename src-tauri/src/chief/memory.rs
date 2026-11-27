@@ -959,9 +959,17 @@ pub fn resolve_proposal(
     crate::storage::write_atomic(&paths(staff_id)?.proposals, &body)?;
     append_history_unlocked(
         staff_id,
-        if accept { "proposal_accept" } else { "proposal_reject" },
+        if accept {
+            "proposal_accept"
+        } else {
+            "proposal_reject"
+        },
         "proposals.jsonl",
-        if accept { "memory proposal accepted" } else { "memory proposal rejected" },
+        if accept {
+            "memory proposal accepted"
+        } else {
+            "memory proposal rejected"
+        },
         resolved.source_refs.clone(),
     )?;
     index = read_index_unlocked(staff_id);
@@ -1232,22 +1240,13 @@ mod tests {
             vec![MemorySourceRef::task("task_1")],
         )
         .unwrap();
-        let accepted = resolve_proposal(
-            "staff_a",
-            &proposal.proposal_id,
-            true,
-            Some("pinned"),
-        )
-        .unwrap();
+        let accepted =
+            resolve_proposal("staff_a", &proposal.proposal_id, true, Some("pinned")).unwrap();
         assert_eq!(accepted.status, "accepted");
-        assert!(read_pinned("staff_a").unwrap().contains("Use short final reports."));
-        assert!(resolve_proposal(
-            "staff_a",
-            &proposal.proposal_id,
-            false,
-            None
-        )
-        .is_err());
+        assert!(read_pinned("staff_a")
+            .unwrap()
+            .contains("Use short final reports."));
+        assert!(resolve_proposal("staff_a", &proposal.proposal_id, false, None).is_err());
         set_root_override_for_tests(None);
         let _ = fs::remove_dir_all(root);
     }

@@ -18,10 +18,10 @@
 pub mod executor;
 pub mod formation;
 pub mod orchestrator;
-pub mod tasks;
 pub mod prompts;
 pub mod state;
 pub mod store;
+pub mod tasks;
 pub mod types;
 pub mod verify;
 pub mod worker;

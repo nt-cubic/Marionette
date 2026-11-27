@@ -36,10 +36,28 @@ pub fn model_family_rank(model_id: &str) -> Option<u8> {
     let id = model_id.to_lowercase();
     // 轻量档(词越靠前越具体)。
     let lite = [
-        "mini", "nano", "flash-lite", "flash", "haiku", "turbo", "air", "lite", "swift", "instant",
+        "mini",
+        "nano",
+        "flash-lite",
+        "flash",
+        "haiku",
+        "turbo",
+        "air",
+        "lite",
+        "swift",
+        "instant",
     ];
     // 旗舰档(opus/ultra/max/reasoner/pro 系)。
-    let flagship = ["opus", "ultra", "-max", "max-", "reasoner", "thinking", "pro-preview", "r1"];
+    let flagship = [
+        "opus",
+        "ultra",
+        "-max",
+        "max-",
+        "reasoner",
+        "thinking",
+        "pro-preview",
+        "r1",
+    ];
     let mid = ["pro", "plus", "v4", "v3.2", "v3.1"];
     if flagship.iter().any(|k| id.contains(k)) {
         return Some(9);
@@ -84,7 +102,11 @@ pub fn probe_model(client: &dyn ModelClient, model: &str) -> ProbeOutcome {
     };
     let at = super::types::now_millis();
     let Ok(out) = client.complete(&req) else {
-        return ProbeOutcome { score: 0, notes: "请求失败(引擎未就绪或来源不可用)".into(), at };
+        return ProbeOutcome {
+            score: 0,
+            notes: "请求失败(引擎未就绪或来源不可用)".into(),
+            at,
+        };
     };
     score_probe_output(&out.content, at)
 }
@@ -93,7 +115,11 @@ pub fn probe_model(client: &dyn ModelClient, model: &str) -> ProbeOutcome {
 pub fn score_probe_output(raw: &str, at: i64) -> ProbeOutcome {
     let fence = raw
         .find("```json")
-        .and_then(|start| raw[start + 7..].find("```").map(|end| &raw[start + 7..start + 7 + end]))
+        .and_then(|start| {
+            raw[start + 7..]
+                .find("```")
+                .map(|end| &raw[start + 7..start + 7 + end])
+        })
         .map(|s| s.trim())
         .unwrap_or(raw.trim());
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(fence);
@@ -104,7 +130,10 @@ pub fn score_probe_output(raw: &str, at: i64) -> ProbeOutcome {
             score += 3;
             notes_parts.push("JSON 格式合规".into());
             let answer = v.get("answer").and_then(|a| a.as_str()).unwrap_or("");
-            let normalized: String = answer.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
+            let normalized: String = answer
+                .chars()
+                .filter(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
             if normalized.trim_end_matches('.') == "2" {
                 score += 4;
                 notes_parts.push("推理正确(2 小时)".into());
@@ -117,21 +146,30 @@ pub fn score_probe_output(raw: &str, at: i64) -> ProbeOutcome {
         }
         Err(_) => notes_parts.push("未输出合法 JSON".into()),
     }
-    ProbeOutcome { score, notes: notes_parts.join(";"), at }
+    ProbeOutcome {
+        score,
+        notes: notes_parts.join(";"),
+        at,
+    }
 }
 
 /// 探针结果持久化(council/probes.json;用户显式触发后长期复用,
 /// 画像每次组队都会带上)。保存的是「最近一次」结果——模型会升级,
 /// 旧探针不该永久粘滞。
 pub fn load_probe_results() -> HashMap<String, ProbeOutcome> {
-    let Ok(path) = store::council_root() else { return HashMap::new() };
+    let Ok(path) = store::council_root() else {
+        return HashMap::new();
+    };
     std::fs::read_to_string(path.join("probes.json"))
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default()
 }
 
-pub fn merge_probe_results(models: &[String], outcomes: &[ProbeOutcome]) -> HashMap<String, ProbeOutcome> {
+pub fn merge_probe_results(
+    models: &[String],
+    outcomes: &[ProbeOutcome],
+) -> HashMap<String, ProbeOutcome> {
     let mut merged = load_probe_results();
     for (model, outcome) in models.iter().zip(outcomes.iter()) {
         merged.insert(model.clone(), outcome.clone());
@@ -179,11 +217,19 @@ fn stats_path() -> Result<std::path::PathBuf, String> {
 }
 
 pub fn load_model_stats() -> ModelStatsFile {
-    let Ok(path) = stats_path() else { return ModelStatsFile { version: 1, models: HashMap::new() } };
+    let Ok(path) = stats_path() else {
+        return ModelStatsFile {
+            version: 1,
+            models: HashMap::new(),
+        };
+    };
     std::fs::read_to_string(path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or(ModelStatsFile { version: 1, models: HashMap::new() })
+        .unwrap_or(ModelStatsFile {
+            version: 1,
+            models: HashMap::new(),
+        })
 }
 
 pub fn save_model_stats(stats: &ModelStatsFile) -> Result<(), String> {
@@ -203,16 +249,31 @@ pub fn record_deliberation_outcome(spec: &CouncilSpec, messages: &[super::types:
             .iter()
             .filter(|m| {
                 m.from == member.id
-                    && matches!(m.kind, MessageKind::Proposal | MessageKind::Revision | MessageKind::Critique | MessageKind::Briefing | MessageKind::Synthesis)
+                    && matches!(
+                        m.kind,
+                        MessageKind::Proposal
+                            | MessageKind::Revision
+                            | MessageKind::Critique
+                            | MessageKind::Briefing
+                            | MessageKind::Synthesis
+                    )
             })
             .count() as u32;
         entry.failures += messages
             .iter()
-            .filter(|m| m.kind == MessageKind::Status && m.from == "system" && m.content.contains(&member.id) && m.content.contains("失败"))
+            .filter(|m| {
+                m.kind == MessageKind::Status
+                    && m.from == "system"
+                    && m.content.contains(&member.id)
+                    && m.content.contains("失败")
+            })
             .count() as u32;
     }
     // 背书记到**目标作者**对应的模型。
-    for msg in messages.iter().filter(|m| m.kind == MessageKind::Endorsement) {
+    for msg in messages
+        .iter()
+        .filter(|m| m.kind == MessageKind::Endorsement)
+    {
         let target_member = msg
             .meta
             .as_ref()
@@ -237,7 +298,11 @@ pub fn record_deliberation_outcome(spec: &CouncilSpec, messages: &[super::types:
     }
     // 上限淘汰:runs 最少的先走。
     if stats.models.len() > STATS_CAP {
-        let mut by_runs: Vec<(String, u32)> = stats.models.iter().map(|(k, v)| (k.clone(), v.runs)).collect();
+        let mut by_runs: Vec<(String, u32)> = stats
+            .models
+            .iter()
+            .map(|(k, v)| (k.clone(), v.runs))
+            .collect();
         by_runs.sort_by_key(|(_, r)| *r);
         let excess = stats.models.len() - STATS_CAP;
         for (key, _) in by_runs.into_iter().take(excess) {
@@ -268,11 +333,18 @@ fn history_score(h: &ModelHistory) -> Option<(u8, Vec<String>)> {
         return None;
     }
     let verdicts = h.endorsed + h.rejected;
-    let mut evidence = vec![format!("历史 {}/{} run · 产出 {} · 失败 {}", h.runs, h.runs, h.outputs, h.failures)];
+    let mut evidence = vec![format!(
+        "历史 {}/{} run · 产出 {} · 失败 {}",
+        h.runs, h.runs, h.outputs, h.failures
+    )];
     if verdicts > 0 {
         evidence.push(format!("背书认可 {}/{}", h.endorsed, verdicts));
     }
-    let endorse_ratio = if verdicts > 0 { h.endorsed as f32 / verdicts as f32 } else { 0.6 };
+    let endorse_ratio = if verdicts > 0 {
+        h.endorsed as f32 / verdicts as f32
+    } else {
+        0.6
+    };
     let fail_ratio = (h.failures as f32 / (h.runs as f32 * 3.0)).min(1.0);
     let score = (endorse_ratio * 6.0 - fail_ratio * 3.0 + 4.0).clamp(0.0, 10.0) as u8;
     Some((score, evidence))
@@ -283,7 +355,11 @@ pub fn build_profile(model: &str, probes: &HashMap<String, ProbeOutcome>) -> Mod
     build_profile_with(model, probes, &stats)
 }
 
-pub fn build_profile_with(model: &str, probes: &HashMap<String, ProbeOutcome>, stats: &ModelStatsFile) -> ModelProfile {
+pub fn build_profile_with(
+    model: &str,
+    probes: &HashMap<String, ProbeOutcome>,
+    stats: &ModelStatsFile,
+) -> ModelProfile {
     let mut evidence = Vec::new();
     let mut signals: Vec<(f32, f32)> = Vec::new(); // (score, weight)
     if let Some(rank) = model_family_rank(model) {
@@ -311,7 +387,11 @@ pub fn build_profile_with(model: &str, probes: &HashMap<String, ProbeOutcome>, s
         let s: f32 = signals.iter().map(|(v, w)| v * w).sum::<f32>() / total_w;
         s.round() as u8
     };
-    ModelProfile { model: model.to_string(), score, evidence }
+    ModelProfile {
+        model: model.to_string(),
+        score,
+        evidence,
+    }
 }
 
 /// 组队计划(组队 agent 的输出,经 parse_formation 校验)。
@@ -357,7 +437,9 @@ pub fn auto_formation(
         user,
         max_tokens: Some(1600),
     };
-    let out = client.complete(&req).map_err(|e| format!("组队调用失败({}):{e}", organizer.model))?;
+    let out = client
+        .complete(&req)
+        .map_err(|e| format!("组队调用失败({}):{e}", organizer.model))?;
     parse_formation(&out.content, &pool)
 }
 
@@ -365,12 +447,25 @@ pub fn auto_formation(
 pub fn parse_formation(raw: &str, pool: &[&str]) -> Result<FormationPlan, String> {
     let fence = raw
         .find("```json")
-        .and_then(|start| raw[start + 7..].find("```").map(|end| &raw[start + 7..start + 7 + end]))
+        .and_then(|start| {
+            raw[start + 7..]
+                .find("```")
+                .map(|end| &raw[start + 7..start + 7 + end])
+        })
         .map(|s| s.trim())
         .unwrap_or(raw.trim());
-    let value: serde_json::Value = serde_json::from_str(fence).map_err(|e| format!("组队 JSON 解析失败:{e}"))?;
-    let rounds = value.get("rounds").and_then(|v| v.as_u64()).unwrap_or(2).clamp(1, 4) as u32;
-    let notes = value.get("notes").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let value: serde_json::Value =
+        serde_json::from_str(fence).map_err(|e| format!("组队 JSON 解析失败:{e}"))?;
+    let rounds = value
+        .get("rounds")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(2)
+        .clamp(1, 4) as u32;
+    let notes = value
+        .get("notes")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let arr = value
         .get("members")
         .and_then(|v| v.as_array())
@@ -381,11 +476,19 @@ pub fn parse_formation(raw: &str, pool: &[&str]) -> Result<FormationPlan, String
     let mut members = Vec::new();
     let mut chair_count = 0;
     for item in arr {
-        let model = item.get("model").and_then(|v| v.as_str()).ok_or("成员缺 model")?.to_string();
+        let model = item
+            .get("model")
+            .and_then(|v| v.as_str())
+            .ok_or("成员缺 model")?
+            .to_string();
         if !pool.contains(&model.as_str()) {
             return Err(format!("成员模型 {} 不在候选池内", model));
         }
-        let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let role = item
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         if role.trim().is_empty() {
             return Err(format!("成员 {} 缺角色描述", model));
         }
@@ -394,7 +497,10 @@ pub fn parse_formation(raw: &str, pool: &[&str]) -> Result<FormationPlan, String
             Some("contributor") => MemberTier::Contributor,
             other => return Err(format!("成员 {} 的 tier 非法:{:?}", model, other)),
         };
-        let is_chair = item.get("isChair").and_then(|v| v.as_bool()).unwrap_or(false);
+        let is_chair = item
+            .get("isChair")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if is_chair {
             chair_count += 1;
             if tier != MemberTier::Lead {
@@ -406,8 +512,16 @@ pub fn parse_formation(raw: &str, pool: &[&str]) -> Result<FormationPlan, String
             role,
             tier,
             is_chair,
-            assignment: item.get("assignment").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            rationale: item.get("rationale").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            assignment: item
+                .get("assignment")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            rationale: item
+                .get("rationale")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
         });
     }
     if chair_count != 1 {
@@ -417,7 +531,11 @@ pub fn parse_formation(raw: &str, pool: &[&str]) -> Result<FormationPlan, String
         return Err("至少需要一个 lead".into());
     }
     // 同一模型出现多次时要求显式角色区分(合法,但给理由)。
-    Ok(FormationPlan { members, rounds, notes })
+    Ok(FormationPlan {
+        members,
+        rounds,
+        notes,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -441,7 +559,10 @@ mod tests {
     #[test]
     fn probe_scoring_correct_and_malformed() {
         let at = 1i64;
-        let ok = score_probe_output("```json\n{\"answer\": \"2 小时\", \"reason\": \"1/(1/3-1/6)\"}\n```", at);
+        let ok = score_probe_output(
+            "```json\n{\"answer\": \"2 小时\", \"reason\": \"1/(1/3-1/6)\"}\n```",
+            at,
+        );
         assert_eq!(ok.score, 7);
         let wrong = score_probe_output("{\"answer\": \"3\", \"reason\": \"猜的\"}", at);
         assert_eq!(wrong.score, 4); // 格式 3 + 错答 1
@@ -458,7 +579,10 @@ mod tests {
             {"model":"m/weak","role":"调研","tier":"contributor","isChair":false,"assignment":"搜集现有方案"}]}"#;
         let plan = parse_formation(good, &pool).unwrap();
         assert_eq!(plan.members.len(), 3);
-        assert!(plan.members.iter().any(|m| m.tier == MemberTier::Contributor));
+        assert!(plan
+            .members
+            .iter()
+            .any(|m| m.tier == MemberTier::Contributor));
 
         // 池外模型拒绝
         let offpool = good.replace("m/mid", "m/other");
@@ -474,19 +598,33 @@ mod tests {
             {"model":"m/weak","role":"b","tier":"contributor"}]}"#;
         assert!(parse_formation(no_chair, &pool).is_err());
         // 成员数下限
-        let single = r#"{"members":[{"model":"m/strong","role":"a","tier":"lead","isChair":true}]}"#;
+        let single =
+            r#"{"members":[{"model":"m/strong","role":"a","tier":"lead","isChair":true}]}"#;
         assert!(parse_formation(single, &pool).is_err());
     }
 
     #[test]
     fn profile_blends_signals_with_evidence() {
         let mut probes = HashMap::new();
-        probes.insert("m/a".to_string(), ProbeOutcome { score: 7, notes: "全对".into(), at: 0 });
+        probes.insert(
+            "m/a".to_string(),
+            ProbeOutcome {
+                score: 7,
+                notes: "全对".into(),
+                at: 0,
+            },
+        );
         let stats = ModelStatsFile {
             version: 1,
             models: HashMap::from([(
                 "m/b".to_string(),
-                ModelHistory { runs: 5, outputs: 10, endorsed: 8, rejected: 1, failures: 1 },
+                ModelHistory {
+                    runs: 5,
+                    outputs: 10,
+                    endorsed: 8,
+                    rejected: 1,
+                    failures: 1,
+                },
             )]),
         };
         let pa = build_profile_with("m/a", &probes, &stats);
@@ -507,11 +645,20 @@ mod tests {
             "m/strong",
             vec![r#"{"rounds":1,"members":[
                 {"model":"m/strong","role":"主席","tier":"lead","isChair":true},
-                {"model":"m/weak","role":"调研","tier":"contributor","assignment":"找资料"}]}"#.to_string()],
+                {"model":"m/weak","role":"调研","tier":"contributor","assignment":"找资料"}]}"#
+                .to_string()],
         );
         let profiles = vec![
-            ModelProfile { model: "m/strong".into(), score: 9, evidence: vec![] },
-            ModelProfile { model: "m/weak".into(), score: 3, evidence: vec![] },
+            ModelProfile {
+                model: "m/strong".into(),
+                score: 9,
+                evidence: vec![],
+            },
+            ModelProfile {
+                model: "m/weak".into(),
+                score: 3,
+                evidence: vec![],
+            },
         ];
         let plan = auto_formation(&mock, "设计一个缓存", &profiles).unwrap();
         assert_eq!(plan.members.len(), 2);

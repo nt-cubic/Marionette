@@ -163,14 +163,13 @@ pub(crate) fn parse_rollout(path: &Path, keep_from_ms: i64) -> Option<SessionFac
                     return None;
                 }
                 let mut c = SessionCollector::new(id);
-                if let Some(parent) = json_str(payload, "parent_thread_id").filter(|p| !p.is_empty()) {
+                if let Some(parent) =
+                    json_str(payload, "parent_thread_id").filter(|p| !p.is_empty())
+                {
                     c.parent_native_id = Some(parent.to_string());
                 }
                 c.cwd = json_str(payload, "cwd").map(|s| s.to_string());
-                c.hint_bounds(
-                    json_str(payload, "timestamp").and_then(iso_ms),
-                    None,
-                );
+                c.hint_bounds(json_str(payload, "timestamp").and_then(iso_ms), None);
                 collector = Some(c);
             }
             Some("token_usage_record") => {
@@ -193,8 +192,12 @@ pub(crate) fn parse_rollout(path: &Path, keep_from_ms: i64) -> Option<SessionFac
                 let payload = row.get("payload").unwrap_or(&Value::Null);
                 match json_str(payload, "type") {
                     Some("token_count") => {
-                        let Some(info) = payload.get("info") else { continue };
-                        if let Some(window) = json_u64(info, "model_context_window").filter(|w| *w > 0) {
+                        let Some(info) = payload.get("info") else {
+                            continue;
+                        };
+                        if let Some(window) =
+                            json_u64(info, "model_context_window").filter(|w| *w > 0)
+                        {
                             ctx_window = Some(window);
                         }
                         let Some(total) = info.get("total_token_usage") else {
@@ -216,9 +219,7 @@ pub(crate) fn parse_rollout(path: &Path, keep_from_ms: i64) -> Option<SessionFac
                                     .cache_write
                                     .saturating_sub(totals_seen.cache_write),
                                 output: totals.output.saturating_sub(totals_seen.output),
-                                reasoning: totals
-                                    .reasoning
-                                    .saturating_sub(totals_seen.reasoning),
+                                reasoning: totals.reasoning.saturating_sub(totals_seen.reasoning),
                                 total: totals.total.saturating_sub(totals_seen.total),
                             }
                         };
@@ -302,7 +303,12 @@ pub(crate) fn parse_rollout(path: &Path, keep_from_ms: i64) -> Option<SessionFac
     collector.finish(AGENT, keep_from_ms)
 }
 
-pub(crate) fn scan(root: &Path, cache: &mut Cache, force: bool, keep_from_ms: i64) -> SourceOutcome {
+pub(crate) fn scan(
+    root: &Path,
+    cache: &mut Cache,
+    force: bool,
+    keep_from_ms: i64,
+) -> SourceOutcome {
     let mut outcome = SourceOutcome::new(AGENT, Some(root.to_string_lossy().into_owned()));
     let mut live_keys: Vec<String> = Vec::new();
     let mut sessions: Vec<SessionFacts> = Vec::new();
@@ -415,25 +421,41 @@ mod tests {
         // values, then a user turn + injected context row.
         let rows = format!(
             "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
-            meta_line("01a10a8f-b31e-7852-b6e5-1e732bbada33", None, "D:\\Projects\\Marionette"),
+            meta_line(
+                "01a10a8f-b31e-7852-b6e5-1e732bbada33",
+                None,
+                "D:\\Projects\\Marionette"
+            ),
             json!({"timestamp": "2026-10-05T05:36:00.000Z", "type": "turn_context",
                    "payload": {"turn_id": "t1", "model": "gpt-6-luna", "cwd": "D:\\x"}}),
-            token_count_line("2026-10-05T05:36:08.587Z", json!({
+            token_count_line(
+                "2026-10-05T05:36:08.587Z",
+                json!({
                 "input_tokens": 28341, "cached_input_tokens": 21248,
                 "cache_write_input_tokens": 0, "output_tokens": 418,
-                "reasoning_output_tokens": 175, "total_tokens": 28759})),
-            token_count_line("2026-10-05T05:36:09.000Z", json!({
+                "reasoning_output_tokens": 175, "total_tokens": 28759})
+            ),
+            token_count_line(
+                "2026-10-05T05:36:09.000Z",
+                json!({
                 "input_tokens": 28341, "cached_input_tokens": 21248,
                 "cache_write_input_tokens": 0, "output_tokens": 418,
-                "reasoning_output_tokens": 175, "total_tokens": 28759})),
-            token_count_line("2026-10-05T05:36:18.460Z", json!({
+                "reasoning_output_tokens": 175, "total_tokens": 28759})
+            ),
+            token_count_line(
+                "2026-10-05T05:36:18.460Z",
+                json!({
                 "input_tokens": 69256, "cached_input_tokens": 48640,
                 "cache_write_input_tokens": 0, "output_tokens": 749,
-                "reasoning_output_tokens": 364, "total_tokens": 70005})),
-            token_count_line("2026-10-05T05:37:00.000Z", json!({
+                "reasoning_output_tokens": 364, "total_tokens": 70005})
+            ),
+            token_count_line(
+                "2026-10-05T05:37:00.000Z",
+                json!({
                 "input_tokens": 500, "cached_input_tokens": 100,
                 "cache_write_input_tokens": 50, "output_tokens": 20,
-                "reasoning_output_tokens": 5, "total_tokens": 570})),
+                "reasoning_output_tokens": 5, "total_tokens": 570})
+            ),
             json!({"timestamp": "2026-10-05T05:35:30.000Z", "type": "response_item",
                    "payload": {"type": "message", "role": "user",
                        "content": [{"type": "input_text", "text": "帮我看看这个仓库"}]}}),
@@ -473,7 +495,11 @@ mod tests {
                            "reasoning_output_tokens": 175, "total_tokens": 28759});
         let rows = format!(
             "{}\n{}\n{}\n{}\n",
-            meta_line("01a10a8f-0000-0000-0000-000000000001", Some("01a10a8f-aaaa-0000-000000000000"), "D:\\y"),
+            meta_line(
+                "01a10a8f-0000-0000-0000-000000000001",
+                Some("01a10a8f-aaaa-0000-000000000000"),
+                "D:\\y"
+            ),
             json!({"timestamp": "2026-10-05T05:36:08.000Z", "type": "token_usage_record",
                    "payload": {"response_id": "resp_0088", "usage": usage.clone()}}),
             json!({"timestamp": "2026-10-05T05:36:08.100Z", "type": "token_usage_record",
@@ -504,10 +530,13 @@ mod tests {
             json!({"timestamp": "2026-05-18T02:35:02.000Z", "type": "response_item",
                    "payload": {"type": "message", "role": "user",
                        "content": [{"type": "input_text", "text": "hi"}]}}),
-            token_count_line("2026-05-18T02:35:06.000Z", json!({
+            token_count_line(
+                "2026-05-18T02:35:06.000Z",
+                json!({
                 "input_tokens": 0, "cached_input_tokens": 0,
                 "cache_write_input_tokens": 0, "output_tokens": 0,
-                "reasoning_output_tokens": 0, "total_tokens": 53})),
+                "reasoning_output_tokens": 0, "total_tokens": 53})
+            ),
         );
         fs::write(&f, rows).unwrap();
         let facts = parse_rollout(&f, 0).unwrap();
@@ -530,7 +559,10 @@ mod tests {
         fs::write(&f, rows).unwrap();
         let facts = parse_rollout(&f, 0).unwrap();
         assert_eq!(facts.compactions.len(), 1);
-        assert_eq!(facts.compactions[0], iso_ms("2026-05-21T02:02:11.753Z").unwrap());
+        assert_eq!(
+            facts.compactions[0],
+            iso_ms("2026-05-21T02:02:11.753Z").unwrap()
+        );
         fs::remove_dir_all(&root).ok();
     }
 }

@@ -113,7 +113,11 @@ fn read_apply_result(dir: &Path) -> Option<String> {
     while end > 0 && !text.is_char_boundary(end) {
         end -= 1;
     }
-    Some(crate::ts!("上次自动更新失败，未能替换程序文件：{tail}", "Last auto-update failed; could not replace the program file: {tail}", tail = &text[..end]))
+    Some(crate::ts!(
+        "上次自动更新失败，未能替换程序文件：{tail}",
+        "Last auto-update failed; could not replace the program file: {tail}",
+        tail = &text[..end]
+    ))
 }
 
 pub fn check_for_update() -> AppUpdateInfo {
@@ -411,8 +415,8 @@ del "%~f0"
 pub fn apply_and_relaunch() -> Result<(), String> {
     let dir = updates_dir()?;
     let meta_path = dir.join("pending.json");
-    let meta_raw =
-        fs::read_to_string(&meta_path).map_err(|_| "No pending update — download first".to_string())?;
+    let meta_raw = fs::read_to_string(&meta_path)
+        .map_err(|_| "No pending update — download first".to_string())?;
     let meta: Value =
         serde_json::from_str(&meta_raw).map_err(|e| format!("Bad pending.json: {e}"))?;
     let new_exe = meta
@@ -507,10 +511,7 @@ mod tests {
 
     #[test]
     fn ignores_uncompressed_and_non_exe() {
-        assert_eq!(
-            picked(&["Marionette-uncompressed.exe", "notes.md"]),
-            None
-        );
+        assert_eq!(picked(&["Marionette-uncompressed.exe", "notes.md"]), None);
     }
 
     #[test]
@@ -527,7 +528,10 @@ mod tests {
 
     #[test]
     fn legacy_unversioned_names_still_match() {
-        assert_eq!(picked(&["Marionette.exe"]).as_deref(), Some("Marionette.exe"));
+        assert_eq!(
+            picked(&["Marionette.exe"]).as_deref(),
+            Some("Marionette.exe")
+        );
         assert_eq!(
             picked(&["Marionette-Engine.exe"]).as_deref(),
             Some("Marionette-Engine.exe")
@@ -570,9 +574,13 @@ mod tests {
             "资产应是完整 exe(>1MB),实际 {size} 字节"
         );
         let meta_path = dest.parent().unwrap().join("pending.json");
-        let meta: Value = serde_json::from_str(&fs::read_to_string(&meta_path).expect("pending.json 应写出"))
-            .expect("pending.json 应是合法 JSON");
-        assert_eq!(meta.get("version").and_then(Value::as_str), Some(version.as_str()));
+        let meta: Value =
+            serde_json::from_str(&fs::read_to_string(&meta_path).expect("pending.json 应写出"))
+                .expect("pending.json 应是合法 JSON");
+        assert_eq!(
+            meta.get("version").and_then(Value::as_str),
+            Some(version.as_str())
+        );
         assert_eq!(
             meta.get("path").and_then(Value::as_str),
             Some(dest.to_string_lossy().as_ref())

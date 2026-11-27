@@ -92,7 +92,10 @@ fn ensure_started(app: &AppHandle) -> Option<u16> {
     }
     let server = tiny_http::Server::http("127.0.0.1:0").ok()?;
     let port = server.server_addr().to_ip().map(|addr| addr.port())?;
-    let _ = SERVER.set(ServerState { port, app: app.clone() });
+    let _ = SERVER.set(ServerState {
+        port,
+        app: app.clone(),
+    });
     std::thread::Builder::new()
         .name("tools-mcp".to_string())
         .spawn(move || {
@@ -127,7 +130,8 @@ fn handle_request(mut request: tiny_http::Request) {
     }
     let session_id = bearer_session(&request);
     let Some(session_id) = session_id else {
-        let _ = request.respond(tiny_http::Response::from_string("unauthorized").with_status_code(401));
+        let _ =
+            request.respond(tiny_http::Response::from_string("unauthorized").with_status_code(401));
         return;
     };
     let mut body = String::new();
@@ -136,7 +140,8 @@ fn handle_request(mut request: tiny_http::Request) {
         .take((MAX_BODY_BYTES + 1) as u64)
         .read_to_string(&mut body);
     if capped.is_err() || body.len() > MAX_BODY_BYTES {
-        let _ = request.respond(tiny_http::Response::from_string("body too large").with_status_code(413));
+        let _ = request
+            .respond(tiny_http::Response::from_string("body too large").with_status_code(413));
         return;
     }
     let message: Value = match serde_json::from_str(&body) {
@@ -167,20 +172,28 @@ fn handle_request(mut request: tiny_http::Request) {
         return;
     }
     let id = id.unwrap_or(Value::Null);
-    let method = message.get("method").and_then(Value::as_str).unwrap_or("").to_string();
+    let method = message
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let params = message.get("params").cloned().unwrap_or(Value::Null);
     let result = route(&method, &params, &session_id);
     let payload = match result {
         Ok(value) => json!({"jsonrpc": "2.0", "id": id, "result": value}),
         Err(error) => json!({"jsonrpc": "2.0", "id": id, "error": error}),
     };
-    let response = tiny_http::Response::from_string(payload.to_string())
-        .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
+    let response = tiny_http::Response::from_string(payload.to_string()).with_header(
+        tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
+    );
     let _ = request.respond(response);
 }
 
 fn bearer_session(request: &tiny_http::Request) -> Option<String> {
-    let header = request.headers().iter().find(|h| h.field.equiv("Authorization"))?;
+    let header = request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Authorization"))?;
     let value = header.value.as_str();
     let token = value.strip_prefix("Bearer ").map(str::trim_start)?;
     let guard = TOKENS.read().ok()?;
@@ -211,7 +224,10 @@ fn merge_delegate_kit(base: Value, session_id: &str) -> Value {
             .and_then(|tools| {
                 tools
                     .iter()
-                    .find(|tool| tool.get("name").and_then(Value::as_str) == Some(crate::delegation::SUBMIT_OUTPUT))
+                    .find(|tool| {
+                        tool.get("name").and_then(Value::as_str)
+                            == Some(crate::delegation::SUBMIT_OUTPUT)
+                    })
                     .cloned()
             })
         {
@@ -290,7 +306,11 @@ fn route(method: &str, params: &Value, session_id: &str) -> Result<Value, Value>
                         match &outcome {
                             Ok(value) => {
                                 let errored = value.get("error").is_some();
-                                if errored { "refused" } else { "ok" }
+                                if errored {
+                                    "refused"
+                                } else {
+                                    "ok"
+                                }
                             }
                             Err(_) => "host-error",
                         }
@@ -319,12 +339,7 @@ fn route(method: &str, params: &Value, session_id: &str) -> Result<Value, Value>
 // ---------------------------------------------------------------------------
 
 fn tool_schemas() -> Value {
-    fn tool(
-        name: &str,
-        description: &str,
-        required: &[&str],
-        properties: Value,
-    ) -> Value {
+    fn tool(name: &str, description: &str, required: &[&str], properties: Value) -> Value {
         json!({
             "name": name,
             "description": description,
@@ -750,12 +765,11 @@ fn help_payload(topic: &str) -> Result<Value, String> {
         .unwrap()
         .iter()
         .filter(|tool| {
-            tool["name"].as_str().is_some_and(|name| name.starts_with("browser_"))
+            tool["name"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("browser_"))
         })
-        .filter(|tool| {
-            related.is_empty()
-                || related.contains(&tool["name"].as_str().unwrap_or(""))
-        })
+        .filter(|tool| related.is_empty() || related.contains(&tool["name"].as_str().unwrap_or("")))
         .map(|tool| {
             json!({
                 "name": tool["name"],
@@ -778,9 +792,9 @@ fn help_payload(topic: &str) -> Result<Value, String> {
 #[cfg(target_os = "windows")]
 use crate::browser::agent::SnapshotRequest;
 #[cfg(target_os = "windows")]
-use crate::browser::{self, batch};
-#[cfg(target_os = "windows")]
 use crate::browser::surface;
+#[cfg(target_os = "windows")]
+use crate::browser::{self, batch};
 
 /// Interval between two polls of a wait condition. Each poll is one short
 /// eval through the process-wide CDP lease, so other tabs interleave freely.
@@ -827,8 +841,14 @@ fn poll_until(
 /// timeout names what was actually seen — never a bare "try again".
 fn wait_ref_record(target: &str, state: &str, waited_ms: u64, last: &Value) -> Value {
     let found = last.get("found").and_then(Value::as_bool).unwrap_or(false);
-    let connected = last.get("connected").and_then(Value::as_bool).unwrap_or(false);
-    let visible = last.get("visible").and_then(Value::as_bool).unwrap_or(false);
+    let connected = last
+        .get("connected")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let visible = last
+        .get("visible")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let reached = match state {
         "attached" => found && connected,
         "visible" => found && connected && visible,
@@ -871,12 +891,18 @@ fn load_state_reached(state: &str, ready_state: &str) -> bool {
 
 /// Classify a finished load-state poll the same way.
 fn load_state_record(state: &str, waited_ms: u64, last: &Value) -> Value {
-    let ready = last.get("readyState").and_then(Value::as_str).unwrap_or("unknown");
+    let ready = last
+        .get("readyState")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
     let reached = load_state_reached(state, ready);
-    let mut record = json!({ "ok": reached, "state": state, "readyState": ready, "waitedMs": waited_ms });
+    let mut record =
+        json!({ "ok": reached, "state": state, "readyState": ready, "waitedMs": waited_ms });
     if !reached {
         record["error"] = json!("timeout");
-        record["detail"] = json!(format!("the document was still in readyState '{ready}' when the deadline passed"));
+        record["detail"] = json!(format!(
+            "the document was still in readyState '{ready}' when the deadline passed"
+        ));
     }
     record
 }
@@ -901,11 +927,10 @@ fn execute_batch_step(
         | batch::BatchStep::SelectOption { .. } => {
             let request = batch::action_request(step, generation)
                 .ok_or("batch control step lost its action during execution")?;
-            browser::tool_call(app, tab_id, move |s| surface::act(s, &request))
-                .map(|mut value| {
-                    batch::condense(index, step, &mut value);
-                    value
-                })
+            browser::tool_call(app, tab_id, move |s| surface::act(s, &request)).map(|mut value| {
+                batch::condense(index, step, &mut value);
+                value
+            })
         }
         batch::BatchStep::SetValue { target, value } => {
             let generation = generation.to_string();
@@ -919,7 +944,11 @@ fn execute_batch_step(
                 answer
             })
         }
-        batch::BatchStep::WaitForSelector { target, state, timeout_ms } => {
+        batch::BatchStep::WaitForSelector {
+            target,
+            state,
+            timeout_ms,
+        } => {
             let step_deadline = Instant::now() + Duration::from_millis(*timeout_ms);
             let deadline = batch_deadline.min(step_deadline);
             let call = browser::probe::wait_ref_state_call(generation, target);
@@ -937,7 +966,8 @@ fn execute_batch_step(
                     _ => false,
                 }
             })?;
-            let mut record = wait_ref_record(&target, state, started.elapsed().as_millis() as u64, &last);
+            let mut record =
+                wait_ref_record(&target, state, started.elapsed().as_millis() as u64, &last);
             record["index"] = json!(index);
             record["op"] = json!("waitForSelector");
             Ok(record)
@@ -949,7 +979,10 @@ fn execute_batch_step(
             let started = Instant::now();
             let state = *state;
             let last = poll_until(app, tab_id, call, deadline, move |value| {
-                let ready = value.get("readyState").and_then(Value::as_str).unwrap_or("");
+                let ready = value
+                    .get("readyState")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
                 load_state_reached(state, ready)
             })?;
             let mut record = load_state_record(state, started.elapsed().as_millis() as u64, &last);
@@ -957,37 +990,38 @@ fn execute_batch_step(
             record["op"] = json!("waitForLoadState");
             Ok(record)
         }
-        batch::BatchStep::PageState => {
-            browser::tool_read(app, tab_id, |s| surface::probe(s, &browser::probe::state_call()))
-                .map(|state| json!({ "index": index, "op": "pageState", "ok": true, "state": state }))
-        }
-        batch::BatchStep::PageReady => {
-            browser::tool_read(app, tab_id, |s| surface::probe(s, &browser::probe::ready_call()))
-                .map(|ready| json!({ "index": index, "op": "pageReady", "ok": true, "ready": ready }))
-        }
+        batch::BatchStep::PageState => browser::tool_read(app, tab_id, |s| {
+            surface::probe(s, &browser::probe::state_call())
+        })
+        .map(|state| json!({ "index": index, "op": "pageState", "ok": true, "state": state })),
+        batch::BatchStep::PageReady => browser::tool_read(app, tab_id, |s| {
+            surface::probe(s, &browser::probe::ready_call())
+        })
+        .map(|ready| json!({ "index": index, "op": "pageReady", "ok": true, "ready": ready })),
         batch::BatchStep::Snapshot { max_chars } => {
-            let request = SnapshotRequest { max_chars: *max_chars };
-            browser::tool_read(app, tab_id, move |s| surface::snapshot(s, &request))
-                .map(|value| {
-                    // A successful snapshot step re-seats the batch's
-                    // generation: later steps would use the new refs table
-                    // (and since snapshot is terminal-only, nothing here
-                    // still holds the old one).
-                    if let Some(token) = value.get("generation").and_then(Value::as_str) {
-                        *final_generation = token.to_string();
-                    }
-                    json!({
-                        "index": index,
-                        "op": "snapshot",
-                        "ok": true,
-                        "generation": value.get("generation"),
-                        "title": value.get("title"),
-                        "url": value.get("url"),
-                        "refsCount": value.get("refsCount"),
-                        "truncated": value.get("truncated"),
-                        "tree": value.get("tree"),
-                    })
+            let request = SnapshotRequest {
+                max_chars: *max_chars,
+            };
+            browser::tool_read(app, tab_id, move |s| surface::snapshot(s, &request)).map(|value| {
+                // A successful snapshot step re-seats the batch's
+                // generation: later steps would use the new refs table
+                // (and since snapshot is terminal-only, nothing here
+                // still holds the old one).
+                if let Some(token) = value.get("generation").and_then(Value::as_str) {
+                    *final_generation = token.to_string();
+                }
+                json!({
+                    "index": index,
+                    "op": "snapshot",
+                    "ok": true,
+                    "generation": value.get("generation"),
+                    "title": value.get("title"),
+                    "url": value.get("url"),
+                    "refsCount": value.get("refsCount"),
+                    "truncated": value.get("truncated"),
+                    "tree": value.get("tree"),
                 })
+            })
         }
     }
 }
@@ -1013,7 +1047,11 @@ fn control_gate(
     use crate::browser;
     let level = browser::grant_level(app, tab_id)?;
     let opened_by_agent = browser::tab_opened_by_agent(app, tab_id)?;
-    if control_auto_allowed(level, opened_by_agent, browser::session_auto_approves(session_id)) {
+    if control_auto_allowed(
+        level,
+        opened_by_agent,
+        browser::session_auto_approves(session_id),
+    ) {
         return Ok(None);
     }
     let allowed = browser::request_permission(
@@ -1097,18 +1135,11 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
         }
         "browser_open_tab" => {
             let url = arg_str(args, "url")?;
-            let display = browser::normalize_open_display(
-                args.get("display").and_then(Value::as_str),
-            )?;
+            let display =
+                browser::normalize_open_display(args.get("display").and_then(Value::as_str))?;
             let chosen_id = args.get("id").and_then(Value::as_str);
-            let (tab_id, existed) = browser::open_tab(
-                app,
-                &url,
-                true,
-                display,
-                Some(session_id),
-                chosen_id,
-            )?;
+            let (tab_id, existed) =
+                browser::open_tab(app, &url, true, display, Some(session_id), chosen_id)?;
             Ok(json!({
                 "tabId": tab_id,
                 "id": chosen_id,
@@ -1132,14 +1163,7 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
                 .and_then(Value::as_u64)
                 .unwrap_or(120)
                 .clamp(15, 300);
-            browser::request_handoff(
-                app,
-                session_id,
-                &tab_id,
-                title,
-                &message,
-                timeout_secs,
-            )
+            browser::request_handoff(app, session_id, &tab_id, title, &message, timeout_secs)
         }
         "browser_close_tab" => {
             let tab_id = arg_str(args, "tabId")?;
@@ -1174,23 +1198,27 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
         }
         "browser_page_state" => {
             let tab_id = arg_str(args, "tabId")?;
-            browser::tool_read(app, &tab_id, move |s| surface::probe(s, &browser::probe::state_call()))
-                .map(|mut value| {
-                    if let Some(object) = value.as_object_mut() {
-                        object.insert("tabId".to_string(), json!(tab_id));
-                    }
-                    value
-                })
+            browser::tool_read(app, &tab_id, move |s| {
+                surface::probe(s, &browser::probe::state_call())
+            })
+            .map(|mut value| {
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("tabId".to_string(), json!(tab_id));
+                }
+                value
+            })
         }
         "browser_page_ready" => {
             let tab_id = arg_str(args, "tabId")?;
-            browser::tool_read(app, &tab_id, move |s| surface::probe(s, &browser::probe::ready_call()))
-                .map(|mut value| {
-                    if let Some(object) = value.as_object_mut() {
-                        object.insert("tabId".to_string(), json!(tab_id));
-                    }
-                    value
-                })
+            browser::tool_read(app, &tab_id, move |s| {
+                surface::probe(s, &browser::probe::ready_call())
+            })
+            .map(|mut value| {
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("tabId".to_string(), json!(tab_id));
+                }
+                value
+            })
         }
         "browser_console_messages" => {
             let tab_id = arg_str(args, "tabId")?;
@@ -1199,24 +1227,29 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
                 .and_then(Value::as_u64)
                 .unwrap_or(DEFAULT_CONSOLE_LIMIT as u64)
                 .clamp(1, 1000) as usize;
-            browser::tool_read(app, &tab_id, move |s| Ok(surface::console_lines(s, limit)))
-                .map(|mut value| {
+            browser::tool_read(app, &tab_id, move |s| Ok(surface::console_lines(s, limit))).map(
+                |mut value| {
                     if let Some(object) = value.as_object_mut() {
                         object.insert("tabId".to_string(), json!(tab_id));
                     }
                     value
-                })
+                },
+            )
         }
         "browser_screenshot" => {
             let tab_id = arg_str(args, "tabId")?;
-            let max_width = args.get("maxWidth").and_then(Value::as_u64).map(|w| w as u32);
-            browser::tool_read(app, &tab_id, move |s| surface::screenshot(s, max_width))
-                .map(|mut value| {
+            let max_width = args
+                .get("maxWidth")
+                .and_then(Value::as_u64)
+                .map(|w| w as u32);
+            browser::tool_read(app, &tab_id, move |s| surface::screenshot(s, max_width)).map(
+                |mut value| {
                     if let Some(object) = value.as_object_mut() {
                         object.insert("tabId".to_string(), json!(tab_id));
                     }
                     value
-                })
+                },
+            )
         }
         // ── Waits (read level): poll a cheap page-side check, never sleep
         // on the main thread, every wait has a hard deadline ──────────────
@@ -1224,9 +1257,15 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
             let tab_id = arg_str(args, "tabId")?;
             let generation = arg_str(args, "generation")?;
             let target = arg_str(args, "ref")?;
-            let state = args.get("state").and_then(Value::as_str).unwrap_or("visible");
+            let state = args
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("visible");
             if !batch::WAIT_STATES.contains(&state) {
-                return Err(format!("state must be one of {}", batch::WAIT_STATES.join("|")));
+                return Err(format!(
+                    "state must be one of {}",
+                    batch::WAIT_STATES.join("|")
+                ));
             }
             let timeout = args
                 .get("timeoutMs")
@@ -1236,20 +1275,26 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
             let call = browser::probe::wait_ref_state_call(&generation, &target);
             let started = Instant::now();
             let state_owned = state.to_string();
-            let last = poll_until(app, &tab_id, call, Instant::now() + Duration::from_millis(timeout), {
-                let state_owned = state_owned.clone();
-                move |value| {
-                    let connected = value.get("connected").and_then(Value::as_bool);
-                    let visible = value.get("visible").and_then(Value::as_bool);
-                    match state_owned.as_str() {
-                        "attached" => connected == Some(true),
-                        "visible" => visible == Some(true),
-                        "hidden" => connected == Some(true) && visible == Some(false),
-                        "detached" => connected == Some(false),
-                        _ => false,
+            let last = poll_until(
+                app,
+                &tab_id,
+                call,
+                Instant::now() + Duration::from_millis(timeout),
+                {
+                    let state_owned = state_owned.clone();
+                    move |value| {
+                        let connected = value.get("connected").and_then(Value::as_bool);
+                        let visible = value.get("visible").and_then(Value::as_bool);
+                        match state_owned.as_str() {
+                            "attached" => connected == Some(true),
+                            "visible" => visible == Some(true),
+                            "hidden" => connected == Some(true) && visible == Some(false),
+                            "detached" => connected == Some(false),
+                            _ => false,
+                        }
                     }
-                }
-            })?;
+                },
+            )?;
             let mut record =
                 wait_ref_record(&target, state, started.elapsed().as_millis() as u64, &last);
             if let Some(object) = record.as_object_mut() {
@@ -1261,7 +1306,10 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
             let tab_id = arg_str(args, "tabId")?;
             let state = args.get("state").and_then(Value::as_str).unwrap_or("load");
             if !batch::LOAD_STATES.contains(&state) {
-                return Err(format!("state must be one of {}", batch::LOAD_STATES.join("|")));
+                return Err(format!(
+                    "state must be one of {}",
+                    batch::LOAD_STATES.join("|")
+                ));
             }
             let timeout = args
                 .get("timeoutMs")
@@ -1271,15 +1319,23 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
             let call = browser::probe::state_call();
             let started = Instant::now();
             let state_owned = state.to_string();
-            let last = poll_until(app, &tab_id, call, Instant::now() + Duration::from_millis(timeout), {
-                let state_owned = state_owned.clone();
-                move |value| {
-                    let ready = value.get("readyState").and_then(Value::as_str).unwrap_or("");
-                    load_state_reached(state_owned.as_str(), ready)
-                }
-            })?;
-            let mut record =
-                load_state_record(state, started.elapsed().as_millis() as u64, &last);
+            let last = poll_until(
+                app,
+                &tab_id,
+                call,
+                Instant::now() + Duration::from_millis(timeout),
+                {
+                    let state_owned = state_owned.clone();
+                    move |value| {
+                        let ready = value
+                            .get("readyState")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        load_state_reached(state_owned.as_str(), ready)
+                    }
+                },
+            )?;
+            let mut record = load_state_record(state, started.elapsed().as_millis() as u64, &last);
             if let Some(object) = record.as_object_mut() {
                 object.insert("tabId".to_string(), json!(tab_id));
             }
@@ -1291,7 +1347,10 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
                 .get("accept")
                 .and_then(Value::as_bool)
                 .ok_or("missing argument: accept (true to accept, false to dismiss)")?;
-            let prompt_text = args.get("promptText").and_then(Value::as_str).map(str::to_string);
+            let prompt_text = args
+                .get("promptText")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             let summary = if accept {
                 "accept the page dialog"
             } else {
@@ -1312,7 +1371,11 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
             .map_err(|e| format!("dialog failed: {e}"))
         }
         // ── Control level ──────────────────────────────────────────────
-        "browser_click" | "browser_hover" | "browser_type" | "browser_press_key" | "browser_select_option" => {
+        "browser_click"
+        | "browser_hover"
+        | "browser_type"
+        | "browser_press_key"
+        | "browser_select_option" => {
             let tab_id = arg_str(args, "tabId")?;
             let generation = arg_str(args, "generation")?;
             let target = args.get("ref").and_then(Value::as_str).map(str::to_string);
@@ -1355,7 +1418,11 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
             if let Some(refusal) = control_gate(app, session_id, &tab_id, &summary)? {
                 return Ok(refusal);
             }
-            let request = ActionRequest { generation, target, action };
+            let request = ActionRequest {
+                generation,
+                target,
+                action,
+            };
             browser::tool_call(app, &tab_id, move |s| surface::act(s, &request))
                 .map(|mut value| {
                     if let Some(object) = value.as_object_mut() {
@@ -1376,7 +1443,8 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
                 .get("value")
                 .cloned()
                 .ok_or_else(|| "missing argument: value".to_string())?;
-            if let Some(refusal) = control_gate(app, session_id, &tab_id, "set a control's value")? {
+            if let Some(refusal) = control_gate(app, session_id, &tab_id, "set a control's value")?
+            {
                 return Ok(refusal);
             }
             browser::tool_call(app, &tab_id, move |s| {
@@ -1394,7 +1462,10 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
         "browser_batch" => {
             let tab_id = arg_str(args, "tabId")?;
             let generation = arg_str(args, "generation")?;
-            let stop_on_error = args.get("stopOnError").and_then(Value::as_bool).unwrap_or(true);
+            let stop_on_error = args
+                .get("stopOnError")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
             let steps = batch::validate(args.get("steps").unwrap_or(&Value::Null))?;
             let started = Instant::now();
             let mut records: Vec<Value> = Vec::new();
@@ -1502,8 +1573,14 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
                 "computer_click" => WindowAction::Click {
                     x: args.get("x").and_then(Value::as_f64),
                     y: args.get("y").and_then(Value::as_f64),
-                    token: args.get("token").and_then(Value::as_str).map(str::to_string),
-                    button: args.get("button").and_then(Value::as_str).map(str::to_string),
+                    token: args
+                        .get("token")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    button: args
+                        .get("button")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
                     count: args.get("count").and_then(Value::as_u64).map(|c| c as u8),
                     modifiers: Vec::new(),
                 },
@@ -1517,19 +1594,32 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
                 "computer_scroll" => WindowAction::Scroll {
                     direction: arg_str(args, "direction")?,
                     amount: args.get("amount").and_then(Value::as_u64).unwrap_or(3) as u32,
-                    unit: args.get("unit").and_then(Value::as_str).unwrap_or("line").to_string(),
+                    unit: args
+                        .get("unit")
+                        .and_then(Value::as_str)
+                        .unwrap_or("line")
+                        .to_string(),
                     x: args.get("x").and_then(Value::as_f64),
                     y: args.get("y").and_then(Value::as_f64),
-                    token: args.get("token").and_then(Value::as_str).map(str::to_string),
+                    token: args
+                        .get("token")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
                 },
                 "computer_type" => WindowAction::Type {
-                    token: args.get("token").and_then(Value::as_str).map(str::to_string),
+                    token: args
+                        .get("token")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
                     text: arg_str(args, "text")?,
                     submit: args.get("submit").and_then(Value::as_bool).unwrap_or(false),
                 },
                 "computer_press_key" => WindowAction::Press {
                     key: arg_str(args, "key")?,
-                    token: args.get("token").and_then(Value::as_str).map(str::to_string),
+                    token: args
+                        .get("token")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
                 },
                 "computer_set_value" => WindowAction::SetValue {
                     token: arg_str(args, "token")?,
@@ -1537,18 +1627,27 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
                 },
                 _ => WindowAction::Restore,
             };
-            computer::tool_act(app, session_id, &json!({
-                "pid": args.get("pid"),
-                "windowId": args.get("windowId"),
-                "action": action,
-            }))
+            computer::tool_act(
+                app,
+                session_id,
+                &json!({
+                    "pid": args.get("pid"),
+                    "windowId": args.get("windowId"),
+                    "action": action,
+                }),
+            )
         }
         _ => Err(format!("unknown tool: {name}")),
     }
 }
 
 #[cfg(not(target_os = "windows"))]
-fn dispatch(_app: &AppHandle, _session_id: &str, name: &str, _args: &Value) -> Result<Value, String> {
+fn dispatch(
+    _app: &AppHandle,
+    _session_id: &str,
+    name: &str,
+    _args: &Value,
+) -> Result<Value, String> {
     Err(format!("tool unavailable on this platform: {name}"))
 }
 
@@ -1691,8 +1790,8 @@ mod tests {
         );
 
         for topic in HELP_TOPICS {
-            let payload = help_payload(topic)
-                .unwrap_or_else(|e| panic!("topic {topic} must exist: {e}"));
+            let payload =
+                help_payload(topic).unwrap_or_else(|e| panic!("topic {topic} must exist: {e}"));
             let text = payload["text"].as_str().unwrap_or("");
             for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
                 if word.starts_with("browser_") {

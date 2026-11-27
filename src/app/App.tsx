@@ -185,7 +185,11 @@ import {
 } from "../lib/workspaceSurface";
 import { memoList, memoPrompt } from "../lib/memos";
 import { installPageDragSourceTracker } from "../lib/dragText";
-import { splitShelfChatSessions, withoutGhostProjects } from "../lib/sessionGroups";
+import {
+  isDelegatedWorkerSession,
+  splitShelfChatSessions,
+  withoutGhostProjects,
+} from "../lib/sessionGroups";
 import { parseAvailableCommandsUpdate } from "../lib/slashCommands";
 import type { PlanEntry } from "../lib/acpPlan";
 import { parseAcpPlanUpdate } from "../lib/acpPlan";
@@ -211,6 +215,7 @@ import {
 } from "../lib/todos";
 import { parseDelegateLine } from "../lib/delegate";
 import {
+  clampEffortIdToLiveMenu,
   expandAcpConfigAttempts,
   mergeAcpCapabilities,
   normalizeAgentModeId,
@@ -400,6 +405,7 @@ type ComposerChipSnapshot = {
   modeLabel?: string | null;
   modelId?: string | null;
   modelLabel?: string | null;
+  providerLabel?: string | null;
   effortId?: string | null;
   effort?: number | null;
   effortLabel?: string | null;
@@ -892,6 +898,7 @@ function AppMain() {
     agentLabel?: string;
     modelId?: string;
     modelLabel?: string;
+    providerLabel?: string;
     modeLabel?: string;
     effortLabel?: string;
   } | null>(null);
@@ -5214,7 +5221,12 @@ function AppMain() {
   /** 收纳盒-grown dialogs (origin "memo") — their own shelf group. */
   const memoSessions = shelfChatSplit.memo;
   const projectOnlySessions = useMemo(
-    () => availableSessions.filter((session) => session.projectId !== CHAT_PROJECT_ID),
+    () =>
+      availableSessions.filter(
+        (session) =>
+          session.projectId !== CHAT_PROJECT_ID &&
+          !isDelegatedWorkerSession(session),
+      ),
     [availableSessions],
   );
 
@@ -5240,7 +5252,11 @@ function AppMain() {
     if (!dockActive) return [];
     void dockListTick;
     return availableSessions
-      .filter((session) => session.id === currentSessionId || canPark(session))
+      .filter(
+        (session) =>
+          session.id === currentSessionId ||
+          (!isDelegatedWorkerSession(session) && canPark(session)),
+      )
       .sort((a, b) => lastActiveMs(b) - lastActiveMs(a));
   }, [availableSessions, currentSessionId, dockActive, dockListTick]);
 
@@ -5344,6 +5360,15 @@ function AppMain() {
         })),
     [staffController.tasks],
   );
+  const delegateTasksById = useMemo(
+    () =>
+      new Map(
+        staffController.tasks
+          .filter((task) => !task.staffId)
+          .map((task) => [task.taskId, task] as const),
+      ),
+    [staffController.tasks],
+  );
 
   const backgroundTasks = useMemo(() => {
     void backgroundTick;
@@ -5400,6 +5425,23 @@ function AppMain() {
       sessionLabels,
     });
   }, [backgroundTick, acpTerminals, availableSessions, currentSessionId, permissionPrompt, askPrompt, planApproval, locale, agentDelegateSnapshots]);
+
+  /**
+   * Delegated agents have their own section, as they do in T3 Code's thread
+   * details. The generic background panel keeps terminals, queue state and
+   * human-attention rows.
+   */
+  const currentAgentTasks = useMemo(
+    () =>
+      backgroundTasks.filter(
+        (row) => row.kind === "agent-delegate" && row.fromCurrent,
+      ),
+    [backgroundTasks],
+  );
+  const nonAgentBackgroundTasks = useMemo(
+    () => backgroundTasks.filter((row) => row.kind !== "agent-delegate"),
+    [backgroundTasks],
+  );
 
   const handleKillBackgroundTerminal = useCallback((terminalId: string) => {
     void killAcpTerminal(terminalId).catch(() => undefined);
@@ -8341,6 +8383,7 @@ function AppMain() {
               agentLabel: original.agentLabel,
               modelId: original.modelId,
               modelLabel: original.modelLabel,
+              providerLabel: original.providerLabel,
               modeLabel: original.modeLabel,
               effortLabel: original.effortLabel,
             }
@@ -8350,6 +8393,7 @@ function AppMain() {
         agentLabel: fromOriginal.agentLabel || agent.label,
         modelId: fromOriginal.modelId || session.preferredModel || undefined,
         modelLabel: fromOriginal.modelLabel,
+        providerLabel: fromOriginal.providerLabel,
         modeLabel: fromOriginal.modeLabel,
         effortLabel: fromOriginal.effortLabel,
       };
@@ -9053,6 +9097,7 @@ function AppMain() {
         agentLabel: sendAgent.label,
         modelId: modelId ?? undefined,
         modelLabel: modelLabel ?? undefined,
+        providerLabel: composerSnap?.providerLabel?.trim() || undefined,
         modeLabel: modeLabel ?? undefined,
         effortLabel: effortLabelVal || undefined,
       };
@@ -9126,7 +9171,11 @@ function AppMain() {
           isBridgePrefTransientlyMissing(sendRow?.preferredModel, caps);
         if (modelId && !transientPref) prefsPatch.preferredModel = modelId;
         if (modeId) prefsPatch.preferredMode = modeId;
-        if (effortId) prefsPatch.preferredEffortId = effortId;
+        if (effortId) {
+          // Never persist a level this model's menu does not offer: it would be
+          // re-pushed every turn and rejected every time (effort not found).
+          prefsPatch.preferredEffortId = clampEffortIdToLiveMenu(effortId, caps);
+        }
         if (sendEffort != null) prefsPatch.preferredEffort = sendEffort;
         if (Object.keys(prefsPatch).length > 0) persistComposerPrefs(sid, prefsPatch);
       }
@@ -10133,6 +10182,19 @@ function AppMain() {
     const ownerStaff = ownerTask?.staffId
       ? staffController.profiles.find((profile) => profile.staffId === ownerTask.staffId)
       : null;
+    const lineageParentId =
+      session.lineage?.relationship === "subagent"
+        ? session.lineage.parentSessionId
+        : null;
+    const delegatedParent =
+      (lineageParentId
+        ? availableSessions.find((item) => item.id === lineageParentId) ?? null
+        : null) ??
+      (ownerTask &&
+      !ownerStaff &&
+      (session.origin === "agent-worker" || session.origin === "chief-worker")
+        ? availableSessions.find((item) => item.id === ownerTask.chiefSessionId) ?? null
+        : null);
     const staffChat = isStaffChatSession(session);
     const sessionStaff = staffForSession(staffController.profiles, session.id);
     const staffIdentity = staffChat
@@ -10142,6 +10204,15 @@ function AppMain() {
       : null;
     return (
       <>
+        <div className="conversation-surface">
+        {delegatedParent ? (
+          <div className="staff-worker-breadcrumb">
+            <span>{t("agents.fromParent", { name: delegatedParent.label })}</span>
+            <button type="button" onClick={() => openSession(delegatedParent)}>
+              {t("agents.backToParent")}
+            </button>
+          </div>
+        ) : null}
         {ownerStaff ? (
           <div className="staff-worker-breadcrumb">
             <span>
@@ -10163,6 +10234,7 @@ function AppMain() {
         <SessionView
           agent={agent}
           events={events}
+          delegateTasks={delegateTasksById}
           session={session}
           staffIdentity={staffIdentity}
           olderCount={olderHeadsRef.current[session.id]?.firstLine ?? 0}
@@ -10212,6 +10284,44 @@ function AppMain() {
           onAgentSubtaskSend={(taskId, text) => {
             void delegationSendTask(taskId, text, true).catch(() => undefined);
           }}
+          onAgentSubtaskOpen={(childId) => {
+            const known = availableSessions.find((item) => item.id === childId);
+            if (known) {
+              if (
+                !IS_DETACHED_WINDOW &&
+                !dockActive &&
+                window.innerWidth >= 1100 &&
+                !paneOfSession(splitStateRef.current, known.id)
+              ) {
+                handleOpenBeside(known, "right");
+              } else {
+                openSession(known);
+              }
+              return;
+            }
+            const loadWorker = session.projectId && session.projectId !== CHAT_PROJECT_ID
+              ? listSessions(session.projectId)
+              : listChatSessions();
+            void loadWorker.then((sessions) => {
+              const loaded = sessions.find((item) => item.id === childId);
+              if (!loaded) return;
+              const next = asIdleOnLoad(loaded);
+              setAvailableSessions((current) => [
+                next,
+                ...current.filter((item) => item.id !== next.id),
+              ]);
+              if (
+                !IS_DETACHED_WINDOW &&
+                !dockActive &&
+                window.innerWidth >= 1100 &&
+                !paneOfSession(splitStateRef.current, next.id)
+              ) {
+                handleOpenBeside(next, "right");
+              } else {
+                openSession(next);
+              }
+            }).catch(() => undefined);
+          }}
           onSubtaskQuote={(summary) => {
             const block = `> ${summary.replace(/\n/g, "\n> ").slice(0, 2000)}\n\n`;
             setComposerPrefill({ sessionId: session.id, text: block, token: Date.now() });
@@ -10257,6 +10367,7 @@ function AppMain() {
             onPlanPermissionChoose: (optionId) => void handlePlanPermissionChoose(optionId),
           }}
         />
+        </div>
         <div className="composer-slot">
         <div className="composer-slot__notices">
         {queuedSends.length > 0 && (() => {
@@ -10684,7 +10795,7 @@ function AppMain() {
         <ToastStack />
         {paletteOpen && (
           <CommandPalette
-            sessions={availableSessions}
+            sessions={projectOnlySessions}
             chatSessions={[...chatSessions, ...memoSessions]}
             projects={shelfProjects}
             currentSessionId={displaySession.id}
@@ -11479,7 +11590,8 @@ function AppMain() {
           }}
           resizeDragging={resizingSide === "right"}
           onResizeStart={() => setResizingSide("right")}
-          backgroundTasks={backgroundTasks}
+          backgroundTasks={nonAgentBackgroundTasks}
+          agentTasks={currentAgentTasks}
           sessionLabels={sessionLabelsForBackground}
           onOpenBackgroundTask={handleOpenBackgroundTask}
           onKillBackgroundTerminal={handleKillBackgroundTerminal}

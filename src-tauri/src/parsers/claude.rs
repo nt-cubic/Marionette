@@ -145,7 +145,11 @@ impl AgentParser for ClaudeParser {
                 }
                 let native_id = meta
                     .session_id
-                    .or_else(|| path.file_stem().and_then(|s| s.to_str()).map(str::to_string))
+                    .or_else(|| {
+                        path.file_stem()
+                            .and_then(|s| s.to_str())
+                            .map(str::to_string)
+                    })
                     .unwrap_or_else(|| "unknown".into());
                 let title = meta
                     .title
@@ -177,7 +181,10 @@ impl AgentParser for ClaudeParser {
             return Err(format!("Claude session not found: {locator}"));
         }
         let file = fs::File::open(path).map_err(|e| format!("read claude jsonl: {e}"))?;
-        let session_id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("claude");
+        let session_id = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("claude");
         let mut events = Vec::new();
         let mut idx: u64 = 0;
         for line in BufReader::new(file).lines() {
@@ -245,7 +252,9 @@ fn extract_claude_message_text(message: Option<&Value>) -> String {
     extract_text(message.and_then(|m| m.get("content")).or(message))
 }
 
-fn extract_assistant_parts(message: Option<&Value>) -> (String, Vec<String>, Vec<(String, String)>) {
+fn extract_assistant_parts(
+    message: Option<&Value>,
+) -> (String, Vec<String>, Vec<(String, String)>) {
     let mut text_parts = Vec::new();
     let mut thoughts = Vec::new();
     let mut tools = Vec::new();

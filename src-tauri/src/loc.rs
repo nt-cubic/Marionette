@@ -73,13 +73,17 @@ fn code(lang: Lang) -> u8 {
 }
 
 fn language_file_path() -> Option<PathBuf> {
-    crate::app_paths::global_dir().ok().map(|dir| dir.join("language"))
+    crate::app_paths::global_dir()
+        .ok()
+        .map(|dir| dir.join("language"))
 }
 
 /// Activate + persist (best effort: a read-only dir leaves the in-memory value).
 pub fn set(lang: Lang) {
     LANG.store(code(lang), Ordering::Relaxed);
-    let Some(path) = language_file_path() else { return };
+    let Some(path) = language_file_path() else {
+        return;
+    };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }

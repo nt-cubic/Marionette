@@ -20,7 +20,8 @@ pub fn navigate_webview(label: String, url: String, app: AppHandle) -> Result<()
         "try{{window.location.replace({})}}catch(e){{}}",
         serde_json::to_string(&url).unwrap_or_else(|_| "\"about:blank\"".into())
     );
-    win.eval(&js).map_err(|e| format!("eval navigate failed: {e}"))
+    win.eval(&js)
+        .map_err(|e| format!("eval navigate failed: {e}"))
 }
 
 #[tauri::command(async)]
@@ -69,14 +70,20 @@ pub fn open_here(
 ) -> Result<serde_json::Value, String> {
     let _trace = crate::debug_log::CmdTrace::new("open_here");
     if crate::storage::StorageService::has_marionette_dir(&path) {
-        let storage = state.storage.lock().map_err(|_| "Storage lock poisoned".to_string())?;
+        let storage = state
+            .storage
+            .lock()
+            .map_err(|_| "Storage lock poisoned".to_string())?;
         let project = storage.add_project(path)?;
         return Ok(serde_json::json!({
             "kind": "project",
             "project": project,
         }));
     }
-    let storage = state.storage.lock().map_err(|_| "Storage lock poisoned".to_string())?;
+    let storage = state
+        .storage
+        .lock()
+        .map_err(|_| "Storage lock poisoned".to_string())?;
     let resolved_agent = if agent_id.trim().is_empty() {
         "opencode".to_string()
     } else {
@@ -119,7 +126,10 @@ pub fn create_chat_session(
         .or_else(crate::shell_integration::peek_launch_open_path)
         .or_else(|| crate::app_paths::current_dir().ok())
         .ok_or_else(|| "Unable to determine Chat folder".to_string())?;
-    let storage = state.storage.lock().map_err(|_| "Storage lock poisoned".to_string())?;
+    let storage = state
+        .storage
+        .lock()
+        .map_err(|_| "Storage lock poisoned".to_string())?;
     let origin = match origin.as_deref() {
         Some("memo") => Some("memo"),
         _ => None,
@@ -290,9 +300,11 @@ pub fn list_agent_preflights() -> Vec<crate::preflight::PreflightResult> {
 pub async fn agent_versions(
     check_registry: bool,
 ) -> Result<Vec<crate::agent_update::AgentVersionInfo>, String> {
-    tauri::async_runtime::spawn_blocking(move || crate::agent_update::all_version_info(check_registry))
-        .await
-        .map_err(|error| format!("Version check failed: {error}"))
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::agent_update::all_version_info(check_registry)
+    })
+    .await
+    .map_err(|error| format!("Version check failed: {error}"))
 }
 
 /// Update every npm-managed agent that has a newer published version.
@@ -305,9 +317,11 @@ pub fn auto_update_agents_in_background() {
             if !info.update_available {
                 continue;
             }
-            let (Some(package), Some(latest), Some(installed)) =
-                (info.package.as_deref(), info.latest.as_deref(), info.installed.as_deref())
-            else {
+            let (Some(package), Some(latest), Some(installed)) = (
+                info.package.as_deref(),
+                info.latest.as_deref(),
+                info.installed.as_deref(),
+            ) else {
                 continue;
             };
             crate::debug_log::append(
@@ -374,8 +388,7 @@ fn agent_command_status(agent: &AgentConfig) -> AgentCommandStatus {
         ),
         Ok(None) => {
             missing.push(format!("{} (`{}`)", agent.label, agent.command));
-            installable =
-                agent.install.package.is_some() || agent.install.manager == "binary";
+            installable = agent.install.package.is_some() || agent.install.manager == "binary";
             (
                 "missing".to_string(),
                 None,
@@ -464,7 +477,11 @@ fn apply_runtime_gate(
     message: String,
 ) -> (bool, String, Option<String>) {
     if agent_id == "zcode" && !runtime_available {
-        return (false, zcode_runtime_gate_guidance(), Some(zcode_runtime_gate_guidance()));
+        return (
+            false,
+            zcode_runtime_gate_guidance(),
+            Some(zcode_runtime_gate_guidance()),
+        );
     }
     (installable, message, None)
 }
@@ -617,12 +634,7 @@ fn install_binary_agent_blocking(
     let progress = |message: &str| {
         crate::debug_log::append("install", "info", "antigravity", message, None);
     };
-    let entry = crate::antigravity_support::install(
-        &version,
-        &url,
-        sha256.as_deref(),
-        &progress,
-    )?;
+    let entry = crate::antigravity_support::install(&version, &url, sha256.as_deref(), &progress)?;
     Ok(serde_json::json!({
         "agentId": agent.id,
         "installed": [format!("agy-acp-server {version}")],
@@ -681,7 +693,11 @@ fn npm_install_global(agent_id: &str, package: &str) -> Result<(), String> {
     let stderr = crate::process_util::decode_process_bytes(&output.stderr);
     crate::debug_log::append(
         "install",
-        if output.status.success() { "info" } else { "error" },
+        if output.status.success() {
+            "info"
+        } else {
+            "error"
+        },
         agent_id,
         &format!("npm install -g {package} → {}", output.status),
         Some(&format!("{stdout}\n{stderr}")),
@@ -812,12 +828,9 @@ pub async fn refresh_external_sessions(
     }
 
     for conv in convs {
-        let session_id =
-            crate::parsers::imported_session_id(&conv.source, &conv.native_id);
+        let session_id = crate::parsers::imported_session_id(&conv.source, &conv.native_id);
         let title_twin = crate::parsers::dedup::find_match(&index, &conv, &session_id, None)
-            .and_then(|(row, kind)| {
-                (row.id != session_id).then(|| (row.id.clone(), kind))
-            });
+            .and_then(|(row, kind)| (row.id != session_id).then(|| (row.id.clone(), kind)));
         if let Some((twin_id, kind)) = title_twin {
             let storage = state
                 .storage
@@ -880,10 +893,7 @@ pub async fn refresh_external_sessions(
                 Ok(Ok(mut events)) => {
                     for event in &mut events {
                         if let Some(obj) = event.as_object_mut() {
-                            obj.insert(
-                                "sessionId".into(),
-                                serde_json::json!(session_id.clone()),
-                            );
+                            obj.insert("sessionId".into(), serde_json::json!(session_id.clone()));
                         }
                     }
                     events
@@ -921,15 +931,9 @@ pub async fn refresh_external_sessions(
         }
         let first_user = crate::parsers::dedup::first_user_from_events(&events);
         if !first_user.is_empty() {
-            let text_twin = crate::parsers::dedup::find_match(
-                &index,
-                &conv,
-                &session_id,
-                Some(&first_user),
-            )
-            .and_then(|(row, kind)| {
-                (row.id != session_id).then(|| (row.id.clone(), kind))
-            });
+            let text_twin =
+                crate::parsers::dedup::find_match(&index, &conv, &session_id, Some(&first_user))
+                    .and_then(|(row, kind)| (row.id != session_id).then(|| (row.id.clone(), kind)));
             if let Some((twin_id, kind)) = text_twin {
                 let storage = state
                     .storage
@@ -974,13 +978,7 @@ pub async fn refresh_external_sessions(
             Ok(("updated", _)) => updated += 1,
             Ok(_) => skipped += 1,
             Err(e) => {
-                crate::debug_log::append(
-                    "external",
-                    "warn",
-                    "",
-                    "import failed",
-                    Some(&e),
-                );
+                crate::debug_log::append("external", "warn", "", "import failed", Some(&e));
                 failed += 1;
             }
         }
@@ -991,9 +989,7 @@ pub async fn refresh_external_sessions(
             .storage
             .lock()
             .map_err(|_| "Storage lock poisoned".to_string())?;
-        storage.list_sessions_healed(&project_id, |session_id| {
-            state.acp.is_live(session_id)
-        })?
+        storage.list_sessions_healed(&project_id, |session_id| state.acp.is_live(session_id))?
     };
 
     crate::debug_log::append(
@@ -1028,9 +1024,7 @@ pub fn list_sessions(
         .lock()
         .map_err(|_| "Storage lock poisoned".to_string())?;
     // Only this process can own a live agent — anything else on disk is stale.
-    storage.list_sessions_healed(&project_id, |session_id| {
-        state.acp.is_live(session_id)
-    })
+    storage.list_sessions_healed(&project_id, |session_id| state.acp.is_live(session_id))
 }
 
 #[tauri::command(async)]
@@ -1062,8 +1056,7 @@ pub fn create_child_session(
         .storage
         .lock()
         .map_err(|_| "Storage lock poisoned".to_string())?;
-    let session =
-        storage.create_child_session(&project_id, &parent_session_id, agent_id, label)?;
+    let session = storage.create_child_session(&project_id, &parent_session_id, agent_id, label)?;
     crate::acp::register_parent_session(&session.id, &parent_session_id);
     Ok(session)
 }
@@ -1319,9 +1312,7 @@ pub fn antigravity_scan_leaked_temp() -> Vec<crate::antigravity_support::LeakedT
 /// Reclaim previously scanned leftovers — every path is re-validated (age,
 /// shape, parent == temp root, still idle) inside the support module.
 #[tauri::command(async)]
-pub fn antigravity_reclaim_leaked_temp(
-    paths: Vec<String>,
-) -> Result<serde_json::Value, String> {
+pub fn antigravity_reclaim_leaked_temp(paths: Vec<String>) -> Result<serde_json::Value, String> {
     let (reclaimed, skipped) = crate::antigravity_support::reclaim_leaked_temp(&paths);
     Ok(serde_json::json!({ "reclaimed": reclaimed, "skipped": skipped }))
 }
@@ -1682,7 +1673,9 @@ fn probe_kimi_auth() -> Result<serde_json::Value, String> {
 /// Substring markers of a credential-bearing JSON store (auth.json, providers.json…).
 fn json_has_credential_markers(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    let no_empty_key = lower.replace("\"key\": \"\"", "").replace("\"key\":\"\"", "");
+    let no_empty_key = lower
+        .replace("\"key\": \"\"", "")
+        .replace("\"key\":\"\"", "");
     no_empty_key.contains("\"key\"")
         || lower.contains("\"apikey\"")
         || lower.contains("\"api_key\"")
@@ -1693,9 +1686,12 @@ fn json_has_credential_markers(text: &str) -> bool {
 }
 
 fn probe_cline_auth() -> Result<serde_json::Value, String> {
-    let Some(providers) = home_dir()
-        .map(|h| h.join(".cline").join("data").join("settings").join("providers.json"))
-    else {
+    let Some(providers) = home_dir().map(|h| {
+        h.join(".cline")
+            .join("data")
+            .join("settings")
+            .join("providers.json")
+    }) else {
         return Ok(auth_result(
             "cline",
             "logged_out",
@@ -1704,7 +1700,11 @@ fn probe_cline_auth() -> Result<serde_json::Value, String> {
     };
     let text = fs::read_to_string(&providers).unwrap_or_default();
     if json_has_credential_markers(&text) {
-        Ok(auth_result("cline", "logged_in", "Cline provider credentials found"))
+        Ok(auth_result(
+            "cline",
+            "logged_in",
+            "Cline provider credentials found",
+        ))
     } else {
         Ok(auth_result(
             "cline",
@@ -1828,9 +1828,13 @@ fn probe_openclaw_auth() -> Result<serde_json::Value, String> {
         .map(|dir| {
             std::fs::read_dir(&dir)
                 .map(|entries| {
-                    entries
-                        .flatten()
-                        .any(|entry| entry.path().join("agent").join("auth-profiles.json").exists())
+                    entries.flatten().any(|entry| {
+                        entry
+                            .path()
+                            .join("agent")
+                            .join("auth-profiles.json")
+                            .exists()
+                    })
                 })
                 .unwrap_or(false)
         })
@@ -1933,8 +1937,10 @@ fn opencode_auth_has_provider(text: &str, provider: &str) -> bool {
         return false;
     };
     match value.get(provider) {
-        Some(entry) if !entry.is_null() => grok_auth_has_credential(&entry.to_string())
-            || json_has_credential_markers(&entry.to_string()),
+        Some(entry) if !entry.is_null() => {
+            grok_auth_has_credential(&entry.to_string())
+                || json_has_credential_markers(&entry.to_string())
+        }
         _ => false,
     }
 }
@@ -2500,11 +2506,7 @@ pub fn clipboard_files() -> Result<Vec<serde_json::Value>, String> {
         let meta = std::fs::metadata(&path).ok();
         let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
         let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-        let name = path
-            .rsplit(['\\', '/'])
-            .next()
-            .unwrap_or(&path)
-            .to_string();
+        let name = path.rsplit(['\\', '/']).next().unwrap_or(&path).to_string();
         out.push(serde_json::json!({ "path": path, "name": name, "size": size, "isDir": is_dir }));
     }
     Ok(out)
@@ -2547,11 +2549,7 @@ pub fn save_pasted_image(
         .trim()
         .to_ascii_lowercase();
     // Strip parameters: "image/png; charset=..." → "image/png"
-    let mime = mime_raw
-        .split(';')
-        .next()
-        .unwrap_or("image/png")
-        .trim();
+    let mime = mime_raw.split(';').next().unwrap_or("image/png").trim();
     let (ext, mime_out) = match mime {
         "image/jpeg" | "image/jpg" => ("jpg", "image/jpeg"),
         "image/gif" => ("gif", "image/gif"),
@@ -2644,7 +2642,10 @@ pub async fn update_acp_session(
 /// Blocks on `child.kill()` + `child.wait()` — blocking pool, same reasoning as
 /// `update_acp_session` above.
 #[tauri::command]
-pub async fn stop_acp_session(session_id: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn stop_acp_session(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     let acp = state.acp.clone();
     let sid = session_id.clone();
     tauri::async_runtime::spawn_blocking(move || acp.stop(&sid))
@@ -2685,13 +2686,7 @@ pub fn append_debug_log(
     summary: String,
     detail: Option<String>,
 ) {
-    crate::debug_log::append(
-        &source,
-        &level,
-        &session_id,
-        &summary,
-        detail.as_deref(),
-    );
+    crate::debug_log::append(&source, &level, &session_id, &summary, detail.as_deref());
 }
 
 #[tauri::command]
@@ -2970,8 +2965,7 @@ pub fn telegram_remote_save(
 }
 
 #[tauri::command(async)]
-pub fn telegram_remote_accept_pairing(
-) -> Result<crate::telegram_remote::TelegramStatus, String> {
+pub fn telegram_remote_accept_pairing() -> Result<crate::telegram_remote::TelegramStatus, String> {
     crate::telegram_remote::accept_pairing()
 }
 
@@ -2981,8 +2975,7 @@ pub fn telegram_remote_dismiss_pairing() -> Result<crate::telegram_remote::Teleg
 }
 
 #[tauri::command(async)]
-pub fn telegram_remote_reset_pairing(
-) -> Result<crate::telegram_remote::TelegramStatus, String> {
+pub fn telegram_remote_reset_pairing() -> Result<crate::telegram_remote::TelegramStatus, String> {
     crate::telegram_remote::reset_pairing()
 }
 
@@ -3000,10 +2993,7 @@ pub fn telegram_remote_ack(
 
 /// 前端执行远程命令（/new、/model）后的回执；bind_session_id 同时切换裸文本绑定。
 #[tauri::command(async)]
-pub fn telegram_remote_result(
-    text: String,
-    bind_session_id: Option<String>,
-) -> Result<(), String> {
+pub fn telegram_remote_result(text: String, bind_session_id: Option<String>) -> Result<(), String> {
     crate::telegram_remote::result(text, bind_session_id);
     Ok(())
 }
@@ -3081,13 +3071,9 @@ fn todos_path(project_root: &Path) -> PathBuf {
 
 fn write_todos_atomic(path: &Path, body: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Create .marionette failed: {e}"))?;
+        fs::create_dir_all(parent).map_err(|e| format!("Create .marionette failed: {e}"))?;
     }
-    let temp = path.with_extension(format!(
-        "json.{}.tmp",
-        std::process::id()
-    ));
+    let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
     fs::write(&temp, body).map_err(|e| format!("Write todos temp failed: {e}"))?;
     // rename 前落盘：掉电可能得到「rename 已完成、数据还在缓存」的空文件。
     // Windows 的 FlushFileBuffers 要求句柄带写权限，所以不能只读 File::open。
@@ -3118,8 +3104,8 @@ pub fn list_todos(
     let Ok(raw) = fs::read_to_string(&path) else {
         return Ok(Vec::new());
     };
-    let file: TodoFileDto = serde_json::from_str(&raw)
-        .map_err(|e| format!("Parse todos.json failed: {e}"))?;
+    let file: TodoFileDto =
+        serde_json::from_str(&raw).map_err(|e| format!("Parse todos.json failed: {e}"))?;
     Ok(file.items)
 }
 
@@ -3141,8 +3127,8 @@ pub fn save_todos(
         items,
         updated_at,
     };
-    let body = serde_json::to_string_pretty(&file)
-        .map_err(|e| format!("Serialize todos failed: {e}"))?;
+    let body =
+        serde_json::to_string_pretty(&file).map_err(|e| format!("Serialize todos failed: {e}"))?;
     write_todos_atomic(&path, &format!("{body}\n"))
 }
 
@@ -3214,7 +3200,9 @@ pub fn check_outside_project_paths(
     state: State<'_, AppState>,
 ) -> Result<Vec<serde_json::Value>, String> {
     let root = project_root_of(&project_id, &state)?;
-    Ok(crate::context_inventory::outside_project_paths(&root, &paths))
+    Ok(crate::context_inventory::outside_project_paths(
+        &root, &paths,
+    ))
 }
 
 /// Grant a folder outside the project to this project's agents.
@@ -3267,7 +3255,9 @@ pub fn project_context_prompt(
     state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
     let root = project_root_of(&project_id, &state)?;
-    Ok(crate::context_inventory::skills_prompt_for_agent(&root, &agent_id))
+    Ok(crate::context_inventory::skills_prompt_for_agent(
+        &root, &agent_id,
+    ))
 }
 
 /// Save a provider API key to OpenCode's auth.json.
@@ -3412,8 +3402,12 @@ pub fn bridge_list_models(agent_id: String) -> crate::model_bridge::BridgeModels
 }
 
 #[tauri::command(async)]
-pub fn bridge_add_custom_provider(label: String, key: String, config: crate::credentials::CustomProviderConfig) -> Result<(),String> {
-    crate::credentials::add_custom_provider(&label,&key,config)?;
+pub fn bridge_add_custom_provider(
+    label: String,
+    key: String,
+    config: crate::credentials::CustomProviderConfig,
+) -> Result<(), String> {
+    crate::credentials::add_custom_provider(&label, &key, config)?;
     crate::engine::reregister_key_providers();
     Ok(())
 }
@@ -3421,7 +3415,12 @@ pub fn bridge_add_custom_provider(label: String, key: String, config: crate::cre
 /// 编辑一条手动自定义来源（2026-11-26）。`key = None` 沿用原密钥，`Some("")`
 /// 改成无认证。返回（改名/改址/改协议后会变的）条目 id。
 #[tauri::command(async)]
-pub fn bridge_update_custom_provider(entry_id: String, label: String, key: Option<String>, config: crate::credentials::CustomProviderConfig) -> Result<String,String> {
+pub fn bridge_update_custom_provider(
+    entry_id: String,
+    label: String,
+    key: Option<String>,
+    config: crate::credentials::CustomProviderConfig,
+) -> Result<String, String> {
     let _trace = crate::debug_log::CmdTrace::new("bridge_update_custom_provider");
     let id = crate::credentials::update_custom_provider(&entry_id, &label, key.as_deref(), config)?;
     // 换了地址或清单 → 引擎侧按新配置重登记；换了 id → 账本对账回收旧 provider。
@@ -3432,7 +3431,11 @@ pub fn bridge_update_custom_provider(entry_id: String, label: String, key: Optio
 /// 「添加自定义来源」保存前的模型目录预览：按地址 + 协议 + key 拉一次目录，
 /// 不落盘、不注册、不发生成请求。
 #[tauri::command(async)]
-pub fn model_library_probe_custom(endpoint: String, protocol: String, key: String) -> crate::model_sources::CustomProbe {
+pub fn model_library_probe_custom(
+    endpoint: String,
+    protocol: String,
+    key: String,
+) -> crate::model_sources::CustomProbe {
     let _trace = crate::debug_log::CmdTrace::new("model_library_probe_custom");
     crate::model_sources::probe_custom(&endpoint, &protocol, &key)
 }
@@ -3448,15 +3451,17 @@ pub fn model_library_family_models() -> serde_json::Value {
 pub fn model_library_scan() -> serde_json::Value {
     let mut discovery = crate::model_sources::discover();
     // 手动面板刷新：强制 live 重抓 + 排队等锁（用户显式要新数据）。
-    discovery.warnings.extend(crate::engine::sync_discovered_sources(true));
+    discovery
+        .warnings
+        .extend(crate::engine::sync_discovered_sources(true));
     // 来源别名（发现来源 / 凭据条目 → 引擎 provider）+ 同一账号的重复 provider
     // 别名（模型设置只列一个来源；providers.json 不删，已有绑定照旧解析）。
-    let mut aliases=crate::engine::model_source_aliases(&discovery.sources);
+    let mut aliases = crate::engine::model_source_aliases(&discovery.sources);
     aliases.extend(crate::engine::provider_account_aliases(&discovery.sources));
     // 「订阅共享」四行的已登录 / 未登录：直接问各账号模块，不走上面的账号去重清单
     // （那份只为菜单合并而设，只产出 ChatGPT 一家）。四族在 Rust 引擎里都有对话桥
     // （gemini = Antigravity 的 Code Assist 桥，2026-11-26 补齐），没有「暂不支持」的族。
-    let signed_in=crate::engine::signed_in_families();
+    let signed_in = crate::engine::signed_in_families();
     serde_json::json!({ "sources": discovery.sources.into_iter().map(|s|s.view).collect::<Vec<_>>(), "warnings": discovery.warnings, "paths": discovery.paths, "aliases": aliases, "accounts": discovery.accounts, "signedIn": signed_in })
 }
 
@@ -3466,12 +3471,12 @@ pub fn model_library_check_source(id: String) -> serde_json::Value {
 }
 
 #[tauri::command(async)]
-pub fn model_library_preferences() -> Result<serde_json::Value,String> {
+pub fn model_library_preferences() -> Result<serde_json::Value, String> {
     crate::model_sources::load_preferences()
 }
 
 #[tauri::command(async)]
-pub fn model_library_save_preferences(preferences: serde_json::Value) -> Result<(),String> {
+pub fn model_library_save_preferences(preferences: serde_json::Value) -> Result<(), String> {
     crate::model_sources::save_preferences(preferences)
 }
 
@@ -3479,7 +3484,7 @@ pub fn model_library_save_preferences(preferences: serde_json::Value) -> Result<
 /// 共享）。写 model-library.json 的 `subscriptionShares`，刷新 engine.rs 偏好
 /// 缓存并向运行中的网关推送执行闸——开 = 目录/拦截器即时放行，关 = 即时退场。
 #[tauri::command(async)]
-pub fn model_library_set_subscription_share(family: String, enabled: bool) -> Result<(),String> {
+pub fn model_library_set_subscription_share(family: String, enabled: bool) -> Result<(), String> {
     crate::engine::set_subscription_share(&family, enabled)
 }
 
@@ -3523,9 +3528,7 @@ pub fn bridge_bind(
 /// Current cross-use binding for a session (frontend restores the picker
 /// display state after suspend/restart; spawn applies it independently).
 #[tauri::command(async)]
-pub fn bridge_get_binding(
-    session_id: String,
-) -> Option<crate::model_bridge::BridgeSelection> {
+pub fn bridge_get_binding(session_id: String) -> Option<crate::model_bridge::BridgeSelection> {
     let _trace = crate::debug_log::CmdTrace::new("bridge_get_binding");
     crate::model_bridge::binding_for(&session_id)
 }
@@ -3774,8 +3777,12 @@ pub fn memory_distill(
             .map_err(|_| "Storage lock poisoned".to_string())?;
         storage.transcript_path_for(&session_id)?
     };
-    let digest = crate::memory::transcript_digest(&path)
-        .ok_or_else(|| crate::ts!("会话记录里没有可提炼的文本", "No text in the transcript to distill"))?;
+    let digest = crate::memory::transcript_digest(&path).ok_or_else(|| {
+        crate::ts!(
+            "会话记录里没有可提炼的文本",
+            "No text in the transcript to distill"
+        )
+    })?;
     let draft = crate::memory::distill_with_deepseek(&digest)?;
     Ok(serde_json::json!({ "draft": draft }))
 }
@@ -3802,7 +3809,11 @@ mod tests {
     fn other_agents_keep_default_install_args() {
         assert_eq!(
             super::npm_install_args("opencode-ai"),
-            vec!["install".to_string(), "-g".to_string(), "opencode-ai".to_string()]
+            vec![
+                "install".to_string(),
+                "-g".to_string(),
+                "opencode-ai".to_string()
+            ]
         );
     }
 
@@ -3816,9 +3827,13 @@ mod tests {
             super::apply_runtime_gate("zcode", false, true, "ZCode needs: ZCode CLI".into());
         assert!(!installable, "install button must not be offered");
         assert!(gate.is_some());
-        assert!(message.contains("桌面版"), "guidance must name the desktop install");
+        assert!(
+            message.contains("桌面版"),
+            "guidance must name the desktop install"
+        );
 
-        let (installable, message, gate) = super::apply_runtime_gate("zcode", true, true, "ok".into());
+        let (installable, message, gate) =
+            super::apply_runtime_gate("zcode", true, true, "ok".into());
         assert!(installable);
         assert!(gate.is_none());
         assert_eq!(message, "ok");
@@ -3900,10 +3915,8 @@ mod tests {
     fn file_mtime_stamp_reads_existing_file() {
         use super::file_mtime_stamp;
         use std::fs;
-        let path = std::env::temp_dir().join(format!(
-            "marionette-stamp-{}.txt",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("marionette-stamp-{}.txt", std::process::id()));
         fs::write(&path, "ok").unwrap();
         let stamp = file_mtime_stamp(&path);
         let _ = fs::remove_file(&path);
@@ -3917,10 +3930,19 @@ mod tests {
     #[test]
     fn classifies_codex_login_status_output() {
         use super::classify_codex_status;
-        assert_eq!(classify_codex_status(true, "Logged in using ChatGPT"), "logged_in");
-        assert_eq!(classify_codex_status(true, "Logged in using an API key - sk-.."), "logged_in");
+        assert_eq!(
+            classify_codex_status(true, "Logged in using ChatGPT"),
+            "logged_in"
+        );
+        assert_eq!(
+            classify_codex_status(true, "Logged in using an API key - sk-.."),
+            "logged_in"
+        );
         assert_eq!(classify_codex_status(false, "Not logged in"), "logged_out");
-        assert_eq!(classify_codex_status(false, "Error checking login status: boom"), "unknown");
+        assert_eq!(
+            classify_codex_status(false, "Error checking login status: boom"),
+            "unknown"
+        );
     }
 
     #[test]
@@ -3937,11 +3959,15 @@ mod tests {
     #[test]
     fn json_credential_marker_scan() {
         use super::json_has_credential_markers;
-        assert!(json_has_credential_markers(r#"{"openai": {"key": "sk-abc"}}"#));
+        assert!(json_has_credential_markers(
+            r#"{"openai": {"key": "sk-abc"}}"#
+        ));
         assert!(json_has_credential_markers(
             r#"{"anthropic": {"type": "oauth", "tokens": {"access": "x"}}}"#
         ));
-        assert!(json_has_credential_markers(r#"{"cline": {"apiKey": "sk-.."}}"#));
+        assert!(json_has_credential_markers(
+            r#"{"cline": {"apiKey": "sk-.."}}"#
+        ));
         assert!(!json_has_credential_markers("{}"));
         assert!(!json_has_credential_markers(r#"{"openai": {"key": ""}}"#));
     }
@@ -3951,10 +3977,8 @@ mod tests {
         use super::resolve_image_path;
         use std::fs;
 
-        let root = std::env::temp_dir().join(format!(
-            "marionette-image-path-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("marionette-image-path-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         // The real name an agent misquoted in its reply, and a decoy that must
@@ -3989,7 +4013,11 @@ mod tests {
 }
 
 #[tauri::command(async)]
-pub fn model_library_set_environment(source_id: String, name: String, value: String) -> Result<(), String> {
+pub fn model_library_set_environment(
+    source_id: String,
+    name: String,
+    value: String,
+) -> Result<(), String> {
     crate::model_sources::set_environment(&source_id, &name, &value)
 }
 
@@ -4007,7 +4035,14 @@ fn council_detail(run_id: &str) -> Result<council_types::RunDetail, String> {
     let transitions = crate::council::store::load_transitions(run_id)?;
     let plan = crate::council::store::load_plan(run_id)?;
     let live = crate::council::orchestrator::run_is_live(run_id);
-    Ok(council_types::RunDetail { spec, state, messages, transitions, plan, live })
+    Ok(council_types::RunDetail {
+        spec,
+        state,
+        messages,
+        transitions,
+        plan,
+        live,
+    })
 }
 
 /// 创建并启动一个 Council run。`input` 的 runId/createdAt 由后端重写
@@ -4080,7 +4115,11 @@ pub fn council_cancel_run(run_id: String) -> Result<council_types::CouncilState,
     if state.phase.is_terminal() {
         return Ok(state);
     }
-    let record = crate::council::state::apply_transition(&mut state, council_types::RunPhase::Cancelled, Some("用户取消"))?;
+    let record = crate::council::state::apply_transition(
+        &mut state,
+        council_types::RunPhase::Cancelled,
+        Some("用户取消"),
+    )?;
     crate::council::store::append_transition(&run_id, &record)?;
     crate::council::store::save_state(&state)?;
     Ok(state)
@@ -4098,7 +4137,10 @@ pub fn council_pause_run(run_id: String) -> Result<(), String> {
 
 /// 恢复暂停的 run(回到 paused_from 指向的阶段)。
 #[tauri::command(async)]
-pub fn council_resume_run(app: tauri::AppHandle, run_id: String) -> Result<council_types::CouncilState, String> {
+pub fn council_resume_run(
+    app: tauri::AppHandle,
+    run_id: String,
+) -> Result<council_types::CouncilState, String> {
     let mut state = crate::council::store::load_state(&run_id)?;
     let target = crate::council::state::can_resume(&state)?;
     let record = crate::council::state::apply_transition(&mut state, target, Some("用户恢复"))?;
@@ -4127,7 +4169,10 @@ pub fn council_approve_plan(
     let mut run_state = crate::council::store::load_state(&run_id)?;
     let spec = crate::council::store::load_spec(&run_id)?;
     if run_state.phase != council_types::RunPhase::PlanReady {
-        return Err(format!("计划未就绪(当前状态 {:?}),不能裁决", run_state.phase));
+        return Err(format!(
+            "计划未就绪(当前状态 {:?}),不能裁决",
+            run_state.phase
+        ));
     }
     if !accept {
         let msg = council_types::CouncilMessage {
@@ -4177,7 +4222,11 @@ pub fn council_approve_plan(
         return Ok(run_state);
     }
     let reason = "计划被接受;council-only 交付完成(无代码执行)";
-    let record = crate::council::state::apply_transition(&mut run_state, council_types::RunPhase::Completed, Some(reason))?;
+    let record = crate::council::state::apply_transition(
+        &mut run_state,
+        council_types::RunPhase::Completed,
+        Some(reason),
+    )?;
     crate::council::store::append_transition(&run_id, &record)?;
     crate::council::store::save_state(&run_state)?;
     Ok(run_state)
@@ -4207,7 +4256,9 @@ pub fn council_resolve_approval(
 // ---------------------------------------------------------------------------
 
 #[tauri::command(async)]
-pub fn council_probe_models(models: Vec<String>) -> Result<Vec<crate::council::formation::ProbeOutcome>, String> {
+pub fn council_probe_models(
+    models: Vec<String>,
+) -> Result<Vec<crate::council::formation::ProbeOutcome>, String> {
     if models.is_empty() {
         return Err("候选模型列表为空".into());
     }
@@ -4246,8 +4297,10 @@ pub fn council_auto_formation(
         return Err("模型共享引擎未就绪".into());
     }
     let probes = crate::council::formation::load_probe_results();
-    let profiles: Vec<crate::council::formation::ModelProfile> =
-        models.iter().map(|m| crate::council::formation::build_profile(m, &probes)).collect();
+    let profiles: Vec<crate::council::formation::ModelProfile> = models
+        .iter()
+        .map(|m| crate::council::formation::build_profile(m, &probes))
+        .collect();
     let client = crate::council::worker::EngineClient::default();
     let plan = crate::council::formation::auto_formation(&client, &task, &profiles)?;
     Ok(serde_json::json!({ "profiles": profiles, "plan": plan }))

@@ -189,10 +189,7 @@ fn companion_id_for(id: &str, props: &Map<String, Value>) -> Option<String> {
 /// `_custom` field is a *note* when an option is also picked (and the answer
 /// only when nothing was picked). Other adapters use the same suffix as a
 /// plain "other" replacement, so the distinction cannot come from the schema.
-pub fn classify_elicitation(
-    raw: &Value,
-    claude_like: bool,
-) -> Result<ElicitationPlan, String> {
+pub fn classify_elicitation(raw: &Value, claude_like: bool) -> Result<ElicitationPlan, String> {
     let mode = raw
         .get("mode")
         .ok_or_else(|| "elicitation missing mode".to_string())?;

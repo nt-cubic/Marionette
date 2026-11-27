@@ -11,7 +11,11 @@ use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::Duration;
 
-pub(super) fn request(process: &Arc<AcpProcess>, method: &str, params: Value) -> Result<Value, String> {
+pub(super) fn request(
+    process: &Arc<AcpProcess>,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
     request_with_timeout(process, method, params, Duration::from_secs(60), false)
 }
 
@@ -19,7 +23,11 @@ pub(super) fn request(process: &Arc<AcpProcess>, method: &str, params: Value) ->
 ///
 /// Used for capability probes: the caller inspects the Err and either retries
 /// on a different transport or surfaces a real error itself.
-pub(super) fn request_quiet(process: &Arc<AcpProcess>, method: &str, params: Value) -> Result<Value, String> {
+pub(super) fn request_quiet(
+    process: &Arc<AcpProcess>,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
     request_with_timeout(process, method, params, Duration::from_secs(60), true)
 }
 

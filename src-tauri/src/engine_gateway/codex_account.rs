@@ -76,7 +76,8 @@ const EXPIRED_MESSAGE: &str = "Codex sign-in expired — run Codex once to refre
 const COMPRESS_MIN: usize = 64 * 1024;
 /// 单账号/全部账号都耗尽时的兜底文案。状态恒 429：`groups::retryable` 对 429
 /// 恒真（chat.rs 的候选循环按它换成员），词表判定见 [`codex_account_out`]。
-const EXHAUSTED_MESSAGE: &str = "Codex subscription usage limit exhausted (no signed-in account can take this turn)";
+const EXHAUSTED_MESSAGE: &str =
+    "Codex subscription usage limit exhausted (no signed-in account can take this turn)";
 /// Go codexInstructions 的最后兜底之前没有任何来源时用的极简指令
 /// （后端要求 instructions 非空）。
 const FALLBACK_INSTRUCTIONS: &str = "You are Codex, a coding agent. Be concise and accurate.";
@@ -104,7 +105,9 @@ fn seam() -> Option<Seam> {
 
 #[cfg(test)]
 fn base_url() -> String {
-    seam().map(|s| s.base).unwrap_or_else(|| "http://127.0.0.1:9/codex".into())
+    seam()
+        .map(|s| s.base)
+        .unwrap_or_else(|| "http://127.0.0.1:9/codex".into())
 }
 #[cfg(not(test))]
 fn base_url() -> String {
@@ -153,12 +156,16 @@ pub(crate) struct Account {
 
 impl Account {
     fn expired(&self) -> bool {
-        self.exp.is_some_and(|e| e <= now_secs() + EXPIRY_MARGIN_SECS)
+        self.exp
+            .is_some_and(|e| e <= now_secs() + EXPIRY_MARGIN_SECS)
     }
 }
 
 fn now_secs() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// JWT 载荷（不验签——只读展示/到期判断用）。
@@ -182,7 +189,12 @@ fn claim_str(claims: &Value, path: &[&str]) -> String {
 }
 
 /// `{tokens:{access_token,id_token,account_id}, auth_mode?}` → Account。
-fn account_from_auth(auth: &Value, id: &str, fallback_user: &str, fallback_plan: &str) -> Option<Account> {
+fn account_from_auth(
+    auth: &Value,
+    id: &str,
+    fallback_user: &str,
+    fallback_plan: &str,
+) -> Option<Account> {
     if auth.get("auth_mode").and_then(|m| m.as_str()) == Some("apikey") {
         return None;
     }
@@ -204,13 +216,23 @@ fn account_from_auth(auth: &Value, id: &str, fallback_user: &str, fallback_plan:
     if email.is_empty() {
         email = fallback_user.to_string();
     }
-    let mut plan = claim_str(&id_claims, &["https://api.openai.com/auth", "chatgpt_plan_type"]);
+    let mut plan = claim_str(
+        &id_claims,
+        &["https://api.openai.com/auth", "chatgpt_plan_type"],
+    );
     if plan.is_empty() {
         plan = fallback_plan.to_string();
     }
-    let mut account_id = tokens.get("account_id").and_then(|a| a.as_str()).unwrap_or("").to_string();
+    let mut account_id = tokens
+        .get("account_id")
+        .and_then(|a| a.as_str())
+        .unwrap_or("")
+        .to_string();
     if account_id.is_empty() {
-        account_id = claim_str(&id_claims, &["https://api.openai.com/auth", "chatgpt_account_id"]);
+        account_id = claim_str(
+            &id_claims,
+            &["https://api.openai.com/auth", "chatgpt_account_id"],
+        );
     }
     Some(Account {
         id: id.to_string(),
@@ -237,7 +259,9 @@ pub(crate) fn discover_all() -> Vec<Account> {
                 if entry.get("agent").and_then(|a| a.as_str()) != Some("codex") {
                     continue;
                 }
-                let Some(auth) = entry.get("auth").filter(|a| a.is_object()) else { continue };
+                let Some(auth) = entry.get("auth").filter(|a| a.is_object()) else {
+                    continue;
+                };
                 let id = entry.get("id").and_then(|u| u.as_str()).unwrap_or("");
                 let user = entry.get("user").and_then(|u| u.as_str()).unwrap_or("");
                 let plan = entry.get("plan").and_then(|u| u.as_str()).unwrap_or("");
@@ -262,7 +286,11 @@ pub(crate) fn discover_all() -> Vec<Account> {
         let key = |x: &Account| (x.account_id.clone(), x.email.to_ascii_lowercase());
         match out.iter_mut().find(|o| key(o) == key(&a)) {
             Some(o) => {
-                let keep_id = if o.id.is_empty() { a.id.clone() } else { o.id.clone() };
+                let keep_id = if o.id.is_empty() {
+                    a.id.clone()
+                } else {
+                    o.id.clone()
+                };
                 if a.exp.unwrap_or(0) > o.exp.unwrap_or(0) {
                     *o = a;
                 }
@@ -389,7 +417,11 @@ fn client_version() -> String {
         if let Some(c) = std::fs::read(home.join("models_cache.json"))
             .ok()
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-            .and_then(|j| j.get("client_version").and_then(|c| c.as_str()).map(String::from))
+            .and_then(|j| {
+                j.get("client_version")
+                    .and_then(|c| c.as_str())
+                    .map(String::from)
+            })
         {
             v = newer_version(&v, &c);
         }
@@ -412,7 +444,12 @@ fn user_agent(ver: &str) -> String {
 
 /// 给一个 ureq 请求签上 Codex CLI 同款头。`body` 为 Some = 模型请求（要 SSE、
 /// 带会话头）；None = /models、/wham 一类账号读取。
-fn sign(mut request: ureq::Request, account: &Account, ver: &str, body: Option<&Value>) -> ureq::Request {
+fn sign(
+    mut request: ureq::Request,
+    account: &Account,
+    ver: &str,
+    body: Option<&Value>,
+) -> ureq::Request {
     request = request
         .set("Authorization", &format!("Bearer {}", account.token))
         .set("originator", "codex_cli_rs")
@@ -426,7 +463,11 @@ fn sign(mut request: ureq::Request, account: &Account, ver: &str, body: Option<&
                 .set("OpenAI-Beta", "responses=experimental")
                 .set("version", ver)
                 .set("Accept", "text/event-stream");
-            if let Some(key) = body.get("prompt_cache_key").and_then(|k| k.as_str()).filter(|k| !k.is_empty()) {
+            if let Some(key) = body
+                .get("prompt_cache_key")
+                .and_then(|k| k.as_str())
+                .filter(|k| !k.is_empty())
+            {
                 request = request.set("session-id", key).set("thread-id", key);
             }
             request
@@ -450,7 +491,10 @@ struct State {
     backoff_until: Option<Instant>,
 }
 
-static STATE: Mutex<State> = Mutex::new(State { cache: None, backoff_until: None });
+static STATE: Mutex<State> = Mutex::new(State {
+    cache: None,
+    backoff_until: None,
+});
 
 fn lock_state() -> std::sync::MutexGuard<'static, State> {
     STATE.lock().unwrap_or_else(|p| p.into_inner())
@@ -504,14 +548,21 @@ fn parse_models(body: &[u8]) -> (Vec<VendorRow>, HashMap<String, String>) {
             .pointer("/model_messages/instructions_template")
             .and_then(|s| s.as_str())
             .filter(|s| !s.is_empty())
-            .or_else(|| m.get("base_instructions").and_then(|s| s.as_str()).filter(|s| !s.is_empty()));
+            .or_else(|| {
+                m.get("base_instructions")
+                    .and_then(|s| s.as_str())
+                    .filter(|s| !s.is_empty())
+            });
         if let Some(p) = prompt {
             prompts.insert(slug.to_string(), p.to_string());
         }
         if m.get("visibility").and_then(|v| v.as_str()) == Some("hide") {
             continue;
         }
-        let context = m.get("context_window").and_then(|v| v.as_u64()).unwrap_or(0);
+        let context = m
+            .get("context_window")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         let images = m
             .get("input_modalities")
             .and_then(|v| v.as_array())
@@ -534,7 +585,13 @@ fn parse_models(body: &[u8]) -> (Vec<VendorRow>, HashMap<String, String>) {
         if !levels.is_empty() {
             raw["reasoning_levels"] = json!(levels);
         }
-        rows.push(VendorRow { id: slug.to_string(), context_window: context, max_output: 0, images, raw });
+        rows.push(VendorRow {
+            id: slug.to_string(),
+            context_window: context,
+            max_output: 0,
+            images,
+            raw,
+        });
     }
     (rows, prompts)
 }
@@ -578,7 +635,9 @@ fn rows_impl(providers: &[Provider], gated: bool) -> Vec<VendorRow> {
     if providers.iter().any(|p| p.id == CODEX_ID) || (gated && !super::family_enabled(CODEX_ID)) {
         return Vec::new();
     }
-    let Some(account) = discover() else { return Vec::new() };
+    let Some(account) = discover() else {
+        return Vec::new();
+    };
     {
         let state = lock_state();
         if let Some(c) = state.cache.as_ref() {
@@ -586,7 +645,11 @@ fn rows_impl(providers: &[Provider], gated: bool) -> Vec<VendorRow> {
                 return c.rows.clone();
             }
         }
-        let stale = state.cache.as_ref().map(|c| c.rows.clone()).unwrap_or_default();
+        let stale = state
+            .cache
+            .as_ref()
+            .map(|c| c.rows.clone())
+            .unwrap_or_default();
         if account.expired() || state.backoff_until.is_some_and(|u| Instant::now() < u) {
             return stale;
         }
@@ -595,37 +658,61 @@ fn rows_impl(providers: &[Provider], gated: bool) -> Vec<VendorRow> {
         Ok((rows, prompts)) => {
             let mut state = lock_state();
             state.backoff_until = None;
-            state.cache = Some(ModelCache { at: Instant::now(), rows: rows.clone(), prompts });
+            state.cache = Some(ModelCache {
+                at: Instant::now(),
+                rows: rows.clone(),
+                prompts,
+            });
             rows
         }
         Err(_) => {
             let mut state = lock_state();
             state.backoff_until = Some(Instant::now() + FAIL_BACKOFF);
-            state.cache.as_ref().map(|c| c.rows.clone()).unwrap_or_default()
+            state
+                .cache
+                .as_ref()
+                .map(|c| c.rows.clone())
+                .unwrap_or_default()
         }
     }
 }
 
 /// 整串 `codex/<slug>` 是不是已知模型（纯内存，组成员后缀拆分用）。
 fn knows(whole: &str) -> bool {
-    let Some(slug) = whole.strip_prefix("codex/") else { return false };
-    lock_state().cache.as_ref().is_some_and(|c| c.rows.iter().any(|r| r.id == slug))
+    let Some(slug) = whole.strip_prefix("codex/") else {
+        return false;
+    };
+    lock_state()
+        .cache
+        .as_ref()
+        .is_some_and(|c| c.rows.iter().any(|r| r.id == slug))
 }
 
 fn levels_of(slug: &str) -> Vec<String> {
     let state = lock_state();
-    let Some(row) = state.cache.as_ref().and_then(|c| c.rows.iter().find(|r| r.id == slug)) else {
+    let Some(row) = state
+        .cache
+        .as_ref()
+        .and_then(|c| c.rows.iter().find(|r| r.id == slug))
+    else {
         return Vec::new();
     };
     row.raw
         .get("reasoning_levels")
         .and_then(|v| v.as_array())
-        .map(|l| l.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|l| {
+            l.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
 fn prompt_of(slug: &str) -> Option<String> {
-    lock_state().cache.as_ref().and_then(|c| c.prompts.get(slug).cloned())
+    lock_state()
+        .cache
+        .as_ref()
+        .and_then(|c| c.prompts.get(slug).cloned())
 }
 
 // =====================================================================
@@ -643,10 +730,23 @@ fn duration_name(secs: i64) -> String {
 }
 
 fn window_row(w: &Value) -> Value {
-    let used = w.get("used_percent").and_then(|u| u.as_f64()).unwrap_or(0.0).clamp(0.0, 100.0);
-    let span = w.get("limit_window_seconds").and_then(|s| s.as_i64()).unwrap_or(0);
-    let reset_after = w.get("reset_after_seconds").and_then(|s| s.as_i64()).unwrap_or(0);
-    let reset_at = w.get("reset_at").and_then(|s| s.as_i64()).filter(|t| *t > 0);
+    let used = w
+        .get("used_percent")
+        .and_then(|u| u.as_f64())
+        .unwrap_or(0.0)
+        .clamp(0.0, 100.0);
+    let span = w
+        .get("limit_window_seconds")
+        .and_then(|s| s.as_i64())
+        .unwrap_or(0);
+    let reset_after = w
+        .get("reset_after_seconds")
+        .and_then(|s| s.as_i64())
+        .unwrap_or(0);
+    let reset_at = w
+        .get("reset_at")
+        .and_then(|s| s.as_i64())
+        .filter(|t| *t > 0);
     let mut row = json!({
         "name": duration_name(span),
         "used": used,
@@ -669,10 +769,19 @@ pub fn quota_rows(providers: &[Provider]) -> Vec<Value> {
     if providers.iter().any(|p| p.id == CODEX_ID) {
         return Vec::new();
     }
-    let accounts: Vec<Account> = discover_all().into_iter().filter(|a| !a.expired()).collect();
+    let accounts: Vec<Account> = discover_all()
+        .into_iter()
+        .filter(|a| !a.expired())
+        .collect();
     std::thread::scope(|scope| {
-        let handles: Vec<_> = accounts.iter().map(|a| scope.spawn(move || quota_row_of(a))).collect();
-        handles.into_iter().filter_map(|h| h.join().ok().flatten()).collect()
+        let handles: Vec<_> = accounts
+            .iter()
+            .map(|a| scope.spawn(move || quota_row_of(a)))
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok().flatten())
+            .collect()
     })
 }
 
@@ -690,18 +799,28 @@ pub fn quota_row(providers: &[Provider]) -> Option<Value> {
 
 fn quota_row_of(account: &Account) -> Option<Value> {
     let ver = client_version();
-    let url = format!("{}/wham/usage", base_url().trim_end_matches('/').trim_end_matches("/codex"));
+    let url = format!(
+        "{}/wham/usage",
+        base_url().trim_end_matches('/').trim_end_matches("/codex")
+    );
     // /wham 读取：Codex 不发 version/OpenAI-Beta，只有账号头 + 客户端头。
     let response = sign(super::outbound_agent().get(&url), account, &ver, None)
         .timeout(FETCH_TIMEOUT)
         .call()
         .ok()?;
     let mut buf = Vec::new();
-    response.into_reader().take(1 << 20).read_to_end(&mut buf).ok()?;
+    response
+        .into_reader()
+        .take(1 << 20)
+        .read_to_end(&mut buf)
+        .ok()?;
     let data: Value = serde_json::from_slice(&buf).ok()?;
     let mut windows = Vec::new();
     for key in ["primary_window", "secondary_window"] {
-        if let Some(w) = data.pointer(&format!("/rate_limit/{key}")).filter(|w| w.is_object()) {
+        if let Some(w) = data
+            .pointer(&format!("/rate_limit/{key}"))
+            .filter(|w| w.is_object())
+        {
             windows.push(window_row(w));
         }
     }
@@ -728,11 +847,19 @@ fn quota_row_of(account: &Account) -> Option<Value> {
     }
     // 买的/送的 credits（Go：has && !unlimited && balance>0 → "N credits"）。
     if let Some(c) = data.get("credits") {
-        let has = c.get("has_credits").and_then(|v| v.as_bool()).unwrap_or(false);
-        let unlimited = c.get("unlimited").and_then(|v| v.as_bool()).unwrap_or(false);
-        let balance = c
-            .get("balance")
-            .and_then(|b| b.as_str().map(|s| s.trim().parse::<f64>().ok()).unwrap_or_else(|| b.as_f64()));
+        let has = c
+            .get("has_credits")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let unlimited = c
+            .get("unlimited")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let balance = c.get("balance").and_then(|b| {
+            b.as_str()
+                .map(|s| s.trim().parse::<f64>().ok())
+                .unwrap_or_else(|| b.as_f64())
+        });
         if let (true, false, Some(n)) = (has, unlimited, balance) {
             if n > 0.0 {
                 row["balance"] = json!(format!("{} credits", (n * 100.0).round() / 100.0));
@@ -810,8 +937,16 @@ impl Words {
                 }
             }
         }
-        let squeezed: Vec<u8> = stripped.iter().copied().filter(|b| b.is_ascii_alphanumeric()).collect();
-        Words { plain, stripped, squeezed }
+        let squeezed: Vec<u8> = stripped
+            .iter()
+            .copied()
+            .filter(|b| b.is_ascii_alphanumeric())
+            .collect();
+        Words {
+            plain,
+            stripped,
+            squeezed,
+        }
     }
 }
 
@@ -858,9 +993,17 @@ fn credit_words(w: &Words) -> bool {
     has(sq, b"insufficientbalance")
         || has(sq, b"insufficientcredit")
         || has(sq, b"insufficientfund")
-        || ["balance", "credit", "billing", "payment", "arrear", "overdue", "suspended"]
-            .iter()
-            .any(|x| has(&w.stripped, x.as_bytes()))
+        || [
+            "balance",
+            "credit",
+            "billing",
+            "payment",
+            "arrear",
+            "overdue",
+            "suspended",
+        ]
+        .iter()
+        .any(|x| has(&w.stripped, x.as_bytes()))
         || has(&w.stripped, "余额".as_bytes())
         || has(&w.stripped, "欠费".as_bytes())
         || has(&w.stripped, "充值".as_bytes())
@@ -900,7 +1043,9 @@ fn used_up_words(w: &Words) -> bool {
         || has_after(st, b"limit", b"resets", 24 + 6)
         || has_after(st, b"exceeded", b"plan", MAXSPAN)
         || has_after(st, b"exceeded", b"limit", MAXSPAN)
-        || ["额度", "用量", "套餐", "上限"].iter().any(|x| has(st, x.as_bytes()))
+        || ["额度", "用量", "套餐", "上限"]
+            .iter()
+            .any(|x| has(st, x.as_bytes()))
 }
 
 /// rateWords：按分钟/秒的短限速。
@@ -908,11 +1053,15 @@ fn rate_words(w: &Words) -> bool {
     let sq = &w.squeezed;
     has(sq, b"ratelimit")
         || has(sq, b"frequencylimit")
-        || ["persecond", "persec", "perminute", "permin"].iter().any(|x| has(sq, x.as_bytes()))
+        || ["persecond", "persec", "perminute", "permin"]
+            .iter()
+            .any(|x| has(sq, x.as_bytes()))
         || has(&w.stripped, b"too many requests")
         || has_word(&w.stripped, b"rpm")
         || has_word(&w.stripped, b"tpm")
-        || ["频率", "太频繁", "过于频繁", "速率"].iter().any(|x| has(&w.stripped, x.as_bytes()))
+        || ["频率", "太频繁", "过于频繁", "速率"]
+            .iter()
+            .any(|x| has(&w.stripped, x.as_bytes()))
 }
 
 /// plannedWords：429 里说套餐自身额度用尽的（与 rateWords 互斥判）。
@@ -924,19 +1073,37 @@ fn planned_words(w: &Words) -> bool {
         || has_after(st, b"hit your", b"limit", MAXSPAN)
         || has_after(st, b"reached your", b"limit", MAXSPAN)
         || has_after(st, b"limit", b"resets", 24 + 6)
-        || ["perday", "perweek", "permonth"].iter().any(|x| has(sq, x.as_bytes()))
-        || ["daily", "weekly", "monthly", "额度", "用量", "套餐", "限额已用完"]
+        || ["perday", "perweek", "permonth"]
             .iter()
-            .any(|x| has(st, x.as_bytes()))
+            .any(|x| has(sq, x.as_bytes()))
+        || [
+            "daily",
+            "weekly",
+            "monthly",
+            "额度",
+            "用量",
+            "套餐",
+            "限额已用完",
+        ]
+        .iter()
+        .any(|x| has(st, x.as_bytes()))
 }
 
 /// minuteWords：窗口是一分钟或更短（TPM/RPM）。
 fn minute_words(w: &Words) -> bool {
     let sq = &w.squeezed;
-    ["persecond", "perminute", "persec", "permin"].iter().any(|x| has(sq, x.as_bytes()))
-        || ["rpm", "tpm", "rps", "tps"].iter().any(|x| has_word(&w.stripped, x.as_bytes()))
-        || ["tokenratelimit", "callratelimit", "requestratelimit"].iter().any(|x| has(sq, x.as_bytes()))
-        || ["每分钟", "每秒"].iter().any(|x| has(&w.stripped, x.as_bytes()))
+    ["persecond", "perminute", "persec", "permin"]
+        .iter()
+        .any(|x| has(sq, x.as_bytes()))
+        || ["rpm", "tpm", "rps", "tps"]
+            .iter()
+            .any(|x| has_word(&w.stripped, x.as_bytes()))
+        || ["tokenratelimit", "callratelimit", "requestratelimit"]
+            .iter()
+            .any(|x| has(sq, x.as_bytes()))
+        || ["每分钟", "每秒"]
+            .iter()
+            .any(|x| has(&w.stripped, x.as_bytes()))
 }
 
 /// longWords：比一分钟长的窗口或套餐限额（minuteWords 的反面）。
@@ -947,13 +1114,31 @@ fn long_words(w: &Words) -> bool {
         || has_after(st, b"hit your", b"limit", MAXSPAN)
         || has_after(st, b"reached your", b"limit", MAXSPAN)
         || has_after(st, b"limit", b"resets", 24 + 6)
-        || ["perhour", "perday", "perweek", "permonth"].iter().any(|x| has(sq, x.as_bytes()))
+        || ["perhour", "perday", "perweek", "permonth"]
+            .iter()
+            .any(|x| has(sq, x.as_bytes()))
         || has_word(st, b"hour")
         || has_word(st, b"hours")
-        || ["rpd", "rph", "tpd", "tph"].iter().any(|x| has_word(st, x.as_bytes()))
-        || ["hourly", "daily", "weekly", "monthly", "额度已用", "用量", "套餐", "限额已用完", "小时", "每天", "每日", "每周", "每月"]
+        || ["rpd", "rph", "tpd", "tph"]
             .iter()
-            .any(|x| has(st, x.as_bytes()))
+            .any(|x| has_word(st, x.as_bytes()))
+        || [
+            "hourly",
+            "daily",
+            "weekly",
+            "monthly",
+            "额度已用",
+            "用量",
+            "套餐",
+            "限额已用完",
+            "小时",
+            "每天",
+            "每日",
+            "每周",
+            "每月",
+        ]
+        .iter()
+        .any(|x| has(st, x.as_bytes()))
 }
 
 /// quotaCodes：厂商自己的额度用尽代码（5xx 里光词不算，代码才算）。
@@ -965,7 +1150,10 @@ fn quota_codes(w: &Words) -> bool {
     let hay = &w.stripped;
     let needle = b"limit reached|";
     let mut from = 0;
-    while let Some(rel) = hay[from.min(hay.len())..].windows(needle.len()).position(|x| x == needle) {
+    while let Some(rel) = hay[from.min(hay.len())..]
+        .windows(needle.len())
+        .position(|x| x == needle)
+    {
         let at = from + rel + needle.len();
         if at + 10 <= hay.len()
             && hay[at..at + 10].iter().all(|b| b.is_ascii_digit())
@@ -992,7 +1180,10 @@ fn failure_class(status: u16, body: &[u8]) -> &'static str {
     if status == 402 && used_up_words(&w) && !credit_words(&w) && !insufficient_quota {
         return "quota";
     }
-    if status == 402 || (credit_words(&w) && (status != 429 || broke_words(&w))) || (insufficient_quota && !minute_rate(&w)) {
+    if status == 402
+        || (credit_words(&w) && (status != 429 || broke_words(&w)))
+        || (insufficient_quota && !minute_rate(&w))
+    {
         return "credit";
     }
     if status == 429 {
@@ -1067,7 +1258,14 @@ fn conversation_key(instructions: &str, input: &[Value]) -> Option<String> {
         return None;
     }
     let s = hex(&hasher.finalize());
-    Some(format!("{}-{}-{}-{}-{}", &s[0..8], &s[8..12], &s[12..16], &s[16..20], &s[20..32]))
+    Some(format!(
+        "{}-{}-{}-{}-{}",
+        &s[0..8],
+        &s[8..12],
+        &s[12..16],
+        &s[16..20],
+        &s[20..32]
+    ))
 }
 
 const CALL_TYPES: [&str; 8] = [
@@ -1084,7 +1282,11 @@ const CALL_TYPES: [&str; 8] = [
 /// Go orphanOutput：调用不在 input 里的工具输出，改说成 assistant 的一句备注
 /// （后端拒收孤儿 output 项）。
 fn orphan_output(it: &Value, id: &str) -> Value {
-    let name = it.get("name").and_then(|n| n.as_str()).filter(|n| !n.is_empty()).unwrap_or("tool");
+    let name = it
+        .get("name")
+        .and_then(|n| n.as_str())
+        .filter(|n| !n.is_empty())
+        .unwrap_or("tool");
     let id = if id.is_empty() { "unknown" } else { id };
     let mut text = match it.get("output") {
         Some(Value::String(s)) => s.clone(),
@@ -1109,13 +1311,19 @@ fn shape_input(mut input: Vec<Value>) -> Vec<Value> {
     // 第一遍：收口 call_id、记「哪个 call 期望哪种 output」。
     let mut calls: HashMap<String, &'static str> = HashMap::new();
     for item in input.iter_mut() {
-        let Some(obj) = item.as_object_mut() else { continue };
+        let Some(obj) = item.as_object_mut() else {
+            continue;
+        };
         let ty = obj.get("type").and_then(|t| t.as_str()).map(String::from);
         let Some(ty) = ty else { continue };
         if !CALL_TYPES.contains(&ty.as_str()) {
             continue;
         }
-        let mut id = obj.get("call_id").and_then(|c| c.as_str()).unwrap_or("").to_string();
+        let mut id = obj
+            .get("call_id")
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string();
         let bound = bound_call_id(&id);
         if bound != id {
             id = bound.clone();
@@ -1140,8 +1348,13 @@ fn shape_input(mut input: Vec<Value>) -> Vec<Value> {
             continue;
         }
         // Codex 自己发的无 call id 的独立通知：原样放过。
-        let standalone_output = matches!(ty.as_deref(), Some("function_call_output" | "custom_tool_call_output"))
-            && obj.get("call_id").map(|c| c.is_null() || c.as_str() == Some("")).unwrap_or(true);
+        let standalone_output = matches!(
+            ty.as_deref(),
+            Some("function_call_output" | "custom_tool_call_output")
+        ) && obj
+            .get("call_id")
+            .map(|c| c.is_null() || c.as_str() == Some(""))
+            .unwrap_or(true);
         if standalone_output {
             out.push(item);
             continue;
@@ -1150,12 +1363,19 @@ fn shape_input(mut input: Vec<Value>) -> Vec<Value> {
         if matches!(ty.as_deref(), None | Some("message") | Some("reasoning")) {
             obj.remove("status");
         }
-        if let Some(t @ ("function_call_output" | "custom_tool_call_output" | "local_shell_call_output")) =
-            ty.as_deref()
+        if let Some(
+            t @ ("function_call_output" | "custom_tool_call_output" | "local_shell_call_output"),
+        ) = ty.as_deref()
         {
-            let id = obj.get("call_id").and_then(|c| c.as_str()).unwrap_or("").trim().to_string();
+            let id = obj
+                .get("call_id")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
             let want = calls.get(&id).copied().unwrap_or("");
-            let paired = want == t || (t == "function_call_output" && want == "local_shell_call_output");
+            let paired =
+                want == t || (t == "function_call_output" && want == "local_shell_call_output");
             if !paired {
                 out.push(orphan_output(&item, &id));
                 continue;
@@ -1176,7 +1396,10 @@ fn shape_input(mut input: Vec<Value>) -> Vec<Value> {
 // ---- Go codexToolNames：后端拒收 ^[a-zA-Z0-9_.-]+$ 之外的工具名 ----
 
 fn tool_name_ok(name: &str) -> bool {
-    !name.is_empty() && name.bytes().all(|c| c == b'_' || c == b'.' || c == b'-' || c.is_ascii_alphanumeric())
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|c| c == b'_' || c == b'.' || c == b'-' || c.is_ascii_alphanumeric())
 }
 
 /// Go CodexToolName：合法原样；否则每个非法**字节**换成 `_`、截 55、
@@ -1187,7 +1410,13 @@ pub(crate) fn codex_tool_name(name: &str) -> String {
     }
     let mut out: Vec<u8> = name
         .bytes()
-        .map(|c| if c == b'_' || c == b'.' || c == b'-' || c.is_ascii_alphanumeric() { c } else { b'_' })
+        .map(|c| {
+            if c == b'_' || c == b'.' || c == b'-' || c.is_ascii_alphanumeric() {
+                c
+            } else {
+                b'_'
+            }
+        })
         .collect();
     out.truncate(55);
     let sum = Sha256::digest(name.as_bytes());
@@ -1206,7 +1435,9 @@ fn fix_tool_name(o: &mut serde_json::Map<String, Value>, changed: &mut bool) {
 
 fn fix_tools(tools: &mut [Value], changed: &mut bool) {
     for t in tools.iter_mut() {
-        let Some(tm) = t.as_object_mut() else { continue };
+        let Some(tm) = t.as_object_mut() else {
+            continue;
+        };
         match tm.get("type").and_then(|x| x.as_str()) {
             Some("function" | "custom") => fix_tool_name(tm, changed),
             Some("namespace") => {
@@ -1228,7 +1459,9 @@ fn codex_tool_names(m: &mut serde_json::Map<String, Value>) -> bool {
     }
     if let Some(input) = m.get_mut("input").and_then(|t| t.as_array_mut()) {
         for it in input.iter_mut() {
-            let Some(o) = it.as_object_mut() else { continue };
+            let Some(o) = it.as_object_mut() else {
+                continue;
+            };
             match o.get("type").and_then(|x| x.as_str()) {
                 Some("function_call" | "custom_tool_call") => fix_tool_name(o, &mut changed),
                 Some("additional_tools" | "tool_search_output") => {
@@ -1280,7 +1513,12 @@ pub(crate) fn names_back_of(request: &Value) -> super::translate::NamesBack {
     if let Some(ts) = request.get("tools").and_then(|t| t.as_array()) {
         walk(ts, &mut back);
     }
-    for it in request.get("input").and_then(|i| i.as_array()).into_iter().flatten() {
+    for it in request
+        .get("input")
+        .and_then(|i| i.as_array())
+        .into_iter()
+        .flatten()
+    {
         if it.get("type").and_then(|t| t.as_str()) == Some("additional_tools") {
             if let Some(ts) = it.get("tools").and_then(|t| t.as_array()) {
                 walk(ts, &mut back);
@@ -1304,12 +1542,14 @@ fn declares_search(tools: &[Value]) -> bool {
         }
         typ == "namespace"
             && name == "web"
-            && t.get("tools").and_then(|x| x.as_array()).is_some_and(|inner| {
-                inner.iter().any(|f| {
-                    f.get("type").and_then(|x| x.as_str()) == Some("function")
-                        && f.get("name").and_then(|x| x.as_str()) == Some("run")
+            && t.get("tools")
+                .and_then(|x| x.as_array())
+                .is_some_and(|inner| {
+                    inner.iter().any(|f| {
+                        f.get("type").and_then(|x| x.as_str()) == Some("function")
+                            && f.get("name").and_then(|x| x.as_str()) == Some("run")
+                    })
                 })
-            })
     })
 }
 
@@ -1318,14 +1558,20 @@ fn cached_search() -> Value {
 }
 
 fn declare_search(m: &mut serde_json::Map<String, Value>) -> bool {
-    let Some(input) = m.get("input").and_then(|i| i.as_array()).cloned() else { return false };
+    let Some(input) = m.get("input").and_then(|i| i.as_array()).cloned() else {
+        return false;
+    };
     let (mut searched, mut offered) = (false, false);
     let mut additional: Option<usize> = None;
     for (i, it) in input.iter().enumerate() {
         match it.get("type").and_then(|t| t.as_str()) {
             Some("web_search_call") => searched = true,
             Some("additional_tools") => {
-                let tools = it.get("tools").and_then(|t| t.as_array()).cloned().unwrap_or_default();
+                let tools = it
+                    .get("tools")
+                    .and_then(|t| t.as_array())
+                    .cloned()
+                    .unwrap_or_default();
                 if declares_search(&tools) {
                     return false;
                 }
@@ -1349,13 +1595,21 @@ fn declare_search(m: &mut serde_json::Map<String, Value>) -> bool {
         return false;
     }
     offered = offered || !tools.is_empty();
-    let all_turns = m.get("reasoning").and_then(|r| r.get("context")).and_then(|c| c.as_str()) == Some("all_turns");
+    let all_turns = m
+        .get("reasoning")
+        .and_then(|r| r.get("context"))
+        .and_then(|c| c.as_str())
+        == Some("all_turns");
     let lite = additional.is_some() || all_turns;
     let mut input = input;
     match additional {
         Some(i) => {
             if let Some(o) = input[i].as_object_mut() {
-                let mut have = o.get("tools").and_then(|t| t.as_array()).cloned().unwrap_or_default();
+                let mut have = o
+                    .get("tools")
+                    .and_then(|t| t.as_array())
+                    .cloned()
+                    .unwrap_or_default();
                 have.push(cached_search());
                 o.insert("tools".into(), Value::Array(have));
             }
@@ -1387,7 +1641,9 @@ fn declare_search(m: &mut serde_json::Map<String, Value>) -> bool {
 /// Go codexBody 的移植：把任意 Responses 请求整形成 ChatGPT 后端收的那种
 /// （恒流式、不存储、带 Codex 指令、去掉它拒收的采样/缓存参数）。
 fn shape_body(mut v: Value, bare: &str, prompt: Option<String>) -> Value {
-    let Some(map) = v.as_object_mut() else { return v };
+    let Some(map) = v.as_object_mut() else {
+        return v;
+    };
     for k in [
         "max_output_tokens",
         "max_completion_tokens",
@@ -1400,7 +1656,10 @@ fn shape_body(mut v: Value, bare: &str, prompt: Option<String>) -> Value {
     ] {
         map.remove(k);
     }
-    let tier_ok = matches!(map.get("service_tier").and_then(|t| t.as_str()), Some("priority" | "ultrafast"));
+    let tier_ok = matches!(
+        map.get("service_tier").and_then(|t| t.as_str()),
+        Some("priority" | "ultrafast")
+    );
     if !tier_ok {
         map.remove("service_tier");
     }
@@ -1415,8 +1674,17 @@ fn shape_body(mut v: Value, bare: &str, prompt: Option<String>) -> Value {
         Some(Value::Array(a)) => shape_input(a),
         _ => Vec::new(),
     };
-    let own = map.get("instructions").and_then(|i| i.as_str()).unwrap_or("").to_string();
-    if map.get("prompt_cache_key").and_then(|k| k.as_str()).unwrap_or("").is_empty() {
+    let own = map
+        .get("instructions")
+        .and_then(|i| i.as_str())
+        .unwrap_or("")
+        .to_string();
+    if map
+        .get("prompt_cache_key")
+        .and_then(|k| k.as_str())
+        .unwrap_or("")
+        .is_empty()
+    {
         if let Some(k) = conversation_key(&own, &input) {
             map.insert("prompt_cache_key".into(), Value::String(k));
         }
@@ -1446,8 +1714,10 @@ fn shape_body(mut v: Value, bare: &str, prompt: Option<String>) -> Value {
     declare_search(map);
     // 历史里别家模型写的非法工具名会让整个请求被拒（回程由 names_back_of 还原）
     codex_tool_names(map);
-    map.entry("parallel_tool_calls").or_insert(Value::Bool(true));
-    map.entry("text").or_insert(json!({ "verbosity": "medium" }));
+    map.entry("parallel_tool_calls")
+        .or_insert(Value::Bool(true));
+    map.entry("text")
+        .or_insert(json!({ "verbosity": "medium" }));
 
     // 推理：除非关了，否则要摘要并带回加密推理内容（跨轮）；"ultra" 是 Codex
     // CLI 对 "max" 的叫法。
@@ -1473,7 +1743,10 @@ fn shape_body(mut v: Value, bare: &str, prompt: Option<String>) -> Value {
             .and_then(|i| i.as_array())
             .cloned()
             .unwrap_or_default();
-        if !include.iter().any(|i| i.as_str() == Some("reasoning.encrypted_content")) {
+        if !include
+            .iter()
+            .any(|i| i.as_str() == Some("reasoning.encrypted_content"))
+        {
             include.push(Value::String("reasoning.encrypted_content".into()));
         }
         map.insert("include".into(), Value::Array(include));
@@ -1495,7 +1768,10 @@ fn proto_error(proto: Proto, status: u16, message: &str) -> Reply {
                 529 => "overloaded_error",
                 _ => "api_error",
             };
-            Reply::json(status, &json!({ "type": "error", "error": { "type": ty, "message": message } }))
+            Reply::json(
+                status,
+                &json!({ "type": "error", "error": { "type": ty, "message": message } }),
+            )
         }
         _ => Reply::error(status, message),
     }
@@ -1508,7 +1784,12 @@ fn vendor_message(status: u16, body: &[u8]) -> String {
         .and_then(|v| {
             ["/error/message", "/error", "/message", "/detail"]
                 .iter()
-                .find_map(|p| v.pointer(p).and_then(|x| x.as_str()).filter(|s| !s.trim().is_empty()).map(String::from))
+                .find_map(|p| {
+                    v.pointer(p)
+                        .and_then(|x| x.as_str())
+                        .filter(|s| !s.trim().is_empty())
+                        .map(String::from)
+                })
         })
         .unwrap_or_else(|| {
             let t = String::from_utf8_lossy(body);
@@ -1533,7 +1814,11 @@ fn upstream_error_reply(proto: Proto, status: u16, body: Vec<u8>) -> Reply {
 /// 订阅耗尽兜底应答（Go codexFallBack 的「无下一跳」半边）：429 + 明确文案。
 /// `groups::retryable` 对 429 恒真——上层组路由的候选循环据此换成员。
 fn exhausted_reply(proto: Proto, upstream_status: u16, body: &[u8]) -> Reply {
-    let msg = format!("{}: {}", EXHAUSTED_MESSAGE, vendor_message(upstream_status, body));
+    let msg = format!(
+        "{}: {}",
+        EXHAUSTED_MESSAGE,
+        vendor_message(upstream_status, body)
+    );
     match proto {
         Proto::Anthropic => proto_error(proto, 429, &msg),
         _ => Reply::json(
@@ -1549,8 +1834,12 @@ fn aggregate_sse_value(reader: impl Read) -> Result<Value, (u16, String)> {
     let mut final_response: Option<Value> = None;
     for line in BufReader::new(reader).lines() {
         let Ok(line) = line else { break };
-        let Some(data) = line.strip_prefix("data:") else { continue };
-        let Ok(event) = serde_json::from_str::<Value>(data.trim()) else { continue };
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let Ok(event) = serde_json::from_str::<Value>(data.trim()) else {
+            continue;
+        };
         match event.get("type").and_then(|t| t.as_str()).unwrap_or("") {
             "response.output_item.done" => {
                 if let Some(item) = event.get("item") {
@@ -1648,8 +1937,13 @@ const WS_DIAL: Duration = Duration::from_secs(30);
 const WS_CONNECT: Duration = Duration::from_secs(10);
 /// 帧流的终态事件（Go codexSocketBody.frame :698/:709：这些类型后 socket
 /// 对本回合而言结束，读到它们流收口到 EOF）。
-const WS_TERMINAL: [&str; 5] =
-    ["response.completed", "response.failed", "response.incomplete", "response.done", "error"];
+const WS_TERMINAL: [&str; 5] = [
+    "response.completed",
+    "response.failed",
+    "response.incomplete",
+    "response.done",
+    "error",
+];
 /// RFC 6455 §7.4.1 关闭码 1009 = message too big（Go 用 coder/websocket 的
 /// StatusMessageTooBig 判同一件事，codex_socket.go :530）。
 const WS_CLOSE_TOO_BIG: u16 = 1009;
@@ -1680,9 +1974,14 @@ struct TooBig {
 /// const，进不了 static 初始化）。
 fn lock_ws_guard() -> std::sync::MutexGuard<'static, WsGuard> {
     static G: std::sync::OnceLock<Mutex<WsGuard>> = std::sync::OnceLock::new();
-    G.get_or_init(|| Mutex::new(WsGuard { shun: HashMap::new(), too_big: HashMap::new() }))
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
+    G.get_or_init(|| {
+        Mutex::new(WsGuard {
+            shun: HashMap::new(),
+            too_big: HashMap::new(),
+        })
+    })
+    .lock()
+    .unwrap_or_else(|p| p.into_inner())
 }
 
 /// Go shunCodexSocket（:126）：主机拒了握手，10 分钟内整轮直接 HTTP。Go
@@ -1710,7 +2009,10 @@ fn ws_shunned(host: &str) -> bool {
 fn refused_too_big(host: &str, size: usize) {
     let now = Instant::now();
     let mut g = lock_ws_guard();
-    let tb = g.too_big.entry(host.to_string()).or_insert(TooBig { size, until: now });
+    let tb = g
+        .too_big
+        .entry(host.to_string())
+        .or_insert(TooBig { size, until: now });
     if size < tb.size || now >= tb.until {
         tb.size = size;
     }
@@ -1746,7 +2048,11 @@ fn ws_host_of(url: &str) -> String {
 fn shun_worthy(err: &str) -> bool {
     match err.strip_prefix("ws handshake refused: HTTP ") {
         Some(rest) => {
-            let code: u16 = rest.split_whitespace().next().and_then(|c| c.parse().ok()).unwrap_or(0);
+            let code: u16 = rest
+                .split_whitespace()
+                .next()
+                .and_then(|c| c.parse().ok())
+                .unwrap_or(0);
             !(code == 401 || code == 429 || (500..=599).contains(&code))
         }
         None => true,
@@ -1790,7 +2096,9 @@ struct KeptConn {
 /// 完成，绝不在持锁时做网络 IO）。
 fn lock_keep_pool() -> std::sync::MutexGuard<'static, HashMap<String, KeptConn>> {
     static P: std::sync::OnceLock<Mutex<HashMap<String, KeptConn>>> = std::sync::OnceLock::new();
-    P.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap_or_else(|p| p.into_inner())
+    P.get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
 }
 
 /// Go codexKeepTake（:124）：把会话的连接**取走**（并发回合各开新连接，最后
@@ -1824,7 +2132,10 @@ fn keep_put(mut k: KeptConn) {
     drop(old);
     if pool.len() > KEEP_MAX {
         // Go :155-162：淘汰最久未用的那一条。
-        let oldest = pool.iter().min_by_key(|(_, e)| e.used).map(|(key, _)| key.clone());
+        let oldest = pool
+            .iter()
+            .min_by_key(|(_, e)| e.used)
+            .map(|(key, _)| key.clone());
         if let Some(key) = oldest {
             let evicted = pool.remove(&key);
             drop(evicted);
@@ -1864,10 +2175,23 @@ fn turn_shape(body: &Value) -> Option<TurnShape> {
     }
     let fields: BTreeMap<String, String> = top
         .iter()
-        .filter(|(k, _)| k.as_str() != "input" && k.as_str() != "client_metadata" && k.as_str() != "stream_options")
-        .map(|(k, v)| (k.as_str().to_string(), serde_json::to_string(v).unwrap_or_default()))
+        .filter(|(k, _)| {
+            k.as_str() != "input"
+                && k.as_str() != "client_metadata"
+                && k.as_str() != "stream_options"
+        })
+        .map(|(k, v)| {
+            (
+                k.as_str().to_string(),
+                serde_json::to_string(v).unwrap_or_default(),
+            )
+        })
         .collect();
-    Some(TurnShape { fields, items: input.clone(), sums })
+    Some(TurnShape {
+        fields,
+        items: input.clone(),
+        sums,
+    })
 }
 
 /// Go codexSocketItem（:256）：条目的「后端口径」摘要——顶层去 id/status；
@@ -1946,7 +2270,11 @@ fn reply_item_digest(frame: &[u8]) -> Option<[u8; 32]> {
 fn completed_response_id(frame: &[u8]) -> String {
     serde_json::from_slice::<Value>(frame)
         .ok()
-        .and_then(|v| v.pointer("/response/id").and_then(|i| i.as_str()).map(String::from))
+        .and_then(|v| {
+            v.pointer("/response/id")
+                .and_then(|i| i.as_str())
+                .map(String::from)
+        })
         .unwrap_or_default()
 }
 
@@ -1971,7 +2299,10 @@ fn delta_message(kept: &KeptConn, body: &Value, shape: &TurnShape) -> Option<Vec
     let rest: Vec<Value> = shape.items.get(n..)?.to_vec();
     if let Some(map) = out.as_object_mut() {
         map.insert("input".into(), Value::Array(rest));
-        map.insert("previous_response_id".into(), Value::String(kept.reply_id.clone()));
+        map.insert(
+            "previous_response_id".into(),
+            Value::String(kept.reply_id.clone()),
+        );
     }
     let payload = serde_json::to_vec(&out).ok()?;
     Some(response_create_message(&payload))
@@ -1996,7 +2327,13 @@ fn keep_key(plan: &WsPlan) -> Option<String> {
         return None;
     }
     let mut h = Sha256::new();
-    for part in [plan.url.as_str(), header("Authorization"), header("chatgpt-account-id"), sid, tid] {
+    for part in [
+        plan.url.as_str(),
+        header("Authorization"),
+        header("chatgpt-account-id"),
+        sid,
+        tid,
+    ] {
         h.update(part.as_bytes());
         h.update(&[0]);
     }
@@ -2054,11 +2391,19 @@ fn ws_plan(account: &Account, ver: &str, body: &Value) -> Option<WsPlan> {
     if !account.account_id.is_empty() {
         headers.push(("chatgpt-account-id".into(), account.account_id.clone()));
     }
-    if let Some(key) = body.get("prompt_cache_key").and_then(|k| k.as_str()).filter(|k| !k.is_empty()) {
+    if let Some(key) = body
+        .get("prompt_cache_key")
+        .and_then(|k| k.as_str())
+        .filter(|k| !k.is_empty())
+    {
         headers.push(("session-id".into(), key.to_string()));
         headers.push(("thread-id".into(), key.to_string()));
     }
-    Some(WsPlan { url: ws_url(&base_url()), headers, message })
+    Some(WsPlan {
+        url: ws_url(&base_url()),
+        headers,
+        message,
+    })
 }
 
 /// Go codexCreate（:265）：HTTP 体前面接 `{"type":"response.create",`——原
@@ -2066,7 +2411,11 @@ fn ws_plan(account: &Account, ver: &str, body: &Value) -> Option<WsPlan> {
 /// 不补。消息 = 一帧 text 发出（Go :427）。
 fn response_create_message(body: &[u8]) -> Vec<u8> {
     let body = body.trim_ascii();
-    let rest = if body.first() == Some(&b'{') { &body[1..] } else { body };
+    let rest = if body.first() == Some(&b'{') {
+        &body[1..]
+    } else {
+        body
+    };
     let mut out = Vec::with_capacity(body.len() + 32);
     out.extend_from_slice(br#"{"type":"response.create""#);
     if !rest.is_empty() && rest.first() != Some(&b'}') {
@@ -2087,7 +2436,9 @@ fn response_create_message(body: &[u8]) -> Vec<u8> {
 /// 跳过。
 fn ws_error_reply(frame: &[u8]) -> Option<Result<(u16, Vec<u8>), ()>> {
     let v: Value = serde_json::from_slice(frame).ok()?;
-    if v.pointer("/error/code").and_then(|c| c.as_str()) == Some("websocket_connection_limit_reached") {
+    if v.pointer("/error/code").and_then(|c| c.as_str())
+        == Some("websocket_connection_limit_reached")
+    {
         return Some(Err(()));
     }
     let status = v
@@ -2100,7 +2451,9 @@ fn ws_error_reply(frame: &[u8]) -> Option<Result<(u16, Vec<u8>), ()>> {
     }
     let status = status as u16;
     let body = match v.get("error") {
-        Some(e) if e.is_object() => serde_json::to_vec(&json!({ "error": e })).unwrap_or_else(|_| frame.to_vec()),
+        Some(e) if e.is_object() => {
+            serde_json::to_vec(&json!({ "error": e })).unwrap_or_else(|_| frame.to_vec())
+        }
         _ => frame.to_vec(),
     };
     Some(Ok((status, body)))
@@ -2305,7 +2658,11 @@ fn ws_turn_over(
     };
     if conn.send_text(message).is_err() {
         // Go turn :427-429：写失败同样按 reused 分流（写错误没有关闭码，不记）。
-        return if reused { WsOutcome::Again } else { WsOutcome::FallBack };
+        return if reused {
+            WsOutcome::Again
+        } else {
+            WsOutcome::FallBack
+        };
     }
     let mut conn = Some(conn);
     let mut keep = keep;
@@ -2344,12 +2701,24 @@ fn ws_turn_over(
             // completed 在 prelude 里出现时连接当场回池（Go frame 同款）。
             let mut done = false;
             frame_keep_step(&kind, &data, &mut keep, &mut conn, &mut done);
-            return WsOutcome::Stream(Box::new(WsSseReader { conn, pending, done, err: None, keep }));
+            return WsOutcome::Stream(Box::new(WsSseReader {
+                conn,
+                pending,
+                done,
+                err: None,
+                keep,
+            }));
         }
-    // 头帧（rate_limits / metadata）不参与 keep 处置（Go frame 的 switch
-    // 对它们无分支），只进 pending。
+        // 头帧（rate_limits / metadata）不参与 keep 处置（Go frame 的 switch
+        // 对它们无分支），只进 pending。
     }
-    WsOutcome::Stream(Box::new(WsSseReader { conn, pending, done: false, err: None, keep }))
+    WsOutcome::Stream(Box::new(WsSseReader {
+        conn,
+        pending,
+        done: false,
+        err: None,
+        keep,
+    }))
 }
 
 /// WS 出站入口（Go overSocket :162 的形状）：
@@ -2376,8 +2745,7 @@ fn open_upstream_ws(account: &Account, ver: &str, body: &Value) -> WsOutcome {
         if let Some(kept) = keep_take(&key) {
             // 能续跑就只发增量；不能（字段变了/前缀对不上/上轮无 id）就整段
             // 发在同一条连接上（Go :188-190）。
-            let send =
-                delta_message(&kept, body, &shape).unwrap_or_else(|| plan.message.clone());
+            let send = delta_message(&kept, body, &shape).unwrap_or_else(|| plan.message.clone());
             if !message_too_big(&host, send.len()) {
                 let keep = KeepTurn {
                     key,
@@ -2438,7 +2806,11 @@ fn open_stream(account: &Account, ver: &str, body: &Value) -> Result<ByteStream,
 
 /// 打开上游流：200 → Response（SSE 待读）；其它 → Err(Reply 由调用方按入站
 /// 协议整形)。大请求体 gzip 出站。
-fn open_upstream(account: &Account, ver: &str, body: &Value) -> Result<ureq::Response, (u16, Vec<u8>)> {
+fn open_upstream(
+    account: &Account,
+    ver: &str,
+    body: &Value,
+) -> Result<ureq::Response, (u16, Vec<u8>)> {
     let url = format!("{}/responses", base_url().trim_end_matches('/'));
     let payload = serde_json::to_vec(body).unwrap_or_default();
     let mut request = sign(super::outbound_agent().post(&url), account, ver, Some(body))
@@ -2448,7 +2820,11 @@ fn open_upstream(account: &Account, ver: &str, body: &Value) -> Result<ureq::Res
     let already = request
         .header("content-encoding")
         .is_some_and(|v| !v.eq_ignore_ascii_case("identity"));
-    let wire = if !already { gzip_payload(&payload) } else { None };
+    let wire = if !already {
+        gzip_payload(&payload)
+    } else {
+        None
+    };
     if wire.is_some() {
         request = request.set("Content-Encoding", "gzip");
     }
@@ -2458,7 +2834,8 @@ fn open_upstream(account: &Account, ver: &str, body: &Value) -> Result<ureq::Res
         // 厂商的 4xx/5xx 是合同面的一部分，原样取回（chat.rs 同款）。
         Err(ureq::Error::Status(_, r)) => r,
         Err(e) => {
-            let msg = json!({ "error": { "message": format!("codex: {e}"), "type": "engine_error" } });
+            let msg =
+                json!({ "error": { "message": format!("codex: {e}"), "type": "engine_error" } });
             return Err((502, serde_json::to_vec(&msg).unwrap_or_default()));
         }
     };
@@ -2482,7 +2859,11 @@ enum UpstreamFailure {
 /// （401/400/5xx 过载……）原样返回——那些不是「这个账号不行」。全部账号
 /// 都耗尽 → [`UpstreamFailure::Exhausted`]。WS 开关开时每个账号先试 WS、
 /// 未交付回退该账号的 HTTP（[`open_stream`]）。
-fn open_stream_rotating(accounts: &[Account], ver: &str, body: &Value) -> Result<ByteStream, UpstreamFailure> {
+fn open_stream_rotating(
+    accounts: &[Account],
+    ver: &str,
+    body: &Value,
+) -> Result<ByteStream, UpstreamFailure> {
     let mut last: Option<(u16, Vec<u8>)> = None;
     for (i, account) in accounts.iter().enumerate() {
         match open_stream(account, ver, body) {
@@ -2494,7 +2875,10 @@ fn open_stream_rotating(accounts: &[Account], ver: &str, body: &Value) -> Result
                     continue;
                 }
                 if out {
-                    return Err(UpstreamFailure::Exhausted { upstream: status, body: err_body });
+                    return Err(UpstreamFailure::Exhausted {
+                        upstream: status,
+                        body: err_body,
+                    });
                 }
                 return Err(UpstreamFailure::Raw(status, err_body));
             }
@@ -2510,7 +2894,12 @@ fn open_stream_rotating(accounts: &[Account], ver: &str, body: &Value) -> Result
     }
 }
 
-fn forward_responses(accounts: &[Account], ver: &str, body: &Value, client_wants_stream: bool) -> Reply {
+fn forward_responses(
+    accounts: &[Account],
+    ver: &str,
+    body: &Value,
+    client_wants_stream: bool,
+) -> Reply {
     let response = match open_stream_rotating(accounts, ver, body) {
         Ok(r) => r,
         Err(UpstreamFailure::Raw(status, body)) => return Reply::Json { status, body },
@@ -2541,8 +2930,12 @@ fn forward_translated(
 ) -> Reply {
     let response = match open_stream_rotating(accounts, ver, shaped) {
         Ok(r) => r,
-        Err(UpstreamFailure::Raw(status, body)) => return upstream_error_reply(proto, status, body),
-        Err(UpstreamFailure::Exhausted { upstream, body }) => return exhausted_reply(proto, upstream, &body),
+        Err(UpstreamFailure::Raw(status, body)) => {
+            return upstream_error_reply(proto, status, body)
+        }
+        Err(UpstreamFailure::Exhausted { upstream, body }) => {
+            return exhausted_reply(proto, upstream, &body)
+        }
     };
     if client_wants_stream {
         // anthropic 出站复用 messages.rs 的 chat→anthropic 翻译器（它要
@@ -2555,10 +2948,17 @@ fn forward_translated(
         let chat_reader: Box<dyn Read + Send> =
             Box::new(super::translate::ResponsesToChatReader::new(response, conv));
         let reader: Box<dyn Read + Send> = match proto {
-            Proto::Anthropic => Box::new(super::messages::AnthropicSseTranslator::new(chat_reader, asked_model)),
+            Proto::Anthropic => Box::new(super::messages::AnthropicSseTranslator::new(
+                chat_reader,
+                asked_model,
+            )),
             _ => chat_reader,
         };
-        return Reply::Stream { status: 200, content_type: "text/event-stream".into(), reader };
+        return Reply::Stream {
+            status: 200,
+            content_type: "text/event-stream".into(),
+            reader,
+        };
     }
     let aggregated = match aggregate_sse_value(response) {
         Ok(v) => v,
@@ -2618,8 +3018,13 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
     // 候选表（groups.rs 的成员语法：强度/:fast/#账号都已拆好）；首发不是
     // codex 的（组里排在前面的是别的来源）交还原路径。
     let no_ids = || Vec::new();
-    let ctx = super::groups::PlanCtx { has_model: &known2, catalog_ids: &no_ids };
-    let cand = super::groups::plan_with(&groups, &with, &asked, &ctx).into_iter().next()?;
+    let ctx = super::groups::PlanCtx {
+        has_model: &known2,
+        catalog_ids: &no_ids,
+    };
+    let cand = super::groups::plan_with(&groups, &with, &asked, &ctx)
+        .into_iter()
+        .next()?;
     if cand.provider != CODEX_ID {
         return None;
     }
@@ -2643,7 +3048,9 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
                 return Some(proto_error(
                     proto,
                     404,
-                    &format!("no Codex account matches \"{p}\" (use the account's email, id or account id)"),
+                    &format!(
+                    "no Codex account matches \"{p}\" (use the account's email, id or account id)"
+                ),
                 ))
             }
         },
@@ -2667,7 +3074,10 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
             .unwrap_or_else(|| request.body.clone())
     };
     let inbound: Value = serde_json::from_slice(&body).unwrap_or(parsed);
-    let client_wants_stream = inbound.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
+    let client_wants_stream = inbound
+        .get("stream")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false);
     let ver = newer_version(&client_version(), request.header("version").unwrap_or(""));
     // 入站 → Responses 请求
     let responses_request = match proto {
@@ -2688,7 +3098,12 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
         shaped["service_tier"] = Value::String("priority".into());
     }
     if proto == Proto::Responses {
-        return Some(forward_responses(&accounts, &ver, &shaped, client_wants_stream));
+        return Some(forward_responses(
+            &accounts,
+            &ver,
+            &shaped,
+            client_wants_stream,
+        ));
     }
     let include_usage = inbound
         .pointer("/stream_options/include_usage")
@@ -2769,8 +3184,10 @@ mod tests {
             let port = listener.local_addr().unwrap().port();
             let hits = Arc::new(AtomicUsize::new(0));
             let seen: Arc<Mutex<Vec<Recorded>>> = Arc::new(Mutex::new(Vec::new()));
-            let routes: Arc<Mutex<Vec<(String, u16, String, String)>>> = Arc::new(Mutex::new(Vec::new()));
-            let seqs: Arc<Mutex<Vec<(String, Vec<(u16, String, String)>)>>> = Arc::new(Mutex::new(Vec::new()));
+            let routes: Arc<Mutex<Vec<(String, u16, String, String)>>> =
+                Arc::new(Mutex::new(Vec::new()));
+            let seqs: Arc<Mutex<Vec<(String, Vec<(u16, String, String)>)>>> =
+                Arc::new(Mutex::new(Vec::new()));
             let (h, s, r, q) = (hits.clone(), seen.clone(), routes.clone(), seqs.clone());
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
@@ -2798,7 +3215,10 @@ mod tests {
                                 headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
                             }
                         }
-                        let len: usize = headers.get("content-length").and_then(|l| l.parse().ok()).unwrap_or(0);
+                        let len: usize = headers
+                            .get("content-length")
+                            .and_then(|l| l.parse().ok())
+                            .unwrap_or(0);
                         let mut body = vec![0u8; len];
                         reader.read_exact(&mut body).ok();
                         let seq_reply = {
@@ -2828,7 +3248,12 @@ mod tests {
                                 .map(|(_, status, ct, b)| (*status, ct.clone(), b.clone()))
                                 .unwrap_or((404, "text/plain".into(), "no route".into())),
                         };
-                        s.lock().unwrap().push(Recorded { method, path, headers, body });
+                        s.lock().unwrap().push(Recorded {
+                            method,
+                            path,
+                            headers,
+                            body,
+                        });
                         let mut stream = stream;
                         let out = format!(
                             "HTTP/1.1 {} X\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -2841,21 +3266,34 @@ mod tests {
                     });
                 }
             });
-            Mock { base: format!("http://127.0.0.1:{port}/backend-api/codex"), hits, seen, routes, seqs }
+            Mock {
+                base: format!("http://127.0.0.1:{port}/backend-api/codex"),
+                hits,
+                seen,
+                routes,
+                seqs,
+            }
         }
 
         fn route(&self, prefix: &str, status: u16, content_type: &str, body: &str) {
             let mut routes = self.routes.lock().unwrap();
             routes.retain(|(p, ..)| p != prefix);
-            routes.push((prefix.to_string(), status, content_type.to_string(), body.to_string()));
+            routes.push((
+                prefix.to_string(),
+                status,
+                content_type.to_string(),
+                body.to_string(),
+            ));
         }
 
         /// 同前缀按次序回（用尽重复最后一条）。
         fn route_seq(&self, prefix: &str, reps: &[(u16, &str, &str)]) {
             let mut seqs = self.seqs.lock().unwrap();
             seqs.retain(|(p, _)| p != prefix);
-            let reps: Vec<(u16, String, String)> =
-                reps.iter().map(|(s, c, b)| (*s, c.to_string(), b.to_string())).collect();
+            let reps: Vec<(u16, String, String)> = reps
+                .iter()
+                .map(|(s, c, b)| (*s, c.to_string(), b.to_string()))
+                .collect();
             seqs.push((prefix.to_string(), reps));
         }
 
@@ -2865,7 +3303,11 @@ mod tests {
 
         fn last(&self, path_prefix: &str) -> (HashMap<String, String>, Vec<u8>) {
             let seen = self.seen.lock().unwrap();
-            let r = seen.iter().rev().find(|r| r.path.starts_with(path_prefix)).expect("request seen");
+            let r = seen
+                .iter()
+                .rev()
+                .find(|r| r.path.starts_with(path_prefix))
+                .expect("request seen");
             let _ = &r.method;
             (r.headers.clone(), r.body.clone())
         }
@@ -2887,7 +3329,9 @@ mod tests {
     /// 沙箱：串行锁 + 临时配置目录（providers.json）+ 种子缝。logins/auth 由
     /// 各测试自己写。
     fn world(providers_json: &str, base: &str) -> (Gateway, World) {
-        let lock = crate::engine_gateway::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let lock = crate::engine_gateway::TEST_SANDBOX_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         reset_for_tests();
         let dir = std::env::temp_dir().join(format!(
             "marionette-engine-codex-{}-{}",
@@ -2915,7 +3359,11 @@ mod tests {
     fn write_logins(world: &World, access: &str, email: &str) {
         let logins = json!([{ "id": "x", "agent": "codex", "user": email, "plan": "pro",
                               "auth": auth_json(access, email) }]);
-        std::fs::write(world.dir.join("magpie").join("logins.json"), serde_json::to_vec(&logins).unwrap()).unwrap();
+        std::fs::write(
+            world.dir.join("magpie").join("logins.json"),
+            serde_json::to_vec(&logins).unwrap(),
+        )
+        .unwrap();
     }
 
     fn write_codex_auth(world: &World, access: &str, email: &str) {
@@ -2955,16 +3403,28 @@ mod tests {
     }
 
     fn get(path: &str) -> Request {
-        Request { method: "GET".into(), path: path.into(), headers: Vec::new(), body: Vec::new() }
+        Request {
+            method: "GET".into(),
+            path: path.into(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
     }
 
     fn reply_json(reply: Reply) -> (u16, Value) {
         match reply {
-            Reply::Json { status, body } => (status, serde_json::from_slice(&body).unwrap_or(Value::Null)),
-            Reply::Stream { status, mut reader, .. } => {
+            Reply::Json { status, body } => {
+                (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+            }
+            Reply::Stream {
+                status, mut reader, ..
+            } => {
                 let mut buf = Vec::new();
                 reader.read_to_end(&mut buf).unwrap();
-                (status, Value::String(String::from_utf8_lossy(&buf).into_owned()))
+                (
+                    status,
+                    Value::String(String::from_utf8_lossy(&buf).into_owned()),
+                )
             }
         }
     }
@@ -2986,7 +3446,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert!(quota_row(&[]).is_none());
         // 路由：codex 模型 404（没有来源），且没打任何网络
         let reply = super::super::routes::route(
-            &post("/v1/responses", &json!({"model":"codex/gpt-6-luna","input":"hi"})),
+            &post(
+                "/v1/responses",
+                &json!({"model":"codex/gpt-6-luna","input":"hi"}),
+            ),
             &gateway,
         );
         assert_eq!(reply_json(reply).0, 404);
@@ -2999,7 +3462,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     #[test]
     fn models_rows_cache_and_stale_on_error() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/models", 200, "application/json", MODELS_BODY);
+        mock.route(
+            "/backend-api/codex/models",
+            200,
+            "application/json",
+            MODELS_BODY,
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         let token = valid_token();
         write_logins(&w, &token, "me@example.test");
@@ -3012,14 +3480,19 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert_eq!(data[0]["context_window"], 400000);
         assert_eq!(data[0]["modalities"]["input"], json!(["text", "image"]));
         assert_eq!(data[1]["modalities"]["input"], json!(["text"]));
-        assert_eq!(data[0]["reasoning_levels"], json!(["low", "medium", "xhigh"]));
+        assert_eq!(
+            data[0]["reasoning_levels"],
+            json!(["low", "medium", "xhigh"])
+        );
         // 请求带了 Codex 同款头 + client_version
         let (headers, _) = mock.last("/backend-api/codex/models");
         assert_eq!(headers["authorization"], format!("Bearer {token}"));
         assert_eq!(headers["chatgpt-account-id"], "acct-test");
         assert_eq!(headers["originator"], "codex_cli_rs");
         assert!(headers["user-agent"].starts_with("codex_cli_rs/"));
-        assert!(mock.seen.lock().unwrap()[0].path.contains("client_version=0.169.1"));
+        assert!(mock.seen.lock().unwrap()[0]
+            .path
+            .contains("client_version=0.169.1"));
 
         // 30s 缓存：第二次不再打后端
         let hits = mock.hits();
@@ -3040,7 +3513,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     fn failing_codex_does_not_hide_other_providers() {
         let mock = Mock::start(); // 没有任何 route → /models 404
         let vendor = Mock::start();
-        vendor.route("/v1/models", 200, "application/json", r#"{"data":[{"id":"m1","context_window":1000}]}"#);
+        vendor.route(
+            "/v1/models",
+            200,
+            "application/json",
+            r#"{"data":[{"id":"m1","context_window":1000}]}"#,
+        );
         let providers = format!(
             r#"{{"providers":[{{"id":"acme","name":"Acme","key":"k","chat":"{}/v1"}}]}}"#,
             vendor.base.trim_end_matches("/backend-api/codex")
@@ -3048,14 +3526,24 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let (gateway, w) = world(&providers, &mock.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let body = reply_json(super::super::routes::route(&get("/v1/models"), &gateway)).1;
-        let ids: Vec<&str> = body["data"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap()).collect();
+        let ids: Vec<&str> = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
         assert_eq!(ids, vec!["acme/m1"]);
     }
 
     #[test]
     fn responses_stream_passthrough_headers_and_body() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", SSE_OK);
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            SSE_OK,
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         let token = valid_token();
         write_logins(&w, &token, "me@example.test");
@@ -3086,17 +3574,29 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert_eq!(sent["instructions"], "client rules");
         // 字符串 input 被折成 message 项
         assert_eq!(sent["input"][0]["role"], "user");
-        assert!(sent["include"].as_array().unwrap().iter().any(|i| i == "reasoning.encrypted_content"));
+        assert!(sent["include"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i == "reasoning.encrypted_content"));
     }
 
     #[test]
     fn responses_nonstream_aggregates_sse() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", SSE_OK);
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            SSE_OK,
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let reply = super::super::routes::route(
-            &post("/v1/responses", &json!({"model":"codex/gpt-6-luna","stream":false,"input":"hello"})),
+            &post(
+                "/v1/responses",
+                &json!({"model":"codex/gpt-6-luna","stream":false,"input":"hello"}),
+            ),
             &gateway,
         );
         let (status, resp) = reply_json(reply);
@@ -3106,7 +3606,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert_eq!(resp["usage"]["input_tokens"], 3);
         // 上游被强制成流
         let (_, body) = mock.last("/backend-api/codex/responses");
-        assert_eq!(serde_json::from_slice::<Value>(&body).unwrap()["stream"], true);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap()["stream"],
+            true
+        );
     }
 
     #[test]
@@ -3121,7 +3624,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let (status, body) = reply_json(super::super::routes::route(
-            &post("/v1/responses", &json!({"model":"codex/gpt-6-luna","input":"x"})),
+            &post(
+                "/v1/responses",
+                &json!({"model":"codex/gpt-6-luna","input":"x"}),
+            ),
             &gateway,
         ));
         assert_eq!(status, 502);
@@ -3131,11 +3637,19 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     #[test]
     fn upstream_error_status_is_passed_through() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/responses", 404, "application/json", r#"{"detail":"Model not found"}"#);
+        mock.route(
+            "/backend-api/codex/responses",
+            404,
+            "application/json",
+            r#"{"detail":"Model not found"}"#,
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let (status, body) = reply_json(super::super::routes::route(
-            &post("/v1/responses", &json!({"model":"codex/nope","stream":true,"input":"x"})),
+            &post(
+                "/v1/responses",
+                &json!({"model":"codex/nope","stream":true,"input":"x"}),
+            ),
             &gateway,
         ));
         assert_eq!(status, 404);
@@ -3145,8 +3659,18 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     #[test]
     fn alias_group_member_effort_applies_to_reasoning() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", SSE_OK);
-        mock.route("/backend-api/codex/models", 200, "application/json", MODELS_BODY);
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            SSE_OK,
+        );
+        mock.route(
+            "/backend-api/codex/models",
+            200,
+            "application/json",
+            MODELS_BODY,
+        );
         let providers = r#"{"providers":[],"groups":[
             {"id":"gpt-6.1-sol","name":"gpt-6.1-sol","members":["codex/gpt-6-luna:xhigh"],"pick":"codex/gpt-6-luna:xhigh"}]}"#;
         let (gateway, w) = world(providers, &mock.base);
@@ -3169,8 +3693,18 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     #[test]
     fn catalog_prompt_becomes_instructions_and_client_goes_developer() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", SSE_OK);
-        mock.route("/backend-api/codex/models", 200, "application/json", MODELS_BODY);
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            SSE_OK,
+        );
+        mock.route(
+            "/backend-api/codex/models",
+            200,
+            "application/json",
+            MODELS_BODY,
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_logins(&w, &valid_token(), "me@example.test");
         // 先拉模型表（填指令缓存）
@@ -3192,13 +3726,21 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     #[test]
     fn expired_token_is_a_clear_error_and_never_hits_network() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/models", 200, "application/json", MODELS_BODY);
+        mock.route(
+            "/backend-api/codex/models",
+            200,
+            "application/json",
+            MODELS_BODY,
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_logins(&w, &expired_token(), "me@example.test");
         // 账号存在（合成来源在）→ 路由给出明确原因，不是 404
         assert!(synthetic_provider().is_some());
         let (status, body) = reply_json(super::super::routes::route(
-            &post("/v1/responses", &json!({"model":"codex/gpt-6-luna","input":"x"})),
+            &post(
+                "/v1/responses",
+                &json!({"model":"codex/gpt-6-luna","input":"x"}),
+            ),
             &gateway,
         ));
         assert_eq!(status, 401);
@@ -3211,7 +3753,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     #[test]
     fn later_expiry_source_wins_and_files_are_never_written() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", SSE_OK);
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            SSE_OK,
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_logins(&w, &expired_token(), "old@example.test");
         let good = valid_token();
@@ -3219,7 +3766,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let before = std::fs::read(w.dir.join("magpie").join("logins.json")).unwrap();
         let before_auth = std::fs::read(w.dir.join("home").join("auth.json")).unwrap();
         let (status, _) = reply_json(super::super::routes::route(
-            &post("/v1/responses", &json!({"model":"codex/gpt-6-luna","stream":true,"input":"x"})),
+            &post(
+                "/v1/responses",
+                &json!({"model":"codex/gpt-6-luna","stream":true,"input":"x"}),
+            ),
             &gateway,
         ));
         assert_eq!(status, 200);
@@ -3227,8 +3777,14 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert_eq!(headers["authorization"], format!("Bearer {good}"));
         assert_eq!(discover().unwrap().email, "new@example.test");
         // 只读：两份文件逐字节未动
-        assert_eq!(before, std::fs::read(w.dir.join("magpie").join("logins.json")).unwrap());
-        assert_eq!(before_auth, std::fs::read(w.dir.join("home").join("auth.json")).unwrap());
+        assert_eq!(
+            before,
+            std::fs::read(w.dir.join("magpie").join("logins.json")).unwrap()
+        );
+        assert_eq!(
+            before_auth,
+            std::fs::read(w.dir.join("home").join("auth.json")).unwrap()
+        );
     }
 
     #[test]
@@ -3242,17 +3798,36 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
             { "agent": "claude", "user": "c@example.test", "auth": auth_json(&valid_token(), "c@example.test") },
             { "agent": "codex", "user": "n", "auth": null }
         ]);
-        std::fs::write(w.dir.join("magpie").join("logins.json"), serde_json::to_vec(&logins).unwrap()).unwrap();
+        std::fs::write(
+            w.dir.join("magpie").join("logins.json"),
+            serde_json::to_vec(&logins).unwrap(),
+        )
+        .unwrap();
         assert!(discover().is_none());
     }
 
     #[test]
     fn user_defined_codex_provider_takes_precedence() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/models", 200, "application/json", MODELS_BODY);
+        mock.route(
+            "/backend-api/codex/models",
+            200,
+            "application/json",
+            MODELS_BODY,
+        );
         let vendor = Mock::start();
-        vendor.route("/v1/models", 200, "application/json", r#"{"data":[{"id":"real","context_window":5}]}"#);
-        vendor.route("/v1/responses", 200, "application/json", r#"{"id":"from-real"}"#);
+        vendor.route(
+            "/v1/models",
+            200,
+            "application/json",
+            r#"{"data":[{"id":"real","context_window":5}]}"#,
+        );
+        vendor.route(
+            "/v1/responses",
+            200,
+            "application/json",
+            r#"{"id":"from-real"}"#,
+        );
         let root = vendor.base.trim_end_matches("/backend-api/codex");
         let providers = format!(
             r#"{{"providers":[{{"id":"codex","name":"Mine","key":"k","chat":"{root}/v1","responses":"{root}/v1"}}]}}"#
@@ -3260,7 +3835,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let (gateway, w) = world(&providers, &mock.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let body = reply_json(super::super::routes::route(&get("/v1/models"), &gateway)).1;
-        let ids: Vec<&str> = body["data"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap()).collect();
+        let ids: Vec<&str> = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
         assert_eq!(ids, vec!["codex/real"]);
         let (status, resp) = reply_json(super::super::routes::route(
             &post("/v1/responses", &json!({"model":"codex/real","input":"x"})),
@@ -3269,7 +3849,11 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert_eq!(status, 200);
         assert_eq!(resp["id"], "from-real");
         assert_eq!(mock.hits(), 0);
-        assert!(quota_row(&[Provider { id: "codex".into(), ..Default::default() }]).is_none());
+        assert!(quota_row(&[Provider {
+            id: "codex".into(),
+            ..Default::default()
+        }])
+        .is_none());
     }
 
     #[test]
@@ -3289,7 +3873,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let token = valid_token();
         write_logins(&w, &token, "me@example.test");
         let rows = super::super::quotas::quota_entries(&gateway, true);
-        let row = rows.iter().find(|r| r["provider"] == "codex").expect("codex row");
+        let row = rows
+            .iter()
+            .find(|r| r["provider"] == "codex")
+            .expect("codex row");
         assert_eq!(row["name"], "Codex");
         assert_eq!(row["user"], "me@example.test");
         assert_eq!(row["plan"], "pro");
@@ -3321,7 +3908,11 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         // 内置下限必须够新：后端只把 GPT-6.2 Sol / Astra 列给 0.166.0 起的客户端，
         // 本机没有任何 Codex 缓存时也得看得到（Go codexClientVersion 2026-11-18）。
         assert_eq!(newer_version(CLIENT_VERSION, "0.166.0"), CLIENT_VERSION);
-        assert_eq!(client_version(), CLIENT_VERSION, "no models_cache.json in the test home → the built-in floor");
+        assert_eq!(
+            client_version(),
+            CLIENT_VERSION,
+            "no models_cache.json in the test home → the built-in floor"
+        );
     }
 
     #[test]
@@ -3368,18 +3959,28 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
 
     fn data_frames(text: &str) -> Vec<String> {
         text.split("\n\n")
-            .filter_map(|b| b.lines().find_map(|l| l.strip_prefix("data: ")).map(String::from))
+            .filter_map(|b| {
+                b.lines()
+                    .find_map(|l| l.strip_prefix("data: "))
+                    .map(String::from)
+            })
             .collect()
     }
 
     fn chat_chunks(text: &str) -> Vec<Value> {
-        data_frames(text).iter().filter_map(|d| serde_json::from_str(d).ok()).collect()
+        data_frames(text)
+            .iter()
+            .filter_map(|d| serde_json::from_str(d).ok())
+            .collect()
     }
 
     fn anthropic_frames(text: &str) -> Vec<(String, Value)> {
         text.split("\n\n")
             .filter_map(|b| {
-                let ev = b.lines().find_map(|l| l.strip_prefix("event: "))?.to_string();
+                let ev = b
+                    .lines()
+                    .find_map(|l| l.strip_prefix("event: "))?
+                    .to_string();
                 let data = b.lines().find_map(|l| l.strip_prefix("data: "))?;
                 Some((ev, serde_json::from_str(data).ok()?))
             })
@@ -3421,7 +4022,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     #[test]
     fn chat_stream_translates_responses_sse() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&text_events()));
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            &sse(&text_events()),
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let (status, text) = reply_json(super::super::routes::route(
@@ -3439,12 +4045,20 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert_eq!(chunks[0]["choices"][0]["delta"]["role"], "assistant");
         let content: String = chunks
             .iter()
-            .filter_map(|c| c.pointer("/choices/0/delta/content").and_then(|v| v.as_str()))
+            .filter_map(|c| {
+                c.pointer("/choices/0/delta/content")
+                    .and_then(|v| v.as_str())
+            })
             .collect();
         assert_eq!(content, "Hello");
-        let finish = chunks.iter().find(|c| c.pointer("/choices/0/finish_reason") == Some(&json!("stop")));
+        let finish = chunks
+            .iter()
+            .find(|c| c.pointer("/choices/0/finish_reason") == Some(&json!("stop")));
         assert!(finish.is_some(), "{text}");
-        let usage = chunks.iter().find_map(|c| c.get("usage").filter(|u| u.is_object())).expect("usage chunk");
+        let usage = chunks
+            .iter()
+            .find_map(|c| c.get("usage").filter(|u| u.is_object()))
+            .expect("usage chunk");
         assert_eq!(usage["prompt_tokens"], 10);
         assert_eq!(usage["completion_tokens"], 5);
         assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 4);
@@ -3465,7 +4079,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     #[test]
     fn chat_stream_without_include_usage_has_no_usage_chunk() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&text_events()));
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            &sse(&text_events()),
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let (_, text) = reply_json(super::super::routes::route(
@@ -3482,7 +4101,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     #[test]
     fn chat_nonstream_aggregates_to_completion_json() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&text_events()));
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            &sse(&text_events()),
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let (status, v) = reply_json(super::super::routes::route(
@@ -3524,7 +4148,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let mock = Mock::start();
         let wire = codex_tool_name("my tool");
         assert_ne!(wire, "my tool");
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&tool_events(&wire)));
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            &sse(&tool_events(&wire)),
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let (status, text) = reply_json(super::super::routes::route(
@@ -3534,14 +4163,20 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert_eq!(status, 200);
         let text = text.as_str().unwrap().to_string();
         let chunks = chat_chunks(&text);
-        let calls: Vec<&Value> =
-            chunks.iter().filter_map(|c| c.pointer("/choices/0/delta/tool_calls/0")).collect();
+        let calls: Vec<&Value> = chunks
+            .iter()
+            .filter_map(|c| c.pointer("/choices/0/delta/tool_calls/0"))
+            .collect();
         assert_eq!(calls[0]["id"], "call_9");
         assert_eq!(calls[0]["function"]["name"], "my tool"); // 回程还原
-        let args: String =
-            calls.iter().filter_map(|c| c.pointer("/function/arguments").and_then(|a| a.as_str())).collect();
+        let args: String = calls
+            .iter()
+            .filter_map(|c| c.pointer("/function/arguments").and_then(|a| a.as_str()))
+            .collect();
         assert_eq!(args, "{\"a\":1}");
-        assert!(chunks.iter().any(|c| c.pointer("/choices/0/finish_reason") == Some(&json!("tool_calls"))));
+        assert!(chunks
+            .iter()
+            .any(|c| c.pointer("/choices/0/finish_reason") == Some(&json!("tool_calls"))));
         // 上游：工具名与历史调用名都改成后端收的；孤儿输出改成 assistant 备注
         let sent = sent_body(&mock);
         assert_eq!(sent["tools"][0]["name"], wire.as_str());
@@ -3549,20 +4184,34 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let fc = input.iter().find(|i| i["type"] == "function_call").unwrap();
         assert_eq!(fc["name"], wire.as_str());
         assert_eq!(fc["call_id"], "call_1");
-        assert!(input.iter().any(|i| i["type"] == "function_call_output" && i["call_id"] == "call_1"));
+        assert!(input
+            .iter()
+            .any(|i| i["type"] == "function_call_output" && i["call_id"] == "call_1"));
         let orphan = input
             .iter()
-            .find(|i| i["role"] == "assistant" && i["content"].as_str().is_some_and(|c| c.contains("call_id=zzz")))
+            .find(|i| {
+                i["role"] == "assistant"
+                    && i["content"]
+                        .as_str()
+                        .is_some_and(|c| c.contains("call_id=zzz"))
+            })
             .expect("orphan became a note");
         assert!(orphan["content"].as_str().unwrap().ends_with("stray"));
-        assert!(!input.iter().any(|i| i["type"] == "function_call_output" && i["call_id"] == "zzz"));
+        assert!(!input
+            .iter()
+            .any(|i| i["type"] == "function_call_output" && i["call_id"] == "zzz"));
     }
 
     #[test]
     fn chat_tool_turn_nonstream_returns_tool_calls_json() {
         let mock = Mock::start();
         let wire = codex_tool_name("my tool");
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&tool_events(&wire)));
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            &sse(&tool_events(&wire)),
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let (status, v) = reply_json(super::super::routes::route(
@@ -3581,7 +4230,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     #[test]
     fn anthropic_stream_text_and_usage() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&text_events()));
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            &sse(&text_events()),
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let (status, text) = reply_json(super::super::routes::route(
@@ -3618,7 +4272,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     fn anthropic_tool_use_stream_and_nonstream() {
         let mock = Mock::start();
         let wire = codex_tool_name("my tool");
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&tool_events(&wire)));
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            &sse(&tool_events(&wire)),
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let req = |stream: bool| {
@@ -3626,11 +4285,17 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
                    "tools":[{"name":"my tool","description":"d","input_schema":{"type":"object"}}],
                    "messages":[{"role":"user","content":"go"}]})
         };
-        let (_, text) = reply_json(super::super::routes::route(&post("/v1/messages", &req(true)), &gateway));
+        let (_, text) = reply_json(super::super::routes::route(
+            &post("/v1/messages", &req(true)),
+            &gateway,
+        ));
         let frames = anthropic_frames(text.as_str().unwrap());
         let start = frames
             .iter()
-            .find(|(e, v)| e == "content_block_start" && v.pointer("/content_block/type") == Some(&json!("tool_use")))
+            .find(|(e, v)| {
+                e == "content_block_start"
+                    && v.pointer("/content_block/type") == Some(&json!("tool_use"))
+            })
             .expect("tool_use block");
         assert_eq!(start.1["content_block"]["name"], "my tool");
         assert_eq!(start.1["content_block"]["id"], "call_9");
@@ -3642,7 +4307,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let md = frames.iter().find(|(e, _)| e == "message_delta").unwrap();
         assert_eq!(md.1["delta"]["stop_reason"], "tool_use");
 
-        let (status, v) = reply_json(super::super::routes::route(&post("/v1/messages", &req(false)), &gateway));
+        let (status, v) = reply_json(super::super::routes::route(
+            &post("/v1/messages", &req(false)),
+            &gateway,
+        ));
         assert_eq!(status, 200);
         assert_eq!(v["type"], "message");
         assert_eq!(v["stop_reason"], "tool_use");
@@ -3655,7 +4323,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     #[test]
     fn anthropic_nonstream_text() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&text_events()));
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            &sse(&text_events()),
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let (status, v) = reply_json(super::super::routes::route(
@@ -3680,7 +4353,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
             json!({"type":"response.incomplete","response":{"status":"incomplete",
                    "incomplete_details":{"reason":"max_output_tokens"},"output":[]}}),
         ];
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&events));
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            &sse(&events),
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let (_, v) = reply_json(super::super::routes::route(
@@ -3700,7 +4378,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
             json!({"type":"response.output_text.delta","output_index":0,"delta":"par"}),
             json!({"type":"response.failed","response":{"error":{"message":"boom","code":"server_error"}}}),
         ];
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&events));
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            &sse(&events),
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let (_, text) = reply_json(super::super::routes::route(
@@ -3722,16 +4405,28 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
             &gateway,
         ));
         let frames = anthropic_frames(text.as_str().unwrap());
-        let err = frames.iter().find(|(e, _)| e == "error").expect("anthropic error event");
+        let err = frames
+            .iter()
+            .find(|(e, _)| e == "error")
+            .expect("anthropic error event");
         assert_eq!(err.1["error"]["message"], "boom");
         // 非流式：502 + 各自错误形状
         let (status, body) = reply_json(super::super::routes::route(
-            &post("/v1/chat/completions", &json!({"model":"codex/gpt-6-luna","messages":[{"role":"user","content":"x"}]})),
+            &post(
+                "/v1/chat/completions",
+                &json!({"model":"codex/gpt-6-luna","messages":[{"role":"user","content":"x"}]}),
+            ),
             &gateway,
         ));
-        assert_eq!((status, body["error"]["message"].as_str()), (502, Some("boom")));
+        assert_eq!(
+            (status, body["error"]["message"].as_str()),
+            (502, Some("boom"))
+        );
         let (status, body) = reply_json(super::super::routes::route(
-            &post("/v1/messages", &json!({"model":"codex/gpt-6-luna","max_tokens":9,"messages":[{"role":"user","content":"x"}]})),
+            &post(
+                "/v1/messages",
+                &json!({"model":"codex/gpt-6-luna","max_tokens":9,"messages":[{"role":"user","content":"x"}]}),
+            ),
             &gateway,
         ));
         assert_eq!((status, body["type"].as_str()), (502, Some("error")));
@@ -3740,8 +4435,14 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     #[test]
     fn truncated_stream_is_an_error_not_a_clean_finish() {
         let mock = Mock::start();
-        let events = vec![json!({"type":"response.output_text.delta","output_index":0,"delta":"half"})];
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&events));
+        let events =
+            vec![json!({"type":"response.output_text.delta","output_index":0,"delta":"half"})];
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            &sse(&events),
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let (_, text) = reply_json(super::super::routes::route(
@@ -3752,24 +4453,37 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
             &gateway,
         ));
         let chunks = chat_chunks(text.as_str().unwrap());
-        assert!(chunks.iter().all(|c| c.pointer("/choices/0/finish_reason") != Some(&json!("stop"))));
+        assert!(chunks
+            .iter()
+            .all(|c| c.pointer("/choices/0/finish_reason") != Some(&json!("stop"))));
         assert!(chunks.iter().any(|c| c.get("error").is_some()));
     }
 
     #[test]
     fn upstream_errors_take_each_protocols_shape() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/responses", 401, "application/json", r#"{"detail":"Token expired"}"#);
+        mock.route(
+            "/backend-api/codex/responses",
+            401,
+            "application/json",
+            r#"{"detail":"Token expired"}"#,
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let (status, body) = reply_json(super::super::routes::route(
-            &post("/v1/chat/completions", &json!({"model":"codex/gpt-6-luna","messages":[{"role":"user","content":"x"}]})),
+            &post(
+                "/v1/chat/completions",
+                &json!({"model":"codex/gpt-6-luna","messages":[{"role":"user","content":"x"}]}),
+            ),
             &gateway,
         ));
         assert_eq!(status, 401);
         assert_eq!(body["error"]["message"], "Token expired");
         let (status, body) = reply_json(super::super::routes::route(
-            &post("/v1/messages", &json!({"model":"codex/gpt-6-luna","max_tokens":9,"messages":[{"role":"user","content":"x"}]})),
+            &post(
+                "/v1/messages",
+                &json!({"model":"codex/gpt-6-luna","max_tokens":9,"messages":[{"role":"user","content":"x"}]}),
+            ),
             &gateway,
         ));
         assert_eq!(status, 401);
@@ -3781,17 +4495,34 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     #[test]
     fn expired_token_is_a_clear_401_on_every_inbound_path() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&text_events()));
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            &sse(&text_events()),
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_logins(&w, &expired_token(), "me@example.test");
         for (path, body) in [
-            ("/v1/responses", json!({"model":"codex/gpt-6-luna","input":"x"})),
-            ("/v1/chat/completions", json!({"model":"codex/gpt-6-luna","messages":[{"role":"user","content":"x"}]})),
-            ("/v1/messages", json!({"model":"codex/gpt-6-luna","max_tokens":9,"messages":[{"role":"user","content":"x"}]})),
+            (
+                "/v1/responses",
+                json!({"model":"codex/gpt-6-luna","input":"x"}),
+            ),
+            (
+                "/v1/chat/completions",
+                json!({"model":"codex/gpt-6-luna","messages":[{"role":"user","content":"x"}]}),
+            ),
+            (
+                "/v1/messages",
+                json!({"model":"codex/gpt-6-luna","max_tokens":9,"messages":[{"role":"user","content":"x"}]}),
+            ),
         ] {
             let (status, v) = reply_json(super::super::routes::route(&post(path, &body), &gateway));
             assert_eq!(status, 401, "{path}");
-            let msg = v.pointer("/error/message").and_then(|m| m.as_str()).unwrap_or("");
+            let msg = v
+                .pointer("/error/message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("");
             assert_eq!(msg, EXPIRED_MESSAGE, "{path}");
         }
         assert_eq!(mock.hits(), 0);
@@ -3799,7 +4530,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let fresh = valid_token();
         write_codex_auth(&w, &fresh, "me@example.test");
         let (status, _) = reply_json(super::super::routes::route(
-            &post("/v1/chat/completions", &json!({"model":"codex/gpt-6-luna","messages":[{"role":"user","content":"x"}]})),
+            &post(
+                "/v1/chat/completions",
+                &json!({"model":"codex/gpt-6-luna","messages":[{"role":"user","content":"x"}]}),
+            ),
             &gateway,
         ));
         assert_eq!(status, 200);
@@ -3810,17 +4544,28 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     #[test]
     fn credentials_are_reread_on_every_request() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&text_events()));
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            &sse(&text_events()),
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         let one = fake_jwt(json!({ "exp": now_secs() + 3600, "n": 1 }));
         let two = fake_jwt(json!({ "exp": now_secs() + 7200, "n": 2 }));
         write_codex_auth(&w, &one, "me@example.test");
         let chat = json!({"model":"codex/gpt-6-luna","messages":[{"role":"user","content":"x"}]});
         let _ = super::super::routes::route(&post("/v1/chat/completions", &chat), &gateway);
-        assert_eq!(mock.last("/backend-api/codex/responses").0["authorization"], format!("Bearer {one}"));
+        assert_eq!(
+            mock.last("/backend-api/codex/responses").0["authorization"],
+            format!("Bearer {one}")
+        );
         write_codex_auth(&w, &two, "me@example.test");
         let _ = super::super::routes::route(&post("/v1/chat/completions", &chat), &gateway);
-        assert_eq!(mock.last("/backend-api/codex/responses").0["authorization"], format!("Bearer {two}"));
+        assert_eq!(
+            mock.last("/backend-api/codex/responses").0["authorization"],
+            format!("Bearer {two}")
+        );
         // 从不写凭据文件
         assert!(!w.dir.join("magpie").join("logins.json").exists());
     }
@@ -3834,13 +4579,22 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
                 json!({ "id": id, "agent": "codex", "user": email, "plan": "pro", "auth": auth })
             })
             .collect();
-        std::fs::write(world.dir.join("magpie").join("logins.json"), serde_json::to_vec(&list).unwrap()).unwrap();
+        std::fs::write(
+            world.dir.join("magpie").join("logins.json"),
+            serde_json::to_vec(&list).unwrap(),
+        )
+        .unwrap();
     }
 
     #[test]
     fn multi_account_pin_and_default_pick() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&text_events()));
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            &sse(&text_events()),
+        );
         let providers = r#"{"providers":[],"groups":[
             {"id":"pinned","name":"pinned","members":["codex/gpt-6-luna:xhigh#acc-a"],"pick":"codex/gpt-6-luna:xhigh#acc-a"}]}"#;
         let (gateway, w) = world(providers, &mock.base);
@@ -3848,18 +4602,28 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let b = fake_jwt(json!({ "exp": now_secs() + 9000, "who": "b" }));
         write_logins_multi(
             &w,
-            &[("acc-a", "a@example.test", &a, "acct-a"), ("acc-b", "b@example.test", &b, "acct-b")],
+            &[
+                ("acc-a", "a@example.test", &a, "acct-a"),
+                ("acc-b", "b@example.test", &b, "acct-b"),
+            ],
         );
-        let chat = |model: &str| json!({"model": model, "messages":[{"role":"user","content":"x"}]});
+        let chat =
+            |model: &str| json!({"model": model, "messages":[{"role":"user","content":"x"}]});
         let seen = |mock: &Mock| mock.last("/backend-api/codex/responses").0;
         // 默认：到期最晚的 b
-        let _ = super::super::routes::route(&post("/v1/chat/completions", &chat("codex/gpt-6-luna")), &gateway);
+        let _ = super::super::routes::route(
+            &post("/v1/chat/completions", &chat("codex/gpt-6-luna")),
+            &gateway,
+        );
         let h = seen(&mock);
         assert_eq!(h["authorization"], format!("Bearer {b}"));
         assert_eq!(h["chatgpt-account-id"], "acct-b");
         // 直写 #邮箱 钉 a
         let _ = super::super::routes::route(
-            &post("/v1/chat/completions", &chat("codex/gpt-6-luna#a@example.test")),
+            &post(
+                "/v1/chat/completions",
+                &chat("codex/gpt-6-luna#a@example.test"),
+            ),
             &gateway,
         );
         let h = seen(&mock);
@@ -3883,38 +4647,61 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
             &gateway,
         ));
         assert_eq!(status, 404);
-        assert!(body["error"]["message"].as_str().unwrap().contains("nobody"));
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("nobody"));
         assert_eq!(mock.hits(), hits);
         let (status, body) = reply_json(super::super::routes::route(
-            &post("/v1/messages", &json!({"model":"codex/gpt-6-luna#nobody","max_tokens":9,
-                                          "messages":[{"role":"user","content":"x"}]})),
+            &post(
+                "/v1/messages",
+                &json!({"model":"codex/gpt-6-luna#nobody","max_tokens":9,
+                                          "messages":[{"role":"user","content":"x"}]}),
+            ),
             &gateway,
         ));
-        assert_eq!((status, body["error"]["type"].as_str()), (404, Some("not_found_error")));
+        assert_eq!(
+            (status, body["error"]["type"].as_str()),
+            (404, Some("not_found_error"))
+        );
     }
 
     #[test]
     fn multi_account_expired_pin_is_401_and_default_skips_expired() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&text_events()));
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            &sse(&text_events()),
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         let old = expired_token();
         let live = fake_jwt(json!({ "exp": now_secs() + 100, "who": "live" }));
         write_logins_multi(
             &w,
-            &[("acc-old", "old@example.test", &old, "acct-old"), ("acc-live", "live@example.test", &live, "acct-live")],
+            &[
+                ("acc-old", "old@example.test", &old, "acct-old"),
+                ("acc-live", "live@example.test", &live, "acct-live"),
+            ],
         );
-        let chat = |model: &str| json!({"model": model, "messages":[{"role":"user","content":"x"}]});
+        let chat =
+            |model: &str| json!({"model": model, "messages":[{"role":"user","content":"x"}]});
         let (status, _) = reply_json(super::super::routes::route(
             &post("/v1/chat/completions", &chat("codex/gpt-6-luna#acc-old")),
             &gateway,
         ));
         assert_eq!(status, 401);
         assert_eq!(mock.hits(), 0);
-        let (status, _) =
-            reply_json(super::super::routes::route(&post("/v1/chat/completions", &chat("codex/gpt-6-luna")), &gateway));
+        let (status, _) = reply_json(super::super::routes::route(
+            &post("/v1/chat/completions", &chat("codex/gpt-6-luna")),
+            &gateway,
+        ));
         assert_eq!(status, 200);
-        assert_eq!(mock.last("/backend-api/codex/responses").0["chatgpt-account-id"], "acct-live");
+        assert_eq!(
+            mock.last("/backend-api/codex/responses").0["chatgpt-account-id"],
+            "acct-live"
+        );
     }
 
     #[test]
@@ -3926,7 +4713,11 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         write_logins_multi(&w, &[("acc-x", "x@example.test", &older, "acct-x")]);
         let mut auth = auth_json(&newer, "x@example.test");
         auth["tokens"]["account_id"] = json!("acct-x");
-        std::fs::write(w.dir.join("home").join("auth.json"), serde_json::to_vec(&auth).unwrap()).unwrap();
+        std::fs::write(
+            w.dir.join("home").join("auth.json"),
+            serde_json::to_vec(&auth).unwrap(),
+        )
+        .unwrap();
         let all = discover_all();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].token, newer); // 取更新的令牌
@@ -3947,11 +4738,17 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let b = fake_jwt(json!({ "exp": now_secs() + 4000 }));
         write_logins_multi(
             &w,
-            &[("acc-a", "a@example.test", &a, "acct-a"), ("acc-b", "b@example.test", &b, "acct-b")],
+            &[
+                ("acc-a", "a@example.test", &a, "acct-a"),
+                ("acc-b", "b@example.test", &b, "acct-b"),
+            ],
         );
         let rows = super::super::quotas::quota_entries(&gateway, true);
-        let mut users: Vec<&str> =
-            rows.iter().filter(|r| r["provider"] == "codex").map(|r| r["user"].as_str().unwrap()).collect();
+        let mut users: Vec<&str> = rows
+            .iter()
+            .filter(|r| r["provider"] == "codex")
+            .map(|r| r["user"].as_str().unwrap())
+            .collect();
         users.sort();
         assert_eq!(users, vec!["a@example.test", "b@example.test"]);
         // 每个账号用自己的令牌问
@@ -3967,13 +4764,21 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     #[test]
     fn fast_member_sets_priority_tier() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", &sse(&text_events()));
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            &sse(&text_events()),
+        );
         let providers = r#"{"providers":[],"groups":[
             {"id":"quick","name":"quick","members":["codex/gpt-6-luna:fast"],"pick":"codex/gpt-6-luna:fast"}]}"#;
         let (gateway, w) = world(providers, &mock.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let _ = super::super::routes::route(
-            &post("/v1/responses", &json!({"model":"quick","input":"x","stream":true})),
+            &post(
+                "/v1/responses",
+                &json!({"model":"quick","input":"x","stream":true}),
+            ),
             &gateway,
         );
         assert_eq!(sent_body(&mock)["service_tier"], "priority");
@@ -3987,10 +4792,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert_eq!(codex_tool_name("fine_name-1.x"), "fine_name-1.x");
         let n = codex_tool_name("get weather: 天气");
         assert!(n.starts_with("get_weather"));
-        assert!(n.bytes().all(|c| c == b'_' || c == b'.' || c == b'-' || c.is_ascii_alphanumeric()));
+        assert!(n
+            .bytes()
+            .all(|c| c == b'_' || c == b'.' || c == b'-' || c.is_ascii_alphanumeric()));
         assert_eq!(n, codex_tool_name("get weather: 天气")); // 恒定
         assert_ne!(codex_tool_name("a b"), codex_tool_name("a:b")); // 不同名不撞
-        // 超长：55 + _ + 8 hex
+                                                                    // 超长：55 + _ + 8 hex
         let long = format!("{} x", "n".repeat(100));
         assert_eq!(codex_tool_name(&long).len(), 55 + 1 + 8);
         // 空名也要合法
@@ -4003,16 +4810,27 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
             "tool_choice": {"type":"function","name":"a b"}
         });
         assert!(codex_tool_names(v.as_object_mut().unwrap()));
-        assert_eq!(v["tools"][0]["tools"][0]["name"], codex_tool_name("a b").as_str());
+        assert_eq!(
+            v["tools"][0]["tools"][0]["name"],
+            codex_tool_name("a b").as_str()
+        );
         assert_eq!(v["input"][0]["name"], codex_tool_name("x y").as_str());
-        assert_eq!(v["input"][1]["tools"][0]["name"], codex_tool_name("p q").as_str());
+        assert_eq!(
+            v["input"][1]["tools"][0]["name"],
+            codex_tool_name("p q").as_str()
+        );
         assert_eq!(v["tool_choice"]["name"], codex_tool_name("a b").as_str());
         // 合法名：原样、不报改动
         let mut ok = json!({"tools":[{"type":"function","name":"fine"}]});
         assert!(!codex_tool_names(ok.as_object_mut().unwrap()));
         // 回程表只含改过名的
-        let back = names_back_of(&json!({"tools":[{"type":"function","name":"a b"},{"type":"function","name":"fine"}]}));
-        assert_eq!(back.get(&codex_tool_name("a b")).map(String::as_str), Some("a b"));
+        let back = names_back_of(
+            &json!({"tools":[{"type":"function","name":"a b"},{"type":"function","name":"fine"}]}),
+        );
+        assert_eq!(
+            back.get(&codex_tool_name("a b")).map(String::as_str),
+            Some("a b")
+        );
         assert_eq!(back.len(), 1);
     }
 
@@ -4029,11 +4847,14 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         ]);
         assert_eq!(out[1]["type"], "function_call_output");
         assert_eq!(out[2]["role"], "assistant");
-        assert_eq!(out[2]["content"], "[Previous grep result; call_id=gone]: {\"k\":1}");
+        assert_eq!(
+            out[2]["content"],
+            "[Previous grep result; call_id=gone]: {\"k\":1}"
+        );
         assert_eq!(out[3]["role"], "assistant"); // call 种类不配对
         assert_eq!(out[4]["output"], "standalone notification"); // 无 call_id：原样
         assert_eq!(out[6]["type"], "function_call_output"); // function_call_output 可配 local_shell_call
-        // 超长输出截断并保持 UTF-8 合法
+                                                            // 超长输出截断并保持 UTF-8 合法
         let big = "界".repeat(9000);
         let o = orphan_output(&json!({"output": big}), "");
         let c = o["content"].as_str().unwrap();
@@ -4068,7 +4889,11 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         );
         assert_eq!(v["tools"].as_array().unwrap().len(), 1);
         // 没回放搜索：不动
-        let v = shape_body(json!({"input":[{"type":"message","role":"user","content":"x"}]}), "m", None);
+        let v = shape_body(
+            json!({"input":[{"type":"message","role":"user","content":"x"}]}),
+            "m",
+            None,
+        );
         assert!(v.get("tools").is_none());
         // additional_tools（Lite）：补进该项而不是 tools
         let v = shape_body(
@@ -4086,7 +4911,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     #[test]
     fn oversized_body_is_gzipped_and_equivalent() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", SSE_OK);
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            SSE_OK,
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let big = "x".repeat(COMPRESS_MIN + 10);
@@ -4102,7 +4932,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert_eq!(headers["content-encoding"], "gzip");
         use flate2::read::GzDecoder;
         let mut plain = Vec::new();
-        GzDecoder::new(&body[..]).read_to_end(&mut plain).expect("gunzip");
+        GzDecoder::new(&body[..])
+            .read_to_end(&mut plain)
+            .expect("gunzip");
         let sent: Value = serde_json::from_slice(&plain).expect("json");
         assert_eq!(sent["model"], "gpt-6-luna");
         // 解压后等价：整段正文原样在（shape 过的形态）
@@ -4113,11 +4945,19 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     #[test]
     fn small_body_stays_plain() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", SSE_OK);
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            SSE_OK,
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let _ = super::super::routes::route(
-            &post("/v1/responses", &json!({"model":"codex/gpt-6-luna","stream":true,"input":"small"})),
+            &post(
+                "/v1/responses",
+                &json!({"model":"codex/gpt-6-luna","stream":true,"input":"small"}),
+            ),
             &gateway,
         );
         let (headers, _) = mock.last("/backend-api/codex/responses");
@@ -4154,12 +4994,16 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     }
     impl FrameFeed {
         fn frame(&mut self, opcode: u8, payload: &[u8]) {
-            self.data.extend(super::super::ws::encode_server_frame(opcode, payload));
+            self.data
+                .extend(super::super::ws::encode_server_frame(opcode, payload));
         }
     }
     impl Default for FrameFeed {
         fn default() -> Self {
-            FrameFeed { data: Vec::new(), at: 0 }
+            FrameFeed {
+                data: Vec::new(),
+                at: 0,
+            }
         }
     }
     impl std::io::Read for FrameFeed {
@@ -4188,17 +5032,29 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
 
     #[test]
     fn ws_url_maps_schemes() {
-        assert_eq!(super::ws_url("https://chatgpt.com/backend-api/codex"), "wss://chatgpt.com/backend-api/codex/responses");
-        assert_eq!(super::ws_url("http://127.0.0.1:9/codex/"), "ws://127.0.0.1:9/codex/responses");
+        assert_eq!(
+            super::ws_url("https://chatgpt.com/backend-api/codex"),
+            "wss://chatgpt.com/backend-api/codex/responses"
+        );
+        assert_eq!(
+            super::ws_url("http://127.0.0.1:9/codex/"),
+            "ws://127.0.0.1:9/codex/responses"
+        );
     }
 
     #[test]
     fn response_create_message_prefixes_body_bytes() {
         // Go codexCreate：`{"type":"response.create",` 接在 `{` 后，原字节不动。
         let msg = super::response_create_message(br#"{ "model": "x", "stream": true }"#);
-        assert_eq!(msg, br#"{"type":"response.create", "model": "x", "stream": true }"#.to_vec());
+        assert_eq!(
+            msg,
+            br#"{"type":"response.create", "model": "x", "stream": true }"#.to_vec()
+        );
         // 空对象不补逗号。
-        assert_eq!(super::response_create_message(b"{}"), br#"{"type":"response.create"}"#.to_vec());
+        assert_eq!(
+            super::response_create_message(b"{}"),
+            br#"{"type":"response.create"}"#.to_vec()
+        );
         // 前后空白剥掉（Go TrimSpace 同款）。
         let msg = super::response_create_message(b"\r\n{\"stream\":true}\n");
         assert_eq!(msg, br#"{"type":"response.create","stream":true}"#.to_vec());
@@ -4216,7 +5072,8 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
             plan: "pro".into(),
             exp: Some(now_secs() + 3600),
         };
-        let body = json!({"model":"gpt-6-luna","stream":true,"input":"hi","prompt_cache_key":"thread-1"});
+        let body =
+            json!({"model":"gpt-6-luna","stream":true,"input":"hi","prompt_cache_key":"thread-1"});
         let plan = super::ws_plan(&account, "0.200.0", &body).expect("plan");
         assert_eq!(plan.url, "ws://127.0.0.1:9/codex/responses");
         // 消息 = 原体前接 response.create；round-trip 回来字段原样。
@@ -4243,9 +5100,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert_eq!(h("session-id"), "thread-1");
         assert_eq!(h("thread-id"), "thread-1");
         assert_eq!(h("OpenAI-Beta"), super::WS_BETA);
-        assert!(plan.headers.iter().all(|(k, _)| !k.eq_ignore_ascii_case("Accept")
-            && !k.eq_ignore_ascii_case("Content-Type")
-            && !k.eq_ignore_ascii_case("Content-Encoding")));
+        assert!(plan
+            .headers
+            .iter()
+            .all(|(k, _)| !k.eq_ignore_ascii_case("Accept")
+                && !k.eq_ignore_ascii_case("Content-Type")
+                && !k.eq_ignore_ascii_case("Content-Encoding")));
     }
 
     #[test]
@@ -4260,13 +5120,21 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         };
         // 非流式 / 顶层带 type：不合 WS 形状（Go codexSocketMessage :247）。
         assert!(super::ws_plan(&account, "v", &json!({"model":"m","stream":false})).is_none());
-        assert!(super::ws_plan(&account, "v", &json!({"model":"m","stream":true,"type":"response.create"})).is_none());
+        assert!(super::ws_plan(
+            &account,
+            "v",
+            &json!({"model":"m","stream":true,"type":"response.create"})
+        )
+        .is_none());
     }
 
     #[test]
     fn ws_sse_event_lines_and_compaction() {
         let ev = super::ws_sse_event("response.created", br#"{"type":"response.created"}"#);
-        assert_eq!(ev, b"event: response.created\ndata: {\"type\":\"response.created\"}\n\n".to_vec());
+        assert_eq!(
+            ev,
+            b"event: response.created\ndata: {\"type\":\"response.created\"}\n\n".to_vec()
+        );
         // 空类型：只有 data 行（Go kind=="" 分支）。
         let ev = super::ws_sse_event("", br#"{"a":1}"#);
         assert_eq!(ev, b"data: {\"a\":1}\n\n".to_vec());
@@ -4282,7 +5150,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert!(matches!(super::ws_error_reply(f), Some(Err(()))));
         // status 429 + error 对象 → 合成 (429, {"error":…})。
         let f = br#"{"type":"error","status":429,"error":{"message":"slow down","code":"rate_limited"}}"#;
-        let Some(Ok((status, body))) = super::ws_error_reply(f) else { panic!("429") };
+        let Some(Ok((status, body))) = super::ws_error_reply(f) else {
+            panic!("429")
+        };
         assert_eq!(status, 429);
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["error"]["message"], "slow down");
@@ -4299,14 +5169,23 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     fn ws_turn_over_prelude_and_sse_restore() {
         let mut feed = FrameFeed::default();
         // timing 帧（丢弃）→ 头帧 rate_limits → 首条正文 → 终态。
-        feed.data.extend(text_frame(br#"{"type":"responsesapi.websocket_timing","ms":1}"#));
-        feed.data.extend(text_frame(br#"{"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":1}}}"#));
-        feed.data.extend(text_frame(br#"{"type":"response.created","response":{"id":"r1"}}"#));
-        feed.data
-            .extend(text_frame(br#"{"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":1}}}"#));
+        feed.data.extend(text_frame(
+            br#"{"type":"responsesapi.websocket_timing","ms":1}"#,
+        ));
+        feed.data.extend(text_frame(
+            br#"{"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":1}}}"#,
+        ));
+        feed.data.extend(text_frame(
+            br#"{"type":"response.created","response":{"id":"r1"}}"#,
+        ));
+        feed.data.extend(text_frame(
+            br#"{"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":1}}}"#,
+        ));
         let conn = super::super::ws::WsConn::over(Box::new(feed));
         let outcome = super::ws_turn_over(conn, br#"{"type":"response.create"}"#, "h", false, None);
-        let super::WsOutcome::Stream(mut reader) = outcome else { panic!("expected Stream") };
+        let super::WsOutcome::Stream(mut reader) = outcome else {
+            panic!("expected Stream")
+        };
         let mut sse = String::new();
         reader.read_to_string(&mut sse).expect("read to end");
         assert_eq!(
@@ -4326,33 +5205,60 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     fn ws_turn_over_error_frame_paths() {
         // 连接上限 error 帧 → 回退 HTTP。
         let mut feed = FrameFeed::default();
-        feed.data.extend(text_frame(br#"{"type":"error","error":{"code":"websocket_connection_limit_reached"}}"#));
+        feed.data.extend(text_frame(
+            br#"{"type":"error","error":{"code":"websocket_connection_limit_reached"}}"#,
+        ));
         let conn = super::super::ws::WsConn::over(Box::new(feed));
-        assert!(matches!(super::ws_turn_over(conn, b"m", "h", false, None), super::WsOutcome::FallBack));
+        assert!(matches!(
+            super::ws_turn_over(conn, b"m", "h", false, None),
+            super::WsOutcome::FallBack
+        ));
 
         // 带 status 的 error 帧 → 合成错误走现有路径（账号轮换可判）。
         let mut feed = FrameFeed::default();
-        feed.data.extend(text_frame(br#"{"type":"error","status":429,"error":{"message":"usage limit"}}"#));
+        feed.data.extend(text_frame(
+            br#"{"type":"error","status":429,"error":{"message":"usage limit"}}"#,
+        ));
         let conn = super::super::ws::WsConn::over(Box::new(feed));
-        let super::WsOutcome::Error(429, body) = super::ws_turn_over(conn, b"m", "h", false, None) else { panic!("429") };
+        let super::WsOutcome::Error(429, body) = super::ws_turn_over(conn, b"m", "h", false, None)
+        else {
+            panic!("429")
+        };
         assert!(String::from_utf8_lossy(&body).contains("usage limit"));
 
         // 无 status 的 error 帧 → 当普通事件传下去（且是终态）。
         let mut feed = FrameFeed::default();
-        feed.data.extend(text_frame(br#"{"type":"error","message":"odd"}"#));
+        feed.data
+            .extend(text_frame(br#"{"type":"error","message":"odd"}"#));
         let conn = super::super::ws::WsConn::over(Box::new(feed));
-        let super::WsOutcome::Stream(mut reader) = super::ws_turn_over(conn, b"m", "h", false, None) else { panic!("Stream") };
+        let super::WsOutcome::Stream(mut reader) =
+            super::ws_turn_over(conn, b"m", "h", false, None)
+        else {
+            panic!("Stream")
+        };
         let mut sse = String::new();
         reader.read_to_string(&mut sse).expect("eof after terminal");
-        assert_eq!(sse, "event: error\ndata: {\"type\":\"error\",\"message\":\"odd\"}\n\n");
+        assert_eq!(
+            sse,
+            "event: error\ndata: {\"type\":\"error\",\"message\":\"odd\"}\n\n"
+        );
 
         // 应答前 close / 连不上（EOF）→ 回退。
         let mut feed = FrameFeed::default();
-        feed.data.extend(super::super::ws::encode_server_frame(super::super::ws::OP_CLOSE, &1000u16.to_be_bytes()));
+        feed.data.extend(super::super::ws::encode_server_frame(
+            super::super::ws::OP_CLOSE,
+            &1000u16.to_be_bytes(),
+        ));
         let conn = super::super::ws::WsConn::over(Box::new(feed));
-        assert!(matches!(super::ws_turn_over(conn, b"m", "h", false, None), super::WsOutcome::FallBack));
+        assert!(matches!(
+            super::ws_turn_over(conn, b"m", "h", false, None),
+            super::WsOutcome::FallBack
+        ));
         let conn = super::super::ws::WsConn::over(Box::new(FrameFeed::default()));
-        assert!(matches!(super::ws_turn_over(conn, b"m", "h", false, None), super::WsOutcome::FallBack));
+        assert!(matches!(
+            super::ws_turn_over(conn, b"m", "h", false, None),
+            super::WsOutcome::FallBack
+        ));
     }
 
     #[test]
@@ -4360,9 +5266,15 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         // 正文开始后、终态前断线：事件已交付的部分保留 + io::Error（HTTP 半截
         // 同款——聚合层据此 502「stream ended before response.completed」）。
         let mut feed = FrameFeed::default();
-        feed.data.extend(text_frame(br#"{"type":"response.created","response":{"id":"r1"}}"#));
+        feed.data.extend(text_frame(
+            br#"{"type":"response.created","response":{"id":"r1"}}"#,
+        ));
         let conn = super::super::ws::WsConn::over(Box::new(feed));
-        let super::WsOutcome::Stream(mut reader) = super::ws_turn_over(conn, b"m", "h", false, None) else { panic!("Stream") };
+        let super::WsOutcome::Stream(mut reader) =
+            super::ws_turn_over(conn, b"m", "h", false, None)
+        else {
+            panic!("Stream")
+        };
         let mut buf = Vec::new();
         let res = reader.read_to_end(&mut buf);
         assert!(res.is_err(), "cut stream must surface an error");
@@ -4372,7 +5284,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     #[test]
     fn ws_switch_default_off_and_failure_falls_back_to_http() {
         let mock = Mock::start();
-        mock.route("/backend-api/codex/responses", 200, "text/event-stream", SSE_OK);
+        mock.route(
+            "/backend-api/codex/responses",
+            200,
+            "text/event-stream",
+            SSE_OK,
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         let token = valid_token();
         write_logins(&w, &token, "me@example.test");
@@ -4381,7 +5298,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         {
             let _off = WsEnv::off();
             let reply = super::super::routes::route(
-                &post("/v1/responses", &json!({"model":"codex/gpt-6-luna","stream":true,"input":"hi"})),
+                &post(
+                    "/v1/responses",
+                    &json!({"model":"codex/gpt-6-luna","stream":true,"input":"hi"}),
+                ),
                 &gateway,
             );
             assert_eq!(reply_json(reply).0, 200);
@@ -4397,7 +5317,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         {
             let _on = WsEnv::on();
             let reply = super::super::routes::route(
-                &post("/v1/responses", &json!({"model":"codex/gpt-6-luna","stream":true,"input":"hi"})),
+                &post(
+                    "/v1/responses",
+                    &json!({"model":"codex/gpt-6-luna","stream":true,"input":"hi"}),
+                ),
                 &gateway,
             );
             assert_eq!(reply_json(reply).0, 200);
@@ -4420,7 +5343,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
             assert_eq!(post.method, "POST");
             let sent: Value = serde_json::from_slice(&post.body).unwrap();
             assert_eq!(sent["model"], "gpt-6-luna");
-            assert!(sent.get("type").is_none(), "HTTP body must not carry the ws response.create prefix");
+            assert!(
+                sent.get("type").is_none(),
+                "HTTP body must not carry the ws response.create prefix"
+            );
         }
     }
 
@@ -4437,7 +5363,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let shape1 = super::turn_shape(&body1).expect("shape");
         // 字段排除 input/client_metadata/stream_options，其余全收。
         assert!(shape1.fields.contains_key("model") && shape1.fields.contains_key("store"));
-        assert!(!shape1.fields.contains_key("input") && !shape1.fields.contains_key("client_metadata"));
+        assert!(
+            !shape1.fields.contains_key("input") && !shape1.fields.contains_key("client_metadata")
+        );
 
         // 池内条目：上轮 input [user ping] + output [asst pong]、reply resp-1。
         let kept = super::KeptConn {
@@ -4469,12 +5397,20 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let edited = json!({ "model": "m", "stream": true, "store": false, "prompt_cache_key": "c1",
             "input": [user("PING"), asst("pong"), user("again")] });
         let s = super::turn_shape(&edited).unwrap();
-        assert!(super::delta_message(&kept, &edited, &s).is_none(), "edited history goes whole");
+        assert!(
+            super::delta_message(&kept, &edited, &s).is_none(),
+            "edited history goes whole"
+        );
 
         // 换模型（字段变了）→ 整段；少一条前缀 → 整段。
         let other_model = json!({ "model": "m2", "stream": true, "store": false, "prompt_cache_key": "c1",
             "input": [user("ping"), asst("pong"), user("again")] });
-        assert!(super::delta_message(&kept, &other_model, &super::turn_shape(&other_model).unwrap()).is_none());
+        assert!(super::delta_message(
+            &kept,
+            &other_model,
+            &super::turn_shape(&other_model).unwrap()
+        )
+        .is_none());
         let short = json!({ "model": "m", "stream": true, "store": false, "prompt_cache_key": "c1", "input": [user("ping")] });
         assert!(super::delta_message(&kept, &short, &super::turn_shape(&short).unwrap()).is_none());
 
@@ -4491,9 +5427,14 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         };
         assert!(super::delta_message(&no_id, &body2, &shape2).is_none());
         let named = json!({ "model": "m", "stream": true, "previous_response_id": "x", "input": [user("ping")] });
-        assert!(super::turn_shape(&named).is_none(), "a body naming previous_response_id is not continuable");
+        assert!(
+            super::turn_shape(&named).is_none(),
+            "a body naming previous_response_id is not continuable"
+        );
         // input 非数组 → 不参与形状（Go Unmarshal 到数组失败同款）。
-        assert!(super::turn_shape(&json!({ "model": "m", "stream": true, "input": "hi" })).is_none());
+        assert!(
+            super::turn_shape(&json!({ "model": "m", "stream": true, "input": "hi" })).is_none()
+        );
     }
 
     /// 纯逻辑：dial 错误 → 要不要记 shun 的分类（Go socket :375-386）。
@@ -4501,14 +5442,20 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     fn shun_worthy_classification() {
         // 非 101 的 HTTP 应答：401/429/5xx 豁免，403/404 记 shun。
         assert!(!super::shun_worthy("ws handshake refused: HTTP 401 X"));
-        assert!(!super::shun_worthy("ws handshake refused: HTTP 429 Too Many"));
+        assert!(!super::shun_worthy(
+            "ws handshake refused: HTTP 429 Too Many"
+        ));
         assert!(!super::shun_worthy("ws handshake refused: HTTP 503 busy"));
         assert!(super::shun_worthy("ws handshake refused: HTTP 403 nope"));
         assert!(super::shun_worthy("ws handshake refused: HTTP 404 X"));
         // 连接层失败（Go hs == nil）：一律 shun。
         assert!(super::shun_worthy("ws connect 1.2.3.4:443: timed out"));
-        assert!(super::shun_worthy("ws handshake: connection closed before 101"));
-        assert!(super::shun_worthy("ws handshake: Sec-WebSocket-Accept mismatch"));
+        assert!(super::shun_worthy(
+            "ws handshake: connection closed before 101"
+        ));
+        assert!(super::shun_worthy(
+            "ws handshake: Sec-WebSocket-Accept mismatch"
+        ));
     }
 
     /// 纯逻辑：会话键把账号/会话分开（Go codexKeepKey :102）。
@@ -4543,7 +5490,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
             plan: String::new(),
             exp: None,
         };
-        let plan = super::ws_plan(&account, "v", &json!({"model":"m","stream":true,"input":"hi"})).unwrap();
+        let plan = super::ws_plan(
+            &account,
+            "v",
+            &json!({"model":"m","stream":true,"input":"hi"}),
+        )
+        .unwrap();
         assert!(super::keep_key(&plan).is_none());
     }
 
@@ -4604,8 +5556,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
                             }
                         }
                         if line.starts_with("POST") {
-                            let len: usize =
-                                headers.get("content-length").and_then(|l| l.parse().ok()).unwrap_or(0);
+                            let len: usize = headers
+                                .get("content-length")
+                                .and_then(|l| l.parse().ok())
+                                .unwrap_or(0);
                             let mut body = vec![0u8; len];
                             let _ = reader.read_exact(&mut body);
                             p.fetch_add(1, Ordering::SeqCst);
@@ -4629,7 +5583,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
                             let _ = stream.write_all(out.as_bytes());
                             return;
                         }
-                        let key = headers.get("sec-websocket-key").cloned().unwrap_or_default();
+                        let key = headers
+                            .get("sec-websocket-key")
+                            .cloned()
+                            .unwrap_or_default();
                         let accept = super::super::ws::accept_for(&key);
                         let res = format!(
                             "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
@@ -4638,14 +5595,20 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
                             return;
                         }
                         loop {
-                            let Some((op, payload)) = read_client_frame(&mut reader) else { break };
+                            let Some((op, payload)) = read_client_frame(&mut reader) else {
+                                break;
+                            };
                             if op == super::super::ws::OP_CLOSE {
                                 break;
                             }
                             if op != super::super::ws::OP_TEXT {
                                 continue;
                             }
-                            t.lock().unwrap().push(FakeTurn { msg: payload.clone(), socket: n, auth: auth.clone() });
+                            t.lock().unwrap().push(FakeTurn {
+                                msg: payload.clone(),
+                                socket: n,
+                                auth: auth.clone(),
+                            });
                             let (reply, close) = frames(n, &payload);
                             for fr in reply {
                                 if stream
@@ -4755,7 +5718,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     /// 和别的模型在前缀/字段对不上时整段发，但仍在这条连接上。
     #[test]
     fn ws_keep_sends_the_delta_and_edited_history_goes_whole() {
-        let fake = WsFake::start(None, |socket, _| (kept_reply(&format!("resp-{socket}")), None));
+        let fake = WsFake::start(None, |socket, _| {
+            (kept_reply(&format!("resp-{socket}")), None)
+        });
         let (gateway, w) = world(r#"{"providers":[]}"#, &fake.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let _on = WsEnv::on();
@@ -4799,7 +5764,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let (sock3, _, msg3) = fake.turn(2);
         let m3: Value = serde_json::from_slice(&msg3).unwrap();
         assert_eq!(sock3, 1, "edited history still on the kept socket");
-        assert!(m3.get("previous_response_id").is_none(), "edited history goes whole");
+        assert!(
+            m3.get("previous_response_id").is_none(),
+            "edited history goes whole"
+        );
         assert_eq!(m3["input"].as_array().unwrap().len(), 3);
         assert_eq!((fake.posts(), fake.opened()), (0, 1));
     }
@@ -4810,7 +5778,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     #[test]
     fn ws_keep_lost_response_goes_whole_on_new_socket() {
         let fake = WsFake::start(None, |socket, msg| {
-            if msg.windows(21).any(|w| w.starts_with(br#""previous_response_id"#)) {
+            if msg
+                .windows(21)
+                .any(|w| w.starts_with(br#""previous_response_id"#))
+            {
                 (
                     vec![r#"{"type":"error","status":400,"error":{"type":"invalid_request_error","code":"previous_response_not_found","message":"Previous response with id 'resp-1' not found."}}"#.to_string()],
                     None,
@@ -4846,7 +5817,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     /// 下一回合取出的 keep 连接已死 → Again → 新连接整段。
     #[test]
     fn ws_keep_closed_meanwhile_goes_whole_on_new_socket() {
-        let fake = WsFake::start(None, |socket, _| (kept_reply(&format!("resp-{socket}")), Some(1000)));
+        let fake = WsFake::start(None, |socket, _| {
+            (kept_reply(&format!("resp-{socket}")), Some(1000))
+        });
         let (gateway, w) = world(r#"{"providers":[]}"#, &fake.base);
         write_logins(&w, &valid_token(), "me@example.test");
         let _on = WsEnv::on();
@@ -4862,20 +5835,28 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let (sock, _, msg) = fake.turn(1);
         assert_eq!(sock, 2, "the dead kept socket is replaced");
         let m: Value = serde_json::from_slice(&msg).unwrap();
-        assert!(m.get("previous_response_id").is_none(), "a new socket is sent the turn whole");
+        assert!(
+            m.get("previous_response_id").is_none(),
+            "a new socket is sent the turn whole"
+        );
     }
 
     /// 别的账号绝不复用第一家的连接，也不点名它家的 response（Go
     /// TestCodexKeptSocketIsTheAccounts）。
     #[test]
     fn ws_keep_is_the_accounts() {
-        let fake = WsFake::start(None, |socket, _| (kept_reply(&format!("resp-{socket}")), None));
+        let fake = WsFake::start(None, |socket, _| {
+            (kept_reply(&format!("resp-{socket}")), None)
+        });
         let (gateway, w) = world(r#"{"providers":[]}"#, &fake.base);
         let a = fake_jwt(json!({ "exp": now_secs() + 9000 }));
         let b = fake_jwt(json!({ "exp": now_secs() + 1000 }));
         write_logins_multi(
             &w,
-            &[("acc-a", "a@example.test", &a, "acct-a"), ("acc-b", "b@example.test", &b, "acct-b")],
+            &[
+                ("acc-a", "a@example.test", &a, "acct-a"),
+                ("acc-b", "b@example.test", &b, "acct-b"),
+            ],
         );
         let _on = WsEnv::on();
 
@@ -4883,16 +5864,24 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let mut pinned = first.clone();
         pinned["model"] = Value::String("codex/gpt-6-luna#acc-a".into());
         assert_eq!(run_turn(&gateway, &pinned).0, 200);
-        let mut second = kept_turn_body("conv-1", &format!("{USER_PING}, {ASST_PONG}, {USER_AGAIN}"));
+        let mut second =
+            kept_turn_body("conv-1", &format!("{USER_PING}, {ASST_PONG}, {USER_AGAIN}"));
         second["model"] = Value::String("codex/gpt-6-luna#acc-b".into());
         assert_eq!(run_turn(&gateway, &second).0, 200);
 
-        assert_eq!((fake.posts(), fake.opened()), (0, 2), "each account its own socket");
+        assert_eq!(
+            (fake.posts(), fake.opened()),
+            (0, 2),
+            "each account its own socket"
+        );
         let (sock, auth, msg) = fake.turn(1);
         assert_eq!(sock, 2);
         assert_eq!(auth, format!("Bearer {b}"));
         let m: Value = serde_json::from_slice(&msg).unwrap();
-        assert!(m.get("previous_response_id").is_none(), "acct-2 never names acct-1's response");
+        assert!(
+            m.get("previous_response_id").is_none(),
+            "acct-2 never names acct-1's response"
+        );
     }
 
     /// 握手被拒（403）：当轮回退 HTTP，10 分钟内不再试 WS（Go
@@ -4940,37 +5929,70 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         // 第二回合（同样大）：期内不再连 WS，直接 HTTP。
         let (status, body) = run_turn(&gateway, &big);
         assert_eq!(status, 200, "{body}");
-        assert_eq!((fake.posts(), fake.opened()), (2, 1), "one socket tried, both turns over HTTP");
+        assert_eq!(
+            (fake.posts(), fake.opened()),
+            (2, 1),
+            "one socket tried, both turns over HTTP"
+        );
         // 小回合回到 WS。
         let (status, body) = run_turn(&gateway, &kept_turn_body("conv-2", USER_PING));
         assert_eq!(status, 200, "{body}");
         assert!(body.contains("response.completed"), "{body}");
-        assert_eq!((fake.posts(), fake.opened()), (2, 2), "the small turn goes over the socket");
-        assert_eq!(fake.turns.lock().unwrap().len(), 2, "both WS messages were seen");
+        assert_eq!(
+            (fake.posts(), fake.opened()),
+            (2, 2),
+            "the small turn goes over the socket"
+        );
+        assert_eq!(
+            fake.turns.lock().unwrap().len(),
+            2,
+            "both WS messages were seen"
+        );
     }
 
     #[test]
     fn account_out_word_table_matches_go() {
         // 429：ChatGPT 的标准额度拒绝（代码 / 措辞）
         assert!(codex_account_out(429, br#"{"error":{"code":"usage_limit_reached","message":"You've reached your usage limit"}}"#));
-        assert!(codex_account_out(429, br#"{"error":{"message":"Too many requests"}}"#));
+        assert!(codex_account_out(
+            429,
+            br#"{"error":{"message":"Too many requests"}}"#
+        ));
         assert!(codex_account_out(429, b"Rate limit exceeded"));
         assert!(codex_account_out(429, br#"rate limit per minute exceeded"#)); // 分钟级 → rate
-        // 403 + usage_not_included（没有 Codex 的套餐）
-        assert!(codex_account_out(403, br#"{"detail":"usage_not_included"}"#));
+                                                                               // 403 + usage_not_included（没有 Codex 的套餐）
+        assert!(codex_account_out(
+            403,
+            br#"{"detail":"usage_not_included"}"#
+        ));
         // 402：credit
-        assert!(codex_account_out(402, br#"{"error":{"message":"insufficient credits"}}"#));
+        assert!(codex_account_out(
+            402,
+            br#"{"error":{"message":"insufficient credits"}}"#
+        ));
         // 401 永远不算（Go codexAccountOut：Codex 在 401 上自己续登录）
         assert!(!codex_account_out(401, br#"{"detail":"Token expired"}"#));
         // 400/404 普通措辞不算
         assert!(!codex_account_out(400, br#"{"detail":"invalid request"}"#));
         assert!(!codex_account_out(404, br#"{"detail":"Model not found"}"#));
-        assert!(!codex_account_out(400, b"This model's maximum context length is 8192 tokens"));
+        assert!(!codex_account_out(
+            400,
+            b"This model's maximum context length is 8192 tokens"
+        ));
         // 5xx 过载不算；5xx + 额度代码算（quotaCodes）
-        assert!(!codex_account_out(500, br#"{"error":{"message":"internal error"}}"#));
-        assert!(codex_account_out(500, br#"{"error":{"code":"usage_limit_reached"}}"#));
+        assert!(!codex_account_out(
+            500,
+            br#"{"error":{"message":"internal error"}}"#
+        ));
+        assert!(codex_account_out(
+            500,
+            br#"{"error":{"code":"usage_limit_reached"}}"#
+        ));
         // <500 + 额度词算（usedUpWords）
-        assert!(codex_account_out(400, br#"{"error":{"message":"You exceeded your current quota"}}"#));
+        assert!(codex_account_out(
+            400,
+            br#"{"error":{"message":"You exceeded your current quota"}}"#
+        ));
         // 中文词表（额度/余额）
         assert!(codex_account_out(429, "额度已用完，请明天再来".as_bytes()));
         assert!(codex_account_out(402, "余额不足，请充值".as_bytes()));
@@ -4982,7 +6004,11 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         mock.route_seq(
             "/backend-api/codex/responses",
             &[
-                (429, "application/json", r#"{"error":{"code":"usage_limit_reached","message":"usage limit reached"}}"#),
+                (
+                    429,
+                    "application/json",
+                    r#"{"error":{"code":"usage_limit_reached","message":"usage limit reached"}}"#,
+                ),
                 (200, "text/event-stream", SSE_OK),
             ],
         );
@@ -4992,7 +6018,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let b = fake_jwt(json!({ "exp": now_secs() + 1000 }));
         write_logins_multi(
             &w,
-            &[("acc-a", "a@example.test", &a, "acct-a"), ("acc-b", "b@example.test", &b, "acct-b")],
+            &[
+                ("acc-a", "a@example.test", &a, "acct-a"),
+                ("acc-b", "b@example.test", &b, "acct-b"),
+            ],
         );
         let (status, resp) = reply_json(super::super::routes::route(
             &post(
@@ -5024,7 +6053,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let b = fake_jwt(json!({ "exp": now_secs() + 1000 }));
         write_logins_multi(
             &w,
-            &[("acc-a", "a@example.test", &a, "acct-a"), ("acc-b", "b@example.test", &b, "acct-b")],
+            &[
+                ("acc-a", "a@example.test", &a, "acct-a"),
+                ("acc-b", "b@example.test", &b, "acct-b"),
+            ],
         );
         // chat 入站：429 + 「订阅耗尽」文案 + 代码（groups::retryable 对 429 恒真）
         let (status, body) = reply_json(super::super::routes::route(
@@ -5040,7 +6072,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert!(msg.contains("usage limit"), "{msg}");
         assert_eq!(body["error"]["code"], "usage_limit_reached");
         assert_eq!(mock.hits(), 2); // 两个账号都试过了
-        // anthropic 入站：rate_limit_error 信封
+                                    // anthropic 入站：rate_limit_error 信封
         let (status, body) = reply_json(super::super::routes::route(
             &post(
                 "/v1/messages",
@@ -5050,10 +6082,16 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         ));
         assert_eq!(status, 429);
         assert_eq!(body["error"]["type"], "rate_limit_error");
-        assert!(body["error"]["message"].as_str().unwrap().contains("exhausted"));
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("exhausted"));
         // Responses 入站（流式/非流式同错）
         let (status, body) = reply_json(super::super::routes::route(
-            &post("/v1/responses", &json!({"model":"codex/gpt-6-luna","stream":true,"input":"x"})),
+            &post(
+                "/v1/responses",
+                &json!({"model":"codex/gpt-6-luna","stream":true,"input":"x"}),
+            ),
             &gateway,
         ));
         assert_eq!(status, 429);
@@ -5074,7 +6112,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let b = fake_jwt(json!({ "exp": now_secs() + 1000 }));
         write_logins_multi(
             &w,
-            &[("acc-a", "a@example.test", &a, "acct-a"), ("acc-b", "b@example.test", &b, "acct-b")],
+            &[
+                ("acc-a", "a@example.test", &a, "acct-a"),
+                ("acc-b", "b@example.test", &b, "acct-b"),
+            ],
         );
         // 钉死 = 只有它：耗尽就是耗尽，不落到别的账号（Go memberAccountKept 同款）
         let (status, body) = reply_json(super::super::routes::route(
@@ -5085,9 +6126,15 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
             &gateway,
         ));
         assert_eq!(status, 429);
-        assert!(body["error"]["message"].as_str().unwrap().contains("exhausted"));
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("exhausted"));
         assert_eq!(mock.hits(), 1);
-        assert_eq!(mock.last("/backend-api/codex/responses").0["authorization"], format!("Bearer {a}"));
+        assert_eq!(
+            mock.last("/backend-api/codex/responses").0["authorization"],
+            format!("Bearer {a}")
+        );
     }
 
     #[test]
@@ -5099,7 +6146,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let b = fake_jwt(json!({ "exp": now_secs() + 1000 }));
         write_logins_multi(
             &w,
-            &[("acc-a", "a@example.test", &a, "acct-a"), ("acc-b", "b@example.test", &b, "acct-b")],
+            &[
+                ("acc-a", "a@example.test", &a, "acct-a"),
+                ("acc-b", "b@example.test", &b, "acct-b"),
+            ],
         );
         let (status, body) = reply_json(super::super::routes::route(
             &post(

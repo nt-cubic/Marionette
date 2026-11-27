@@ -61,6 +61,9 @@ export function delegateCardFor(
       agentLabel: task.agentId,
       modelId: task.model ?? undefined,
       displayModel: task.displayModel ?? task.bridgeModel ?? task.model ?? undefined,
+      providerLabel: task.displayProvider ?? undefined,
+      modelLabel: task.displayModelName ?? undefined,
+      effortLabel: task.displayEffort ?? task.preferredEffort ?? undefined,
       prompt: task.title,
       createdAt: now,
       initiatedBy: "agent",
@@ -86,6 +89,9 @@ export function delegateCardFor(
     // 而不是后端的内部错误码。
     summary: task.lastSummary ?? "",
     displayModel: task.displayModel ?? task.bridgeModel ?? task.model ?? undefined,
+    providerLabel: task.displayProvider ?? undefined,
+    modelLabel: task.displayModelName ?? undefined,
+    effortLabel: task.displayEffort ?? task.preferredEffort ?? undefined,
     durationMs:
       task.updatedAt > task.createdAt ? task.updatedAt - task.createdAt : undefined,
     createdAt: now,

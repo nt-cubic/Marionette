@@ -150,7 +150,10 @@ impl TaskStatus {
             (WaitingUser, Running | Completed | Failed | Cancelled | Interrupted) => true,
             (Interrupted, Starting | Cancelled) => true,
             // 终态无出边；同状态幂等转移允许（重复事件不报错）。
-            (a, b) if a == b => a.is_terminal() || matches!(a, Proposed | Starting | Running | WaitingUser | Interrupted),
+            (a, b) if a == b => {
+                a.is_terminal()
+                    || matches!(a, Proposed | Starting | Running | WaitingUser | Interrupted)
+            }
             _ => false,
         }
     }

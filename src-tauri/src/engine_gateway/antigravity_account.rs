@@ -71,7 +71,10 @@ fn seam() -> Option<Seam> {
 #[cfg(test)]
 fn summary_url() -> String {
     // 缝里是 mock 的源地址；测试 URL 现拼同款路径（prod 恒 SUMMARY_URL）。
-    format!("{}/v1internal:retrieveUserQuotaSummary", seam().map(|s| s.base).unwrap_or_default())
+    format!(
+        "{}/v1internal:retrieveUserQuotaSummary",
+        seam().map(|s| s.base).unwrap_or_default()
+    )
 }
 
 #[cfg(not(test))]
@@ -92,7 +95,13 @@ fn credential_path() -> Option<std::path::PathBuf> {
 
 #[cfg(test)]
 fn credential_path() -> Option<std::path::PathBuf> {
-    Some(seam()?.home.join(".gemini").join("antigravity-acp").join("acp_token.json"))
+    Some(
+        seam()?
+            .home
+            .join(".gemini")
+            .join("antigravity-acp")
+            .join("acp_token.json"),
+    )
 }
 
 fn home_dir() -> Option<std::path::PathBuf> {
@@ -161,7 +170,11 @@ fn access_token(cred: &Credential) -> Option<String> {
         ])
         .ok()?;
     let mut buf = Vec::new();
-    response.into_reader().take(1 << 20).read_to_end(&mut buf).ok()?;
+    response
+        .into_reader()
+        .take(1 << 20)
+        .read_to_end(&mut buf)
+        .ok()?;
     let data: Value = serde_json::from_slice(&buf).ok()?;
     let token = trim_non_empty(&data, "access_token")?;
     if let Ok(mut guard) = ACCESS_TOKEN.lock() {
@@ -226,10 +239,16 @@ fn windows_from_summary(data: &Value) -> Vec<Value> {
             continue;
         };
         for bucket in buckets {
-            if bucket.get("disabled").and_then(Value::as_bool).unwrap_or(false) {
+            if bucket
+                .get("disabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
                 continue;
             }
-            let Some(period) = bucket_period(bucket) else { continue };
+            let Some(period) = bucket_period(bucket) else {
+                continue;
+            };
             let fraction = bucket
                 .get("remainingFraction")
                 .and_then(Value::as_f64)
@@ -267,7 +286,11 @@ pub fn quota_row(providers: &[Provider]) -> Option<Value> {
         .send_string(&json!({ "project": cred.project_id }).to_string())
         .ok()?;
     let mut buf = Vec::new();
-    response.into_reader().take(1 << 20).read_to_end(&mut buf).ok()?;
+    response
+        .into_reader()
+        .take(1 << 20)
+        .read_to_end(&mut buf)
+        .ok()?;
     let data: Value = serde_json::from_slice(&buf).ok()?;
     let windows = windows_from_summary(&data);
     if windows.is_empty() {
@@ -312,7 +335,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use super::antigravity_codeassist::{
-    cloak_system, cloak_user_turns, refuses, reword, split_antigravity_id, turned_away_hint, turns_away,
+    cloak_system, cloak_user_turns, refuses, reword, split_antigravity_id, turned_away_hint,
+    turns_away,
 };
 use super::antigravity_stream::ChatStream;
 use super::catalog::VendorRow;
@@ -372,7 +396,12 @@ fn go_arch() -> &'static str {
 }
 
 fn hub_user_agent() -> String {
-    format!("antigravity/hub/{} {}/{}", antigravity_version(), go_os(), go_arch())
+    format!(
+        "antigravity/hub/{} {}/{}",
+        antigravity_version(),
+        go_os(),
+        go_arch()
+    )
 }
 
 /// 最新 Antigravity 的版本（antigravityVersion，google.go:481）：问它的更新器，
@@ -425,13 +454,20 @@ fn fetch_latest_version() -> Option<String> {
     let body = read_body(response, 64 << 10)?;
     let text = String::from_utf8_lossy(&body);
     let line = text.lines().find(|l| l.starts_with("version:"))?;
-    let v = line["version:".len()..].trim().trim_matches(|c| c == '"' || c == '\'').to_string();
+    let v = line["version:".len()..]
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'')
+        .to_string();
     (!v.is_empty() && v.bytes().all(|b| b.is_ascii_digit() || b == b'.')).then_some(v)
 }
 
 fn read_body(response: ureq::Response, cap: u64) -> Option<Vec<u8>> {
     let mut buf = Vec::new();
-    response.into_reader().take(cap).read_to_end(&mut buf).ok()?;
+    response
+        .into_reader()
+        .take(cap)
+        .read_to_end(&mut buf)
+        .ok()?;
     Some(buf)
 }
 
@@ -450,7 +486,12 @@ struct Refused {
 fn api_error(body: &[u8], status: u16) -> String {
     if let Ok(v) = serde_json::from_slice::<Value>(body) {
         for p in ["/error/message", "/error", "/message"] {
-            if let Some(s) = v.pointer(p).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) {
+            if let Some(s) = v
+                .pointer(p)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
                 return s.to_string();
             }
         }
@@ -467,13 +508,25 @@ fn api_error(body: &[u8], status: u16) -> String {
 /// POST `{base}/v1internal:<method>`（googleAccount.call，google.go:517）：200 →
 /// 应答 JSON；其它 → [`Refused`]。元数据类调用 10s 超时（对话流另走
 /// [`generate`]，不设整单超时——长思考回合不能被掐）。
-fn code_assist(cred: &Credential, base: &str, method: &str, body: &Value) -> Result<Value, Refused> {
-    let token = access_token(cred).ok_or_else(|| Refused { status: 401, said: SIGNED_OUT.to_string() })?;
-    let refused = |status: u16, body: &[u8]| {
-        Refused { status, said: format!("Antigravity: {}", api_error(body, status)) }
+fn code_assist(
+    cred: &Credential,
+    base: &str,
+    method: &str,
+    body: &Value,
+) -> Result<Value, Refused> {
+    let token = access_token(cred).ok_or_else(|| Refused {
+        status: 401,
+        said: SIGNED_OUT.to_string(),
+    })?;
+    let refused = |status: u16, body: &[u8]| Refused {
+        status,
+        said: format!("Antigravity: {}", api_error(body, status)),
     };
     let response = super::outbound_agent()
-        .post(&format!("{}/v1internal:{method}", base.trim_end_matches('/')))
+        .post(&format!(
+            "{}/v1internal:{method}",
+            base.trim_end_matches('/')
+        ))
         .set("Content-Type", "application/json")
         .set("Authorization", &format!("Bearer {token}"))
         .set("User-Agent", &hub_user_agent())
@@ -484,12 +537,21 @@ fn code_assist(cred: &Credential, base: &str, method: &str, body: &Value) -> Res
         Err(ureq::Error::Status(code, r)) => {
             return Err(refused(code, &read_body(r, 1 << 20).unwrap_or_default()));
         }
-        Err(e) => return Err(Refused { status: 502, said: format!("Antigravity: {e}") }),
+        Err(e) => {
+            return Err(Refused {
+                status: 502,
+                said: format!("Antigravity: {e}"),
+            })
+        }
     };
-    let buf = read_body(response, 4 << 20)
-        .ok_or_else(|| Refused { status: 502, said: "Antigravity: reply could not be read".to_string() })?;
-    serde_json::from_slice(&buf)
-        .map_err(|_| Refused { status: 502, said: "Antigravity: reply is not JSON".to_string() })
+    let buf = read_body(response, 4 << 20).ok_or_else(|| Refused {
+        status: 502,
+        said: "Antigravity: reply could not be read".to_string(),
+    })?;
+    serde_json::from_slice(&buf).map_err(|_| Refused {
+        status: 502,
+        said: "Antigravity: reply is not JSON".to_string(),
+    })
 }
 
 /// 账号的 Cloud 项目与档位（googleProject）。
@@ -540,12 +602,18 @@ fn project_of(cred: &Credential, scratch: &mut Scratch, prod: &str) -> Result<Pr
             return Ok(p.clone());
         }
     }
-    let mut p = Project { id: cred.project_id.clone(), ..Default::default() };
+    let mut p = Project {
+        id: cred.project_id.clone(),
+        ..Default::default()
+    };
     let body = json!({ "metadata": { "ideType": "ANTIGRAVITY" } });
     match code_assist(cred, prod, "loadCodeAssist", &body) {
         Ok(load) => {
             let tier = |k: &str| {
-                load.pointer(&format!("/{k}/id")).and_then(Value::as_str).unwrap_or("").to_string()
+                load.pointer(&format!("/{k}/id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string()
             };
             p.paid = tier("paidTier");
             p.tier = tier("currentTier");
@@ -560,7 +628,12 @@ fn project_of(cred: &Credential, scratch: &mut Scratch, prod: &str) -> Result<Pr
 
 /// fetchAvailableModels 一页（modelInfo，google.go:1041）：`tier` 非空时点名
 /// `entitlement.userTier`，照 Antigravity 自己的问法。
-fn fetch_models_page(cred: &Credential, daily: &str, project: &str, tier: &str) -> Result<Value, Refused> {
+fn fetch_models_page(
+    cred: &Credential,
+    daily: &str,
+    project: &str,
+    tier: &str,
+) -> Result<Value, Refused> {
     let mut body = json!({ "project": project });
     if !tier.is_empty() {
         body["entitlement"] = json!({ "userTier": tier });
@@ -644,7 +717,11 @@ const FALLBACK: [(&str, &str); 7] = [
 ];
 
 fn fallback_name(id: &str) -> &'static str {
-    FALLBACK.iter().find(|(i, _)| *i == id).map(|(_, n)| *n).unwrap_or("")
+    FALLBACK
+        .iter()
+        .find(|(i, _)| *i == id)
+        .map(|(_, n)| *n)
+        .unwrap_or("")
 }
 
 /// 兜底表（fallbackModels）：gpt-oss 以外都收图。
@@ -662,7 +739,9 @@ fn fallback_models() -> Vec<Model> {
 
 /// 名字最后括号里说的档位，与去掉它的名字（antigravityNameEffort，:52）。
 fn name_effort(name: &str) -> (String, String) {
-    let Some(open) = name.rfind(" (") else { return (name.to_string(), String::new()) };
+    let Some(open) = name.rfind(" (") else {
+        return (name.to_string(), String::new());
+    };
     if !name.ends_with(')') {
         return (name.to_string(), String::new());
     }
@@ -700,7 +779,9 @@ fn enum_names(enum_name: &str, id: &str) -> bool {
 /// 名字；位置按 agentModelSorts。先按 id 排（选择器的顺序在 [`antigravity_list`]
 /// 里再排）。
 fn parse_models_page(page: &Value) -> Vec<ModelInfo> {
-    let Some(models) = page.get("models").and_then(Value::as_object) else { return Vec::new() };
+    let Some(models) = page.get("models").and_then(Value::as_object) else {
+        return Vec::new();
+    };
     let mut out: Vec<ModelInfo> = Vec::new();
     for (id, m) in models {
         if HIDDEN.contains(&id.as_str()) || id.starts_with("chat_") || id.starts_with("tab_") {
@@ -712,9 +793,16 @@ fn parse_models_page(page: &Value) -> Vec<ModelInfo> {
         }
         out.push(ModelInfo {
             id: id.clone(),
-            name: m.get("displayName").and_then(Value::as_str).unwrap_or("").to_string(),
+            name: m
+                .get("displayName")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
             context: m.get("maxTokens").and_then(Value::as_u64).unwrap_or(0),
-            output: m.get("maxOutputTokens").and_then(Value::as_u64).unwrap_or(0),
+            output: m
+                .get("maxOutputTokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
             supports_images: m.get("supportsImages").and_then(Value::as_bool),
             picker: 0,
         });
@@ -739,7 +827,9 @@ fn parse_models_page(page: &Value) -> Vec<ModelInfo> {
             .and_then(Value::as_str)
             .unwrap_or("");
         if spelled.contains(&mi.name) || enum_names(enum_name, &mi.id) {
-            mi.name = super::presets::lookup(&mi.id).map(|p| p.display_name).unwrap_or_default();
+            mi.name = super::presets::lookup(&mi.id)
+                .map(|p| p.display_name)
+                .unwrap_or_default();
         }
     }
     let mut rank: HashMap<&str, usize> = HashMap::new();
@@ -748,9 +838,20 @@ fn parse_models_page(page: &Value) -> Vec<ModelInfo> {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .flat_map(|s| s.get("groups").and_then(Value::as_array).into_iter().flatten());
+        .flat_map(|s| {
+            s.get("groups")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        });
     for group in sorts {
-        for id in group.get("modelIds").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+        for id in group
+            .get("modelIds")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
             if !rank.contains_key(id) {
                 rank.insert(id, rank.len() + 1);
             }
@@ -777,7 +878,11 @@ fn antigravity_list(infos: Vec<ModelInfo>) -> Vec<Model> {
     let out: Vec<Model> = infos
         .into_iter()
         .map(|mi| Model {
-            name: if mi.name.is_empty() { fallback_name(&mi.id).to_string() } else { mi.name },
+            name: if mi.name.is_empty() {
+                fallback_name(&mi.id).to_string()
+            } else {
+                mi.name
+            },
             images: mi.supports_images.unwrap_or(!mi.id.starts_with("gpt-oss")),
             id: mi.id,
             context: mi.context,
@@ -802,7 +907,11 @@ fn families_of(raw: &[Model]) -> Vec<Family> {
         if let Some(f) = out.iter_mut().find(|f| f.id == id) {
             f.variants.push(m.clone());
         } else {
-            out.push(Family { id: id.to_string(), variants: vec![m.clone()], efforts: Vec::new() });
+            out.push(Family {
+                id: id.to_string(),
+                variants: vec![m.clone()],
+                efforts: Vec::new(),
+            });
         }
     }
     for f in &mut out {
@@ -820,7 +929,13 @@ fn families_of(raw: &[Model]) -> Vec<Family> {
             .collect();
         let by_name: Vec<String> = f.variants.iter().map(|v| name_effort(&v.name).1).collect();
         f.efforts = (0..f.variants.len())
-            .map(|i| if named.len() == f.variants.len() { by_name[i].clone() } else { by_id[i].clone() })
+            .map(|i| {
+                if named.len() == f.variants.len() {
+                    by_name[i].clone()
+                } else {
+                    by_id[i].clone()
+                }
+            })
             .collect();
     }
     out
@@ -852,7 +967,12 @@ fn by_effort(f: &Family) -> HashMap<String, String> {
 fn family_model(f: &Family) -> Model {
     let by = by_effort(f);
     let def = by.get("").cloned().unwrap_or_default();
-    let mut m = f.variants.iter().find(|v| v.id == def).cloned().unwrap_or_default();
+    let mut m = f
+        .variants
+        .iter()
+        .find(|v| v.id == def)
+        .cloned()
+        .unwrap_or_default();
     m.id = f.id.clone();
     m.efforts.clear();
     m.name = name_effort(&m.name).0;
@@ -967,14 +1087,24 @@ fn catalog_of(raw: Vec<Model>, live: bool) -> Catalog {
     }
     for f in &families {
         if f.variants.len() > 1 {
-            let efforts = folded.iter().find(|m| m.id == f.id).map(|m| m.efforts.clone()).unwrap_or_default();
+            let efforts = folded
+                .iter()
+                .find(|m| m.id == f.id)
+                .map(|m| m.efforts.clone())
+                .unwrap_or_default();
             for v in &f.variants {
                 levels.insert(v.id.clone(), efforts.clone());
             }
         }
     }
     let rows = folded.iter().map(vendor_row).collect();
-    Catalog { raw, families, rows, levels, live }
+    Catalog {
+        raw,
+        families,
+        rows,
+        levels,
+        live,
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -992,7 +1122,11 @@ static STATE: OnceLock<Mutex<State>> = OnceLock::new();
 fn lock_state() -> std::sync::MutexGuard<'static, State> {
     STATE
         .get_or_init(|| {
-            Mutex::new(State { cache: None, backoff_until: None, scratch: Scratch::default() })
+            Mutex::new(State {
+                cache: None,
+                backoff_until: None,
+                scratch: Scratch::default(),
+            })
         })
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -1040,11 +1174,22 @@ fn fetch_catalog(cred: &Credential, scratch: &mut Scratch) -> Result<Catalog, Re
         }
     }
     for tier in refused {
-        scratch.refused.insert(tier_key(&project.id, &tier), Instant::now());
+        scratch
+            .refused
+            .insert(tier_key(&project.id, &tier), Instant::now());
     }
-    let page = page.ok_or_else(|| last.unwrap_or(Refused { status: 502, said: "Antigravity listed no models".into() }))?;
+    let page = page.ok_or_else(|| {
+        last.unwrap_or(Refused {
+            status: 502,
+            said: "Antigravity listed no models".into(),
+        })
+    })?;
     let listed = antigravity_list(parse_models_page(&page));
-    Ok(if listed.is_empty() { catalog_of(fallback_models(), false) } else { catalog_of(listed, true) })
+    Ok(if listed.is_empty() {
+        catalog_of(fallback_models(), false)
+    } else {
+        catalog_of(listed, true)
+    })
 }
 
 /// `/v1/models` 的 antigravity 行（30s 缓存、失败 60s 退避、失败回旧缓存）。没有
@@ -1063,7 +1208,9 @@ fn rows_impl(providers: &[Provider], gated: bool) -> Vec<VendorRow> {
     if providers.iter().any(|p| p.id == AGY_ID) || (gated && !super::family_enabled(FAMILY)) {
         return Vec::new();
     }
-    let Some(cred) = read_credential() else { return Vec::new() };
+    let Some(cred) = read_credential() else {
+        return Vec::new();
+    };
     {
         let state = lock_state();
         if let Some((at, catalog)) = state.cache.as_ref() {
@@ -1072,7 +1219,11 @@ fn rows_impl(providers: &[Provider], gated: bool) -> Vec<VendorRow> {
             }
         }
         if state.backoff_until.is_some_and(|u| Instant::now() < u) {
-            return state.cache.as_ref().map(|(_, c)| c.rows.clone()).unwrap_or_default();
+            return state
+                .cache
+                .as_ref()
+                .map(|(_, c)| c.rows.clone())
+                .unwrap_or_default();
         }
     }
     // 联网在锁外：抓取期间对话路径照常读旧目录。
@@ -1122,31 +1273,43 @@ pub fn synthetic_provider() -> Option<Provider> {
 /// 折叠后的家族行，和 Antigravity 自己清单里的每个变体 id（折叠前存的会话
 /// 偏好还点名它们）。
 fn knows(whole: &str) -> bool {
-    let Some(id) = whole.strip_prefix("antigravity/") else { return false };
+    let Some(id) = whole.strip_prefix("antigravity/") else {
+        return false;
+    };
     if id.is_empty() {
         return false;
     }
-    lock_state().cache.as_ref().is_some_and(|(_, c)| {
-        c.levels.contains_key(id) || c.raw.iter().any(|m| m.id == id)
-    })
+    lock_state()
+        .cache
+        .as_ref()
+        .is_some_and(|(_, c)| c.levels.contains_key(id) || c.raw.iter().any(|m| m.id == id))
 }
 
 /// 目录里某个 id 的档位表（家族的档位；变体 id 也算家族的）。
 fn levels_of(id: &str) -> Vec<String> {
-    lock_state().cache.as_ref().and_then(|(_, c)| c.levels.get(id)).cloned().unwrap_or_default()
+    lock_state()
+        .cache
+        .as_ref()
+        .and_then(|(_, c)| c.levels.get(id))
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// levels 里离 want 最近的档位，同距取高的；levels 空或本来就有 want → want
 /// （nearestEffort，modelprefs.go:1381）。
 fn nearest_effort<'a>(want: &'a str, levels: &[&'a str]) -> &'a str {
-    let Some(at) = super::effort::LEVELS.iter().position(|l| *l == want) else { return want };
+    let Some(at) = super::effort::LEVELS.iter().position(|l| *l == want) else {
+        return want;
+    };
     if levels.is_empty() || levels.contains(&want) {
         return want;
     }
     let mut best = want;
     let mut dist = super::effort::LEVELS.len();
     for l in levels {
-        let Some(i) = super::effort::LEVELS.iter().position(|x| x == l) else { continue };
+        let Some(i) = super::effort::LEVELS.iter().position(|x| x == l) else {
+            continue;
+        };
         if *l == "none" {
             continue;
         }
@@ -1188,12 +1351,21 @@ fn sent_id_in(catalog: &Catalog, model: &str, effort: &str) -> String {
         Some(base) => base,
         None => model.to_string(),
     };
-    let Some(f) = catalog.families.iter().find(|f| f.id == model && f.variants.len() > 1) else { return model };
+    let Some(f) = catalog
+        .families
+        .iter()
+        .find(|f| f.id == model && f.variants.len() > 1)
+    else {
+        return model;
+    };
     let by = by_effort(f);
     if effort.is_empty() {
         return by.get("").cloned().unwrap_or(model);
     }
-    let levels: Vec<&str> = super::effort::LEVELS.into_iter().filter(|l| by.get(*l).is_some()).collect();
+    let levels: Vec<&str> = super::effort::LEVELS
+        .into_iter()
+        .filter(|l| by.get(*l).is_some())
+        .collect();
     by.get(nearest_effort(effort, &levels))
         .or_else(|| by.get(""))
         .cloned()
@@ -1214,7 +1386,10 @@ fn anthropic_error(status: u16, message: &str) -> Reply {
         s if s >= 500 => "api_error",
         _ => "invalid_request_error",
     };
-    Reply::json(status, &json!({ "type": "error", "error": { "type": ty, "message": message } }))
+    Reply::json(
+        status,
+        &json!({ "type": "error", "error": { "type": ty, "message": message } }),
+    )
 }
 
 fn error_reply(proto: Proto, status: u16, message: &str) -> Reply {
@@ -1231,7 +1406,10 @@ fn generate(cred: &Credential, body: &Value) -> Result<ureq::Response, (u16, Vec
     let (_, daily) = code_assist_bases();
     let token = access_token(cred).ok_or_else(|| (401, SIGNED_OUT.as_bytes().to_vec()))?;
     let request = super::outbound_agent()
-        .post(&format!("{}/v1internal:streamGenerateContent?alt=sse", daily.trim_end_matches('/')))
+        .post(&format!(
+            "{}/v1internal:streamGenerateContent?alt=sse",
+            daily.trim_end_matches('/')
+        ))
         .set("Content-Type", "application/json")
         .set("Authorization", &format!("Bearer {token}"))
         .set("User-Agent", &hub_user_agent())
@@ -1281,7 +1459,8 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
     let mut with = providers.clone();
     with.push(synthetic);
     let known2 = |id: &str| knows(id) || gateway.catalog.knows(&with, id);
-    let (provider, bare_asked, levels) = super::groups::resolve_with(&groups, &with, &asked, &known2)?;
+    let (provider, bare_asked, levels) =
+        super::groups::resolve_with(&groups, &with, &asked, &known2)?;
     // 直通 `antigravity/<id>` 形态 resolve 不查目录，这里统一认一次
     if provider != AGY_ID || !knows(&format!("{AGY_ID}/{bare_asked}")) {
         return None;
@@ -1307,10 +1486,11 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
         Proto::Responses => {
             // previous_response_id / store：与翻译路径同一张服务端回合表（miss =
             // 显式 400，绝不静默重放空历史）
-            let (merged, saved) = match super::responses::prev_prepare(gateway, std::mem::take(&mut body)) {
-                Ok(v) => v,
-                Err(reply) => return Some(reply),
-            };
+            let (merged, saved) =
+                match super::responses::prev_prepare(gateway, std::mem::take(&mut body)) {
+                    Ok(v) => v,
+                    Err(reply) => return Some(reply),
+                };
             prev = saved;
             match super::translate::responses_to_chat_with_tools(&merged) {
                 Ok((v, t)) => {
@@ -1404,15 +1584,27 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
         let (completion, error) = stream.into_result();
         match error {
             Some((status, message)) => stream_error(proto, status, &message),
-            None => Reply::Json { status: 200, body: serde_json::to_vec(&completion).unwrap_or_default() },
+            None => Reply::Json {
+                status: 200,
+                body: serde_json::to_vec(&completion).unwrap_or_default(),
+            },
         }
     };
     Some(match proto {
         Proto::Chat => {
             let reply = chat_reply(stream);
             match reply {
-                Reply::Stream { status, content_type, reader } => {
-                    let tap = log.tap(gateway.usage.clone(), super::usage_ledger::Dialect::Chat, AGY_ID, status);
+                Reply::Stream {
+                    status,
+                    content_type,
+                    reader,
+                } => {
+                    let tap = log.tap(
+                        gateway.usage.clone(),
+                        super::usage_ledger::Dialect::Chat,
+                        AGY_ID,
+                        status,
+                    );
                     Reply::Stream {
                         status,
                         content_type,
@@ -1420,15 +1612,28 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
                     }
                 }
                 Reply::Json { status, body } if status < 400 => {
-                    log.whole(&gateway.usage, super::usage_ledger::Dialect::Chat, AGY_ID, status, &body);
+                    log.whole(
+                        &gateway.usage,
+                        super::usage_ledger::Dialect::Chat,
+                        AGY_ID,
+                        status,
+                        &body,
+                    );
                     Reply::Json { status, body }
                 }
                 other => other,
             }
         }
-        Proto::Responses => {
-            super::responses::reshape(chat_reply(stream), &asked, &table, None, prev, gateway, AGY_ID, &log)
-        }
+        Proto::Responses => super::responses::reshape(
+            chat_reply(stream),
+            &asked,
+            &table,
+            None,
+            prev,
+            gateway,
+            AGY_ID,
+            &log,
+        ),
         Proto::Anthropic => super::messages::chat_reply_to_anthropic(
             chat_reply(stream),
             client_wants_stream,
@@ -1495,7 +1700,11 @@ mod oracle {
             .send_string(&serde_json::json!({ "project": cred.project_id }).to_string())
             .expect("quota summary request");
         let mut buf = Vec::new();
-        response.into_reader().take(1 << 20).read_to_end(&mut buf).unwrap();
+        response
+            .into_reader()
+            .take(1 << 20)
+            .read_to_end(&mut buf)
+            .unwrap();
         serde_json::from_slice(&buf).unwrap()
     }
 
@@ -1506,7 +1715,9 @@ mod oracle {
     #[test]
     #[ignore = "reads this machine's real Antigravity sign-in and asks Google for its model list"]
     fn antigravity_models_oracle_real_account() {
-        let _lock = crate::engine_gateway::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _lock = crate::engine_gateway::TEST_SANDBOX_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let cred = real_credential();
         let mut scratch = super::Scratch::default();
         let catalog = super::fetch_catalog(&cred, &mut scratch).expect("catalog");
@@ -1515,7 +1726,10 @@ mod oracle {
         }
         println!("live list: {} models", catalog.raw.len());
         for m in &catalog.raw {
-            println!("  raw  {:<34} {:?} ctx={} out={} images={}", m.id, m.name, m.context, m.output, m.images);
+            println!(
+                "  raw  {:<34} {:?} ctx={} out={} images={}",
+                m.id, m.name, m.context, m.output, m.images
+            );
         }
         println!("catalog rows: {}", catalog.rows.len());
         for row in &catalog.rows {
@@ -1523,17 +1737,34 @@ mod oracle {
                 "  row  {:<34} {:?} levels={} ctx={} out={} images={}",
                 row.id,
                 row.raw.get("display_name"),
-                row.raw.get("reasoning_levels").cloned().unwrap_or(serde_json::json!([])),
+                row.raw
+                    .get("reasoning_levels")
+                    .cloned()
+                    .unwrap_or(serde_json::json!([])),
                 row.context_window,
                 row.max_output,
                 row.images
             );
         }
         for f in catalog.families.iter().filter(|f| f.variants.len() > 1) {
-            println!("  family {} efforts={:?} by_effort={:?}", f.id, f.efforts, super::by_effort(f));
-            println!("    sent(no effort) = {}", super::sent_id_in(&catalog, &f.id, ""));
-            println!("    sent(low)       = {}", super::sent_id_in(&catalog, &f.id, "low"));
-            println!("    sent(high)      = {}", super::sent_id_in(&catalog, &f.id, "high"));
+            println!(
+                "  family {} efforts={:?} by_effort={:?}",
+                f.id,
+                f.efforts,
+                super::by_effort(f)
+            );
+            println!(
+                "    sent(no effort) = {}",
+                super::sent_id_in(&catalog, &f.id, "")
+            );
+            println!(
+                "    sent(low)       = {}",
+                super::sent_id_in(&catalog, &f.id, "low")
+            );
+            println!(
+                "    sent(high)      = {}",
+                super::sent_id_in(&catalog, &f.id, "high")
+            );
         }
         assert!(!catalog.rows.is_empty(), "no rows");
     }
@@ -1545,7 +1776,9 @@ mod oracle {
     #[test]
     #[ignore = "sends one real prompt on this machine's real Antigravity account"]
     fn antigravity_chat_oracle_real_account() {
-        let _lock = crate::engine_gateway::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _lock = crate::engine_gateway::TEST_SANDBOX_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let cred = real_credential();
         let mut scratch = super::Scratch::default();
         let catalog = super::fetch_catalog(&cred, &mut scratch).expect("catalog");
@@ -1574,7 +1807,10 @@ mod oracle {
         let (completion, error) =
             super::ChatStream::new(Box::new(response.into_reader()), "antigravity/x").into_result();
         println!("stream error: {:?}", error);
-        println!("content: {:?}", completion["choices"][0]["message"]["content"]);
+        println!(
+            "content: {:?}",
+            completion["choices"][0]["message"]["content"]
+        );
         println!("finish: {:?}", completion["choices"][0]["finish_reason"]);
         println!("usage: {}", completion["usage"]);
         assert!(error.is_none(), "{error:?}");
@@ -1584,11 +1820,22 @@ mod oracle {
     #[ignore = "depends on this machine's real ~/.gemini antigravity sign-in and the network"]
     fn antigravity_quota_oracle_real_account() {
         let data = production_summary_request();
-        let groups = data.get("groups").and_then(|g| g.as_array()).cloned().unwrap_or_default();
+        let groups = data
+            .get("groups")
+            .and_then(|g| g.as_array())
+            .cloned()
+            .unwrap_or_default();
         for group in &groups {
-            let name = group.get("displayName").and_then(|s| s.as_str()).unwrap_or("(no name)");
+            let name = group
+                .get("displayName")
+                .and_then(|s| s.as_str())
+                .unwrap_or("(no name)");
             println!("group {name:?}");
-            for bucket in group.get("buckets").and_then(|b| b.as_array()).unwrap_or(&vec![]) {
+            for bucket in group
+                .get("buckets")
+                .and_then(|b| b.as_array())
+                .unwrap_or(&vec![])
+            {
                 println!(
                     "  bucket id={:?} window={:?} remaining={:?} disabled={:?}",
                     bucket.get("bucketId").and_then(|s| s.as_str()),
@@ -1608,12 +1855,17 @@ mod oracle {
         let families: std::collections::BTreeSet<String> = windows
             .iter()
             .filter_map(|w| {
-                w["name"].as_str().and_then(|n| n.split(" · ").next().map(str::to_string))
+                w["name"]
+                    .as_str()
+                    .and_then(|n| n.split(" · ").next().map(str::to_string))
             })
             .collect();
         println!("families: {families:?}");
         assert!(!windows.is_empty(), "no windows parsed");
-        assert!(families.len() > 1, "expected more than one quota family, got {families:?}");
+        assert!(
+            families.len() > 1,
+            "expected more than one quota family, got {families:?}"
+        );
     }
 }
 
@@ -1660,8 +1912,11 @@ mod tests {
                         let mut reader = BufReader::new(stream.try_clone().unwrap());
                         let mut request_line = String::new();
                         reader.read_line(&mut request_line).ok();
-                        let path =
-                            request_line.split_whitespace().nth(1).unwrap_or("").to_string();
+                        let path = request_line
+                            .split_whitespace()
+                            .nth(1)
+                            .unwrap_or("")
+                            .to_string();
                         let mut headers = std::collections::HashMap::new();
                         loop {
                             let mut line = String::new();
@@ -1673,8 +1928,7 @@ mod tests {
                                 break;
                             }
                             if let Some((k, v)) = t.split_once(':') {
-                                headers
-                                    .insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
+                                headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
                             }
                         }
                         let len: usize = headers
@@ -1688,7 +1942,8 @@ mod tests {
                         let text = String::from_utf8_lossy(&body).into_owned();
                         let matches = |spec: &str| {
                             let (prefix, contains) = spec.split_once('\0').unwrap_or((spec, ""));
-                            path.starts_with(prefix) && (contains.is_empty() || text.contains(contains))
+                            path.starts_with(prefix)
+                                && (contains.is_empty() || text.contains(contains))
                         };
                         let reply = r
                             .lock()
@@ -1698,7 +1953,11 @@ mod tests {
                             .max_by_key(|(spec, ..)| spec.contains('\0') as u8)
                             .map(|(_, status, ct, b)| (*status, ct.clone(), b.clone()))
                             .unwrap_or((404, "text/plain".into(), "no route".into()));
-                        s.lock().unwrap().push(Recorded { path, headers, body });
+                        s.lock().unwrap().push(Recorded {
+                            path,
+                            headers,
+                            body,
+                        });
                         let mut stream = stream;
                         let out = format!(
                             "HTTP/1.1 {} X\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -1711,17 +1970,34 @@ mod tests {
                     });
                 }
             });
-            Mock { base: format!("http://127.0.0.1:{port}"), hits, seen, routes }
+            Mock {
+                base: format!("http://127.0.0.1:{port}"),
+                hits,
+                seen,
+                routes,
+            }
         }
 
         fn route(&self, prefix: &str, status: u16, content_type: &str, body: &str) {
             let mut routes = self.routes.lock().unwrap();
             routes.retain(|(p, ..)| p != prefix);
-            routes.push((prefix.to_string(), status, content_type.to_string(), body.to_string()));
+            routes.push((
+                prefix.to_string(),
+                status,
+                content_type.to_string(),
+                body.to_string(),
+            ));
         }
 
         /// 同一个端点按请求体分流：请求体含 `contains` 时回这一条（优先于 `route`）。
-        fn route_when(&self, prefix: &str, contains: &str, status: u16, content_type: &str, body: &str) {
+        fn route_when(
+            &self,
+            prefix: &str,
+            contains: &str,
+            status: u16,
+            content_type: &str,
+            body: &str,
+        ) {
             let mut routes = self.routes.lock().unwrap();
             let key = format!("{prefix}\0{contains}");
             routes.retain(|(p, ..)| p != &key);
@@ -1771,8 +2047,10 @@ mod tests {
         std::fs::create_dir_all(dir.join("magpie")).unwrap();
         std::fs::create_dir_all(dir.join("home").join(".gemini")).unwrap();
         std::fs::write(dir.join("magpie").join("providers.json"), providers_json).unwrap();
-        *TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) =
-            Some(Seam { base: base.to_string(), home: dir.join("home") });
+        *TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = Some(Seam {
+            base: base.to_string(),
+            home: dir.join("home"),
+        });
         let prior = std::env::var("XDG_CONFIG_HOME").ok();
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         let gateway = Gateway::open().expect("gateway");
@@ -1785,7 +2063,11 @@ mod tests {
 
     /// 假登录（全是测试假值）。token_uri 指向假后端。
     fn write_credential(world: &World, token_base: &str) {
-        let dir = world.dir.join("home").join(".gemini").join("antigravity-acp");
+        let dir = world
+            .dir
+            .join("home")
+            .join(".gemini")
+            .join("antigravity-acp");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("acp_token.json"),
@@ -1801,8 +2083,7 @@ mod tests {
         .unwrap();
     }
 
-    const TOKEN_BODY: &str =
-        r#"{"access_token":"atok-test","expires_in":3599,"scope":"https://www.googleapis.com/auth/cloud-platform"}"#;
+    const TOKEN_BODY: &str = r#"{"access_token":"atok-test","expires_in":3599,"scope":"https://www.googleapis.com/auth/cloud-platform"}"#;
 
     fn summary_body() -> String {
         json!({
@@ -1833,12 +2114,7 @@ mod tests {
     fn quota_row_comes_from_quota_summary() {
         let mock = Mock::start();
         mock.route("/token", 200, "application/json", TOKEN_BODY);
-        mock.route(
-            "/v1internal",
-            200,
-            "application/json",
-            &summary_body(),
-        );
+        mock.route("/v1internal", 200, "application/json", &summary_body());
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_credential(&w, &mock.base);
         let rows = super::super::quotas::quota_entries(&gateway, true);
@@ -1849,7 +2125,10 @@ mod tests {
         assert_eq!(row["name"], "Google Antigravity");
         assert_eq!(row["kind"], "subscription");
         let windows = row["windows"].as_array().unwrap();
-        let names: Vec<&str> = windows.iter().map(|x| x["name"].as_str().unwrap()).collect();
+        let names: Vec<&str> = windows
+            .iter()
+            .map(|x| x["name"].as_str().unwrap())
+            .collect();
         // 族名归一 + 带族窗口名；单模型组（Argon）同样带族
         assert_eq!(
             names,
@@ -1883,7 +2162,12 @@ mod tests {
     fn failing_antigravity_is_quiet_and_never_writes_credentials() {
         let mock = Mock::start();
         mock.route("/token", 200, "application/json", TOKEN_BODY);
-        mock.route("/v1internal:retrieveUserQuotaSummary", 500, "text/plain", "boom");
+        mock.route(
+            "/v1internal:retrieveUserQuotaSummary",
+            500,
+            "text/plain",
+            "boom",
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         let cred_path = w
             .dir
@@ -1931,7 +2215,11 @@ mod tests {
         let rows = super::super::quotas::quota_entries(&gateway, true);
         assert!(rows.iter().all(|r| r["provider"] != "antigravity"));
         std::fs::write(
-            w.dir.join("home").join(".gemini").join("antigravity-acp").join("acp_token.json"),
+            w.dir
+                .join("home")
+                .join(".gemini")
+                .join("antigravity-acp")
+                .join("acp_token.json"),
             serde_json::to_vec(&json!({ "refresh_token": "rt" })).unwrap(),
         )
         .unwrap();
@@ -1960,7 +2248,10 @@ mod tests {
             ]
         });
         let windows = windows_from_summary(&data);
-        let names: Vec<&str> = windows.iter().map(|x| x["name"].as_str().unwrap()).collect();
+        let names: Vec<&str> = windows
+            .iter()
+            .map(|x| x["name"].as_str().unwrap())
+            .collect();
         assert_eq!(names, vec!["Gemini · Mystery Window", "Gemini · 5 hours"]);
         let mystery = &windows[0];
         assert_eq!(mystery["used"], 10.0);
@@ -1969,17 +2260,29 @@ mod tests {
     // ─── Code Assist：模型目录 + 对话桥 ───────────────────────────────────
 
     fn post(path: &str, body: &Value) -> Request {
-        Request { method: "POST".into(), path: path.into(), headers: Vec::new(), body: serde_json::to_vec(body).unwrap() }
+        Request {
+            method: "POST".into(),
+            path: path.into(),
+            headers: Vec::new(),
+            body: serde_json::to_vec(body).unwrap(),
+        }
     }
 
     fn get(path: &str) -> Request {
-        Request { method: "GET".into(), path: path.into(), headers: Vec::new(), body: Vec::new() }
+        Request {
+            method: "GET".into(),
+            path: path.into(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
     }
 
     fn reply_text(reply: Reply) -> (u16, String) {
         match reply {
             Reply::Json { status, body } => (status, String::from_utf8_lossy(&body).into_owned()),
-            Reply::Stream { status, mut reader, .. } => {
+            Reply::Stream {
+                status, mut reader, ..
+            } => {
                 let mut buf = Vec::new();
                 reader.read_to_end(&mut buf).unwrap();
                 (status, String::from_utf8_lossy(&buf).into_owned())
@@ -1989,7 +2292,10 @@ mod tests {
 
     fn reply_json(reply: Reply) -> (u16, Value) {
         let (status, text) = reply_text(reply);
-        (status, serde_json::from_str(&text).unwrap_or(Value::String(text)))
+        (
+            status,
+            serde_json::from_str(&text).unwrap_or(Value::String(text)),
+        )
     }
 
     /// SSE 文本里每条 `data:` 的 JSON（`[DONE]` 除外）。
@@ -2062,16 +2368,36 @@ mod tests {
     /// 一套能对话的假后端：token + 档位 + 清单 + Gemini 分块流，和一份假登录。
     fn bridge(mock: &Mock, stream_body: &str) -> (Gateway, World) {
         mock.route("/token", 200, "application/json", TOKEN_BODY);
-        mock.route("/v1internal:loadCodeAssist", 200, "application/json", LOAD_BODY);
-        mock.route("/v1internal:fetchAvailableModels", 200, "application/json", &models_body());
-        mock.route("/v1internal:streamGenerateContent", 200, "text/event-stream", stream_body);
+        mock.route(
+            "/v1internal:loadCodeAssist",
+            200,
+            "application/json",
+            LOAD_BODY,
+        );
+        mock.route(
+            "/v1internal:fetchAvailableModels",
+            200,
+            "application/json",
+            &models_body(),
+        );
+        mock.route(
+            "/v1internal:streamGenerateContent",
+            200,
+            "text/event-stream",
+            stream_body,
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_credential(&w, &mock.base);
         (gateway, w)
     }
 
     fn hits_on(mock: &Mock, prefix: &str) -> usize {
-        mock.seen.lock().unwrap().iter().filter(|r| r.path.starts_with(prefix)).count()
+        mock.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.path.starts_with(prefix))
+            .count()
     }
 
     /// 最近一次对话请求的信封。
@@ -2081,15 +2407,30 @@ mod tests {
     }
 
     fn row_ids(body: &Value) -> Vec<&str> {
-        body["data"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap()).collect()
+        body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect()
     }
 
     #[test]
     fn listed_rows_collapse_level_variants_and_follow_the_picker() {
         let mock = Mock::start();
         mock.route("/token", 200, "application/json", TOKEN_BODY);
-        mock.route("/v1internal:loadCodeAssist", 200, "application/json", LOAD_BODY);
-        mock.route("/v1internal:fetchAvailableModels", 200, "application/json", &models_body());
+        mock.route(
+            "/v1internal:loadCodeAssist",
+            200,
+            "application/json",
+            LOAD_BODY,
+        );
+        mock.route(
+            "/v1internal:fetchAvailableModels",
+            200,
+            "application/json",
+            &models_body(),
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_credential(&w, &mock.base);
 
@@ -2108,26 +2449,48 @@ mod tests {
             ]
         );
         let data = body["data"].as_array().unwrap();
-        let family = data.iter().find(|r| r["id"] == "antigravity/gemini-3.7-flash").unwrap();
+        let family = data
+            .iter()
+            .find(|r| r["id"] == "antigravity/gemini-3.7-flash")
+            .unwrap();
         assert_eq!(family["display_name"], "Gemini 3.7 Flash");
         assert_eq!(family["reasoning_levels"], json!(["low", "medium", "high"]));
         // 窗口/输出取各变体里最小的，收图要全部都收
         assert_eq!(family["context_window"], 900000);
         assert_eq!(family["max_output_tokens"], 32000);
         assert_eq!(family["modalities"]["input"], json!(["text"]));
-        let oss = data.iter().find(|r| r["id"] == "antigravity/gpt-oss-120b-medium").unwrap();
-        assert_eq!(oss["modalities"]["input"], json!(["text"]), "gpt-oss takes no images unless Antigravity says so");
-        let moved = data.iter().find(|r| r["id"] == "antigravity/gemini-2.5-flash").unwrap();
-        assert_eq!(moved["display_name"], "gemini-2.5-flash", "a name that spells another model's id is dropped");
+        let oss = data
+            .iter()
+            .find(|r| r["id"] == "antigravity/gpt-oss-120b-medium")
+            .unwrap();
+        assert_eq!(
+            oss["modalities"]["input"],
+            json!(["text"]),
+            "gpt-oss takes no images unless Antigravity says so"
+        );
+        let moved = data
+            .iter()
+            .find(|r| r["id"] == "antigravity/gemini-2.5-flash")
+            .unwrap();
+        assert_eq!(
+            moved["display_name"], "gemini-2.5-flash",
+            "a name that spells another model's id is dropped"
+        );
 
         // 清单按 Antigravity 自己的问法要：项目 + 账号付钱的档位（好的在前）
         let (headers, req) = mock.last("/v1internal:fetchAvailableModels");
         let req: Value = serde_json::from_slice(&req).unwrap();
-        assert_eq!(req, json!({"project": "aicode-consumers", "entitlement": {"userTier": "g1-pro-tier"}}));
+        assert_eq!(
+            req,
+            json!({"project": "aicode-consumers", "entitlement": {"userTier": "g1-pro-tier"}})
+        );
         assert_eq!(headers["authorization"], "Bearer atok-test");
         assert_eq!(headers["content-type"], "application/json");
         // Code Assist 的 UA 是 magpie 的扁平形状（不是额度行的 aidev 形状）
-        assert_eq!(headers["user-agent"], format!("antigravity/hub/2.9.1 {}/{}", go_os(), go_arch()));
+        assert_eq!(
+            headers["user-agent"],
+            format!("antigravity/hub/2.9.1 {}/{}", go_os(), go_arch())
+        );
         let (_, req) = mock.last("/v1internal:loadCodeAssist");
         assert_eq!(
             serde_json::from_slice::<Value>(&req).unwrap(),
@@ -2144,7 +2507,12 @@ mod tests {
     fn a_tier_google_refused_is_left_out_for_a_day() {
         let mock = Mock::start();
         mock.route("/token", 200, "application/json", TOKEN_BODY);
-        mock.route("/v1internal:loadCodeAssist", 200, "application/json", LOAD_BODY);
+        mock.route(
+            "/v1internal:loadCodeAssist",
+            200,
+            "application/json",
+            LOAD_BODY,
+        );
         mock.route_when(
             "/v1internal:fetchAvailableModels",
             "userTier",
@@ -2152,7 +2520,12 @@ mod tests {
             "application/json",
             r##"{"error":{"code":400,"message":"INVALID_ARGUMENT","status":"INVALID_ARGUMENT"}}"##,
         );
-        mock.route("/v1internal:fetchAvailableModels", 200, "application/json", &models_body());
+        mock.route(
+            "/v1internal:fetchAvailableModels",
+            200,
+            "application/json",
+            &models_body(),
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_credential(&w, &mock.base);
         let body = reply_json(super::super::routes::route(&get("/v1/models"), &gateway)).1;
@@ -2165,23 +2538,45 @@ mod tests {
         let _ = super::super::routes::route(&get("/v1/models"), &gateway);
         // 被拒的档位不再点名，直接不带档位要
         assert_eq!(hits_on(&mock, "/v1internal:fetchAvailableModels"), 4);
-        assert_eq!(hits_on(&mock, "/v1internal:loadCodeAssist"), 1, "loadCodeAssist is asked once an hour");
+        assert_eq!(
+            hits_on(&mock, "/v1internal:loadCodeAssist"),
+            1,
+            "loadCodeAssist is asked once an hour"
+        );
     }
 
     #[test]
     fn failing_listing_keeps_old_rows_and_a_cold_engine_falls_back_to_the_builtin_list() {
         let mock = Mock::start();
         mock.route("/token", 200, "application/json", TOKEN_BODY);
-        mock.route("/v1internal:loadCodeAssist", 200, "application/json", LOAD_BODY);
-        mock.route("/v1internal:fetchAvailableModels", 200, "application/json", &models_body());
+        mock.route(
+            "/v1internal:loadCodeAssist",
+            200,
+            "application/json",
+            LOAD_BODY,
+        );
+        mock.route(
+            "/v1internal:fetchAvailableModels",
+            200,
+            "application/json",
+            &models_body(),
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_credential(&w, &mock.base);
-        assert_eq!(row_ids(&reply_json(super::super::routes::route(&get("/v1/models"), &gateway)).1).len(), 6);
+        assert_eq!(
+            row_ids(&reply_json(super::super::routes::route(&get("/v1/models"), &gateway)).1).len(),
+            6
+        );
 
         // 过期 + 500 → 回旧行；退避内不再打
         expire_cache_for_tests();
         reset_token_cache_for_tests();
-        mock.route("/v1internal:fetchAvailableModels", 500, "text/plain", "boom");
+        mock.route(
+            "/v1internal:fetchAvailableModels",
+            500,
+            "text/plain",
+            "boom",
+        );
         let body = reply_json(super::super::routes::route(&get("/v1/models"), &gateway)).1;
         assert_eq!(row_ids(&body).len(), 6);
         let after_fail = mock.hits();
@@ -2194,8 +2589,18 @@ mod tests {
         let cold = Mock::start();
         cold.route("/token", 200, "application/json", TOKEN_BODY);
         cold.route("/v1internal:loadCodeAssist", 500, "text/plain", "boom");
-        cold.route("/v1internal:fetchAvailableModels", 500, "text/plain", "boom");
-        cold.route("/v1internal:streamGenerateContent", 200, "text/event-stream", &gemini_sse());
+        cold.route(
+            "/v1internal:fetchAvailableModels",
+            500,
+            "text/plain",
+            "boom",
+        );
+        cold.route(
+            "/v1internal:streamGenerateContent",
+            200,
+            "text/event-stream",
+            &gemini_sse(),
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &cold.base);
         write_credential(&w, &cold.base);
         assert_eq!(
@@ -2211,12 +2616,20 @@ mod tests {
             ]
         );
         let oss = reply_json(super::super::routes::route(&get("/v1/models"), &gateway)).1;
-        let oss = &oss["data"].as_array().unwrap().iter().find(|r| r["id"] == "antigravity/gpt-oss-120b-medium").unwrap();
+        let oss = &oss["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "antigravity/gpt-oss-120b-medium")
+            .unwrap();
         assert_eq!(oss["modalities"]["input"], json!(["text"]));
         // 兜底表的 id 原样发（没有家族可折）
         let mut req = chat_request("You are helpful.");
         req["model"] = json!("antigravity/gemini-3.1-pro-low");
-        let (status, _) = reply_json(super::super::routes::route(&post("/v1/chat/completions", &req), &gateway));
+        let (status, _) = reply_json(super::super::routes::route(
+            &post("/v1/chat/completions", &req),
+            &gateway,
+        ));
         assert_eq!(status, 200);
         assert_eq!(sent_envelope(&cold)["model"], "gemini-3.1-pro-low");
     }
@@ -2224,13 +2637,21 @@ mod tests {
     #[test]
     fn a_signed_out_account_lists_nothing_and_a_revoked_token_is_a_plain_401() {
         let mock = Mock::start();
-        mock.route("/token", 400, "application/json", r##"{"error":"invalid_grant","error_description":"rt-test is bad"}"##);
+        mock.route(
+            "/token",
+            400,
+            "application/json",
+            r##"{"error":"invalid_grant","error_description":"rt-test is bad"}"##,
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_credential(&w, &mock.base);
         let body = reply_json(super::super::routes::route(&get("/v1/models"), &gateway)).1;
         assert!(body["data"].as_array().unwrap().is_empty());
         assert_eq!(mock.hits(), 1, "only the token was asked for");
-        let (status, _) = reply_json(super::super::routes::route(&post("/v1/chat/completions", &chat_request("You are helpful.")), &gateway));
+        let (status, _) = reply_json(super::super::routes::route(
+            &post("/v1/chat/completions", &chat_request("You are helpful.")),
+            &gateway,
+        ));
         assert_eq!(status, 404, "nothing to route to");
         drop(gateway);
         drop(w);
@@ -2239,12 +2660,25 @@ mod tests {
         let mock = Mock::start();
         let (gateway, _w) = bridge(&mock, &gemini_sse());
         let _ = super::super::routes::route(&get("/v1/models"), &gateway);
-        mock.route("/token", 400, "application/json", r##"{"error":"invalid_grant","error_description":"rt-test is bad"}"##);
+        mock.route(
+            "/token",
+            400,
+            "application/json",
+            r##"{"error":"invalid_grant","error_description":"rt-test is bad"}"##,
+        );
         reset_token_cache_for_tests();
-        let (status, text) = reply_text(super::super::routes::route(&post("/v1/chat/completions", &chat_request("You are helpful.")), &gateway));
+        let (status, text) = reply_text(super::super::routes::route(
+            &post("/v1/chat/completions", &chat_request("You are helpful.")),
+            &gateway,
+        ));
         assert_eq!(status, 401);
         assert!(text.contains("signed out"), "{text}");
-        assert!(!text.contains("atok-test") && !text.contains("rt-test") && !text.contains("secret-test"), "{text}");
+        assert!(
+            !text.contains("atok-test")
+                && !text.contains("rt-test")
+                && !text.contains("secret-test"),
+            "{text}"
+        );
         assert_eq!(hits_on(&mock, "/v1internal:streamGenerateContent"), 0);
     }
 
@@ -2276,7 +2710,10 @@ mod tests {
         let _gate = Gate;
         let body = reply_json(super::super::routes::route(&get("/v1/models"), &gateway)).1;
         assert!(body["data"].as_array().unwrap().is_empty());
-        let (status, _) = reply_json(super::super::routes::route(&post("/v1/chat/completions", &chat_request("You are helpful.")), &gateway));
+        let (status, _) = reply_json(super::super::routes::route(
+            &post("/v1/chat/completions", &chat_request("You are helpful.")),
+            &gateway,
+        ));
         assert_eq!(status, 404);
         assert_eq!(mock.hits(), 0);
     }
@@ -2288,7 +2725,10 @@ mod tests {
         // 目录冷着（没先列过模型）：桥自己要一份再认这个 id
         let mut req = chat_request(CLAUDE_CODE_SYSTEM);
         req["stream"] = json!(true);
-        let (status, text) = reply_text(super::super::routes::route(&post("/v1/chat/completions", &req), &gateway));
+        let (status, text) = reply_text(super::super::routes::route(
+            &post("/v1/chat/completions", &req),
+            &gateway,
+        ));
         assert_eq!(status, 200);
         assert!(text.trim_end().ends_with("data: [DONE]"), "{text}");
         let frames = sse_data(&text);
@@ -2297,7 +2737,10 @@ mod tests {
             .filter(|c| c["choices"].as_array().is_some_and(|a| !a.is_empty()))
             .map(|c| &c["choices"][0]["delta"])
             .collect();
-        assert!(deltas.iter().any(|d| d["reasoning_content"] == "hmm"), "{text}");
+        assert!(
+            deltas.iter().any(|d| d["reasoning_content"] == "hmm"),
+            "{text}"
+        );
         assert!(deltas.iter().any(|d| d["content"] == "Hello"), "{text}");
         assert!(deltas.iter().any(|d| d["content"] == "!"), "{text}");
         let call = deltas
@@ -2309,13 +2752,26 @@ mod tests {
             serde_json::from_str::<Value>(call["function"]["arguments"].as_str().unwrap()).unwrap(),
             json!({"city": "Paris"})
         );
-        assert!(deltas.iter().any(|d| d["tool_calls"].as_array().is_some_and(|a| !a.is_empty())));
-        assert!(frames.iter().any(|c| c["choices"][0]["finish_reason"] == "tool_calls"), "{text}");
-        let usage = frames.iter().find(|c| c["usage"].is_object()).expect("a usage frame");
+        assert!(deltas
+            .iter()
+            .any(|d| d["tool_calls"].as_array().is_some_and(|a| !a.is_empty())));
+        assert!(
+            frames
+                .iter()
+                .any(|c| c["choices"][0]["finish_reason"] == "tool_calls"),
+            "{text}"
+        );
+        let usage = frames
+            .iter()
+            .find(|c| c["usage"].is_object())
+            .expect("a usage frame");
         // prompt 含缓存读（12 = 8 新鲜 + 4 命中）；completion 含思考
         assert_eq!(usage["usage"]["prompt_tokens"], 12);
         assert_eq!(usage["usage"]["completion_tokens"], 8);
-        assert_eq!(usage["usage"]["completion_tokens_details"]["reasoning_tokens"], 3);
+        assert_eq!(
+            usage["usage"]["completion_tokens_details"]["reasoning_tokens"],
+            3
+        );
         assert_eq!(usage["usage"]["prompt_tokens_details"]["cached_tokens"], 4);
 
         // 信封：强度 low 挑的是 -low 变体；项目；Antigravity 的 userAgent / requestType /
@@ -2327,24 +2783,51 @@ mod tests {
         assert_eq!(sent["requestType"], "agent");
         assert!(sent["requestId"].as_str().unwrap().starts_with("agent-"));
         let request = &sent["request"];
-        assert!(request["sessionId"].as_str().unwrap().starts_with('-'), "{request}");
-        let system = request["systemInstruction"]["parts"][0]["text"].as_str().unwrap();
-        assert!(system.starts_with("You are Claude Code, Anthropic's official CLI for Claude."), "{system}");
+        assert!(
+            request["sessionId"].as_str().unwrap().starts_with('-'),
+            "{request}"
+        );
+        let system = request["systemInstruction"]["parts"][0]["text"]
+            .as_str()
+            .unwrap();
+        assert!(
+            system.starts_with("You are Claude Code, Anthropic's official CLI for Claude."),
+            "{system}"
+        );
         assert!(!system.contains("x-anthropic-billing-header"), "{system}");
-        assert!(request["contents"].to_string().contains("\"hi\""), "{request}");
-        assert_eq!(request["tools"][0]["functionDeclarations"][0]["name"], "get_weather");
-        assert_eq!(request["generationConfig"]["thinkingConfig"]["thinkingLevel"], "low");
+        assert!(
+            request["contents"].to_string().contains("\"hi\""),
+            "{request}"
+        );
+        assert_eq!(
+            request["tools"][0]["functionDeclarations"][0]["name"],
+            "get_weather"
+        );
+        assert_eq!(
+            request["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "low"
+        );
         let (headers, _) = mock.last("/v1internal:streamGenerateContent");
         assert_eq!(headers["authorization"], "Bearer atok-test");
-        assert_eq!(headers["user-agent"], format!("antigravity/hub/2.9.1 {}/{}", go_os(), go_arch()));
+        assert_eq!(
+            headers["user-agent"],
+            format!("antigravity/hub/2.9.1 {}/{}", go_os(), go_arch())
+        );
 
         // 没要强度：发家族的默认变体（这里是没有不带强度词的 id → high），不另说档位
         let plain = json!({"model": "antigravity/gemini-3.7-flash", "messages": [{"role": "user", "content": "hi"}]});
-        let (status, _) = reply_json(super::super::routes::route(&post("/v1/chat/completions", &plain), &gateway));
+        let (status, _) = reply_json(super::super::routes::route(
+            &post("/v1/chat/completions", &plain),
+            &gateway,
+        ));
         assert_eq!(status, 200);
         let sent = sent_envelope(&mock);
         assert_eq!(sent["model"], "gemini-3.7-flash-high");
-        assert!(sent["request"]["generationConfig"]["thinkingConfig"].is_null(), "{}", sent["request"]["generationConfig"]);
+        assert!(
+            sent["request"]["generationConfig"]["thinkingConfig"].is_null(),
+            "{}",
+            sent["request"]["generationConfig"]
+        );
     }
 
     #[test]
@@ -2353,7 +2836,10 @@ mod tests {
         let (gateway, _w) = bridge(&mock, &gemini_sse());
 
         // chat 非流式：整块 completion
-        let (status, body) = reply_json(super::super::routes::route(&post("/v1/chat/completions", &chat_request("You are helpful.")), &gateway));
+        let (status, body) = reply_json(super::super::routes::route(
+            &post("/v1/chat/completions", &chat_request("You are helpful.")),
+            &gateway,
+        ));
         assert_eq!(status, 200, "{body}");
         assert_eq!(body["object"], "chat.completion");
         assert_eq!(body["model"], "antigravity/gemini-3.7-flash");
@@ -2362,7 +2848,12 @@ mod tests {
         assert_eq!(message["reasoning_content"], "hmm");
         assert_eq!(message["tool_calls"][0]["function"]["name"], "get_weather");
         assert_eq!(
-            serde_json::from_str::<Value>(message["tool_calls"][0]["function"]["arguments"].as_str().unwrap()).unwrap(),
+            serde_json::from_str::<Value>(
+                message["tool_calls"][0]["function"]["arguments"]
+                    .as_str()
+                    .unwrap()
+            )
+            .unwrap(),
             json!({"city": "Paris"})
         );
         assert_eq!(body["choices"][0]["finish_reason"], "tool_calls");
@@ -2372,24 +2863,50 @@ mod tests {
         let req = json!({"model": "antigravity/gemini-3.7-flash", "input": "hi", "stream": false,
             "tools": [{"type": "function", "name": "get_weather", "description": "Weather by city",
                 "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}]});
-        let (status, body) = reply_json(super::super::routes::route(&post("/v1/responses", &req), &gateway));
+        let (status, body) = reply_json(super::super::routes::route(
+            &post("/v1/responses", &req),
+            &gateway,
+        ));
         assert_eq!(status, 200, "{body}");
         assert_eq!(body["object"], "response");
         assert_eq!(body["model"], "antigravity/gemini-3.7-flash");
         let output = body["output"].as_array().expect("output items");
-        assert!(output.iter().any(|item| item["type"] == "message" && item["content"][0]["text"] == "Hello!"), "{body}");
-        assert!(output.iter().any(|item| item["type"] == "function_call" && item["name"] == "get_weather"), "{body}");
+        assert!(
+            output
+                .iter()
+                .any(|item| item["type"] == "message" && item["content"][0]["text"] == "Hello!"),
+            "{body}"
+        );
+        assert!(
+            output
+                .iter()
+                .any(|item| item["type"] == "function_call" && item["name"] == "get_weather"),
+            "{body}"
+        );
         assert_eq!(body["usage"]["input_tokens"], 12);
 
         // anthropic 入站（非流式）：message 对象；流式：anthropic 事件流
         let req = json!({"model": "antigravity/gemini-3.7-flash", "max_tokens": 1024, "messages": [{"role": "user", "content": "hi"}]});
-        let (status, body) = reply_json(super::super::routes::route(&post("/v1/messages", &req), &gateway));
+        let (status, body) = reply_json(super::super::routes::route(
+            &post("/v1/messages", &req),
+            &gateway,
+        ));
         assert_eq!(status, 200, "{body}");
         assert_eq!(body["type"], "message");
         assert_eq!(body["role"], "assistant");
         let content = body["content"].as_array().expect("content blocks");
-        assert!(content.iter().any(|b| b["type"] == "text" && b["text"] == "Hello!"), "{body}");
-        assert!(content.iter().any(|b| b["type"] == "tool_use" && b["name"] == "get_weather"), "{body}");
+        assert!(
+            content
+                .iter()
+                .any(|b| b["type"] == "text" && b["text"] == "Hello!"),
+            "{body}"
+        );
+        assert!(
+            content
+                .iter()
+                .any(|b| b["type"] == "tool_use" && b["name"] == "get_weather"),
+            "{body}"
+        );
         assert_eq!(body["stop_reason"], "tool_use");
         // anthropic 口径：新鲜输入与缓存读分开记
         assert_eq!(body["usage"]["input_tokens"], 8);
@@ -2398,43 +2915,88 @@ mod tests {
 
         let mut streamed = req.clone();
         streamed["stream"] = json!(true);
-        let (status, text) = reply_text(super::super::routes::route(&post("/v1/messages", &streamed), &gateway));
+        let (status, text) = reply_text(super::super::routes::route(
+            &post("/v1/messages", &streamed),
+            &gateway,
+        ));
         assert_eq!(status, 200);
-        assert!(text.contains("event: message_start") && text.contains("event: message_stop"), "{text}");
-        assert!(text.contains("Hello") && text.contains("tool_use"), "{text}");
+        assert!(
+            text.contains("event: message_start") && text.contains("event: message_stop"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Hello") && text.contains("tool_use"),
+            "{text}"
+        );
     }
 
     #[test]
     fn turned_away_429_becomes_a_400_with_a_hint() {
         let mock = Mock::start();
         let (gateway, _w) = bridge(&mock, &gemini_sse());
-        mock.route("/v1internal:streamGenerateContent", 429, "application/json", TURNED_AWAY_BODY);
+        mock.route(
+            "/v1internal:streamGenerateContent",
+            429,
+            "application/json",
+            TURNED_AWAY_BODY,
+        );
 
         // Claude Code 的系统提示词 + 被拒的原话 → 400 + 提示（SDK 不重试 400）
-        let (status, body) = reply_json(super::super::routes::route(&post("/v1/chat/completions", &chat_request(CLAUDE_CODE_SYSTEM)), &gateway));
+        let (status, body) = reply_json(super::super::routes::route(
+            &post("/v1/chat/completions", &chat_request(CLAUDE_CODE_SYSTEM)),
+            &gateway,
+        ));
         assert_eq!(status, 400, "{body}");
         let message = body["error"]["message"].as_str().unwrap();
-        assert!(message.starts_with("Resource has been exhausted"), "{message}");
+        assert!(
+            message.starts_with("Resource has been exhausted"),
+            "{message}"
+        );
         assert!(message.contains("not a quota"), "{message}");
 
         // 中性的系统提示词吃到同一个 429：那就是它说的额度，原样透传
-        let (status, body) = reply_json(super::super::routes::route(&post("/v1/chat/completions", &chat_request("You are helpful.")), &gateway));
+        let (status, body) = reply_json(super::super::routes::route(
+            &post("/v1/chat/completions", &chat_request("You are helpful.")),
+            &gateway,
+        ));
         assert_eq!(status, 429, "{body}");
         assert_eq!(body["error"]["status"], "RESOURCE_EXHAUSTED");
 
         // 额度用完的 429 不算被拒，哪怕是 Claude Code 的提示词
-        mock.route("/v1internal:streamGenerateContent", 429, "application/json", QUOTA_BODY);
-        let (status, _) = reply_json(super::super::routes::route(&post("/v1/chat/completions", &chat_request(CLAUDE_CODE_SYSTEM)), &gateway));
+        mock.route(
+            "/v1internal:streamGenerateContent",
+            429,
+            "application/json",
+            QUOTA_BODY,
+        );
+        let (status, _) = reply_json(super::super::routes::route(
+            &post("/v1/chat/completions", &chat_request(CLAUDE_CODE_SYSTEM)),
+            &gateway,
+        ));
         assert_eq!(status, 429);
 
         // anthropic 入站吃到被拒：换信封的错误，同样 400
-        mock.route("/v1internal:streamGenerateContent", 429, "application/json", TURNED_AWAY_BODY);
+        mock.route(
+            "/v1internal:streamGenerateContent",
+            429,
+            "application/json",
+            TURNED_AWAY_BODY,
+        );
         let req = json!({"model": "antigravity/gemini-3.7-flash", "max_tokens": 1024, "system": CLAUDE_CODE_SYSTEM,
             "messages": [{"role": "user", "content": "hi"}]});
-        let (status, body) = reply_json(super::super::routes::route(&post("/v1/messages", &req), &gateway));
+        let (status, body) = reply_json(super::super::routes::route(
+            &post("/v1/messages", &req),
+            &gateway,
+        ));
         assert_eq!(status, 400, "{body}");
         assert_eq!(body["type"], "error");
-        assert!(body["error"]["message"].as_str().unwrap().contains("not a quota"), "{body}");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("not a quota"),
+            "{body}"
+        );
     }
 
     #[test]
@@ -2444,23 +3006,50 @@ mod tests {
         let (gateway, _w) = bridge(&mock, &refused);
 
         // HTTP 200 之后才来的 error 事件：非流式整块如实 400 + 提示
-        let (status, body) = reply_json(super::super::routes::route(&post("/v1/chat/completions", &chat_request(CLAUDE_CODE_SYSTEM)), &gateway));
+        let (status, body) = reply_json(super::super::routes::route(
+            &post("/v1/chat/completions", &chat_request(CLAUDE_CODE_SYSTEM)),
+            &gateway,
+        ));
         assert_eq!(status, 400, "{body}");
-        assert!(body["error"]["message"].as_str().unwrap().contains("not a quota"), "{body}");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("not a quota"),
+            "{body}"
+        );
         // 中性的提示词：照 Antigravity 报的状态说
-        let (status, body) = reply_json(super::super::routes::route(&post("/v1/chat/completions", &chat_request("You are helpful.")), &gateway));
+        let (status, body) = reply_json(super::super::routes::route(
+            &post("/v1/chat/completions", &chat_request("You are helpful.")),
+            &gateway,
+        ));
         assert_eq!(status, 429, "{body}");
-        assert!(body["error"]["message"].as_str().unwrap().contains("Resource has been exhausted"), "{body}");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Resource has been exhausted"),
+            "{body}"
+        );
 
         // 流式：头已经出去了，错误帧带提示收尾
         let mut req = chat_request(CLAUDE_CODE_SYSTEM);
         req["stream"] = json!(true);
-        let (status, text) = reply_text(super::super::routes::route(&post("/v1/chat/completions", &req), &gateway));
+        let (status, text) = reply_text(super::super::routes::route(
+            &post("/v1/chat/completions", &req),
+            &gateway,
+        ));
         assert_eq!(status, 200);
         let frames = sse_data(&text);
         let errors: Vec<&Value> = frames.iter().filter(|c| c["error"].is_object()).collect();
         assert_eq!(errors.len(), 1, "{text}");
-        assert!(errors[0]["error"]["message"].as_str().unwrap().contains("not a quota"), "{text}");
+        assert!(
+            errors[0]["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("not a quota"),
+            "{text}"
+        );
         assert!(text.trim_end().ends_with("data: [DONE]"), "{text}");
     }
 
@@ -2469,18 +3058,40 @@ mod tests {
         let mock = Mock::start();
         let (gateway, _w) = bridge(&mock, &gemini_sse());
         let req = json!({"model": "antigravity/gemini-3.7-flash", "input": "hi", "previous_response_id": "resp_missing"});
-        let (status, _) = reply_json(super::super::routes::route(&post("/v1/responses", &req), &gateway));
+        let (status, _) = reply_json(super::super::routes::route(
+            &post("/v1/responses", &req),
+            &gateway,
+        ));
         assert_eq!(status, 400);
-        assert_eq!(hits_on(&mock, "/v1internal:streamGenerateContent"), 0, "never answered from an empty history");
+        assert_eq!(
+            hits_on(&mock, "/v1internal:streamGenerateContent"),
+            0,
+            "never answered from an empty history"
+        );
     }
 
     #[test]
     fn a_group_member_level_picks_the_variant() {
         let mock = Mock::start();
         mock.route("/token", 200, "application/json", TOKEN_BODY);
-        mock.route("/v1internal:loadCodeAssist", 200, "application/json", LOAD_BODY);
-        mock.route("/v1internal:fetchAvailableModels", 200, "application/json", &models_body());
-        mock.route("/v1internal:streamGenerateContent", 200, "text/event-stream", &gemini_sse());
+        mock.route(
+            "/v1internal:loadCodeAssist",
+            200,
+            "application/json",
+            LOAD_BODY,
+        );
+        mock.route(
+            "/v1internal:fetchAvailableModels",
+            200,
+            "application/json",
+            &models_body(),
+        );
+        mock.route(
+            "/v1internal:streamGenerateContent",
+            200,
+            "text/event-stream",
+            &gemini_sse(),
+        );
         let (gateway, w) = world(
             r#"{"providers":[],"groups":[{"id":"g","members":["antigravity/gemini-3.7-flash:high"]}]}"#,
             &mock.base,
@@ -2490,12 +3101,21 @@ mod tests {
         // 客户端要 low，成员固定 high：成员的档位赢
         let mut req = chat_request("You are helpful.");
         req["model"] = json!("g");
-        let (status, body) = reply_json(super::super::routes::route(&post("/v1/chat/completions", &req), &gateway));
+        let (status, body) = reply_json(super::super::routes::route(
+            &post("/v1/chat/completions", &req),
+            &gateway,
+        ));
         assert_eq!(status, 200, "{body}");
-        assert_eq!(body["model"], "g", "the client is answered in the name it asked for");
+        assert_eq!(
+            body["model"], "g",
+            "the client is answered in the name it asked for"
+        );
         let sent = sent_envelope(&mock);
         assert_eq!(sent["model"], "gemini-3.7-flash-high");
-        assert_eq!(sent["request"]["generationConfig"]["thinkingConfig"]["thinkingLevel"], "high");
+        assert_eq!(
+            sent["request"]["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "high"
+        );
     }
 
     #[test]
@@ -2506,28 +3126,53 @@ mod tests {
         // 没要强度：家族的默认（没有不带强度词的 id → high）
         assert_eq!(sent_id("gemini-3.7-flash", ""), "gemini-3.7-flash-high");
         assert_eq!(sent_id("gemini-3.7-flash", "low"), "gemini-3.7-flash-low");
-        assert_eq!(sent_id("gemini-3.7-flash", "medium"), "gemini-3.7-flash-medium");
+        assert_eq!(
+            sent_id("gemini-3.7-flash", "medium"),
+            "gemini-3.7-flash-medium"
+        );
         // 家族没有的档位取最近的
-        assert_eq!(sent_id("gemini-3.7-flash", "xhigh"), "gemini-3.7-flash-high");
+        assert_eq!(
+            sent_id("gemini-3.7-flash", "xhigh"),
+            "gemini-3.7-flash-high"
+        );
         assert_eq!(sent_id("gemini-3.7-flash", "max"), "gemini-3.7-flash-high");
         // 家族自己的某个变体 id（折叠前存的偏好还点名它）：没要强度原样发
         assert_eq!(sent_id("gemini-3.7-flash-low", ""), "gemini-3.7-flash-low");
-        assert_eq!(sent_id("gemini-3.7-flash-low", "medium"), "gemini-3.7-flash-medium");
+        assert_eq!(
+            sent_id("gemini-3.7-flash-low", "medium"),
+            "gemini-3.7-flash-medium"
+        );
         // 不是家族的：原样
         assert_eq!(sent_id("claude-sonnet-4-6", "high"), "claude-sonnet-4-6");
-        assert_eq!(sent_id("gemini-3-flash-agent", "low"), "gemini-3-flash-agent");
+        assert_eq!(
+            sent_id("gemini-3-flash-agent", "low"),
+            "gemini-3-flash-agent"
+        );
         // 折叠后的家族行和每个变体 id 都认得
-        for id in ["gemini-3.7-flash", "gemini-3.7-flash-low", "gemini-3.7-flash-high", "claude-sonnet-4-6"] {
+        for id in [
+            "gemini-3.7-flash",
+            "gemini-3.7-flash-low",
+            "gemini-3.7-flash-high",
+            "claude-sonnet-4-6",
+        ] {
             assert!(knows(&format!("antigravity/{id}")), "{id}");
         }
         assert!(!knows("antigravity/gemini-9-imaginary"));
         assert!(!knows("grok/gemini-3.7-flash"));
-        assert_eq!(levels_of("gemini-3.7-flash-low"), vec!["low", "medium", "high"]);
+        assert_eq!(
+            levels_of("gemini-3.7-flash-low"),
+            vec!["low", "medium", "high"]
+        );
     }
 
     #[test]
     fn family_levels_listen_to_the_names_when_each_says_one_and_tiered_inherits() {
-        let m = |id: &str, name: &str| Model { id: id.into(), name: name.into(), images: true, ..Default::default() };
+        let m = |id: &str, name: &str| Model {
+            id: id.into(),
+            name: name.into(),
+            images: true,
+            ..Default::default()
+        };
         let raw = vec![
             m("gemini-3.5-flash-extra-low", "Gemini 3.5 Flash (Low)"),
             m("gemini-3.5-flash-low", "Gemini 3.5 Flash (Medium)"),
@@ -2537,40 +3182,78 @@ mod tests {
         ];
         let out = collapse(&raw);
         let ids: Vec<&str> = out.iter().map(|x| x.id.as_str()).collect();
-        assert_eq!(ids, vec!["gemini-3.5-flash", "gemini-3.7-flash-tiered", "gemini-3.7-flash"]);
+        assert_eq!(
+            ids,
+            vec![
+                "gemini-3.5-flash",
+                "gemini-3.7-flash-tiered",
+                "gemini-3.7-flash"
+            ]
+        );
         let get = |id: &str| out.iter().find(|x| x.id == id).unwrap();
         // 两个变体的名字各说了一个档位：档位听名字的
         assert_eq!(get("gemini-3.5-flash").efforts, vec!["low", "medium"]);
         assert_eq!(get("gemini-3.5-flash").name, "Gemini 3.5 Flash");
         let tiered = get("gemini-3.7-flash-tiered");
         assert_eq!(tiered.name, "Gemini 3.7 Flash (Tiered)");
-        assert_eq!(tiered.efforts, vec!["low", "high"], "a -tiered id thinks at the levels of its model");
+        assert_eq!(
+            tiered.efforts,
+            vec!["low", "high"],
+            "a -tiered id thinks at the levels of its model"
+        );
         assert_eq!(get("gemini-3.7-flash").efforts, vec!["low", "high"]);
 
         let catalog = catalog_of(raw, true);
-        assert_eq!(catalog.levels["gemini-3.5-flash-extra-low"], vec!["low", "medium"]);
-        assert_eq!(catalog.levels["gemini-3.7-flash-tiered"], vec!["low", "high"]);
+        assert_eq!(
+            catalog.levels["gemini-3.5-flash-extra-low"],
+            vec!["low", "medium"]
+        );
+        assert_eq!(
+            catalog.levels["gemini-3.7-flash-tiered"],
+            vec!["low", "high"]
+        );
 
         // 默认变体：没有 high 时取最高的那个
         let families = families_of(&catalog.raw);
-        let flash = families.iter().find(|f| f.id == "gemini-3.5-flash").unwrap();
+        let flash = families
+            .iter()
+            .find(|f| f.id == "gemini-3.5-flash")
+            .unwrap();
         assert_eq!(by_effort(flash)[""], "gemini-3.5-flash-low");
     }
 
     #[test]
     fn names_that_spell_another_model_are_dropped() {
-        assert!(name_spells("Gemini 3.5 Flash Lite", "gemini-3.5-flash-lite"));
-        assert!(name_spells("Gemini 3.7 Flash (Low)", "gemini-3.7-flash-low"));
+        assert!(name_spells(
+            "Gemini 3.5 Flash Lite",
+            "gemini-3.5-flash-lite"
+        ));
+        assert!(name_spells(
+            "Gemini 3.7 Flash (Low)",
+            "gemini-3.7-flash-low"
+        ));
         assert!(!name_spells("Gemini 3.5 Flash Lite", "gemini-2.5-flash"));
         assert!(!name_spells("", "gemini-2.5-flash"));
-        assert!(enum_names("MODEL_GOOGLE_GEMINI_2_5_FLASH", "gemini-2.5-flash"));
+        assert!(enum_names(
+            "MODEL_GOOGLE_GEMINI_2_5_FLASH",
+            "gemini-2.5-flash"
+        ));
         assert!(!enum_names("MODEL_PLACEHOLDER_M198", "gemini-3.7-flash"));
         assert!(!enum_names("MODEL_GOOGLE_", "model_google_"));
         assert_eq!(name_effort("Gemini 3.7 Flash (XHigh)").1, "xhigh");
         assert_eq!(name_effort("Gemini 3.7 Flash (Extra Low)").1, "minimal");
-        assert_eq!(name_effort("Claude Sonnet 4.6"), ("Claude Sonnet 4.6".to_string(), String::new()));
-        assert_eq!(name_effort("GPT-OSS 120B (Medium)"), ("GPT-OSS 120B".to_string(), "medium".to_string()));
-        assert_eq!(name_effort("Gemini 3.7 Flash (Preview)"), ("Gemini 3.7 Flash (Preview)".to_string(), String::new()));
+        assert_eq!(
+            name_effort("Claude Sonnet 4.6"),
+            ("Claude Sonnet 4.6".to_string(), String::new())
+        );
+        assert_eq!(
+            name_effort("GPT-OSS 120B (Medium)"),
+            ("GPT-OSS 120B".to_string(), "medium".to_string())
+        );
+        assert_eq!(
+            name_effort("Gemini 3.7 Flash (Preview)"),
+            ("Gemini 3.7 Flash (Preview)".to_string(), String::new())
+        );
     }
 
     #[test]
@@ -2578,9 +3261,16 @@ mod tests {
         assert_eq!(nearest_effort("medium", &["low", "high"]), "high");
         assert_eq!(nearest_effort("medium", &["low"]), "low");
         assert_eq!(nearest_effort("medium", &[]), "medium");
-        assert_eq!(nearest_effort("medium", &["low", "medium", "high"]), "medium");
+        assert_eq!(
+            nearest_effort("medium", &["low", "medium", "high"]),
+            "medium"
+        );
         assert_eq!(nearest_effort("ultra", &["low", "high"]), "ultra");
-        assert_eq!(nearest_effort("high", &["none", "low"]), "low", "none is never picked");
+        assert_eq!(
+            nearest_effort("high", &["none", "low"]),
+            "low",
+            "none is never picked"
+        );
     }
 
     #[test]
@@ -2591,9 +3281,21 @@ mod tests {
             paid: paid.into(),
             at: None,
         };
-        assert_eq!(project("standard-tier", "g1-pro-tier").entitlements(), vec!["g1-pro-tier", "standard-tier"]);
-        assert_eq!(project("free-tier", "").entitlements(), Vec::<String>::new());
-        assert_eq!(project("legacy-tier", "legacy-tier").entitlements(), Vec::<String>::new());
-        assert_eq!(project("g1-pro-tier", "g1-pro-tier").entitlements(), vec!["g1-pro-tier"]);
+        assert_eq!(
+            project("standard-tier", "g1-pro-tier").entitlements(),
+            vec!["g1-pro-tier", "standard-tier"]
+        );
+        assert_eq!(
+            project("free-tier", "").entitlements(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            project("legacy-tier", "legacy-tier").entitlements(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            project("g1-pro-tier", "g1-pro-tier").entitlements(),
+            vec!["g1-pro-tier"]
+        );
     }
 }

@@ -25,7 +25,12 @@ pub(crate) fn discover_root() -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
-pub(crate) fn scan(root: &Path, cache: &mut Cache, force: bool, keep_from_ms: i64) -> SourceOutcome {
+pub(crate) fn scan(
+    root: &Path,
+    cache: &mut Cache,
+    force: bool,
+    keep_from_ms: i64,
+) -> SourceOutcome {
     let mut outcome = SourceOutcome::new(AGENT, Some(root.to_string_lossy().into_owned()));
     let mut live_keys: Vec<String> = Vec::new();
     let mut sessions: Vec<SessionFacts> = Vec::new();
@@ -48,7 +53,10 @@ pub(crate) fn scan(root: &Path, cache: &mut Cache, force: bool, keep_from_ms: i6
     for db in dbs {
         // The -wal sidecar can change while the db length does not; the .meta
         // sidecar carries the cwd.
-        let fp = stamp_files(&db, &[&db.with_extension("wal"), &db.with_extension("meta")]);
+        let fp = stamp_files(
+            &db,
+            &[&db.with_extension("wal"), &db.with_extension("meta")],
+        );
         let key = format!("{AGENT}::{}", db.to_string_lossy());
         if !force {
             if let Some(entry) = cache.entries.get(&key) {
@@ -101,7 +109,9 @@ fn parse_db(db: &Path, keep_from_ms: i64) -> Vec<SessionFacts> {
         }
     };
     for step in steps {
-        let Some(t_ms) = step.created_ms else { continue };
+        let Some(t_ms) = step.created_ms else {
+            continue;
+        };
         if let crate::parsers::antigravity::StepKind::User(ref text) = step.kind {
             if !text.trim().is_empty() {
                 if collector.title.is_none() {
@@ -154,10 +164,8 @@ mod tests {
         let db = dir.join("11111111-2222-3333-4444-555555555555.db");
         {
             let conn = rusqlite::Connection::open(&db).unwrap();
-            conn.execute_batch(
-                "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_payload BLOB);",
-            )
-            .unwrap();
+            conn.execute_batch("CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_payload BLOB);")
+                .unwrap();
             // user step (type=14, arm 19) at t0
             let user = wire_user_step(1795063081_000, "hello antigravity");
             // planner step (type=15, arm 20) at t0+3s with usage + model
@@ -315,7 +323,11 @@ mod oracle {
             println!(
                 "  {} | turns+h={:?} | title={:?}",
                 &facts.native_id[..8],
-                facts.hours.iter().map(|h| (h.turns, h.requests, h.input, h.output)).collect::<Vec<_>>(),
+                facts
+                    .hours
+                    .iter()
+                    .map(|h| (h.turns, h.requests, h.input, h.output))
+                    .collect::<Vec<_>>(),
                 facts.title
             );
         }

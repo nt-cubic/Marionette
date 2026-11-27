@@ -26,7 +26,12 @@ use crate::context_inventory::{self, McpServerSpec};
 /// `~/.zcode/cli/config.json` — zcode 后端的用户配置（MCP 就从这里加载）。
 fn zcode_config_path() -> Option<PathBuf> {
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
-    Some(PathBuf::from(home).join(".zcode").join("cli").join("config.json"))
+    Some(
+        PathBuf::from(home)
+            .join(".zcode")
+            .join("cli")
+            .join("config.json"),
+    )
 }
 
 /// 归属记账 sidecar（config.json 本体放不下标记键）。
@@ -178,10 +183,20 @@ fn merge_zcode_config(
 ) -> Result<(String, BTreeMap<String, Value>, Vec<String>, bool), String> {
     let mut root: Map<String, Value> = match existing {
         Some(text) => serde_json::from_str::<Value>(text)
-            .map_err(|error| crate::ts!("config.json 不是合法 JSON（跳过同步）: {error}", "config.json is not valid JSON (sync skipped): {error}"))?
+            .map_err(|error| {
+                crate::ts!(
+                    "config.json 不是合法 JSON（跳过同步）: {error}",
+                    "config.json is not valid JSON (sync skipped): {error}"
+                )
+            })?
             .as_object()
             .cloned()
-            .ok_or_else(|| crate::ts!("config.json 顶层不是 JSON object（跳过同步）", "config.json top level is not a JSON object (sync skipped)"))?,
+            .ok_or_else(|| {
+                crate::ts!(
+                    "config.json 顶层不是 JSON object（跳过同步）",
+                    "config.json top level is not a JSON object (sync skipped)"
+                )
+            })?,
         None => Map::new(),
     };
     let before = serde_json::to_value(&root).unwrap_or(Value::Null);
@@ -193,15 +208,22 @@ fn merge_zcode_config(
     } else {
         root.remove("mcp")
             .and_then(|value| value.as_object().cloned())
-            .ok_or_else(|| crate::ts!("config.json 的 mcp 键存在但不是 object（跳过同步）", "config.json has an mcp key but it is not an object (sync skipped)"))?
+            .ok_or_else(|| {
+                crate::ts!(
+                    "config.json 的 mcp 键存在但不是 object（跳过同步）",
+                    "config.json has an mcp key but it is not an object (sync skipped)"
+                )
+            })?
     };
     let mut servers: Map<String, Value> = mcp
         .remove("servers")
         .map(|value| {
-            value
-                .as_object()
-                .cloned()
-                .ok_or_else(|| crate::ts!("config.json 的 mcp.servers 不是 object（跳过同步）", "config.json mcp.servers is not an object (sync skipped)"))
+            value.as_object().cloned().ok_or_else(|| {
+                crate::ts!(
+                    "config.json 的 mcp.servers 不是 object（跳过同步）",
+                    "config.json mcp.servers is not an object (sync skipped)"
+                )
+            })
         })
         .transpose()?
         .unwrap_or_default();
@@ -248,7 +270,10 @@ impl SyncReport {
 /// 幂等；无变更不落盘（zcode 不必重读配置）。记 debug log 供排查。
 pub fn sync(project_roots: &[PathBuf]) -> Result<SyncReport, String> {
     let Some(config_path) = zcode_config_path() else {
-        return Err(crate::ts!("无法定位用户目录", "Could not locate the user directory"));
+        return Err(crate::ts!(
+            "无法定位用户目录",
+            "Could not locate the user directory"
+        ));
     };
     let sidecar = sidecar_path()?;
 
@@ -358,9 +383,14 @@ mod tests {
         no_command.command = None;
 
         let servers = vec![spec("notion", "cmd"), http, project_only, no_command];
-        let enabled: HashSet<String> = ["notion".into(), "remote".into(), "local".into(), "bare".into()]
-            .into_iter()
-            .collect();
+        let enabled: HashSet<String> = [
+            "notion".into(),
+            "remote".into(),
+            "local".into(),
+            "bare".into(),
+        ]
+        .into_iter()
+        .collect();
 
         let wanted = wanted_from(&servers, &enabled);
         let names: Vec<&str> = wanted.iter().map(|s| s.name.as_str()).collect();
@@ -417,7 +447,8 @@ mod tests {
 
     #[test]
     fn merge_skips_unowned_name_collision() {
-        let existing = r#"{ "mcp": { "servers": { "notion": { "type": "stdio", "command": "user.exe" } } } }"#;
+        let existing =
+            r#"{ "mcp": { "servers": { "notion": { "type": "stdio", "command": "user.exe" } } } }"#;
         let (text, owned, skipped, changed) = merge_zcode_config(
             Some(existing),
             &[spec("notion", "cmd.exe")],

@@ -72,7 +72,11 @@ fn serve() -> Result<(), String> {
     let gateway = std::sync::Arc::new(super::Gateway::open()?);
     let addr = std::env::var("MAGPIE_ADDR").unwrap_or_else(|_| "127.0.0.0:0".into());
     // 默认随机端口：绑定后打印实际地址（种子同款行为，打印在 httpd::serve 里）。
-    let addr = if addr.ends_with(":0") { "127.0.0.1:0".to_string() } else { addr };
+    let addr = if addr.ends_with(":0") {
+        "127.0.0.1:0".to_string()
+    } else {
+        addr
+    };
     // Bearer 闸（2026-11-22 安全批）：serve 只在 argv 形态可达（进程内形态
     // engine.rs 直起 httpd 线程），这里 println 与地址行同渠道。MAGPIE_TOKEN
     // 可钉死令牌，合同脚本用它复现。
@@ -91,8 +95,12 @@ fn serve() -> Result<(), String> {
 /// 后写的覆盖先写的整张表，表现为「刚登记的来源/别名组凭空消失」。
 static STORE_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn with_store(run: impl FnOnce(&mut super::store::Store) -> Result<(), String>) -> Result<(), String> {
-    let _guard = STORE_WRITE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+fn with_store(
+    run: impl FnOnce(&mut super::store::Store) -> Result<(), String>,
+) -> Result<(), String> {
+    let _guard = STORE_WRITE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut store = super::store::Store::load()?;
     run(&mut store)?;
     store.save()
@@ -254,7 +262,11 @@ fn apply_pairs(provider: &mut Provider, pairs: &[String]) -> Result<(), String> 
             "key" => provider.key = value.to_string(),
             "models" | "model" => {
                 provider.models = Some(
-                    value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+                    value
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect(),
                 );
             }
             "catalog" => provider.catalog = value.to_string(),
@@ -287,7 +299,9 @@ fn apply_pairs(provider: &mut Provider, pairs: &[String]) -> Result<(), String> 
                     if value.trim().is_empty() {
                         provider.headers.remove(header);
                     } else {
-                        provider.headers.insert(header.to_string(), value.to_string());
+                        provider
+                            .headers
+                            .insert(header.to_string(), value.to_string());
                     }
                 } else {
                     return Err(format!("unknown field {:?}", other));
@@ -390,7 +404,11 @@ mod tests {
         std::fs::create_dir_all(dir.join("magpie")).expect("temp dir");
         let prior = std::env::var("XDG_CONFIG_HOME").ok();
         std::env::set_var("XDG_CONFIG_HOME", &dir);
-        Sandbox { prior, dir, _lock: lock }
+        Sandbox {
+            prior,
+            dir,
+            _lock: lock,
+        }
     }
 
     /// preset 注册链的形状（2026-11-18 真机事故回归）：`provider add

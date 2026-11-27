@@ -12,18 +12,15 @@
 //! 编译；接进 main.rs 的 serve 链是账本里的任务，别提前焊死。
 #![allow(dead_code)]
 
-pub mod bodycap;
-pub mod prev_response;
-pub mod usage_ledger;
-pub mod textcalls;
 pub mod affinity;
-pub mod bodyprep;
-pub mod catalog;
-pub mod chattidy;
-pub mod chat;
 pub mod antigravity_account;
 pub mod antigravity_codeassist;
 pub mod antigravity_stream;
+pub mod bodycap;
+pub mod bodyprep;
+pub mod catalog;
+pub mod chat;
+pub mod chattidy;
 pub mod claude_account;
 pub mod cli;
 pub mod codex_account;
@@ -34,11 +31,12 @@ pub mod grok_account;
 pub mod groups;
 pub mod httpd;
 pub mod integral;
-pub mod messages;
 pub mod key_balances;
+pub mod messages;
 pub mod opencode_client;
 pub mod plan_quotas;
 pub mod presets;
+pub mod prev_response;
 pub mod quota_extra;
 pub mod quota_kit;
 pub mod quotas;
@@ -46,7 +44,9 @@ pub mod redact;
 pub mod responses;
 pub mod routes;
 pub mod store;
+pub mod textcalls;
 pub mod translate;
+pub mod usage_ledger;
 pub mod vendor_presets;
 pub mod ws;
 pub mod zcode_account;
@@ -63,7 +63,11 @@ pub const ENGINE_VERSION: &str = concat!("rust-", env!("CARGO_PKG_VERSION"));
 pub(crate) fn localized(zh: String, en: String) -> String {
     #[cfg(engine_rust_active)]
     {
-        if crate::loc::is_en() { en } else { zh }
+        if crate::loc::is_en() {
+            en
+        } else {
+            zh
+        }
     }
     #[cfg(not(engine_rust_active))]
     {
@@ -149,8 +153,7 @@ pub fn mint_gateway_token() -> String {
 // 合同套件维持旧形状；engine.rs 的偏好过滤（catalog_direct*）才是菜单/注入
 // 层的唯一过滤点，这层只是执行闸。额度行不受此闸影响。
 
-static SUBSCRIPTION_ENABLED: std::sync::RwLock<Option<Vec<String>>> =
-    std::sync::RwLock::new(None);
+static SUBSCRIPTION_ENABLED: std::sync::RwLock<Option<Vec<String>>> = std::sync::RwLock::new(None);
 
 /// 主程序推送「已开启的族」。测试构建 no-op（同进程的网关单测依赖
 /// 「未推送 = 全开」默认；闸测试用 set_subscription_enabled_for_tests）。
@@ -174,7 +177,10 @@ pub fn family_enabled(family: &str) -> bool {
             Some(list) => list.iter().any(|f| f == family),
             None => true,
         },
-        Err(poisoned) => poisoned.into_inner().as_ref().map_or(true, |list| list.iter().any(|f| f == family)),
+        Err(poisoned) => poisoned
+            .into_inner()
+            .as_ref()
+            .map_or(true, |list| list.iter().any(|f| f == family)),
     }
 }
 
@@ -252,8 +258,7 @@ impl Gateway {
 /// download_agent 同款做法）。主程序构建（feature engine-rust）带
 /// Marionette 的代理设置；独立 dev bin 走环境变量兜底。
 pub fn outbound_agent() -> ureq::Agent {
-    let mut builder = ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(5));
+    let mut builder = ureq::AgentBuilder::new().timeout_connect(std::time::Duration::from_secs(5));
     if let Ok(connector) = ureq::native_tls::TlsConnector::new() {
         builder = builder.tls_connector(std::sync::Arc::new(connector));
     }
@@ -272,7 +277,9 @@ pub fn outbound_agent() -> ureq::Agent {
 ///   http_client.rs 同款纪律；旧写法 `if let Ok(..)` 在这里是 fail-open）。
 pub(crate) fn ureq_proxy(url: &str) -> ureq::Proxy {
     let normalized = match url.split_once("://") {
-        Some((scheme, rest)) if scheme.eq_ignore_ascii_case("socks5h") => format!("socks5://{rest}"),
+        Some((scheme, rest)) if scheme.eq_ignore_ascii_case("socks5h") => {
+            format!("socks5://{rest}")
+        }
         Some((scheme, rest)) => format!("{}://{rest}", scheme.to_ascii_lowercase()),
         None => url.to_string(),
     };
@@ -299,7 +306,11 @@ pub fn set_outbound_proxy(url: Option<String>) {
 }
 
 fn outbound_proxy() -> Option<String> {
-    if let Some(set) = OUTBOUND_PROXY.lock().unwrap_or_else(|p| p.into_inner()).clone() {
+    if let Some(set) = OUTBOUND_PROXY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+    {
         return set;
     }
     for key in ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"] {
@@ -332,7 +343,11 @@ mod tests {
         set_outbound_proxy(Some("http://127.0.0.1:7891".into()));
         assert_eq!(outbound_proxy().as_deref(), Some("http://127.0.0.1:7891"));
         set_outbound_proxy(Some("   ".into()));
-        assert_eq!(outbound_proxy(), None, "an explicit empty setting disables the proxy");
+        assert_eq!(
+            outbound_proxy(),
+            None,
+            "an explicit empty setting disables the proxy"
+        );
         set_outbound_proxy(None);
         assert_eq!(outbound_proxy(), None);
     }
@@ -361,10 +376,21 @@ mod tests {
                 let _ = tx.send(greeting.to_vec());
             });
             let url = url.replace("PORT", &port.to_string());
-            let outcome = agent_for(ureq_proxy(&url)).get("http://example.invalid/v1/models").call();
-            assert!(outcome.is_err(), "{url}: the mock never completes the handshake");
-            let greeting = rx.recv_timeout(Duration::from_secs(8)).unwrap_or_else(|e| panic!("{url}: request never reached the SOCKS proxy: {e}"));
-            assert_eq!(greeting, vec![0x05, 0x01, 0x00], "{url}: a SOCKS5 no-auth greeting");
+            let outcome = agent_for(ureq_proxy(&url))
+                .get("http://example.invalid/v1/models")
+                .call();
+            assert!(
+                outcome.is_err(),
+                "{url}: the mock never completes the handshake"
+            );
+            let greeting = rx
+                .recv_timeout(Duration::from_secs(8))
+                .unwrap_or_else(|e| panic!("{url}: request never reached the SOCKS proxy: {e}"));
+            assert_eq!(
+                greeting,
+                vec![0x05, 0x01, 0x00],
+                "{url}: a SOCKS5 no-auth greeting"
+            );
         }
 
         // https 代理 ureq 2 说不来：请求不得落到这个「代理」端口上（直连更不行）。
@@ -380,8 +406,14 @@ mod tests {
         let outcome = agent_for(ureq_proxy(&format!("https://127.0.0.1:{port}")))
             .get("http://example.invalid/v1/models")
             .call();
-        assert!(outcome.is_err(), "an unparseable proxy must not be silently bypassed");
-        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "traffic reached the address we could not parse as a proxy");
+        assert!(
+            outcome.is_err(),
+            "an unparseable proxy must not be silently bypassed"
+        );
+        assert!(
+            rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "traffic reached the address we could not parse as a proxy"
+        );
     }
 
     /// 「订阅共享」四族的已登录直接问各账号模块（2026-11-26 修：以前只有 ChatGPT
@@ -395,16 +427,30 @@ mod tests {
         impl Drop for Reset {
             fn drop(&mut self) {
                 // 四个缝类型各异，逐个复位。
-                *codex_account::TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = None;
-                *grok_account::TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = None;
-                *claude_account::TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = None;
-                *antigravity_account::TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                *codex_account::TEST_SEAM
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = None;
+                *grok_account::TEST_SEAM
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = None;
+                *claude_account::TEST_SEAM
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = None;
+                *antigravity_account::TEST_SEAM
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = None;
             }
         }
         let _reset = Reset;
-        assert!(signed_in_families().is_empty(), "no credentials laid down → nothing is signed in");
+        assert!(
+            signed_in_families().is_empty(),
+            "no credentials laid down → nothing is signed in"
+        );
 
-        let dir = std::env::temp_dir().join(format!("marionette-engine-signed-in-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "marionette-engine-signed-in-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let write = |rel: &str, body: &str| {
             let path = dir.join(rel);
@@ -412,28 +458,72 @@ mod tests {
             std::fs::write(path, body).unwrap();
         };
         // Grok：auth.json 里有一条带 key 的账号。
-        write("grok/auth.json", r#"{"me": {"key": "k-fixture", "email": "a@b", "user_id": "u"}}"#);
+        write(
+            "grok/auth.json",
+            r#"{"me": {"key": "k-fixture", "email": "a@b", "user_id": "u"}}"#,
+        );
         // Antigravity：五个字段齐。
-        write(".gemini/antigravity-acp/acp_token.json", r#"{"client_id":"c","client_secret":"s","refresh_token":"r","token_uri":"https://oauth2.googleapis.com/token","project_id":"p"}"#);
+        write(
+            ".gemini/antigravity-acp/acp_token.json",
+            r#"{"client_id":"c","client_secret":"s","refresh_token":"r","token_uri":"https://oauth2.googleapis.com/token","project_id":"p"}"#,
+        );
         // Claude：CLI 主动登出后的形状。
-        write("claude/.credentials.json", r#"{"claudeAiOauth":{"accessToken":"","refreshToken":"","subscriptionType":"team","rateLimitTier":"x","scopes":"a b","refreshTokenExpiresAt":1}}"#);
-        *grok_account::TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) =
-            Some(grok_account::Seam { base: String::new(), home: dir.join("grok") });
-        *antigravity_account::TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) =
-            Some(antigravity_account::Seam { base: String::new(), home: dir.clone() });
-        *claude_account::TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) =
-            Some(claude_account::Seam { home: dir.join("claude"), logins: None, shelf: None, cli: None });
-        assert_eq!(signed_in_families(), vec!["grok", "gemini"], "a logged-out Claude is not signed in");
+        write(
+            "claude/.credentials.json",
+            r#"{"claudeAiOauth":{"accessToken":"","refreshToken":"","subscriptionType":"team","rateLimitTier":"x","scopes":"a b","refreshTokenExpiresAt":1}}"#,
+        );
+        *grok_account::TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(grok_account::Seam {
+            base: String::new(),
+            home: dir.join("grok"),
+        });
+        *antigravity_account::TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(antigravity_account::Seam {
+            base: String::new(),
+            home: dir.clone(),
+        });
+        *claude_account::TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(claude_account::Seam {
+            home: dir.join("claude"),
+            logins: None,
+            shelf: None,
+            cli: None,
+        });
+        assert_eq!(
+            signed_in_families(),
+            vec!["grok", "gemini"],
+            "a logged-out Claude is not signed in"
+        );
 
         // Codex：auth.json 的 ChatGPT 登录（发现只看 access token 在不在，不要求是 JWT）。
-        write("codex/auth.json", r#"{"auth_mode":"chatgpt","tokens":{"access_token":"tok-fixture","account_id":"acct"}}"#);
-        *codex_account::TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) =
-            Some(codex_account::Seam { base: String::new(), logins_dir: dir.join("engine-data"), codex_home: dir.join("codex") });
+        write(
+            "codex/auth.json",
+            r#"{"auth_mode":"chatgpt","tokens":{"access_token":"tok-fixture","account_id":"acct"}}"#,
+        );
+        *codex_account::TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(codex_account::Seam {
+            base: String::new(),
+            logins_dir: dir.join("engine-data"),
+            codex_home: dir.join("codex"),
+        });
         // Claude 重新登录。
-        write("claude/.credentials.json", r#"{"claudeAiOauth":{"accessToken":"at-fixture","refreshToken":"rt","subscriptionType":"pro","expiresAt":4102444800000}}"#);
-        assert_eq!(signed_in_families(), vec!["claude", "codex", "grok", "gemini"]);
+        write(
+            "claude/.credentials.json",
+            r#"{"claudeAiOauth":{"accessToken":"at-fixture","refreshToken":"rt","subscriptionType":"pro","expiresAt":4102444800000}}"#,
+        );
+        assert_eq!(
+            signed_in_families(),
+            vec!["claude", "codex", "grok", "gemini"]
+        );
         // API key 形态的 Codex 不是订阅登录。
-        write("codex/auth.json", r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-fixture"}"#);
+        write(
+            "codex/auth.json",
+            r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-fixture"}"#,
+        );
         assert!(!signed_in_families().contains(&"codex"));
         drop(_reset);
         let _ = std::fs::remove_dir_all(&dir);

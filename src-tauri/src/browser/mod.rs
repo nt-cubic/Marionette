@@ -256,15 +256,13 @@ mod imp {
         let request_id = format!("handoff-{seq}");
         let (tx, rx) = mpsc::channel();
         if let Ok(mut guard) = PENDING_HANDOFFS.lock() {
-            guard
-                .get_or_insert_with(HashMap::new)
-                .insert(
-                    request_id.clone(),
-                    PendingHandoff {
-                        tab_id: tab_id.to_string(),
-                        tx,
-                    },
-                );
+            guard.get_or_insert_with(HashMap::new).insert(
+                request_id.clone(),
+                PendingHandoff {
+                    tab_id: tab_id.to_string(),
+                    tx,
+                },
+            );
         }
         set_tab_status(app, tab_id, "waiting_user")?;
         let timeout_secs = timeout_secs.clamp(15, 300);
@@ -309,7 +307,11 @@ mod imp {
     }
 
     pub fn resolve_handoff(request_id: &str, outcome: &str) -> bool {
-        let outcome = if outcome == "continue" { "continue" } else { "denied" };
+        let outcome = if outcome == "continue" {
+            "continue"
+        } else {
+            "denied"
+        };
         let sender = PENDING_HANDOFFS
             .lock()
             .ok()
@@ -369,9 +371,7 @@ mod imp {
         let url = url.to_string();
         let display = display.to_string();
         let owner_session_id = owner_session_id.map(str::to_string);
-        let chosen_id = chosen_id
-            .map(super::normalize_chosen_id)
-            .transpose()?;
+        let chosen_id = chosen_id.map(super::normalize_chosen_id).transpose()?;
         let app_for_job = app.clone();
         app.run_on_main_thread(move || {
             let result = if let Some(chosen) = chosen_id.as_deref() {
@@ -405,7 +405,8 @@ mod imp {
             let _ = tx.send(result);
         })
         .map_err(|e| format!("main thread hop: {e}"))?;
-        rx.recv().map_err(|_| "main thread did not answer".to_string())?
+        rx.recv()
+            .map_err(|_| "main thread did not answer".to_string())?
     }
 
     pub fn close_tab(app: &AppHandle, tab_id: &str) -> Result<(), String> {
@@ -419,7 +420,8 @@ mod imp {
             let _ = tx.send(result);
         })
         .map_err(|e| format!("main thread hop: {e}"))?;
-        rx.recv().map_err(|_| "main thread did not answer".to_string())?
+        rx.recv()
+            .map_err(|_| "main thread did not answer".to_string())?
     }
 
     /// Agent-close cannot destroy a user-owned/claimed or pinned tab. The
@@ -433,10 +435,7 @@ mod imp {
             let result = (|| {
                 let tab = surface::find_surface(&tab_id)
                     .ok_or_else(|| format!("no such browser tab: {tab_id}"))?;
-                if !super::agent_can_close_tab(
-                    tab.opened_by_agent.get(),
-                    tab.pinned.get(),
-                ) {
+                if !super::agent_can_close_tab(tab.opened_by_agent.get(), tab.pinned.get()) {
                     return Ok(false);
                 }
                 cancel_permissions_for_tab(&tab_id);
@@ -457,7 +456,8 @@ mod imp {
             let _ = tx.send(surface::tabs_snapshot());
         })
         .map_err(|e| format!("main thread hop: {e}"))?;
-        rx.recv().map_err(|_| "main thread did not answer".to_string())
+        rx.recv()
+            .map_err(|_| "main thread did not answer".to_string())
     }
 
     pub fn set_tab_pinned(app: &AppHandle, tab_id: &str, pinned: bool) -> Result<(), String> {
@@ -476,13 +476,11 @@ mod imp {
             s.opened_by_agent.set(false);
             s.owner_session_id.borrow_mut().take();
             s.pinned.set(true);
-            s.status.replace(
-                if s.busy_count.get() > 0 {
-                    "running".to_string()
-                } else {
-                    "idle".to_string()
-                },
-            );
+            s.status.replace(if s.busy_count.get() > 0 {
+                "running".to_string()
+            } else {
+                "idle".to_string()
+            });
             s.last_used_at_ms.set(surface::now_ms_pub());
             *s.grant.borrow_mut() = None;
             surface::emit_tabs(&s.app);
@@ -546,7 +544,11 @@ mod imp {
     /// Grant state of one tab, as the tool surface checks it.
     pub fn grant_level(app: &AppHandle, tab_id: &str) -> Result<GrantLevel, String> {
         surface::with_surface(app, tab_id, |s| {
-            s.grant.borrow().as_ref().map(|g| g.level).unwrap_or(GrantLevel::None)
+            s.grant
+                .borrow()
+                .as_ref()
+                .map(|g| g.level)
+                .unwrap_or(GrantLevel::None)
         })
     }
 
@@ -582,13 +584,11 @@ mod imp {
             let remaining = s.busy_count.get().saturating_sub(1);
             s.busy_count.set(remaining);
             if remaining == 0 {
-                s.status.replace(
-                    if result.is_ok() {
-                        "idle".to_string()
-                    } else {
-                        "failed".to_string()
-                    },
-                );
+                s.status.replace(if result.is_ok() {
+                    "idle".to_string()
+                } else {
+                    "failed".to_string()
+                });
             }
             surface::emit_tabs(&s.app);
             result
@@ -605,8 +605,7 @@ mod imp {
             let ids: Vec<String> = surface::tabs_snapshot()
                 .into_iter()
                 .filter(|tab| {
-                    tab.owner_session_id.as_deref() == Some(session_id.as_str())
-                        && !tab.pinned
+                    tab.owner_session_id.as_deref() == Some(session_id.as_str()) && !tab.pinned
                 })
                 .map(|tab| tab.id)
                 .collect();
@@ -619,7 +618,8 @@ mod imp {
             let _ = tx.send(closed);
         })
         .map_err(|e| format!("main thread hop: {e}"))?;
-        rx.recv().map_err(|_| "main thread did not answer".to_string())
+        rx.recv()
+            .map_err(|_| "main thread did not answer".to_string())
     }
 
     /// Toolbar share: set the grant for the tab's CURRENT origin by hand.
@@ -650,7 +650,8 @@ mod imp {
             let _ = tx.send(result);
         })
         .map_err(|e| format!("main thread hop: {e}"))?;
-        rx.recv().map_err(|_| "main thread did not answer".to_string())?
+        rx.recv()
+            .map_err(|_| "main thread did not answer".to_string())?
     }
 
     /// A read-level tool call (snapshot / console / screenshot): grant check
@@ -690,15 +691,8 @@ mod imp {
         chosen_id: Option<String>,
     ) -> Result<Value, String> {
         let display = super::normalize_open_display(display.as_deref())?;
-        open_tab(
-            &app,
-            &url,
-            false,
-            display,
-            None,
-            chosen_id.as_deref(),
-        )
-        .map(|(tab_id, existed)| json!({ "tabId": tab_id, "existed": existed }))
+        open_tab(&app, &url, false, display, None, chosen_id.as_deref())
+            .map(|(tab_id, existed)| json!({ "tabId": tab_id, "existed": existed }))
     }
 
     #[tauri::command(async)]
@@ -789,12 +783,18 @@ mod imp {
     }
 
     #[tauri::command(async)]
-    pub fn browser_set_tab_visible(app: AppHandle, tab_id: String, visible: bool) -> Result<(), String> {
+    pub fn browser_set_tab_visible(
+        app: AppHandle,
+        tab_id: String,
+        visible: bool,
+    ) -> Result<(), String> {
         surface::with_surface(&app, &tab_id, move |s| {
             // Stock wry set_visible, exactly codeg's call: our vendored patch
             // pairs TrySuspend/Resume INSIDE it — a custom ShowWindow path
             // skips the Resume and the page never composites (2026-10-31).
-            s.webview.set_visible(visible).map_err(|e| format!("set_visible: {e}"))
+            s.webview
+                .set_visible(visible)
+                .map_err(|e| format!("set_visible: {e}"))
         })?
     }
 
@@ -823,9 +823,7 @@ mod imp {
         active: bool,
         mode: String,
     ) -> Result<Value, String> {
-        surface::with_surface(&app, &tab_id, move |s| {
-            surface::pick_set(s, active, &mode)
-        })?
+        surface::with_surface(&app, &tab_id, move |s| surface::pick_set(s, active, &mode))?
     }
 
     /// Forget the current annotation batch after send/clear/abandon.
@@ -836,10 +834,12 @@ mod imp {
 
     /// Crop the viewport screenshot down to one pick, highlight excluded.
     #[tauri::command(async)]
-    pub fn browser_pick_finalize(app: AppHandle, tab_id: String, pick_id: String) -> Result<Value, String> {
-        surface::with_surface(&app, &tab_id, move |s| {
-            surface::pick_finalize(s, &pick_id)
-        })?
+    pub fn browser_pick_finalize(
+        app: AppHandle,
+        tab_id: String,
+        pick_id: String,
+    ) -> Result<Value, String> {
+        surface::with_surface(&app, &tab_id, move |s| surface::pick_finalize(s, &pick_id))?
     }
 
     /// Map the retained picks to aria refs as of a fresh snapshot.
@@ -847,7 +847,6 @@ mod imp {
     pub fn browser_pick_resolve(app: AppHandle, tab_id: String) -> Result<Value, String> {
         surface::with_surface(&app, &tab_id, move |s| surface::pick_resolve(s))?
     }
-
 
     /// Diagnostic (E2E harness): the CDP-level truth about one tab — what the
     /// renderer loaded vs what the window composited. Not for the product UI.
@@ -1057,10 +1056,18 @@ mod display_tests {
             )
         };
         let none: Vec<String> = Vec::new();
-        assert!(eligible("b1", true, true, None, false, false, "idle", 900, &none));
-        assert!(eligible("b1", true, true, None, false, false, "failed", 900, &none));
-        assert!(!eligible("b1", false, true, None, false, false, "idle", 900, &none));
-        assert!(!eligible("b1", true, false, None, false, false, "idle", 900, &none));
+        assert!(eligible(
+            "b1", true, true, None, false, false, "idle", 900, &none
+        ));
+        assert!(eligible(
+            "b1", true, true, None, false, false, "failed", 900, &none
+        ));
+        assert!(!eligible(
+            "b1", false, true, None, false, false, "idle", 900, &none
+        ));
+        assert!(!eligible(
+            "b1", true, false, None, false, false, "idle", 900, &none
+        ));
         assert!(!eligible(
             "b1",
             true,
@@ -1072,8 +1079,12 @@ mod display_tests {
             900,
             &none
         ));
-        assert!(!eligible("b1", true, true, None, true, false, "idle", 900, &none));
-        assert!(!eligible("b1", true, true, None, false, true, "running", 900, &none));
+        assert!(!eligible(
+            "b1", true, true, None, true, false, "idle", 900, &none
+        ));
+        assert!(!eligible(
+            "b1", true, true, None, false, true, "running", 900, &none
+        ));
         assert!(!eligible(
             "b1",
             true,
@@ -1193,7 +1204,11 @@ mod imp {
         super::service::probe_loopback_url(&url)
     }
     #[tauri::command(async)]
-    pub fn browser_navigate_tab(_app: AppHandle, _tab_id: String, _url: String) -> Result<(), String> {
+    pub fn browser_navigate_tab(
+        _app: AppHandle,
+        _tab_id: String,
+        _url: String,
+    ) -> Result<(), String> {
         unavailable()
     }
     #[tauri::command(async)]
@@ -1208,7 +1223,11 @@ mod imp {
         unavailable()
     }
     #[tauri::command(async)]
-    pub fn browser_set_tab_visible(_app: AppHandle, _tab_id: String, _visible: bool) -> Result<(), String> {
+    pub fn browser_set_tab_visible(
+        _app: AppHandle,
+        _tab_id: String,
+        _visible: bool,
+    ) -> Result<(), String> {
         unavailable()
     }
     #[tauri::command(async)]
@@ -1216,7 +1235,11 @@ mod imp {
         Ok(Vec::new())
     }
     #[tauri::command(async)]
-    pub fn browser_share_tab(_app: AppHandle, _tab_id: String, _level: String) -> Result<(), String> {
+    pub fn browser_share_tab(
+        _app: AppHandle,
+        _tab_id: String,
+        _level: String,
+    ) -> Result<(), String> {
         unavailable()
     }
     #[tauri::command(async)]
@@ -1249,10 +1272,7 @@ mod imp {
         Ok(false)
     }
     #[tauri::command(async)]
-    pub fn browser_handoff_respond(
-        _request_id: String,
-        _outcome: String,
-    ) -> Result<bool, String> {
+    pub fn browser_handoff_respond(_request_id: String, _outcome: String) -> Result<bool, String> {
         Ok(false)
     }
     #[tauri::command(async)]

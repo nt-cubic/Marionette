@@ -63,7 +63,9 @@ pub fn capture_hide_call() -> String {
 
 /// Pair of `capture_hide_call`. Restore is best-effort and never fatal.
 pub fn capture_restore_call() -> String {
-    stringify(&call(&format!("globalThis.{PICKER_GLOBAL}.captureRestore()")))
+    stringify(&call(&format!(
+        "globalThis.{PICKER_GLOBAL}.captureRestore()"
+    )))
 }
 
 /// Map every retained pick to the aria ref it carries, as of the snapshot
@@ -110,7 +112,11 @@ mod tests {
                 "{expression}"
             );
             // The install path must ask the same question the warm path does.
-            assert_eq!(expression.matches("__marionettePicker.").count(), 2, "{expression}");
+            assert_eq!(
+                expression.matches("__marionettePicker.").count(),
+                2,
+                "{expression}"
+            );
         }
     }
 
@@ -152,7 +158,10 @@ mod tests {
         );
         // A host-side epoch (`gen.navEpoch`) is not a world generation —
         // elementForRef would refuse it and every ref would resolve null.
-        assert_eq!(generation_from_snapshot(&json!({ "generation": "3.2" })), None);
+        assert_eq!(
+            generation_from_snapshot(&json!({ "generation": "3.2" })),
+            None
+        );
         assert_eq!(generation_from_snapshot(&json!({})), None);
     }
 }

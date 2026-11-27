@@ -89,10 +89,7 @@ pub fn env_dir(var: &str) -> Option<PathBuf> {
         return None;
     }
     let mut p = PathBuf::from(raw);
-    if let Some(stripped) = text
-        .strip_prefix("~/")
-        .or_else(|| text.strip_prefix("~\\"))
-    {
+    if let Some(stripped) = text.strip_prefix("~/").or_else(|| text.strip_prefix("~\\")) {
         if let Some(home) = home_dir() {
             p = home.join(stripped);
         }
@@ -156,7 +153,10 @@ pub fn walk_files(root: &Path, max_depth: usize) -> Vec<PathBuf> {
 }
 
 pub fn json_str<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
-    v.get(key).and_then(|x| x.as_str()).map(str::trim).filter(|s| !s.is_empty())
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
 }
 
 pub fn pointer_str<'a>(v: &'a Value, pointer: &str) -> Option<&'a str> {

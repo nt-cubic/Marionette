@@ -67,7 +67,11 @@ fn part_event(
     let ts = created.map(|t| t.to_string()).unwrap_or_default();
     match data.get("type").and_then(Value::as_str)? {
         "text" => {
-            let text = data.get("text").and_then(Value::as_str).unwrap_or("").trim();
+            let text = data
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
             if text.is_empty() {
                 return None;
             }
@@ -78,7 +82,11 @@ fn part_event(
             })
         }
         "reasoning" => {
-            let text = data.get("text").and_then(Value::as_str).unwrap_or("").trim();
+            let text = data
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
             if text.is_empty() {
                 return None;
             }
@@ -86,9 +94,18 @@ fn part_event(
         }
         "tool" => {
             let name = data.get("tool").and_then(Value::as_str).unwrap_or("tool");
-            let call_id = data.get("callID").and_then(Value::as_str).unwrap_or("zcode-tool");
+            let call_id = data
+                .get("callID")
+                .and_then(Value::as_str)
+                .unwrap_or("zcode-tool");
             let detail = tool_detail(data.get("state"));
-            Some(tool_event(session_id, call_id, name, &ts, detail.as_deref()))
+            Some(tool_event(
+                session_id,
+                call_id,
+                name,
+                &ts,
+                detail.as_deref(),
+            ))
         }
         _ => None,
     }
@@ -197,10 +214,7 @@ fn export_events(conn: &Connection, session_id: &str) -> Result<Vec<Value>, Stri
         .map_err(|e| format!("query zcode messages: {e}"))?;
     let messages: Vec<(String, String)> = stmt
         .query_map([session_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-            ))
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .map_err(|e| format!("query zcode messages: {e}"))?
         .flatten()
@@ -286,7 +300,13 @@ mod tests {
         conn
     }
 
-    fn add_session(conn: &Connection, id: &str, directory: &str, parent: Option<&str>, archived: bool) {
+    fn add_session(
+        conn: &Connection,
+        id: &str,
+        directory: &str,
+        parent: Option<&str>,
+        archived: bool,
+    ) {
         conn.execute(
             "INSERT INTO session (id, directory, title, parent_id, time_archived, time_created, time_updated)
              VALUES (?1, ?2, ?3, ?4, ?5, 1000, 2000)",
@@ -345,41 +365,81 @@ mod tests {
         add_session(&conn, "s1", "D:\\Proj\\App", None, false);
 
         add_message(
-            &conn, "m1", "s1", 0,
+            &conn,
+            "m1",
+            "s1",
+            0,
             &serde_json::json!({
                 "role": "user",
                 "time": { "created": 1792719504970i64 },
                 "semantics": { "kind": "user_prompt" },
             }),
         );
-        add_part(&conn, "m1", 0, &serde_json::json!({ "type": "text", "text": "研究下怎么接入" }));
+        add_part(
+            &conn,
+            "m1",
+            0,
+            &serde_json::json!({ "type": "text", "text": "研究下怎么接入" }),
+        );
 
         add_message(
-            &conn, "m2", "s1", 1,
+            &conn,
+            "m2",
+            "s1",
+            1,
             &serde_json::json!({
                 "role": "user",
                 "semantics": { "kind": "system_reminder" },
             }),
         );
-        add_part(&conn, "m2", 0, &serde_json::json!({ "type": "text", "text": "agent listing delta" }));
+        add_part(
+            &conn,
+            "m2",
+            0,
+            &serde_json::json!({ "type": "text", "text": "agent listing delta" }),
+        );
 
         add_message(
-            &conn, "m3", "s1", 2,
+            &conn,
+            "m3",
+            "s1",
+            2,
             &serde_json::json!({
                 "role": "assistant",
                 "time": { "created": 1792719510000i64 },
                 "semantics": { "kind": "assistant_response" },
             }),
         );
-        add_part(&conn, "m3", 0, &serde_json::json!({ "type": "reasoning", "text": "think" }));
-        add_part(&conn, "m3", 1, &serde_json::json!({ "type": "text", "text": "结论" }));
-        add_part(&conn, "m3", 2, &serde_json::json!({ "type": "tool", "callID": "call_1", "tool": "Bash",
-            "state": { "status": "completed", "input": { "command": "ls" }, "output": "ok" } }));
+        add_part(
+            &conn,
+            "m3",
+            0,
+            &serde_json::json!({ "type": "reasoning", "text": "think" }),
+        );
+        add_part(
+            &conn,
+            "m3",
+            1,
+            &serde_json::json!({ "type": "text", "text": "结论" }),
+        );
+        add_part(
+            &conn,
+            "m3",
+            2,
+            &serde_json::json!({ "type": "tool", "callID": "call_1", "tool": "Bash",
+            "state": { "status": "completed", "input": { "command": "ls" }, "output": "ok" } }),
+        );
         add_part(&conn, "m3", 3, &serde_json::json!({ "type": "step-start" }));
 
         let events = export_events(&conn, "s1").unwrap();
-        let kinds: Vec<&str> = events.iter().map(|e| e["type"].as_str().unwrap_or("")).collect();
-        assert_eq!(kinds, vec!["user_message", "thought", "assistant_message", "tool_call"]);
+        let kinds: Vec<&str> = events
+            .iter()
+            .map(|e| e["type"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["user_message", "thought", "assistant_message", "tool_call"]
+        );
         assert_eq!(events[0]["text"], "研究下怎么接入");
         assert_eq!(events[0]["createdAt"], "1792719504970");
         assert_eq!(events[1]["text"], "think");

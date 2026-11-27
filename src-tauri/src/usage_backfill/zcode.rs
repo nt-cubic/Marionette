@@ -80,7 +80,9 @@ pub(crate) fn parse_db(
 
     {
         let mut stmt = conn
-            .prepare("SELECT id, parent_id, directory, title, time_created, time_updated FROM session")
+            .prepare(
+                "SELECT id, parent_id, directory, title, time_created, time_updated FROM session",
+            )
             .map_err(|e| format!("query sessions: {e}"))?;
         let rows = stmt
             .query_map([], |row| {
@@ -192,7 +194,10 @@ pub(crate) fn parse_db(
             .map_err(|e| format!("query turn_usage: {e}"))?;
         let rows = stmt
             .query_map([], |row| {
-                Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<i64>>(1)?))
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                ))
             })
             .map_err(|e| format!("scan turn_usage: {e}"))?;
         for (session_id, started_at) in rows.flatten() {
@@ -348,10 +353,16 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute("INSERT INTO turn_usage VALUES ('sess_main', 1794188999000)", [])
-            .unwrap();
-        conn.execute("INSERT INTO turn_usage VALUES ('sess_subagent_agent_x1', 1794189199000)", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO turn_usage VALUES ('sess_main', 1794188999000)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO turn_usage VALUES ('sess_subagent_agent_x1', 1794189199000)",
+            [],
+        )
+        .unwrap();
     }
 
     #[test]
@@ -362,7 +373,10 @@ mod tests {
         assert!(note.is_none());
         assert_eq!(sessions.len(), 3);
 
-        let main = sessions.iter().find(|s| s.native_id == "sess_main").unwrap();
+        let main = sessions
+            .iter()
+            .find(|s| s.native_id == "sess_main")
+            .unwrap();
         assert_eq!(main.title.as_deref(), Some("迁移统计页"));
         assert_eq!(main.cwd.as_deref(), Some("D:\\Projects\\Marionette"));
         assert_eq!(main.compactions.len(), 0);
@@ -392,7 +406,10 @@ mod tests {
         assert_eq!(sub.hours.iter().map(|h| h.requests).sum::<u32>(), 1);
         assert_eq!(sub.hours.iter().map(|h| h.turns).sum::<u32>(), 1);
 
-        let orphan = sessions.iter().find(|s| s.native_id == "sess_gone").unwrap();
+        let orphan = sessions
+            .iter()
+            .find(|s| s.native_id == "sess_gone")
+            .unwrap();
         assert_eq!(orphan.hours.iter().map(|h| h.input).sum::<u64>(), 100);
         std::fs::remove_dir_all(db.parent().unwrap()).ok();
     }
@@ -408,13 +425,19 @@ mod tests {
                  CREATE TABLE turn_usage (session_id TEXT, started_at INTEGER);",
             )
             .unwrap();
-            conn.execute("INSERT INTO session VALUES ('s1', NULL, NULL, 'T', 1, 2)", [])
-                .unwrap();
+            conn.execute(
+                "INSERT INTO session VALUES ('s1', NULL, NULL, 'T', 1, 2)",
+                [],
+            )
+            .unwrap();
             conn.execute("INSERT INTO turn_usage VALUES ('s1', 1794188999000)", [])
                 .unwrap();
         }
         let (sessions, note) = parse_db(&db, 0).unwrap();
-        assert_eq!(note.as_deref(), Some("该库不记录 token 用量（无 model_usage 表）"));
+        assert_eq!(
+            note.as_deref(),
+            Some("该库不记录 token 用量（无 model_usage 表）")
+        );
         // Turns still counted, tokens all zero.
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].hours[0].turns, 1);
@@ -434,9 +457,15 @@ mod tests {
         let key = cache.entries.keys().next().unwrap().clone();
         cache.entries.get_mut(&key).unwrap().sessions[0].title = Some("cached".into());
         let out2 = scan(Some(&db), &mut cache, false, 0);
-        assert!(out2.sessions.iter().any(|s| s.title.as_deref() == Some("cached")));
+        assert!(out2
+            .sessions
+            .iter()
+            .any(|s| s.title.as_deref() == Some("cached")));
         let out3 = scan(Some(&db), &mut cache, true, 0);
-        assert!(!out3.sessions.iter().any(|s| s.title.as_deref() == Some("cached")));
+        assert!(!out3
+            .sessions
+            .iter()
+            .any(|s| s.title.as_deref() == Some("cached")));
         std::fs::remove_dir_all(db.parent().unwrap()).ok();
     }
 }

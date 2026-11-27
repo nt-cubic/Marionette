@@ -127,6 +127,12 @@ export type Session = {
   preferredAlwaysApprove?: boolean | null;
   /** Present on @-delegate child sessions; omitted from list_sessions. */
   parentSessionId?: string | null;
+  /** Persistent delegated-agent ancestry; unlike parentSessionId this stays on top-level workers. */
+  lineage?: {
+    parentSessionId: string;
+    rootSessionId: string;
+    relationship: "subagent" | string;
+  } | null;
   /** `"user"` | `"delegate"` | `"import"` — optional for legacy rows. */
   origin?: string | null;
   /** ACP session ids this dialog has used; refresh uses them to skip clones. */
@@ -190,6 +196,7 @@ export type SessionEvent =
       agentLabel?: string;
       modelId?: string;
       modelLabel?: string;
+      providerLabel?: string;
       modeLabel?: string;
       effortLabel?: string;
       /** Image attachments with optional marks (persisted for You-card overlay). */
@@ -219,6 +226,7 @@ export type SessionEvent =
       agentLabel?: string;
       modelId?: string;
       modelLabel?: string;
+      providerLabel?: string;
       modeLabel?: string;
       effortLabel?: string;
       /** Generation duration in ms, computed at turn completion. */
@@ -316,6 +324,9 @@ export type SessionEvent =
       modelId?: string;
       /** 跨用引擎的真实模型 id（显示用；modelId 保留该 agent 的原生写法）。 */
       displayModel?: string;
+      providerLabel?: string;
+      modelLabel?: string;
+      effortLabel?: string;
       prompt: string;
       createdAt: string;
       /** agent 自主派活（marionette_delegate_task）时为 "agent"；
@@ -334,6 +345,9 @@ export type SessionEvent =
       summary: string;
       /** 跨用引擎的真实模型 id（显示用）。 */
       displayModel?: string;
+      providerLabel?: string;
+      modelLabel?: string;
+      effortLabel?: string;
       durationMs?: number;
       error?: string;
       createdAt: string;

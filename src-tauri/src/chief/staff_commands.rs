@@ -8,9 +8,7 @@ use tauri::{AppHandle, Manager};
 
 use super::commitments::{self, Commitment, CommitmentKind};
 use super::memory;
-use super::staff::{
-    self, StaffProfile, StaffRegistry, DEFERRED_BOOTSTRAP_VERSION,
-};
+use super::staff::{self, StaffProfile, StaffRegistry, DEFERRED_BOOTSTRAP_VERSION};
 use super::types::{now_ms, short_id, ProjectPolicy, RemoteMode};
 use super::{broker, runner, store, tee};
 
@@ -21,7 +19,10 @@ fn with_storage<T>(
     operation: impl FnOnce(&crate::storage::StorageService) -> T,
 ) -> T {
     let state = app.state::<crate::AppState>();
-    let guard = state.storage.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let guard = state
+        .storage
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     operation(&guard)
 }
 
@@ -228,13 +229,12 @@ fn canonicalize_project_policy(
     if !global.enabled || global.remote_mode == RemoteMode::Blocked {
         return Err(format!("项目 {} 在全局策略里被禁用", global.project_id));
     }
-    let remote_mode = if remote_mode_rank(requested.remote_mode)
-        <= remote_mode_rank(global.remote_mode)
-    {
-        requested.remote_mode
-    } else {
-        global.remote_mode
-    };
+    let remote_mode =
+        if remote_mode_rank(requested.remote_mode) <= remote_mode_rank(global.remote_mode) {
+            requested.remote_mode
+        } else {
+            global.remote_mode
+        };
     let mut allowed_agents = requested.allowed_agents;
     if !global.allowed_agents.is_empty() {
         if allowed_agents.is_empty() {
@@ -243,12 +243,17 @@ fn canonicalize_project_policy(
             allowed_agents.retain(|agent| global.allowed_agents.contains(agent));
         }
     }
-    let default_agent_id = requested.default_agent_id.or_else(|| global.default_agent_id.clone());
+    let default_agent_id = requested
+        .default_agent_id
+        .or_else(|| global.default_agent_id.clone());
     if default_agent_id
         .as_ref()
         .is_some_and(|agent| !allowed_agents.is_empty() && !allowed_agents.contains(agent))
     {
-        return Err(format!("默认 Agent 不在项目 {} 的允许列表", global.project_id));
+        return Err(format!(
+            "默认 Agent 不在项目 {} 的允许列表",
+            global.project_id
+        ));
     }
     Ok(ProjectPolicy {
         project_id: global.project_id.clone(),
@@ -256,7 +261,9 @@ fn canonicalize_project_policy(
         remote_mode,
         allowed_agents,
         default_agent_id,
-        default_model: requested.default_model.or_else(|| global.default_model.clone()),
+        default_model: requested
+            .default_model
+            .or_else(|| global.default_model.clone()),
         max_concurrent_workers: requested
             .max_concurrent_workers
             .clamp(1, global.max_concurrent_workers.clamp(1, 3)),
@@ -344,10 +351,14 @@ fn save_staff_profile(
     let mut incoming: StaffProfile =
         serde_json::from_value(profile).map_err(|error| format!("员工配置格式错误：{error}"))?;
     let mut registry = ensure_migrated();
-    let existing = registry.staff.iter().find(|current| {
-        (!incoming.staff_id.is_empty() && current.staff_id == incoming.staff_id)
-            || (!incoming.session_id.is_empty() && current.session_id == incoming.session_id)
-    }).cloned();
+    let existing = registry
+        .staff
+        .iter()
+        .find(|current| {
+            (!incoming.staff_id.is_empty() && current.staff_id == incoming.staff_id)
+                || (!incoming.session_id.is_empty() && current.session_id == incoming.session_id)
+        })
+        .cloned();
     if incoming.staff_id.trim().is_empty() {
         incoming.staff_id = short_id("staff");
     }
@@ -401,9 +412,7 @@ fn save_staff_profile(
             registry.update(normalized.clone())?;
         }
         staff::save(&registry)?;
-        if !defer_initial_bootstrap
-            && normalized.bootstrap_version < CURRENT_BOOTSTRAP_VERSION
-        {
+        if !defer_initial_bootstrap && normalized.bootstrap_version < CURRENT_BOOTSTRAP_VERSION {
             queue_bootstrap(&normalized);
         }
         Ok(serde_json::to_value(normalized).unwrap_or(json!({})))
@@ -466,7 +475,12 @@ pub fn chief_staff_delete(
     }
     if clear_memory {
         for target in ["pinned.md", "state.md", "proposals.jsonl"] {
-            let _ = memory::forget(&staff_id, target, "staff dismissed with clearMemory", Vec::new());
+            let _ = memory::forget(
+                &staff_id,
+                target,
+                "staff dismissed with clearMemory",
+                Vec::new(),
+            );
         }
         if let Ok(dates) = memory::list_journal_dates(&staff_id) {
             for date in dates {
@@ -528,7 +542,11 @@ pub fn chief_staff_memory(staff_id: String) -> Result<Value, String> {
 }
 
 #[tauri::command(async)]
-pub fn chief_staff_memory_write(staff_id: String, layer: String, text: String) -> Result<Value, String> {
+pub fn chief_staff_memory_write(
+    staff_id: String,
+    layer: String,
+    text: String,
+) -> Result<Value, String> {
     match layer.as_str() {
         "pinned" => memory::write_pinned(&staff_id, &text)?,
         "state" => memory::write_state(&staff_id, &text)?,
@@ -578,10 +596,7 @@ pub fn chief_commitments_list(staff_id: String) -> Value {
 }
 
 #[tauri::command(async)]
-pub fn chief_commitment_add(
-    staff_id: String,
-    commitment: Value,
-) -> Result<Value, String> {
+pub fn chief_commitment_add(staff_id: String, commitment: Value) -> Result<Value, String> {
     let text = commitment
         .get("text")
         .and_then(Value::as_str)
@@ -606,8 +621,14 @@ pub fn chief_commitment_add(
         text,
         kind,
         due_at: commitment.get("dueAt").and_then(Value::as_u64).unwrap_or(0),
-        condition: commitment.get("condition").and_then(Value::as_str).map(str::to_string),
-        source_ref: commitment.get("sourceRef").and_then(Value::as_str).map(str::to_string),
+        condition: commitment
+            .get("condition")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        source_ref: commitment
+            .get("sourceRef")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         ..Default::default()
     };
     let saved = commitments::with_ledger(|ledger| {
@@ -657,9 +678,7 @@ fn profile_for_worker_session(session_id: &str) -> Option<StaffProfile> {
     let task = store::load_tasks()
         .into_iter()
         .find(|task| task.worker_session_id.as_deref() == Some(session_id))?;
-    task.staff_id
-        .as_deref()
-        .and_then(profile_for_staff_id)
+    task.staff_id.as_deref().and_then(profile_for_staff_id)
 }
 
 /// Computer Use is a separate high-risk capability. Normal user-created
@@ -843,8 +862,7 @@ pub fn profile_for_chat(chat_id: i64) -> Option<StaffProfile> {
     }
     // Single-staff installs keep the legacy "one paired chat = the assistant"
     // behavior. With multiple staff, an unbound chat must not guess a person.
-    (registry.staff.len() == 1)
-        .then(|| registry.staff[0].clone())
+    (registry.staff.len() == 1).then(|| registry.staff[0].clone())
 }
 
 /// A chat explicitly bound in a staff profile is enough to route Telegram to

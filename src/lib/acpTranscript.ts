@@ -22,6 +22,7 @@ import {
   parseCodeBuddyTeamMembers,
   parseCodexCollabSnapshot,
   parseCodexSubagentActivity,
+  looksLikeCommandExecutionInput,
   recoverSubagentToolName,
 } from "./subagentAdapters";
 
@@ -935,6 +936,7 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
       (typeof update.status === "string" && update.status) ||
       (sessionUpdate === "tool_call" ? "pending" : undefined);
     const rawInput = update.rawInput ?? update.raw_input ?? update.input;
+    const normalizedTool = looksLikeCommandExecutionInput(rawInput) ? "bash" : normalized;
     const codexCollab = parseCodexCollabSnapshot(rawInput);
     const inputPreview =
       rawInput == null
@@ -984,7 +986,7 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
             .map((row) => `${row.status}: ${row.title || row.id}`)
             .join("\n")
         : renderToolRawOutput(update.rawOutput ?? update.raw_output));
-    if (/list_agents/i.test(normalized || title || "")) {
+    if (/list_agents/i.test(normalizedTool || title || "")) {
       toolDetail = formatListAgentsRoster(toolDetail);
     }
     // OpenCode write: full file in rawInput, no type:diff block. Synthesize
@@ -993,7 +995,7 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
     if (
       !agentTx &&
       !looksLikeUnifiedDiff(toolDetail ?? "") &&
-      isFileMutationTool(normalized || title, typeof update.kind === "string" ? update.kind : undefined)
+      isFileMutationTool(normalizedTool || title, typeof update.kind === "string" ? update.kind : undefined)
     ) {
       synthesized = diffFromRawInput(rawInput, toolPath) ?? "";
       if (synthesized) toolDetail = clipToolDetail(synthesized);
@@ -1020,11 +1022,11 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
       meta,
     });
     const grokSpawn =
-      /spawn_subagent/i.test(`${normalized || ""} ${wireName || ""} ${title || ""}`) ||
+      recovered === "spawn_subagent" ||
       Boolean(
-        bgStart && /Subagent started in background/i.test(`${toolDetail ?? ""} ${displayTitle ?? ""}`),
+        bgStart && /Subagent started in background/i.test(toolDetail ?? ""),
       );
-    const spawnName = grokSpawn ? "spawn_subagent" : recovered || normalized || title;
+    const spawnName = grokSpawn ? "spawn_subagent" : recovered || normalizedTool || title;
 
     return {
       role: "tool",
@@ -1331,6 +1333,7 @@ export function userMessageEvent(
     agentLabel?: string;
     modelId?: string;
     modelLabel?: string;
+    providerLabel?: string;
     modeLabel?: string;
     effortLabel?: string;
     attachments?: import("./imageAttachments").ImageAttachment[];
@@ -1374,6 +1377,7 @@ export function assistantMessageEvent(
     agentLabel?: string;
     modelId?: string;
     modelLabel?: string;
+    providerLabel?: string;
     modeLabel?: string;
     effortLabel?: string;
   },
@@ -1412,17 +1416,18 @@ export function sessionNoticeEvent(
 
 /** Scan events backward for the last user_message with metadata. */
 export function metaFromLastUser(events: SessionEvent[], sessionId: string):
-  | { agentId?: string; agentLabel?: string; modelId?: string; modelLabel?: string; modeLabel?: string; effortLabel?: string }
+  | { agentId?: string; agentLabel?: string; modelId?: string; modelLabel?: string; providerLabel?: string; modeLabel?: string; effortLabel?: string }
   | undefined {
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i]!;
     if (e.sessionId === sessionId && e.type === "user_message") {
-      if (e.agentId || e.agentLabel || e.modelId || e.modelLabel || e.modeLabel || e.effortLabel) {
+      if (e.agentId || e.agentLabel || e.modelId || e.modelLabel || e.providerLabel || e.modeLabel || e.effortLabel) {
         return {
           agentId: e.agentId,
           agentLabel: e.agentLabel,
           modelId: e.modelId,
           modelLabel: e.modelLabel,
+          providerLabel: e.providerLabel,
           modeLabel: e.modeLabel,
           effortLabel: e.effortLabel,
         };

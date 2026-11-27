@@ -3,6 +3,11 @@
  * docs/plans/plan-agent-delegation.md phase 1.
  */
 export const en = {
+  "session.subtaskDefaultEffort": "Default",
+  "session.subtaskOpen": "Open subagent",
+  "agents.title": "Subagents",
+  "agents.fromParent": "From {name}",
+  "agents.backToParent": "Back to parent",
   "shelf.agentWorkerOrigin": "AI-delegated",
   "session.subtaskAgentChip": "AI-delegated",
   "session.subtaskAgentRunning": "Delegated — it will report back when done",

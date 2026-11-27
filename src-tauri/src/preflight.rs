@@ -66,7 +66,10 @@ pub fn run_preflight_with_cmd(agent_id: &str, command_override: Option<&str>) ->
     if crate::web_chat_bridge::site(agent_id).is_some() {
         if let Some(version) = run_version("node", &["--version"]) {
             checks.push(version_at_least_check(
-                "node_version", "Node version", version.trim_start_matches('v'), "22.0.0",
+                "node_version",
+                "Node version",
+                version.trim_start_matches('v'),
+                "22.0.0",
             ));
         }
     }
@@ -187,20 +190,11 @@ fn run_version(cmd: &str, args: &[&str]) -> Option<String> {
     }
     let text = String::from_utf8_lossy(&output.stdout);
     let err = String::from_utf8_lossy(&output.stderr);
-    let line = if !text.trim().is_empty() {
-        text
-    } else {
-        err
-    };
+    let line = if !text.trim().is_empty() { text } else { err };
     Some(line.lines().next().unwrap_or("").trim().to_string())
 }
 
-fn version_at_least_check(
-    check_id: &str,
-    label: &str,
-    actual: &str,
-    required: &str,
-) -> CheckItem {
+fn version_at_least_check(check_id: &str, label: &str, actual: &str, required: &str) -> CheckItem {
     match (parse_semver(actual), parse_semver(required)) {
         (Some(a), Some(r)) if a >= r => CheckItem {
             check_id: check_id.into(),

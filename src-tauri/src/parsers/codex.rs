@@ -204,7 +204,9 @@ impl AgentParser for CodexParser {
                     }
                 }
                 "response_item" => {
-                    let Some(payload) = v.get("payload") else { continue };
+                    let Some(payload) = v.get("payload") else {
+                        continue;
+                    };
                     let ptype = payload.get("type").and_then(|x| x.as_str()).unwrap_or("");
                     if ptype == "message" {
                         let role = payload.get("role").and_then(|x| x.as_str()).unwrap_or("");
@@ -260,7 +262,9 @@ impl AgentParser for CodexParser {
                     }
                 }
                 "event_msg" => {
-                    let Some(payload) = v.get("payload") else { continue };
+                    let Some(payload) = v.get("payload") else {
+                        continue;
+                    };
                     let et = payload.get("type").and_then(|x| x.as_str()).unwrap_or("");
                     if et == "agent_message" || et == "agent_reasoning" {
                         let text = payload

@@ -202,6 +202,15 @@
 
 - 事件值班：定时发送加触发器（检查一挂就跑 / PR 一开就跑 / cron）。
 
+## 2026-11-27 T3 alignment and startup race fixes
+
+- Worker sessions (`agent-worker`, `chief-worker`, and rows with `parentSessionId`) are hidden from the sidebar, dock list, and command-palette thread lists. They remain reachable from the parent task card, the right-rail Subagents section, and a parent breadcrumb.
+- Running subagent cards are compact task rows. Child streaming, interrupt/stop, steering, and Open-worker actions appear only after expanding the row. The right rail has a separate Subagents section instead of mixing delegated work into project todos.
+- `marionette_delegate_task` now requires only `goal`. `requestId` and `title` are optional, agent defaults to the first enabled agent, and model defaults to that agent's own choice. `agents_list` / `models_list` are conditional lookups, not mandatory preflight calls.
+- OpenCode and Pi wait for the requested model to appear in the live or last-good catalog before binding. OpenCode/Pi/ZCode injection prefers the cached catalog, and Pi receives the resolved `PI_CODING_AGENT_DIR` plus `MARIONETTE_API_KEY` before ACP starts.
+- Transcript loading preserves `initiatedBy`, `taskId`, `displayModel`, and `checkpointBase`, so agent-specific cards and rollback controls survive restart and history paging.
+- Tool classification now treats a shell `command` payload as authoritative. Titles only identify a spawn when they are structured (`Subagent:`, `Task (general)`, `[background]` and similar), so commands that merely mention `subagent`, `spawn_subagent`, or `subagentAdapters.ts` stay ordinary command cards.
+
 ## 明确不做
 
 手机 App、跨机器、自动合并冲突（人裁决）、IM 矩阵、给 AI 派活开放

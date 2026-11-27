@@ -3,10 +3,22 @@ use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf, sync::Mutex};
 
 const FILES: &[(&str, &str)] = &[
-    ("bridge.mjs", include_str!("../../tools/web-chat-bridge/bridge.mjs")),
-    ("attachments.mjs", include_str!("../../tools/web-chat-bridge/attachments.mjs")),
-    ("rich-reply.mjs", include_str!("../../tools/web-chat-bridge/rich-reply.mjs")),
-    ("markdown-reply.mjs", include_str!("../../tools/web-chat-bridge/markdown-reply.mjs")),
+    (
+        "bridge.mjs",
+        include_str!("../../tools/web-chat-bridge/bridge.mjs"),
+    ),
+    (
+        "attachments.mjs",
+        include_str!("../../tools/web-chat-bridge/attachments.mjs"),
+    ),
+    (
+        "rich-reply.mjs",
+        include_str!("../../tools/web-chat-bridge/rich-reply.mjs"),
+    ),
+    (
+        "markdown-reply.mjs",
+        include_str!("../../tools/web-chat-bridge/markdown-reply.mjs"),
+    ),
 ];
 static EXTRACT_LOCK: Mutex<()> = Mutex::new(());
 
@@ -20,7 +32,9 @@ pub fn site(agent_id: &str) -> Option<&'static str> {
 
 /// Content-addressed directories let old and new app versions run side by side.
 pub fn ensure_extracted() -> Result<PathBuf, String> {
-    let _guard = EXTRACT_LOCK.lock().map_err(|_| "Web bridge extraction lock poisoned")?;
+    let _guard = EXTRACT_LOCK
+        .lock()
+        .map_err(|_| "Web bridge extraction lock poisoned")?;
     let mut hash = Sha256::new();
     for (name, content) in FILES {
         hash.update(name.as_bytes());

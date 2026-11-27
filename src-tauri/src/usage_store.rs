@@ -37,7 +37,10 @@ struct State {
     pruned: bool,
 }
 
-static STATE: Mutex<State> = Mutex::new(State { rev: 1, pruned: false });
+static STATE: Mutex<State> = Mutex::new(State {
+    rev: 1,
+    pruned: false,
+});
 static APPEND_LOCK: Mutex<()> = Mutex::new(());
 static ROOT_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
@@ -83,7 +86,9 @@ fn read_ledger_text(path: &Path) -> Option<String> {
             // write_atomic moves the old file to `.json.bak` before the rename;
             // a crash in between leaves only the backup.
             let bak = path.with_extension("json.bak");
-            fs::read_to_string(bak).ok().filter(|t| !t.trim().is_empty())
+            fs::read_to_string(bak)
+                .ok()
+                .filter(|t| !t.trim().is_empty())
         }
     }
 }
@@ -204,13 +209,17 @@ pub fn read_session(session_id: &str) -> Result<Vec<String>, String> {
 
 /// Drop per-session files nobody appended to for SESSION_FILE_MAX_AGE.
 fn prune_session_files(dir: &Path, now: SystemTime) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
             continue;
         }
-        let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else { continue };
+        let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
         if now.duration_since(modified).unwrap_or_default() > SESSION_FILE_MAX_AGE {
             let _ = fs::remove_file(&path);
         }
@@ -312,14 +321,25 @@ mod tests {
     fn session_rows_append_and_read_back_in_order() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = sandbox("sessions");
-        append_session("session-1", &[r#"{"t":1}"#.to_string(), r#"{"t":2}"#.to_string()]).unwrap();
+        append_session(
+            "session-1",
+            &[r#"{"t":1}"#.to_string(), r#"{"t":2}"#.to_string()],
+        )
+        .unwrap();
         // Garbage and multi-line payloads are dropped rather than corrupting the file.
         append_session(
             "session-1",
-            &["not json".to_string(), "{\"a\":1}\n{\"b\":2}".to_string(), r#"{"t":3}"#.to_string()],
+            &[
+                "not json".to_string(),
+                "{\"a\":1}\n{\"b\":2}".to_string(),
+                r#"{"t":3}"#.to_string(),
+            ],
         )
         .unwrap();
-        assert_eq!(read_session("session-1").unwrap(), vec![r#"{"t":1}"#, r#"{"t":2}"#, r#"{"t":3}"#]);
+        assert_eq!(
+            read_session("session-1").unwrap(),
+            vec![r#"{"t":1}"#, r#"{"t":2}"#, r#"{"t":3}"#]
+        );
         assert!(read_session("never-written").unwrap().is_empty());
         set_root_override_for_tests(None);
         let _ = fs::remove_dir_all(dir);
@@ -327,8 +347,14 @@ mod tests {
 
     #[test]
     fn session_ids_become_safe_file_names() {
-        assert_eq!(session_file_name("session-1792813095629").as_deref(), Some("session-1792813095629.jsonl"));
-        assert_eq!(session_file_name("../../etc/passwd").as_deref(), Some("_.._etc_passwd.jsonl"));
+        assert_eq!(
+            session_file_name("session-1792813095629").as_deref(),
+            Some("session-1792813095629.jsonl")
+        );
+        assert_eq!(
+            session_file_name("../../etc/passwd").as_deref(),
+            Some("_.._etc_passwd.jsonl")
+        );
         assert_eq!(session_file_name("a\\b:c").as_deref(), Some("a_b_c.jsonl"));
         assert!(session_file_name("  ").is_none());
         assert!(session_file_name("...").is_none());
@@ -342,7 +368,10 @@ mod tests {
         fs::write(dir.join("fresh.jsonl"), "{}\n").unwrap();
         fs::write(dir.join("keep.txt"), "x").unwrap();
         // Pretend "now" is 200 days ahead: every jsonl looks stale.
-        prune_session_files(&dir, SystemTime::now() + Duration::from_secs(200 * 24 * 3600));
+        prune_session_files(
+            &dir,
+            SystemTime::now() + Duration::from_secs(200 * 24 * 3600),
+        );
         assert!(!dir.join("fresh.jsonl").exists());
         assert!(dir.join("keep.txt").exists());
         fs::write(dir.join("fresh.jsonl"), "{}\n").unwrap();

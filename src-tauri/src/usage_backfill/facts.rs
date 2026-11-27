@@ -477,7 +477,11 @@ mod tests {
         c.push_turn(3_600_000 * 12);
         let facts = c.finish("agent", 0).unwrap();
         assert_eq!(facts.hours.len(), 3);
-        let a = facts.hours.iter().find(|h| h.model.as_deref() == Some("model-a")).unwrap();
+        let a = facts
+            .hours
+            .iter()
+            .find(|h| h.model.as_deref() == Some("model-a"))
+            .unwrap();
         assert_eq!((a.turns, a.requests, a.input, a.output), (1, 1, 100, 40));
         assert_eq!(a.reported_usd, Some(0.5));
         // Late turn with no following request inherits the last request's

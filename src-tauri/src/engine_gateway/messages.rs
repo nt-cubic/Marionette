@@ -77,7 +77,11 @@ fn target_for(gw: &super::Gateway, cand: &Candidate) -> Result<Target, String> {
     Ok(Target {
         provider_id: provider.id.clone(),
         key: provider.key.clone(),
-        headers: provider.headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        headers: provider
+            .headers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
         bare_model: cand.model.clone(),
         anthropic: provider.anthropic.trim_end_matches('/').to_string(),
         chat: provider.chat.trim_end_matches('/').to_string(),
@@ -101,14 +105,21 @@ pub fn handle(gateway: &super::Gateway, body: &[u8]) -> Reply {
         Ok(v) => v,
         Err(e) => return error_reply(400, &format!("invalid request body: {e}")),
     };
-    let model = parsed.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
+    let model = parsed
+        .get("model")
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
     let cands = groups::plan_for(gateway, &model);
     // 与 chat.rs 同口径：解析不到来源就是 404（模型存在性不查，那是
     // 厂商应答该说的话）。
     if cands.is_empty() {
         return error_reply(404, &format!("no provider for model: {model}"));
     }
-    let streaming = parsed.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
+    let streaming = parsed
+        .get("stream")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false);
     let log = super::usage_ledger::TurnLog::new(
         "anthropic",
         &model,
@@ -137,7 +148,11 @@ pub fn count_tokens(gateway: &super::Gateway, body: &[u8]) -> Reply {
         Ok(v) => v,
         Err(e) => return error_reply(400, &format!("invalid request body: {e}")),
     };
-    let model = parsed.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
+    let model = parsed
+        .get("model")
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
     let counted = groups::plan_for(gateway, &model)
         .into_iter()
         .next()
@@ -150,7 +165,10 @@ pub fn count_tokens(gateway: &super::Gateway, body: &[u8]) -> Reply {
                 let status = response.status();
                 let vendor_body = read_all(response.into_reader());
                 if status < 400 {
-                    return Reply::Json { status, body: vendor_body };
+                    return Reply::Json {
+                        status,
+                        body: vendor_body,
+                    };
                 }
                 if !unsupported_count(status, &vendor_body) {
                     return vendor_error_reply(status, &vendor_body);
@@ -173,17 +191,37 @@ fn unsupported_count(status: u16, body: &[u8]) -> bool {
         400 => {
             let said = vendor_error_message(status, body).to_lowercase();
             let said = said.trim_matches(|c: char| ": \t\r\n.。".contains(c));
-            if matches!(said, "unsupported" | "unimplemented" | "not supported" | "not implemented") {
+            if matches!(
+                said,
+                "unsupported" | "unimplemented" | "not supported" | "not implemented"
+            ) {
                 return true;
             }
-            const OPS: [&str; 4] = ["count_tokens", "counttokens", "token counting", "counting tokens"];
+            const OPS: [&str; 4] = [
+                "count_tokens",
+                "counttokens",
+                "token counting",
+                "counting tokens",
+            ];
             OPS.iter().any(|op| {
-                ["is not supported", "not supported", "is not implemented", "not implemented", "is unsupported", "is unimplemented"]
+                [
+                    "is not supported",
+                    "not supported",
+                    "is not implemented",
+                    "not implemented",
+                    "is unsupported",
+                    "is unimplemented",
+                ]
+                .iter()
+                .any(|w| said.contains(&format!("{op} {w}")))
+                    || [
+                        "unsupported",
+                        "unimplemented",
+                        "does not support",
+                        "doesn't support",
+                    ]
                     .iter()
-                    .any(|w| said.contains(&format!("{op} {w}")))
-                    || ["unsupported", "unimplemented", "does not support", "doesn't support"]
-                        .iter()
-                        .any(|w| said.contains(&format!("{w} {op}")))
+                    .any(|w| said.contains(&format!("{w} {op}")))
             }) || said.contains("不支持") && OPS.iter().any(|op| said.contains(op))
         }
         _ => false,
@@ -198,7 +236,12 @@ fn estimate_tokens(req: &Value) -> usize {
             Value::String(s) => s.len(),
             Value::Array(items) => items
                 .iter()
-                .map(|b| b.get("text").and_then(|t| t.as_str()).map(str::len).unwrap_or(0))
+                .map(|b| {
+                    b.get("text")
+                        .and_then(|t| t.as_str())
+                        .map(str::len)
+                        .unwrap_or(0)
+                })
                 .sum(),
             _ => 0,
         }
@@ -213,7 +256,11 @@ fn estimate_tokens(req: &Value) -> usize {
                         match b.get("type").and_then(|t| t.as_str()).unwrap_or("") {
                             "text" => n += text_of(&Value::Array(vec![b.clone()])),
                             "tool_use" => {
-                                n += b.get("name").and_then(|x| x.as_str()).map(str::len).unwrap_or(0);
+                                n += b
+                                    .get("name")
+                                    .and_then(|x| x.as_str())
+                                    .map(str::len)
+                                    .unwrap_or(0);
                                 n += b.get("input").map(|i| i.to_string().len()).unwrap_or(0);
                             }
                             "tool_result" => n += b.get("content").map(text_of).unwrap_or(0),
@@ -227,9 +274,20 @@ fn estimate_tokens(req: &Value) -> usize {
     }
     if let Some(tools) = req.get("tools").and_then(|t| t.as_array()) {
         for t in tools {
-            n += t.get("name").and_then(|x| x.as_str()).map(str::len).unwrap_or(0);
-            n += t.get("description").and_then(|x| x.as_str()).map(str::len).unwrap_or(0);
-            n += t.get("input_schema").map(|s| s.to_string().len()).unwrap_or(0);
+            n += t
+                .get("name")
+                .and_then(|x| x.as_str())
+                .map(str::len)
+                .unwrap_or(0);
+            n += t
+                .get("description")
+                .and_then(|x| x.as_str())
+                .map(str::len)
+                .unwrap_or(0);
+            n += t
+                .get("input_schema")
+                .map(|s| s.to_string().len())
+                .unwrap_or(0);
         }
     }
     n / 4
@@ -257,7 +315,10 @@ fn attempt(
     // 只配了 responses（或什么都没有）：没有诚实的 chat/anthropic 出站点，
     // 别拿 responses 基址拼 /chat/completions 硬试（URL 形状就是错的）；
     // responses 翻译是 T4 的事。
-    Attempt::Retry(error_reply(404, &format!("{} has no endpoint for /v1/messages", target.provider_id)))
+    Attempt::Retry(error_reply(
+        404,
+        &format!("{} has no endpoint for /v1/messages", target.provider_id),
+    ))
 }
 
 // =====================================================================
@@ -287,11 +348,18 @@ fn forward_direct(
         out_body
     };
     // cap 已知时先合身再发（免吃一次拒答）。
-    let out_body = bodycap::prefit_shape(gw, &target.provider_id, bodycap::Shape::Anthropic, &out_body)
-        .unwrap_or(out_body);
+    let out_body = bodycap::prefit_shape(
+        gw,
+        &target.provider_id,
+        bodycap::Shape::Anthropic,
+        &out_body,
+    )
+    .unwrap_or(out_body);
     let response = match send_messages(target, &out_body) {
         Ok(r) => r,
-        Err(e) => return Attempt::Retry(error_reply(502, &format!("{}: {}", target.provider_id, e))),
+        Err(e) => {
+            return Attempt::Retry(error_reply(502, &format!("{}: {}", target.provider_id, e)))
+        }
     };
     let status = response.status();
     if streaming && status < 400 {
@@ -308,15 +376,27 @@ fn forward_direct(
             return Attempt::Done(Reply::Stream {
                 status,
                 content_type,
-                reader: Box::new(super::usage_ledger::TapReader::new(tap, response.into_reader())),
+                reader: Box::new(super::usage_ledger::TapReader::new(
+                    tap,
+                    response.into_reader(),
+                )),
             });
         }
         // 2xx 但不是事件流（厂商没理会 stream）：整读按普通应答直通。
     }
     let vendor_body = read_all(response.into_reader());
     if status < 400 {
-        log.whole(&gw.usage, super::usage_ledger::Dialect::Anthropic, &target.provider_id, status, &vendor_body);
-        return Attempt::Done(Reply::Json { status, body: vendor_body });
+        log.whole(
+            &gw.usage,
+            super::usage_ledger::Dialect::Anthropic,
+            &target.provider_id,
+            status,
+            &vendor_body,
+        );
+        return Attempt::Done(Reply::Json {
+            status,
+            body: vendor_body,
+        });
     }
     if let Some(reply) = bodycap::maybe_refit_with(
         gw,
@@ -332,11 +412,21 @@ fn forward_direct(
             Reply::Json { status, body } if status >= 400 => vendor_error_reply(status, &body),
             Reply::Json { status, body } => {
                 if status < 400 {
-                    log.whole(&gw.usage, super::usage_ledger::Dialect::Anthropic, &target.provider_id, status, &body);
+                    log.whole(
+                        &gw.usage,
+                        super::usage_ledger::Dialect::Anthropic,
+                        &target.provider_id,
+                        status,
+                        &body,
+                    );
                 }
                 Reply::Json { status, body }
             }
-            Reply::Stream { status, content_type, reader } => {
+            Reply::Stream {
+                status,
+                content_type,
+                reader,
+            } => {
                 let tap = log.tap(
                     gw.usage.clone(),
                     super::usage_ledger::Dialect::Anthropic,
@@ -353,7 +443,11 @@ fn forward_direct(
     }
     let retry = groups::retryable(status, &vendor_body);
     let reply = vendor_error_reply(status, &vendor_body);
-    if retry { Attempt::Retry(reply) } else { Attempt::Done(reply) }
+    if retry {
+        Attempt::Retry(reply)
+    } else {
+        Attempt::Done(reply)
+    }
 }
 
 /// 直通出站：与 chat::send 同骨架（ureq Status(4xx/5xx) 取回不当错误），
@@ -417,9 +511,8 @@ fn body_model(body: &[u8]) -> String {
 /// 中转写法 `anthropic/claude-…`、`bedrock.claude-…`）。
 fn is_claude_model(model: &str) -> bool {
     let m = model.to_ascii_lowercase();
-    m.match_indices("claude-").any(|(i, _)| {
-        i == 0 || matches!(m.as_bytes()[i - 1], b'/' | b'.' | b':' | b'-')
-    })
+    m.match_indices("claude-")
+        .any(|(i, _)| i == 0 || matches!(m.as_bytes()[i - 1], b'/' | b'.' | b':' | b'-'))
 }
 
 /// Go `anthropicReplaysThinking`：该主机的 Messages API 是否要求每个调用工具
@@ -446,12 +539,19 @@ fn with_thinking_on_tool_turns(body: &[u8]) -> Vec<u8> {
     if !text.contains("\"tool_use\"") && !text.contains("\"redacted_thinking\"") {
         return body.to_vec();
     }
-    let Ok(mut root) = serde_json::from_slice::<Value>(body) else { return body.to_vec() };
+    let Ok(mut root) = serde_json::from_slice::<Value>(body) else {
+        return body.to_vec();
+    };
     let Some(msgs) = root.get_mut("messages").and_then(|m| m.as_array_mut()) else {
         return body.to_vec();
     };
     let space = json!({ "type": "thinking", "thinking": chat::NO_REASONING });
-    let block_type = |b: &Value| b.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
+    let block_type = |b: &Value| {
+        b.get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
     let mut changed = false;
     // 前一条是「只有 tool_result」的 user 消息
     let mut after_tool = false;
@@ -464,12 +564,16 @@ fn with_thinking_on_tool_turns(body: &[u8]) -> Vec<u8> {
             after_tool = msg
                 .get("content")
                 .and_then(|c| c.as_array())
-                .is_some_and(|blocks| !blocks.is_empty() && blocks.iter().all(|b| block_type(b) == "tool_result"));
+                .is_some_and(|blocks| {
+                    !blocks.is_empty() && blocks.iter().all(|b| block_type(b) == "tool_result")
+                });
             continue;
         }
         let after = after_tool;
         after_tool = false;
-        let Some(blocks) = msg.get("content").and_then(|c| c.as_array()).cloned() else { continue };
+        let Some(blocks) = msg.get("content").and_then(|c| c.as_array()).cloned() else {
+            continue;
+        };
         let mut out: Vec<Value> = Vec::new();
         let (mut thought, mut called, mut edited) = (false, false, false);
         for b in blocks {
@@ -549,9 +653,15 @@ fn forward_translated(
             Attempt::Retry(vendor_error_reply(status, &body))
         }
         Attempt::Retry(other) => Attempt::Retry(other),
-        Attempt::Done(reply) => {
-            Attempt::Done(chat_reply_to_anthropic(reply, streaming, asked_model, scout, gw, &cand.provider, log))
-        }
+        Attempt::Done(reply) => Attempt::Done(chat_reply_to_anthropic(
+            reply,
+            streaming,
+            asked_model,
+            scout,
+            gw,
+            &cand.provider,
+            log,
+        )),
     }
 }
 
@@ -589,13 +699,22 @@ pub(super) fn chat_reply_to_anthropic(
     log: &super::usage_ledger::TurnLog,
 ) -> Reply {
     match reply {
-        Reply::Stream { status, content_type, reader } => {
+        Reply::Stream {
+            status,
+            content_type,
+            reader,
+        } => {
             if status < 400 && streaming && content_type.contains("event-stream") {
                 // chat SSE → anthropic SSE 逐事件翻译（message_start 编排、单次收口
                 // 都在翻译器里）。textcalls 的 scout 挂在帧编排器上。
                 let mut translator = AnthropicSseTranslator::new(reader, asked_model);
                 translator.frames.scout = scout;
-                let tap = log.tap(gw.usage.clone(), super::usage_ledger::Dialect::Anthropic, provider, status);
+                let tap = log.tap(
+                    gw.usage.clone(),
+                    super::usage_ledger::Dialect::Anthropic,
+                    provider,
+                    status,
+                );
                 return Reply::Stream {
                     status,
                     content_type: "text/event-stream".into(),
@@ -606,7 +725,9 @@ pub(super) fn chat_reply_to_anthropic(
             let body = read_all(reader);
             chat_json_to_anthropic(status, body, asked_model, scout, gw, provider, log)
         }
-        Reply::Json { status, body } => chat_json_to_anthropic(status, body, asked_model, scout, gw, provider, log),
+        Reply::Json { status, body } => {
+            chat_json_to_anthropic(status, body, asked_model, scout, gw, provider, log)
+        }
     }
 }
 
@@ -639,7 +760,13 @@ fn chat_json_to_anthropic(
     match chat_response_to_anthropic(&body, asked_model) {
         Ok(v) => {
             let out = serde_json::to_vec(&v).unwrap_or(body);
-            log.whole(&gw.usage, super::usage_ledger::Dialect::Anthropic, provider, status, &out);
+            log.whole(
+                &gw.usage,
+                super::usage_ledger::Dialect::Anthropic,
+                provider,
+                status,
+                &out,
+            );
             Reply::Json { status, body: out }
         }
         // 厂商 2xx 却给了读不懂的体：网关侧问题，按 502 说。
@@ -734,7 +861,10 @@ impl AnthropicFrames {
             out.push_str(&self.close_think());
             out.push_str(&self.close_text());
             out.push_str(&self.flush_tools());
-            let message = err.get("message").and_then(|m| m.as_str()).unwrap_or("upstream stream error");
+            let message = err
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("upstream stream error");
             out.push_str(&sse_frame(
                 "error",
                 &json!({"type": "error", "error": {"type": "api_error", "message": message}}),
@@ -749,7 +879,10 @@ impl AnthropicFrames {
         // 同一条 chunk 里 content 与 tool_calls 并存时正文在前（Go
         // chatDecoder 同款顺序：先 text 后 toolCall）。
         let think = choice
-            .and_then(|c| c.pointer("/delta/reasoning_content").or_else(|| c.pointer("/delta/reasoning")))
+            .and_then(|c| {
+                c.pointer("/delta/reasoning_content")
+                    .or_else(|| c.pointer("/delta/reasoning"))
+            })
             .and_then(|d| d.as_str())
             .unwrap_or("");
         if !think.is_empty() {
@@ -832,7 +965,9 @@ impl AnthropicFrames {
     /// 改成回合收尾时把 stop_reason 置 tool_calls（anthropic 的 tool_use，
     /// Go `ev.Stop = "tool"`）；剩余文本按文本块发。
     fn finish_scout(&mut self) -> String {
-        let Some(sc) = self.scout.take() else { return String::new() };
+        let Some(sc) = self.scout.take() else {
+            return String::new();
+        };
         let fin = sc.finish();
         let mut out = String::new();
         if !fin.text.is_empty() {
@@ -858,7 +993,9 @@ impl AnthropicFrames {
     /// textcalls 的错误/截断路径（Go KError 与 readSSE 结束后的 held()）：
     /// 持有的按原文放出，不解析。
     fn release_scout(&mut self) -> String {
-        let Some(mut sc) = self.scout.take() else { return String::new() };
+        let Some(mut sc) = self.scout.take() else {
+            return String::new();
+        };
         let rest = sc.release_rest();
         if rest.is_empty() {
             String::new()
@@ -932,7 +1069,10 @@ impl AnthropicFrames {
     /// 封口开着的 thinking 块（幂等）。
     fn close_think(&mut self) -> String {
         match self.think_open.take() {
-            Some(i) => sse_frame("content_block_stop", &json!({"type": "content_block_stop", "index": i})),
+            Some(i) => sse_frame(
+                "content_block_stop",
+                &json!({"type": "content_block_stop", "index": i}),
+            ),
             None => String::new(),
         }
     }
@@ -940,7 +1080,10 @@ impl AnthropicFrames {
     /// 封口开着的文本块（幂等）。
     fn close_text(&mut self) -> String {
         match self.text_open.take() {
-            Some(i) => sse_frame("content_block_stop", &json!({"type": "content_block_stop", "index": i})),
+            Some(i) => sse_frame(
+                "content_block_stop",
+                &json!({"type": "content_block_stop", "index": i}),
+            ),
             None => String::new(),
         }
     }
@@ -957,13 +1100,21 @@ impl AnthropicFrames {
             // 空 id 兜底合成（Go anthropicEncoder 同款）：客户端要拿 id
             // 回传 tool_result，空串接不上。chat 的 call_* id 原样透传——
             // 往返只要求同一根串，不要求 anthropic 的 toolu_ 前缀。
-            let id = if call.id.is_empty() { fresh_toolu_id() } else { call.id.clone() };
+            let id = if call.id.is_empty() {
+                fresh_toolu_id()
+            } else {
+                call.id.clone()
+            };
             out.push_str(&sse_frame(
                 "content_block_start",
                 &json!({"type": "content_block_start", "index": index,
                     "content_block": {"type": "tool_use", "id": id, "name": call.name, "input": {}}}),
             ));
-            let partial = if call.arguments.is_empty() { "{}".to_string() } else { call.arguments };
+            let partial = if call.arguments.is_empty() {
+                "{}".to_string()
+            } else {
+                call.arguments
+            };
             out.push_str(&sse_frame(
                 "content_block_delta",
                 &json!({"type": "content_block_delta", "index": index,
@@ -1057,7 +1208,9 @@ impl Read for AnthropicSseTranslator {
                 }
             }
             let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-            let Some(data) = trimmed.strip_prefix("data:") else { continue };
+            let Some(data) = trimmed.strip_prefix("data:") else {
+                continue;
+            };
             let frames = self.frames.feed(data.trim(), &self.model);
             if !frames.is_empty() {
                 self.out.extend_from_slice(frames.as_bytes());
@@ -1121,7 +1274,9 @@ fn sse_text_to_anthropic(body: &[u8], model: &str) -> Option<String> {
         if frames.stopped {
             break;
         }
-        let Some(data) = line.trim_end().strip_prefix("data:") else { continue };
+        let Some(data) = line.trim_end().strip_prefix("data:") else {
+            continue;
+        };
         out.push_str(&frames.feed(data.trim(), model));
     }
     if out.is_empty() {
@@ -1172,15 +1327,24 @@ pub(super) fn chat_response_to_anthropic(body: &[u8], asked_model: &str) -> Resu
         }
         _ => {}
     }
-    if let Some(calls) = message.and_then(|m| m.get("tool_calls")).and_then(|c| c.as_array()) {
+    if let Some(calls) = message
+        .and_then(|m| m.get("tool_calls"))
+        .and_then(|c| c.as_array())
+    {
         for tc in calls {
-            let name = tc.pointer("/function/name").and_then(|n| n.as_str()).unwrap_or_default();
+            let name = tc
+                .pointer("/function/name")
+                .and_then(|n| n.as_str())
+                .unwrap_or_default();
             if name.is_empty() {
                 continue;
             }
             // 零分数在解析前丢（serde 的 f64 会把 2500.0 原样序列化回来，
             // Claude Code 系客户端对浮点整数同样严格；integral.rs）。
-            let args = tc.pointer("/function/arguments").and_then(|a| a.as_str()).unwrap_or_default();
+            let args = tc
+                .pointer("/function/arguments")
+                .and_then(|a| a.as_str())
+                .unwrap_or_default();
             let args = super::integral::whole_args(args);
             blocks.push(json!({
                 "type": "tool_use",
@@ -1192,7 +1356,10 @@ pub(super) fn chat_response_to_anthropic(body: &[u8], asked_model: &str) -> Resu
             }));
         }
     }
-    let finish = choice.get("finish_reason").and_then(|f| f.as_str()).unwrap_or("stop");
+    let finish = choice
+        .get("finish_reason")
+        .and_then(|f| f.as_str())
+        .unwrap_or("stop");
     Ok(json!({
         "id": format!("msg_{}", v.get("id").and_then(|i| i.as_str()).unwrap_or("translated")),
         "type": "message",
@@ -1243,7 +1410,10 @@ fn anthropic_usage_of(u: Option<&Value>) -> Value {
 
 /// anthropic 形状的错误应答（Go writeErrorAs 的 anthropic 分支）。
 fn error_reply(status: u16, message: &str) -> Reply {
-    Reply::json(status, &json!({ "type": "error", "error": { "type": error_type(status), "message": message } }))
+    Reply::json(
+        status,
+        &json!({ "type": "error", "error": { "type": error_type(status), "message": message } }),
+    )
 }
 
 /// 状态码 → anthropic 错误类型（Go errorTypeFor 同表）。
@@ -1265,7 +1435,10 @@ fn error_type(status: u16) -> &'static str {
 /// 话（错误类型串、message 原文）一个字不改写。
 fn vendor_error_reply(status: u16, body: &[u8]) -> Reply {
     if anthropic_error_shaped(body) {
-        return Reply::Json { status, body: body.to_vec() };
+        return Reply::Json {
+            status,
+            body: body.to_vec(),
+        };
     }
     error_reply(status, &vendor_error_message(status, body))
 }
@@ -1275,7 +1448,8 @@ fn anthropic_error_shaped(body: &[u8]) -> bool {
         return false;
     };
     v.get("type").and_then(|t| t.as_str()) == Some("error")
-        && v.pointer("/error/type").is_some_and(|t| t.as_str().is_some())
+        && v.pointer("/error/type")
+            .is_some_and(|t| t.as_str().is_some())
 }
 
 /// 从厂商错误体里捞人话：openai 形状的 error.message / 裸 error 串 /
@@ -1335,7 +1509,9 @@ mod tests {
     }
 
     fn sandbox(providers_json: &str) -> (super::super::Gateway, Sandbox) {
-        let lock = super::super::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let lock = super::super::TEST_SANDBOX_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let dir = std::env::temp_dir().join(format!(
             "marionette-engine-messages-{}-{}",
             std::process::id(),
@@ -1368,7 +1544,10 @@ mod tests {
 
     impl Seen {
         fn header(&self, name: &str) -> Option<&str> {
-            self.headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+            self.headers
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.as_str())
         }
     }
 
@@ -1445,12 +1624,15 @@ mod tests {
                 if length > 0 {
                     let _ = reader.read_exact(&mut body_bytes);
                 }
-                thread_seen.lock().unwrap_or_else(|p| p.into_inner()).push(Seen {
-                    method,
-                    path,
-                    headers,
-                    body: String::from_utf8_lossy(&body_bytes).into_owned(),
-                });
+                thread_seen
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .push(Seen {
+                        method,
+                        path,
+                        headers,
+                        body: String::from_utf8_lossy(&body_bytes).into_owned(),
+                    });
                 let mut stream = stream;
                 let head = format!(
                     "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -1464,7 +1646,10 @@ mod tests {
                 let _ = stream.flush();
             }
         });
-        FakeVendor { base: format!("http://127.0.0.1:{port}"), requests }
+        FakeVendor {
+            base: format!("http://127.0.0.1:{port}"),
+            requests,
+        }
     }
 
     // -----------------------------------------------------------------
@@ -1510,8 +1695,14 @@ mod tests {
         assert_eq!(seen.header("authorization"), Some("Bearer sk-test"));
         let sent: Value = serde_json::from_str(&seen.body).expect("sent chat json");
         assert_eq!(sent["model"], "m");
-        assert_eq!(sent["messages"][0], json!({"role": "system", "content": "be nice"}));
-        assert_eq!(sent["messages"][1], json!({"role": "user", "content": "hi"}));
+        assert_eq!(
+            sent["messages"][0],
+            json!({"role": "system", "content": "be nice"})
+        );
+        assert_eq!(
+            sent["messages"][1],
+            json!({"role": "user", "content": "hi"})
+        );
         assert_eq!(sent["max_tokens"], 64);
     }
 
@@ -1543,7 +1734,10 @@ mod tests {
         assert_eq!(body, anthropic_reply.as_bytes());
 
         let seen = vendor.last();
-        assert_eq!(seen.path, "/v1/messages", "直通打到 anthropic 基址下的 /v1/messages");
+        assert_eq!(
+            seen.path, "/v1/messages",
+            "直通打到 anthropic 基址下的 /v1/messages"
+        );
         assert_eq!(seen.header("x-api-key"), Some("sk-ant"));
         assert_eq!(seen.header("authorization"), Some("Bearer sk-ant"));
         assert_eq!(seen.header("anthropic-version"), Some("2023-06-01"));
@@ -1585,13 +1779,20 @@ mod tests {
             "messages": [{ "role": "user", "content": "hi" }]
         });
         let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
-        let Reply::Stream { status, content_type, mut reader } = reply else {
+        let Reply::Stream {
+            status,
+            content_type,
+            mut reader,
+        } = reply
+        else {
             panic!("expected stream reply, got json");
         };
         assert_eq!(status, 200);
         assert!(content_type.contains("text/event-stream"));
         let mut out = String::new();
-        reader.read_to_string(&mut out).expect("read translated stream");
+        reader
+            .read_to_string(&mut out)
+            .expect("read translated stream");
 
         // message_start 必须是第一帧（anthropic SDK 对它之前的事件直接抛错）。
         assert!(out.starts_with("event: message_start\n"), "got: {out}");
@@ -1671,24 +1872,31 @@ mod tests {
         assert_eq!(sent["tools"][0]["function"]["name"], "get_weather");
         assert_eq!(sent["stream_options"], json!({"include_usage": true}));
 
-        let Reply::Stream { status, content_type, mut reader } = reply else {
+        let Reply::Stream {
+            status,
+            content_type,
+            mut reader,
+        } = reply
+        else {
             panic!("expected stream reply, got json");
         };
         assert_eq!(status, 200);
         assert!(content_type.contains("text/event-stream"));
         let mut out = String::new();
-        reader.read_to_string(&mut out).expect("read translated stream");
+        reader
+            .read_to_string(&mut out)
+            .expect("read translated stream");
         let events = parse_frames(&out);
         let names: Vec<&str> = events.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(
             names,
             vec![
                 "message_start",
-                "content_block_start",  // text 块 index 0
-                "content_block_delta",  // text_delta
-                "content_block_stop",   // 工具分片到达，文本块封口
-                "content_block_start",  // tool_use 块 index 1（三段式起）
-                "content_block_delta",  // input_json_delta（拼装结果整段）
+                "content_block_start", // text 块 index 0
+                "content_block_delta", // text_delta
+                "content_block_stop",  // 工具分片到达，文本块封口
+                "content_block_start", // tool_use 块 index 1（三段式起）
+                "content_block_delta", // input_json_delta（拼装结果整段）
                 "content_block_stop",
                 "message_delta",
                 "message_stop",
@@ -1745,9 +1953,13 @@ mod tests {
             "messages": [{ "role": "user", "content": "hi" }],
         });
         let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
-        let Reply::Stream { mut reader, .. } = reply else { panic!("stream reply") };
+        let Reply::Stream { mut reader, .. } = reply else {
+            panic!("stream reply")
+        };
         let mut out = String::new();
-        reader.read_to_string(&mut out).expect("read translated stream");
+        reader
+            .read_to_string(&mut out)
+            .expect("read translated stream");
         let events = parse_frames(&out);
         let shape: Vec<(String, usize)> = events
             .iter()
@@ -1791,9 +2003,13 @@ mod tests {
             "messages": [{ "role": "user", "content": "go" }],
         });
         let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
-        let Reply::Stream { mut reader, .. } = reply else { panic!("stream reply") };
+        let Reply::Stream { mut reader, .. } = reply else {
+            panic!("stream reply")
+        };
         let mut out = String::new();
-        reader.read_to_string(&mut out).expect("read translated stream");
+        reader
+            .read_to_string(&mut out)
+            .expect("read translated stream");
         let events = parse_frames(&out);
         let names: Vec<&str> = events.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(
@@ -1838,7 +2054,11 @@ mod tests {
 
     #[test]
     fn vendor_error_becomes_anthropic_error_shape() {
-        let vendor = fake_vendor(401, "application/json", r#"{"error":{"message":"bad key"}}"#);
+        let vendor = fake_vendor(
+            401,
+            "application/json",
+            r#"{"error":{"message":"bad key"}}"#,
+        );
         let providers = format!(
             r#"{{"providers":[{{"id":"fake","name":"Fake","key":"sk-test","chat":"{}/v1"}}]}}"#,
             vendor.base
@@ -1939,24 +2159,31 @@ mod tests {
             "tools": textcall_tools(),
         });
         let reply = handle(&gateway, serde_json::to_vec(&request).unwrap().as_slice());
-        let Reply::Stream { status, content_type, mut reader } = reply else {
+        let Reply::Stream {
+            status,
+            content_type,
+            mut reader,
+        } = reply
+        else {
             panic!("expected stream reply, got json");
         };
         assert_eq!(status, 200);
         assert!(content_type.contains("text/event-stream"));
         let mut out = String::new();
-        reader.read_to_string(&mut out).expect("read translated stream");
+        reader
+            .read_to_string(&mut out)
+            .expect("read translated stream");
         let events = parse_frames(&out);
         let names: Vec<&str> = events.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(
             names,
             vec![
                 "message_start",
-                "content_block_start",  // text 块 index 0
-                "content_block_delta",  // text_delta "看一下。"
-                "content_block_stop",   // finish 到达，文本块封口
-                "content_block_start",  // tool_use 块 index 1（三段式）
-                "content_block_delta",  // input_json_delta
+                "content_block_start", // text 块 index 0
+                "content_block_delta", // text_delta "看一下。"
+                "content_block_stop",  // finish 到达，文本块封口
+                "content_block_start", // tool_use 块 index 1（三段式）
+                "content_block_delta", // input_json_delta
                 "content_block_stop",
                 "message_delta",
                 "message_stop",
@@ -2039,7 +2266,9 @@ mod tests {
             panic!("expected stream reply, got json");
         };
         let mut out = String::new();
-        reader.read_to_string(&mut out).expect("read translated stream");
+        reader
+            .read_to_string(&mut out)
+            .expect("read translated stream");
         assert!(out.contains("event: message_delta"));
         let rows = gateway.usage.records_since(0);
         assert_eq!(rows.len(), 1, "一条回合一行");
@@ -2047,7 +2276,11 @@ mod tests {
         assert_eq!(r.agent, "anthropic");
         assert_eq!(r.provider, "fake");
         assert_eq!(r.model, "fake/m");
-        assert_eq!(r.session.as_deref(), Some("user-77"), "body 侧种子（metadata.user_id）");
+        assert_eq!(
+            r.session.as_deref(),
+            Some("user-77"),
+            "body 侧种子（metadata.user_id）"
+        );
         // anthropic 口径：input 只数非缓存（chat 的 900 含缓存 → 900−400−120）。
         assert_eq!(r.in_tokens, Some(380));
         assert_eq!(r.out_tokens, Some(30));
@@ -2089,7 +2322,9 @@ mod tests {
             panic!("expected stream reply, got json");
         };
         let mut out = String::new();
-        reader.read_to_string(&mut out).expect("read passthrough stream");
+        reader
+            .read_to_string(&mut out)
+            .expect("read passthrough stream");
         assert!(out.contains("event: message_stop"), "字节照转: {out}");
         let rows = gateway.usage.records_since(0);
         assert_eq!(rows.len(), 1);
@@ -2097,7 +2332,11 @@ mod tests {
         assert_eq!(r.agent, "anthropic");
         assert_eq!(r.provider, "anth");
         // message_start 的 input/缓存 + message_delta 的 output（后到覆盖占位 1）。
-        assert_eq!(r.in_tokens, Some(650), "anthropic 的 input_tokens 本就只数非缓存");
+        assert_eq!(
+            r.in_tokens,
+            Some(650),
+            "anthropic 的 input_tokens 本就只数非缓存"
+        );
         assert_eq!(r.out_tokens, Some(27));
         assert_eq!(r.cache_read, Some(500));
         assert_eq!(r.cache_write, Some(80));

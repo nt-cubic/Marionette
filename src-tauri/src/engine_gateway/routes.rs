@@ -32,10 +32,10 @@ fn model_row(provider_id: &str, row: &super::catalog::VendorRow) -> Value {
     if row.images && !input.contains(&"image") {
         input.push("image");
     }
-    object
-        .as_object_mut()
-        .expect("object literal")
-        .insert("modalities".into(), serde_json::json!({ "input": input, "output": ["text"] }));
+    object.as_object_mut().expect("object literal").insert(
+        "modalities".into(),
+        serde_json::json!({ "input": input, "output": ["text"] }),
+    );
     object
 }
 
@@ -46,33 +46,36 @@ fn model_row(provider_id: &str, row: &super::catalog::VendorRow) -> Value {
 /// 全部来源的目录行（来源 id, 行）：`/v1/models` 与 `/v1/codex/models` 共用。
 /// 先拍一份来源快照再放锁：目录要联网抓厂商，持 store 锁等网络会让所有 chat
 /// 请求（resolve 要同一把锁）陪着等（2026-10-31 storage 锁事故同款）。
-fn catalog_rows(gateway: &super::Gateway) -> Result<Vec<(String, super::catalog::VendorRow)>, Reply> {
+fn catalog_rows(
+    gateway: &super::Gateway,
+) -> Result<Vec<(String, super::catalog::VendorRow)>, Reply> {
     let providers: Vec<super::store::Provider> = match gateway.store.lock() {
         Ok(s) => s.providers().to_vec(),
         Err(_) => return Err(Reply::error(500, "store poisoned")),
     };
     // Codex 订阅账号的 codex/* 行与其它来源并发抓（自带 10s 超时 +
     // 失败退避，慢/挂都不拖别人）。
-    let (mut rows, codex_rows, grok_rows, claude_rows, antigravity_rows) = std::thread::scope(|scope| {
-        let codex = scope.spawn(|| super::codex_account::listed_rows(&providers));
-        let grok = scope.spawn(|| super::grok_account::listed_rows(&providers));
-        let claude = scope.spawn(|| super::claude_account::listed_rows(&providers));
-        let antigravity = scope.spawn(|| super::antigravity_account::listed_rows(&providers));
-        gateway.catalog.prewarm(&providers);
-        let mut rows = Vec::new();
-        for provider in &providers {
-            for row in gateway.catalog.listed(provider) {
-                rows.push((provider.id.clone(), row));
+    let (mut rows, codex_rows, grok_rows, claude_rows, antigravity_rows) =
+        std::thread::scope(|scope| {
+            let codex = scope.spawn(|| super::codex_account::listed_rows(&providers));
+            let grok = scope.spawn(|| super::grok_account::listed_rows(&providers));
+            let claude = scope.spawn(|| super::claude_account::listed_rows(&providers));
+            let antigravity = scope.spawn(|| super::antigravity_account::listed_rows(&providers));
+            gateway.catalog.prewarm(&providers);
+            let mut rows = Vec::new();
+            for provider in &providers {
+                for row in gateway.catalog.listed(provider) {
+                    rows.push((provider.id.clone(), row));
+                }
             }
-        }
-        (
-            rows,
-            codex.join().unwrap_or_default(),
-            grok.join().unwrap_or_default(),
-            claude.join().unwrap_or_default(),
-            antigravity.join().unwrap_or_default(),
-        )
-    });
+            (
+                rows,
+                codex.join().unwrap_or_default(),
+                grok.join().unwrap_or_default(),
+                claude.join().unwrap_or_default(),
+                antigravity.join().unwrap_or_default(),
+            )
+        });
     for row in codex_rows {
         rows.push((super::codex_account::CODEX_ID.to_string(), row));
     }

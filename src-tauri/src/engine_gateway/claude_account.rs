@@ -283,13 +283,19 @@ pub(crate) struct Account {
 }
 
 fn now_secs() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// 毫秒钟（架条目的 at 用它——秒级分辨率下，测试缝把 idleLongest 压到
 /// 亚秒时会整批秒过期）。
 fn now_millis() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Go appdir.ClaudeDir（appdir/claude.go:18）：`$CLAUDE_CONFIG_DIR` 优先
@@ -331,11 +337,20 @@ fn oauth_of(raw: &Value) -> Option<&Value> {
 }
 
 fn account_of(oauth: &Value) -> Option<Account> {
-    let access = oauth.get("accessToken").and_then(|t| t.as_str()).unwrap_or("").trim().to_string();
+    let access = oauth
+        .get("accessToken")
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if access.is_empty() {
         return None;
     }
-    let refresh = oauth.get("refreshToken").and_then(|t| t.as_str()).unwrap_or("").trim();
+    let refresh = oauth
+        .get("refreshToken")
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .trim();
     if refresh.is_empty() && access.is_empty() {
         return None; // cleared（Go :53-58 的口径；access 已空时到不了这）
     }
@@ -344,7 +359,14 @@ fn account_of(oauth: &Value) -> Option<Account> {
         .and_then(|e| e.as_i64())
         .filter(|e| *e > 0)
         .map(|ms| ms / 1000);
-    Some(Account { plan: oauth.get("subscriptionType").and_then(|s| s.as_str()).unwrap_or("").to_string(), exp })
+    Some(Account {
+        plan: oauth
+            .get("subscriptionType")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string(),
+        exp,
+    })
 }
 
 /// 凭据发现（每次现读、只读）：`~/.claude/.credentials.json` 优先，没有再
@@ -369,7 +391,9 @@ pub(crate) fn discover() -> Option<Account> {
                 if entry.get("agent").and_then(|a| a.as_str()) != Some("claude") {
                     continue;
                 }
-                let Some(auth) = entry.get("auth").filter(|a| a.is_object()) else { continue };
+                let Some(auth) = entry.get("auth").filter(|a| a.is_object()) else {
+                    continue;
+                };
                 if let Some(a) = oauth_of(auth).and_then(account_of) {
                     found.push(a);
                 }
@@ -407,7 +431,10 @@ fn claude_binary() -> Option<Program> {
             return hit.clone();
         }
     }
-    let found = find_claude_on_path().map(|p| Program { program: p, prefix: Vec::new() });
+    let found = find_claude_on_path().map(|p| Program {
+        program: p,
+        prefix: Vec::new(),
+    });
     *cache = Some((Instant::now(), found.clone()));
     found
 }
@@ -429,7 +456,11 @@ fn find_claude_on_path() -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    let line = String::from_utf8_lossy(&out.stdout).lines().next()?.trim().to_string();
+    let line = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()?
+        .trim()
+        .to_string();
     if line.is_empty() {
         None
     } else {
@@ -491,7 +522,10 @@ pub fn listed_rows_for_inspection(providers: &[Provider]) -> Vec<VendorRow> {
 }
 
 fn rows_impl(providers: &[Provider], gated: bool) -> Vec<VendorRow> {
-    if providers.iter().any(|p| p.id == CLAUDE_ID) || (gated && !super::family_enabled(CLAUDE_ID)) || !available() {
+    if providers.iter().any(|p| p.id == CLAUDE_ID)
+        || (gated && !super::family_enabled(CLAUDE_ID))
+        || !available()
+    {
         return Vec::new();
     }
     MODELS
@@ -535,7 +569,8 @@ fn model_name_safe(model: &str) -> bool {
 
 /// Go historyOpen/historyClose（:5440-5444）。
 const HISTORY_OPEN: &str = "<conversation_history>\nThe conversation so far, each turn of it answered already. Images and files in it were sent with those earlier messages: none of them is new, and none needs answering again.\n\n";
-const HISTORY_CLOSE: &str = "</conversation_history>\n\n<current_turn>\nThe turn to answer now:\n\n";
+const HISTORY_CLOSE: &str =
+    "</conversation_history>\n\n<current_turn>\nThe turn to answer now:\n\n";
 /// Go pastCallsNote（claude_text_calls.go:28）。
 const PAST_CALLS_NOTE: &str = "(The \"[tool call …]\" and \"[tool result …]\" lines above record calls made earlier. Writing such a line calls nothing: call a tool only with the tool itself.)";
 
@@ -556,9 +591,11 @@ fn system_text(system: &Value) -> String {
 
 /// 一条消息的 content 块里有没有 tool_use（Go callsTool :2358）。
 fn calls_tool(content: &Value) -> bool {
-    content
-        .as_array()
-        .is_some_and(|blocks| blocks.iter().any(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use")))
+    content.as_array().is_some_and(|blocks| {
+        blocks
+            .iter()
+            .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+    })
 }
 
 /// Go historyEnd（:5578）：最后一条「不带工具调用的 assistant 回复」之后是
@@ -566,7 +603,9 @@ fn calls_tool(content: &Value) -> bool {
 fn history_end(messages: &[Value]) -> usize {
     for j in (0..messages.len()).rev() {
         let m = &messages[j];
-        if m.get("role").and_then(|r| r.as_str()) == Some("assistant") && !calls_tool(m.get("content").unwrap_or(&Value::Null)) {
+        if m.get("role").and_then(|r| r.as_str()) == Some("assistant")
+            && !calls_tool(m.get("content").unwrap_or(&Value::Null))
+        {
             if j == messages.len() - 1 {
                 return 0;
             }
@@ -586,7 +625,11 @@ struct PromptBuilder {
 
 impl PromptBuilder {
     fn new() -> Self {
-        Self { blocks: Vec::new(), text: String::new(), open_result: None }
+        Self {
+            blocks: Vec::new(),
+            text: String::new(),
+            open_result: None,
+        }
     }
 
     fn push_str(&mut self, text: &str) {
@@ -595,7 +638,8 @@ impl PromptBuilder {
 
     fn flush_text(&mut self) {
         if !self.text.is_empty() {
-            self.blocks.push(json!({ "type": "text", "text": std::mem::take(&mut self.text) }));
+            self.blocks
+                .push(json!({ "type": "text", "text": std::mem::take(&mut self.text) }));
         }
     }
 
@@ -605,14 +649,18 @@ impl PromptBuilder {
                 self.flush_text();
                 self.blocks.push(image);
             }
-            None => self.text.push_str("[image omitted: unsupported image source]"),
+            None => self
+                .text
+                .push_str("[image omitted: unsupported image source]"),
         }
     }
 
     fn close_result(&mut self, as_user: bool) {
         if let Some(id) = self.open_result.take() {
             if as_user {
-                self.push_str(&format!("\n[end of tool result id={id}]\n\n[user message]\n"));
+                self.push_str(&format!(
+                    "\n[end of tool result id={id}]\n\n[user message]\n"
+                ));
             } else {
                 self.push_str(&format!("\n[end of tool result id={id}]\n\n"));
             }
@@ -622,7 +670,8 @@ impl PromptBuilder {
     fn finish(mut self) -> Vec<Value> {
         self.flush_text();
         if self.blocks.is_empty() {
-            self.blocks.push(json!({ "type": "text", "text": "[continue]" }));
+            self.blocks
+                .push(json!({ "type": "text", "text": "[continue]" }));
         }
         self.blocks
     }
@@ -669,7 +718,9 @@ fn render_blocks(builder: &mut PromptBuilder, blocks: &[Value], offered: Option<
             "thinking" | "redacted_thinking" => {}
             "tool_use" => {
                 let name = b.get("name").and_then(|x| x.as_str()).unwrap_or("");
-                let name = offered.and_then(|n| n.bridged_of(name)).unwrap_or_else(|| name.to_string());
+                let name = offered
+                    .and_then(|n| n.bridged_of(name))
+                    .unwrap_or_else(|| name.to_string());
                 let id = b.get("id").and_then(|x| x.as_str()).unwrap_or("");
                 let args = b.get("input").cloned().unwrap_or(json!({}));
                 builder.close_result(false);
@@ -687,7 +738,9 @@ fn render_blocks(builder: &mut PromptBuilder, blocks: &[Value], offered: Option<
                         for p in parts {
                             match p.get("type").and_then(|t| t.as_str()) {
                                 Some("text") => {
-                                    builder.push_str(p.get("text").and_then(|x| x.as_str()).unwrap_or(""));
+                                    builder.push_str(
+                                        p.get("text").and_then(|x| x.as_str()).unwrap_or(""),
+                                    );
                                 }
                                 Some("image") => builder.push_image(p),
                                 _ => {}
@@ -720,7 +773,11 @@ fn render_message(builder: &mut PromptBuilder, m: &Value, offered: Option<&ToolN
 /// 入站 anthropic 请求 → CLI stdin 的 content 数组（Go renderClaudePrompt
 /// 的简化：system 一块 + 对话块，历史/当前回合用 Go 原样的标记包裹）。
 fn render_prompt(body: &Value, offered: Option<&ToolNames>) -> Vec<Value> {
-    let messages = body.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default();
+    let messages = body
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .cloned()
+        .unwrap_or_default();
     let mut out = PromptBuilder::new();
     let system = system_text(body.get("system").unwrap_or(&Value::Null));
     if !system.is_empty() {
@@ -739,14 +796,21 @@ fn render_prompt(body: &Value, offered: Option<&ToolNames>) -> Vec<Value> {
             out.push_str(HISTORY_CLOSE);
         }
         let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("user");
-        let label = if role == "assistant" { "Assistant" } else { "Human" };
+        let label = if role == "assistant" {
+            "Assistant"
+        } else {
+            "Human"
+        };
         if split > 0 || i > 0 {
             out.push_str("\n\n");
         }
         out.push_str(&format!("{label}: "));
         render_message(&mut out, m, offered);
     }
-    if messages.iter().any(|m| calls_tool(m.get("content").unwrap_or(&Value::Null))) {
+    if messages
+        .iter()
+        .any(|m| calls_tool(m.get("content").unwrap_or(&Value::Null)))
+    {
         out.push_str("\n\n");
         out.push_str(PAST_CALLS_NOTE);
     }
@@ -759,7 +823,9 @@ fn render_prompt(body: &Value, offered: Option<&ToolNames>) -> Vec<Value> {
 /// 对话里有没有 assistant 回复（Go hasReply；one-off 询问判定与
 /// renderClaudeTurn 的「要不要 Human:/Assistant: 标注」共用口径）。
 fn has_reply(messages: &[Value]) -> bool {
-    messages.iter().any(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))
+    messages
+        .iter()
+        .any(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))
 }
 
 /// 驻留 run 下一回合的增量喂法（Go renderClaudeTurn :5700）：只渲染
@@ -775,12 +841,19 @@ fn render_turn(msgs: &[Value], offered: Option<&ToolNames>) -> Vec<Value> {
         }
         if labeled {
             let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("user");
-            let label = if role == "assistant" { "Assistant" } else { "Human" };
+            let label = if role == "assistant" {
+                "Assistant"
+            } else {
+                "Human"
+            };
             out.push_str(&format!("{label}: "));
         }
         render_message(&mut out, m, offered);
     }
-    if msgs.iter().any(|m| calls_tool(m.get("content").unwrap_or(&Value::Null))) {
+    if msgs
+        .iter()
+        .any(|m| calls_tool(m.get("content").unwrap_or(&Value::Null)))
+    {
         out.push_str("\n\n");
         out.push_str(PAST_CALLS_NOTE);
     }
@@ -822,7 +895,11 @@ fn bridge_args(model: &str, effort: Option<&str>, mcp_config: Option<&str>) -> V
     // Claude Code 自己写的会话文件续，不再全量重写缓存。孤儿会话文件由
     // sweep_sessions_once 按 mtime 收走。usage_args 的那条保留（/usage
     // 一次性询问，Go claudeUsageArgs :516 也保留）。
-    args.extend(["--setting-sources", "", "--dangerously-skip-permissions"].iter().map(|s| s.to_string()));
+    args.extend(
+        ["--setting-sources", "", "--dangerously-skip-permissions"]
+            .iter()
+            .map(|s| s.to_string()),
+    );
     if let Some(e) = effort {
         args.push("--effort".into());
         args.push(e.to_string());
@@ -834,10 +911,22 @@ fn bridge_args(model: &str, effort: Option<&str>, mcp_config: Option<&str>) -> V
 
 /// Go claudeUsageArgs（claude_warmup.go:516，--settings 同上不带）。
 fn usage_args() -> Vec<String> {
-    ["-p", "/usage", "--output-format", "json", "--verbose", "--tools", "", "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
+    [
+        "-p",
+        "/usage",
+        "--output-format",
+        "json",
+        "--verbose",
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--setting-sources",
+        "",
+        "--no-session-persistence",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 
 /// Go cleanClaudeEnvTTL（:4116）要摘掉的环境变量——**尤其 ANTHROPIC_BASE_URL**：
@@ -933,13 +1022,17 @@ fn hex(bytes: &[u8]) -> String {
 /// Go bridgeToolNameOK `^[A-Za-z0-9_-]{1,51}$`（:5632）。
 fn bridge_name_ok(s: &str) -> bool {
     let n = s.chars().count();
-    (1..=51).contains(&n) && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    (1..=51).contains(&n)
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// Go bridgeToolNameHashed `_[0-9a-f]{12}$`（:5634）——已是净化名的不再净化。
 fn bridge_name_hashed(s: &str) -> bool {
     let b = s.as_bytes();
-    b.len() >= 13 && b[b.len() - 13] == b'_' && b[b.len() - 12..].iter().all(|c| c.is_ascii_hexdigit())
+    b.len() >= 13
+        && b[b.len() - 13] == b'_'
+        && b[b.len() - 12..].iter().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Go bridgeToolName（:5616）：Claude Code 只认 `[A-Za-z0-9_-]` 的 MCP 工具
@@ -959,7 +1052,13 @@ fn bridge_tool_name(name: &str) -> String {
     let sum = Sha256::digest(name.as_bytes());
     let short: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .take(38)
         .collect();
     format!("{short}_{}", hex(&sum[..6]))
@@ -978,7 +1077,12 @@ impl ToolNames {
     /// 的退余下部分、不带的保持原名——延迟加载工具的口径 :5601-5613）。
     fn declared_of(&self, model_name: &str) -> Option<String> {
         match model_name.strip_prefix(MCP_TOOL_PREFIX) {
-            Some(rest) => Some(self.declared.get(rest).cloned().unwrap_or_else(|| rest.to_string())),
+            Some(rest) => Some(
+                self.declared
+                    .get(rest)
+                    .cloned()
+                    .unwrap_or_else(|| rest.to_string()),
+            ),
             None => None,
         }
     }
@@ -999,7 +1103,9 @@ fn bridge_tools(tools: &[Value], tool_choice: &str) -> (Vec<Value>, ToolNames, b
     let mut out = Vec::new();
     let mut names = ToolNames::default();
     for t in tools {
-        let Some(name) = t.get("name").and_then(|n| n.as_str()) else { continue };
+        let Some(name) = t.get("name").and_then(|n| n.as_str()) else {
+            continue;
+        };
         if let Some(w) = want {
             if name != w {
                 continue;
@@ -1016,7 +1122,9 @@ fn bridge_tools(tools: &[Value], tool_choice: &str) -> (Vec<Value>, ToolNames, b
         }
         out.push(row);
         names.declared.insert(bridged.clone(), name.to_string());
-        names.bridged_full.insert(name.to_string(), format!("{MCP_TOOL_PREFIX}{bridged}"));
+        names
+            .bridged_full
+            .insert(name.to_string(), format!("{MCP_TOOL_PREFIX}{bridged}"));
     }
     let allowed_all = tool_choice != "none";
     (out, names, allowed_all)
@@ -1059,7 +1167,13 @@ fn image_fingerprint(block: &Value) -> String {
     for field in ["type", "media_type", "data", "url"] {
         h.update(field.as_bytes());
         h.update(b"\0");
-        h.update(source.get(field).and_then(Value::as_str).unwrap_or("").as_bytes());
+        h.update(
+            source
+                .get(field)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .as_bytes(),
+        );
         h.update(b"\0");
     }
     hex(&h.finalize()[..8])
@@ -1074,7 +1188,11 @@ fn result_text_of(b: &Value) -> String {
         Value::Array(parts) => parts
             .iter()
             .map(|p| match p.get("type").and_then(|t| t.as_str()) {
-                Some("text") => p.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                Some("text") => p
+                    .get("text")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 Some("image") => format!("[image {}]", image_fingerprint(p)),
                 _ => String::new(),
             })
@@ -1101,7 +1219,9 @@ fn message_words(msgs: &[Value]) -> Vec<String> {
                     for p in blocks {
                         let ty = p.get("type").and_then(|t| t.as_str()).unwrap_or("");
                         let words = match ty {
-                            "text" => strip_words(p.get("text").and_then(|x| x.as_str()).unwrap_or("")),
+                            "text" => {
+                                strip_words(p.get("text").and_then(|x| x.as_str()).unwrap_or(""))
+                            }
                             "tool_use" => {
                                 n += 1;
                                 if let Some(id) = p.get("id").and_then(|x| x.as_str()) {
@@ -1118,9 +1238,7 @@ fn message_words(msgs: &[Value]) -> Vec<String> {
                                     .unwrap_or_else(|| "?".into());
                                 strip_words(&format!("\x01result #{k} {}", result_text_of(p)))
                             }
-                            "image" => {
-                                strip_words(&format!("\x01image {}", image_fingerprint(p)))
-                            }
+                            "image" => strip_words(&format!("\x01image {}", image_fingerprint(p))),
                             _ => String::new(),
                         };
                         b.push_str(&words);
@@ -1140,7 +1258,10 @@ fn hash_messages(h: &mut Sha256, msgs: &[Value]) {
     let mut role = String::new();
     for (i, words) in message_words(msgs).iter().enumerate() {
         if !words.is_empty() {
-            let r = msgs[i].get("role").and_then(|x| x.as_str()).unwrap_or("user");
+            let r = msgs[i]
+                .get("role")
+                .and_then(|x| x.as_str())
+                .unwrap_or("user");
             if r != role {
                 role = r.to_string();
                 h.update(format!("\x00{r}:").as_bytes());
@@ -1169,7 +1290,13 @@ struct RequestIdentity {
 /// tools + 消息词哈希（webSearch/format/thinkOff/billing 头不在本桥面里）。
 fn turn_key(id: &RequestIdentity, msgs: &[Value]) -> String {
     let mut h = Sha256::new();
-    for part in [&id.owner, &id.model, &id.tool_choice, &id.system, &id.tools_json] {
+    for part in [
+        &id.owner,
+        &id.model,
+        &id.tool_choice,
+        &id.system,
+        &id.tools_json,
+    ] {
         h.update(part.as_bytes());
         h.update(&[0]);
     }
@@ -1184,7 +1311,13 @@ fn turn_key(id: &RequestIdentity, msgs: &[Value]) -> String {
 /// 而不是 resume）→ None。
 fn next_turn(id: &RequestIdentity) -> Option<(String, usize)> {
     let msgs = &id.msgs;
-    if msgs.is_empty() || msgs.last().and_then(|m| m.get("role")).and_then(|r| r.as_str()) == Some("assistant") {
+    if msgs.is_empty()
+        || msgs
+            .last()
+            .and_then(|m| m.get("role"))
+            .and_then(|r| r.as_str())
+            == Some("assistant")
+    {
         return None;
     }
     let mut j = msgs.len() as isize - 1;
@@ -1203,7 +1336,12 @@ fn next_turn(id: &RequestIdentity) -> Option<(String, usize)> {
     // Go :2188——since 里的 tool_result 必须应答 since 之内的调用
     let mut calls: Vec<&str> = Vec::new();
     for m in &msgs[split..] {
-        for b in m.get("content").and_then(|c| c.as_array()).into_iter().flatten() {
+        for b in m
+            .get("content")
+            .and_then(|c| c.as_array())
+            .into_iter()
+            .flatten()
+        {
             match b.get("type").and_then(|t| t.as_str()) {
                 Some("tool_use") => {
                     if let Some(cid) = b.get("id").and_then(|x| x.as_str()) {
@@ -1243,10 +1381,19 @@ fn fresh_results(messages: &[Value]) -> Option<Vec<FreshResult>> {
     }
     let mut out = Vec::new();
     for m in &messages[i..] {
-        for b in m.get("content").and_then(|c| c.as_array()).into_iter().flatten() {
+        for b in m
+            .get("content")
+            .and_then(|c| c.as_array())
+            .into_iter()
+            .flatten()
+        {
             if b.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
                 out.push(FreshResult {
-                    id: b.get("tool_use_id").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    id: b
+                        .get("tool_use_id")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                     content: result_text_of(b),
                     is_error: b.get("is_error").and_then(|x| x.as_bool()).unwrap_or(false),
                 });
@@ -1267,7 +1414,12 @@ fn said_with_results(messages: &[Value]) -> String {
     let mut said: Vec<String> = Vec::new();
     let mut results = false;
     for m in &messages[i..] {
-        for b in m.get("content").and_then(|c| c.as_array()).into_iter().flatten() {
+        for b in m
+            .get("content")
+            .and_then(|c| c.as_array())
+            .into_iter()
+            .flatten()
+        {
             match b.get("type").and_then(|t| t.as_str()) {
                 Some("tool_result") => results = true,
                 Some("text") => {
@@ -1372,7 +1524,10 @@ fn lock_run(core: &RunCore) -> RunLock<'_> {
 fn hex_token() -> String {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
-    let t = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     format!("{t:x}{n:x}")
 }
 
@@ -1389,8 +1544,13 @@ struct Pool {
     runs: HashMap<String, Arc<RunCore>>,
 }
 
-static POOL: std::sync::LazyLock<Mutex<Pool>> =
-    std::sync::LazyLock::new(|| Mutex::new(Pool { idle: HashMap::new(), calls: HashMap::new(), runs: HashMap::new() }));
+static POOL: std::sync::LazyLock<Mutex<Pool>> = std::sync::LazyLock::new(|| {
+    Mutex::new(Pool {
+        idle: HashMap::new(),
+        calls: HashMap::new(),
+        runs: HashMap::new(),
+    })
+});
 
 /// 测试缝：idle 上限/容量的覆盖点（生产恒常量）。
 #[cfg(test)]
@@ -1401,7 +1561,10 @@ static TEST_IDLE_MOST: Mutex<Option<usize>> = Mutex::new(None);
 fn idle_longest() -> Duration {
     #[cfg(test)]
     {
-        TEST_IDLE_LONGEST.lock().unwrap_or_else(|p| p.into_inner()).unwrap_or(IDLE_LONGEST)
+        TEST_IDLE_LONGEST
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or(IDLE_LONGEST)
     }
     #[cfg(not(test))]
     {
@@ -1412,7 +1575,10 @@ fn idle_longest() -> Duration {
 fn idle_most() -> usize {
     #[cfg(test)]
     {
-        TEST_IDLE_MOST.lock().unwrap_or_else(|p| p.into_inner()).unwrap_or(IDLE_MOST)
+        TEST_IDLE_MOST
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or(IDLE_MOST)
     }
     #[cfg(not(test))]
     {
@@ -1444,7 +1610,11 @@ fn sweep_pool(p: &mut Pool) -> Vec<(String, Arc<RunCore>)> {
 /// **在 state 锁内调用**（嵌套池锁是本模块唯一允许的锁向，见 pump_thread
 /// 注释）；返回 (会话键, run) 待逐名单——调用方**出锁后**交给
 /// [`release_victims`]（入架 + 杀进程）。
-fn keep_idle_locked(run: &Arc<RunCore>, g: &mut RunLock<'_>, key: &str) -> Vec<(String, Arc<RunCore>)> {
+fn keep_idle_locked(
+    run: &Arc<RunCore>,
+    g: &mut RunLock<'_>,
+    key: &str,
+) -> Vec<(String, Arc<RunCore>)> {
     if g.closed {
         return Vec::new(); // 回答途中死了（Go #1667）
     }
@@ -1468,7 +1638,8 @@ fn keep_idle_locked(run: &Arc<RunCore>, g: &mut RunLock<'_>, key: &str) -> Vec<(
             p.idle.remove(key);
         }
     }
-    p.idle.insert(key.to_string(), (run.clone(), Instant::now()));
+    p.idle
+        .insert(key.to_string(), (run.clone(), Instant::now()));
     while p.idle.len() > idle_most() {
         let oldest = p
             .idle
@@ -1530,7 +1701,9 @@ fn match_run(messages: &[Value]) -> Option<(Arc<RunCore>, Vec<FreshResult>)> {
     let victims = sweep_pool(&mut p);
     let mut found: Option<Arc<RunCore>> = None;
     for r in &fresh {
-        let Some(run) = p.calls.get(&r.id) else { continue };
+        let Some(run) = p.calls.get(&r.id) else {
+            continue;
+        };
         match &found {
             Some(f) if Arc::ptr_eq(f, run) => {}
             Some(_) => {
@@ -1592,7 +1765,9 @@ fn shelf_path() -> Option<PathBuf> {
 /// Go claudeProjectName（:482）：Claude Code 给工作目录的会话文件夹名——
 /// 路径里 ASCII 字母数字之外的字符全换 `-`。
 fn claude_project_name(path: &str) -> String {
-    path.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+    path.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
 }
 
 /// Go claudeSessions（:3448）的单目录版：本桥工作目录（work_dir，Go
@@ -1600,13 +1775,18 @@ fn claude_project_name(path: &str) -> String {
 /// 第二个目录（macOS 的 /var），Windows temp 不 symlink，不搬。
 fn claude_sessions() -> Option<PathBuf> {
     let dir = claude_config_dir()?;
-    Some(dir.join("projects").join(claude_project_name(&work_dir().to_string_lossy())))
+    Some(
+        dir.join("projects")
+            .join(claude_project_name(&work_dir().to_string_lossy())),
+    )
 }
 
 /// Go removeSession（:3465）的 sid 护栏再加一档：只认 `[A-Za-z0-9-]`
 /// （uuid 的字符域），拼路径前挡住穿越。
 fn sid_ok(sid: &str) -> bool {
-    !sid.is_empty() && sid.len() <= 128 && sid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    !sid.is_empty()
+        && sid.len() <= 128
+        && sid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 /// Go savedSession.saved（:3405）：会话文件还在不在。不在 = resume 必死，
@@ -1617,8 +1797,12 @@ fn session_saved(sessions: &std::path::Path, sid: &str) -> bool {
 
 /// 读架（fail-open：读不了/解析不了 = 空架——memos index.json 同款口径）。
 fn shelf_read() -> HashMap<String, ShelfEntry> {
-    let Some(path) = shelf_path() else { return HashMap::new() };
-    let Ok(bytes) = std::fs::read(&path) else { return HashMap::new() };
+    let Some(path) = shelf_path() else {
+        return HashMap::new();
+    };
+    let Ok(bytes) = std::fs::read(&path) else {
+        return HashMap::new();
+    };
     serde_json::from_slice(&bytes).unwrap_or_default()
 }
 
@@ -1642,7 +1826,11 @@ fn shelf_prune(entries: &mut HashMap<String, ShelfEntry>) {
     let ttl = idle_longest().as_millis() as i64;
     entries.retain(|_, e| now - e.at < ttl);
     while entries.len() > SHELF_MOST {
-        let Some(oldest) = entries.iter().min_by_key(|(_, e)| e.at).map(|(k, _)| k.clone()) else {
+        let Some(oldest) = entries
+            .iter()
+            .min_by_key(|(_, e)| e.at)
+            .map(|(k, _)| k.clone())
+        else {
             break;
         };
         entries.remove(&oldest);
@@ -1668,14 +1856,23 @@ fn shelve_entry(key: &str, session: &str, effort: Option<String>) {
     if !sid_ok(session) {
         return;
     }
-    let Some(sessions) = claude_sessions() else { return };
+    let Some(sessions) = claude_sessions() else {
+        return;
+    };
     if !session_saved(&sessions, session) {
         return;
     }
     let _guard = SHELF_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let mut entries = shelf_read();
     shelf_prune(&mut entries);
-    entries.insert(key.to_string(), ShelfEntry { session: session.to_string(), effort, at: now_millis() });
+    entries.insert(
+        key.to_string(),
+        ShelfEntry {
+            session: session.to_string(),
+            effort,
+            at: now_millis(),
+        },
+    );
     shelf_write(&entries);
 }
 
@@ -1728,14 +1925,20 @@ fn sweep_sessions_once() {
         return;
     }
     let Some(dir) = claude_sessions() else { return };
-    let Ok(rd) = std::fs::read_dir(&dir) else { return };
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return;
+    };
     let cutoff = idle_longest() + Duration::from_secs(60);
     for e in rd.flatten() {
         let path = e.path();
         if path.extension().and_then(|x| x.to_str()) != Some("jsonl") {
             continue;
         }
-        let stale = e.metadata().ok().and_then(|md| md.modified().ok()).is_some_and(|m| m.elapsed().unwrap_or_default() > cutoff);
+        let stale = e
+            .metadata()
+            .ok()
+            .and_then(|md| md.modified().ok())
+            .is_some_and(|m| m.elapsed().unwrap_or_default() > cutoff);
         if stale {
             let _ = std::fs::remove_file(&path);
         }
@@ -1814,14 +2017,20 @@ fn pump_thread(run: Arc<RunCore>, mut stdout: BufReader<std::process::ChildStdou
                 return;
             }
         }
-        let Ok(v) = serde_json::from_slice::<Value>(&line) else { continue };
+        let Ok(v) = serde_json::from_slice::<Value>(&line) else {
+            continue;
+        };
         if v.is_null() {
             continue;
         }
         match v.get("type").and_then(|t| t.as_str()).unwrap_or("") {
             "stream_event" => {
                 let mut event = v.get("event").cloned().unwrap_or(Value::Null);
-                let ty = event.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
+                let ty = event
+                    .get("type")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 match ty.as_str() {
                     "message_start" => {
                         let mut g = lock_run(&run);
@@ -1839,7 +2048,9 @@ fn pump_thread(run: Arc<RunCore>, mut stdout: BufReader<std::process::ChildStdou
                     }
                     "message_delta" => {
                         let mut g = lock_run(&run);
-                        if let Some(sr) = event.pointer("/delta/stop_reason").and_then(|x| x.as_str()) {
+                        if let Some(sr) =
+                            event.pointer("/delta/stop_reason").and_then(|x| x.as_str())
+                        {
                             g.msg_stop_reason = Some(sr.to_string());
                         }
                         g.queue.push_back(Queued::Frame(event));
@@ -1853,14 +2064,28 @@ fn pump_thread(run: Arc<RunCore>, mut stdout: BufReader<std::process::ChildStdou
                         run.state.1.notify_all();
                     }
                     "content_block_start" => {
-                        let is_tool = event.pointer("/content_block/type").and_then(|t| t.as_str()) == Some("tool_use");
+                        let is_tool = event
+                            .pointer("/content_block/type")
+                            .and_then(|t| t.as_str())
+                            == Some("tool_use");
                         if is_tool {
-                            let id = event.pointer("/content_block/id").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                            let name = event.pointer("/content_block/name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                            let id = event
+                                .pointer("/content_block/id")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let name = event
+                                .pointer("/content_block/name")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("")
+                                .to_string();
                             let mut g = lock_run(&run);
                             let mapped = g.names.declared_of(&name);
                             if let Some(m) = mapped {
-                                if let Some(cb) = event.get_mut("content_block").and_then(|c| c.as_object_mut()) {
+                                if let Some(cb) = event
+                                    .get_mut("content_block")
+                                    .and_then(|c| c.as_object_mut())
+                                {
                                     cb.insert("name".into(), json!(m));
                                 }
                             }
@@ -1876,8 +2101,13 @@ fn pump_thread(run: Arc<RunCore>, mut stdout: BufReader<std::process::ChildStdou
                     }
                     "content_block_delta" => {
                         let mut g = lock_run(&run);
-                        if event.pointer("/delta/type").and_then(|t| t.as_str()) == Some("text_delta") {
-                            let t = event.pointer("/delta/text").and_then(|x| x.as_str()).unwrap_or("");
+                        if event.pointer("/delta/type").and_then(|t| t.as_str())
+                            == Some("text_delta")
+                        {
+                            let t = event
+                                .pointer("/delta/text")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("");
                             g.said_words.push_str(&strip_words(t));
                         }
                         g.queue.push_back(Queued::Frame(event));
@@ -1896,13 +2126,25 @@ fn pump_thread(run: Arc<RunCore>, mut stdout: BufReader<std::process::ChildStdou
             // stream_event）时由它合成帧族——回复内容不能丢。
             "assistant" => {
                 let msg = v.get("message").cloned().unwrap_or(Value::Null);
-                let id = msg.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
+                let id = msg
+                    .get("id")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let mut g = lock_run(&run);
                 if g.started || g.streamed.iter().any(|s| *s == id) {
                     continue;
                 }
-                let model = msg.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
-                let model = if model.is_empty() { g.model_echo.clone() } else { model };
+                let model = msg
+                    .get("model")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let model = if model.is_empty() {
+                    g.model_echo.clone()
+                } else {
+                    model
+                };
                 let usage = msg.get("usage").cloned().unwrap_or_else(|| json!({}));
                 let mut frames = vec![json!({
                     "type": "message_start",
@@ -1912,7 +2154,11 @@ fn pump_thread(run: Arc<RunCore>, mut stdout: BufReader<std::process::ChildStdou
                         "content": [], "usage": usage.clone(),
                     }
                 })];
-                let blocks = msg.get("content").and_then(|c| c.as_array()).cloned().unwrap_or_default();
+                let blocks = msg
+                    .get("content")
+                    .and_then(|c| c.as_array())
+                    .cloned()
+                    .unwrap_or_default();
                 let mut tool_ids: Vec<String> = Vec::new();
                 for (i, b) in blocks.iter().enumerate() {
                     // anthropic 流式规矩：content_block_start 的块体不带正文，
@@ -1921,14 +2167,20 @@ fn pump_thread(run: Arc<RunCore>, mut stdout: BufReader<std::process::ChildStdou
                     let mut bare = b.clone();
                     match b.get("type").and_then(|t| t.as_str()).unwrap_or("") {
                         "text" => {
-                            g.said_words.push_str(&strip_words(b.get("text").and_then(|x| x.as_str()).unwrap_or("")));
+                            g.said_words.push_str(&strip_words(
+                                b.get("text").and_then(|x| x.as_str()).unwrap_or(""),
+                            ));
                             bare["text"] = Value::String(String::new());
                         }
                         "thinking" => {
                             bare["thinking"] = Value::String(String::new());
                         }
                         "tool_use" => {
-                            let name = b.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                            let name = b
+                                .get("name")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("")
+                                .to_string();
                             if let Some(m) = g.names.declared_of(&name) {
                                 bare["name"] = json!(m);
                             }
@@ -1938,7 +2190,9 @@ fn pump_thread(run: Arc<RunCore>, mut stdout: BufReader<std::process::ChildStdou
                         }
                         _ => {}
                     }
-                    frames.push(json!({"type": "content_block_start", "index": i, "content_block": bare}));
+                    frames.push(
+                        json!({"type": "content_block_start", "index": i, "content_block": bare}),
+                    );
                     match b.get("type").and_then(|t| t.as_str()).unwrap_or("") {
                         "text" => {
                             let t = b.get("text").and_then(|x| x.as_str()).unwrap_or("");
@@ -1958,7 +2212,10 @@ fn pump_thread(run: Arc<RunCore>, mut stdout: BufReader<std::process::ChildStdou
                     }
                     frames.push(json!({"type": "content_block_stop", "index": i}));
                 }
-                let stop_reason = msg.get("stop_reason").cloned().unwrap_or_else(|| json!("end_turn"));
+                let stop_reason = msg
+                    .get("stop_reason")
+                    .cloned()
+                    .unwrap_or_else(|| json!("end_turn"));
                 frames.push(json!({"type": "message_delta",
                     "delta": {"stop_reason": stop_reason, "stop_sequence": null},
                     "usage": usage}));
@@ -1984,7 +2241,11 @@ fn pump_thread(run: Arc<RunCore>, mut stdout: BufReader<std::process::ChildStdou
             // 会话架（savedSession）的原料
             "system" => {
                 if v.get("subtype").and_then(|s| s.as_str()) == Some("init") {
-                    if let Some(sid) = v.get("session_id").and_then(|s| s.as_str()).filter(|s| !s.is_empty()) {
+                    if let Some(sid) = v
+                        .get("session_id")
+                        .and_then(|s| s.as_str())
+                        .filter(|s| !s.is_empty())
+                    {
                         lock_run(&run).session_id = sid.to_string();
                     }
                 }
@@ -2002,8 +2263,14 @@ fn pump_thread(run: Arc<RunCore>, mut stdout: BufReader<std::process::ChildStdou
                 let is_error = v.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
                 if is_error {
                     // Go ended 的 !ok 臂（:2559）：失败回合不留驻留
-                    let text = v.get("result").and_then(|r| r.as_str()).unwrap_or("Claude Code error");
-                    let status = v.get("api_error_status").and_then(|s| s.as_u64()).unwrap_or(0) as u16;
+                    let text = v
+                        .get("result")
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("Claude Code error");
+                    let status = v
+                        .get("api_error_status")
+                        .and_then(|s| s.as_u64())
+                        .unwrap_or(0) as u16;
                     let status = if status == 0 { 502 } else { status };
                     {
                         let mut g = lock_run(&run);
@@ -2026,10 +2293,12 @@ fn pump_thread(run: Arc<RunCore>, mut stdout: BufReader<std::process::ChildStdou
                         // CLI 没发 message_stop 的怪流：补齐收尾帧（result 兜底）
                         if !g.got_stop {
                             g.got_stop = true;
-                            g.queue.push_back(Queued::Frame(json!({"type": "message_delta",
+                            g.queue
+                                .push_back(Queued::Frame(json!({"type": "message_delta",
                                 "delta": {"stop_reason": "end_turn", "stop_sequence": null},
                                 "usage": {}})));
-                            g.queue.push_back(Queued::Frame(json!({"type": "message_stop"})));
+                            g.queue
+                                .push_back(Queued::Frame(json!({"type": "message_stop"})));
                         }
                         let id = g.identity.take();
                         let said = std::mem::take(&mut g.said_words);
@@ -2070,7 +2339,12 @@ fn pump_thread(run: Arc<RunCore>, mut stdout: BufReader<std::process::ChildStdou
 /// （idle_key 空）与已被 abort 的（不在池里）不入架——失败回合的会话不能
 /// 当作对话的续点（Go abortFor 同款不出架）。
 fn pump_eof(run: &Arc<RunCore>, err: Option<String>) {
-    let tail = run.stderr_tail.lock().unwrap_or_else(|p| p.into_inner()).trim().to_string();
+    let tail = run
+        .stderr_tail
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .trim()
+        .to_string();
     let mut idle_key: Option<(String, String, Option<String>)> = None;
     {
         let mut g = lock_run(run);
@@ -2232,7 +2506,11 @@ fn helper_connection(mut stream: TcpStream) {
         let _ = helper_write_status(&mut stream, 202);
         return;
     };
-    let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("").to_string();
+    let method = req
+        .get("method")
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
     let params = req.get("params").cloned().unwrap_or(Value::Null);
     let answer: Result<Value, (i64, String)> = match method.as_str() {
         "initialize" => Ok(json!({
@@ -2250,7 +2528,9 @@ fn helper_connection(mut stream: TcpStream) {
     };
     let reply = match answer {
         Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-        Err((code, msg)) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": msg } }),
+        Err((code, msg)) => {
+            json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": msg } })
+        }
     };
     let _ = helper_write(&mut stream, 200, &reply);
 }
@@ -2269,7 +2549,8 @@ fn helper_write(stream: &mut TcpStream, status: u16, body: &Value) -> std::io::R
 }
 
 fn helper_write_status(stream: &mut TcpStream, status: u16) -> std::io::Result<()> {
-    let head = format!("HTTP/1.1 {status} Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    let head =
+        format!("HTTP/1.1 {status} Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     stream.write_all(head.as_bytes())?;
     stream.flush()
 }
@@ -2287,7 +2568,11 @@ fn helper_call(run: &Arc<RunCore>, params: &Value) -> Result<Value, (i64, String
         .and_then(|x| x.as_str())
         .unwrap_or("")
         .to_string();
-    let id = if id.is_empty() { format!("call_{}", hex_token()) } else { id };
+    let id = if id.is_empty() {
+        format!("call_{}", hex_token())
+    } else {
+        id
+    };
     {
         let mut g = lock_run(run);
         if g.closed {
@@ -2305,7 +2590,9 @@ fn helper_call(run: &Arc<RunCore>, params: &Value) -> Result<Value, (i64, String
         if let Some(early) = g.early.remove(&id) {
             return Ok(early);
         }
-        g.pending.entry(id.clone()).or_insert_with(|| PendingCall { arrived: None });
+        g.pending
+            .entry(id.clone())
+            .or_insert_with(|| PendingCall { arrived: None });
     }
     let mut g = lock_run(run);
     loop {
@@ -2325,7 +2612,11 @@ fn helper_call(run: &Arc<RunCore>, params: &Value) -> Result<Value, (i64, String
             g.pending.remove(&id);
             return Err((-32000, "claude bridge turn timed out".into()));
         }
-        let (g2, _) = run.state.1.wait_timeout(g, Duration::from_millis(500)).unwrap_or_else(|p| p.into_inner());
+        let (g2, _) = run
+            .state
+            .1
+            .wait_timeout(g, Duration::from_millis(500))
+            .unwrap_or_else(|p| p.into_inner());
         g = g2;
     }
 }
@@ -2353,7 +2644,13 @@ fn attach_segment(run: &Arc<RunCore>, identity: RequestIdentity) -> SegmentReade
         g.idle_key = None;
         run.state.1.notify_all();
     }
-    SegmentReader { core: run.clone(), natural: false, pre: VecDeque::new(), out: Vec::new(), pos: 0 }
+    SegmentReader {
+        core: run.clone(),
+        natural: false,
+        pre: VecDeque::new(),
+        out: Vec::new(),
+        pos: 0,
+    }
 }
 
 /// 给驻留进程的 stdin 写一行 user 消息（Go run.tell）。
@@ -2363,7 +2660,10 @@ fn tell_line(run: &Arc<RunCore>, content: &[Value]) -> Result<(), String> {
     bytes.push(b'\n');
     let mut g = run.stdin.lock().unwrap_or_else(|p| p.into_inner());
     match g.as_mut() {
-        Some(w) => w.write_all(&bytes).and_then(|_| w.flush()).map_err(|e| e.to_string()),
+        Some(w) => w
+            .write_all(&bytes)
+            .and_then(|_| w.flush())
+            .map_err(|e| e.to_string()),
         None => Err("claude bridge input is closed".into()),
     }
 }
@@ -2391,13 +2691,18 @@ fn spawn_run(
     if !helper_tools.is_empty() {
         // Go :1038-1059：tools.json + callback token 都在 run 自己的临时目录
         // 里；我们的 helper 在进程内，配置只剩 URL（token 在路径上）。
-        let port = ensure_helper().ok_or_else(|| (502u16, "claude bridge helper unavailable".to_string()))?;
+        let port = ensure_helper()
+            .ok_or_else(|| (502u16, "claude bridge helper unavailable".to_string()))?;
         let t = hex_token();
-        let dir = std::env::temp_dir().join(format!("marionette-claude-{}-{t}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("marionette-claude-{}-{t}", std::process::id()));
         std::fs::create_dir_all(&dir).map_err(|e| (502, format!("claude bridge workdir: {e}")))?;
         let cfg = json!({ "mcpServers": { MCP_SERVER: { "type": "http", "url": format!("http://127.0.0.1:{port}/{t}") } } });
-        std::fs::write(dir.join("mcp.json"), serde_json::to_vec(&cfg).unwrap_or_default())
-            .map_err(|e| (502, format!("claude bridge mcp config: {e}")))?;
+        std::fs::write(
+            dir.join("mcp.json"),
+            serde_json::to_vec(&cfg).unwrap_or_default(),
+        )
+        .map_err(|e| (502, format!("claude bridge mcp config: {e}")))?;
         mcp_arg = Some(dir.join("mcp.json").to_string_lossy().into_owned());
         token = Some(t);
         cfg_dir = Some(dir);
@@ -2418,7 +2723,9 @@ fn spawn_run(
     if let Some(dir) = claude_config_dir() {
         cmd.env("CLAUDE_CONFIG_DIR", dir);
     }
-    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| {
         if let Some(d) = &cfg_dir {
             let _ = std::fs::remove_dir_all(d);
@@ -2504,7 +2811,10 @@ fn spawn_run(
         std::thread::spawn(move || watchdog_thread(watch_core));
     }
     if let Some(t) = &token {
-        POOL.lock().unwrap_or_else(|e| e.into_inner()).runs.insert(t.clone(), core.clone());
+        POOL.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .runs
+            .insert(t.clone(), core.clone());
     }
     let reader = attach_segment(&core, identity);
     // 喂本回合（Go :1481 的 user 行）
@@ -2518,7 +2828,12 @@ fn spawn_run(
 /// Go continueWith（:6354）的移植：结果交给等待中的 tools/call（早到的存
 /// early），挂新段等续答。None = 交回 intercept 落「新起」（runExpired /
 /// answeredElsewhere / agent 不在等这些结果，Go :6389-6398）。
-fn continue_with(run: &Arc<RunCore>, fresh: &[FreshResult], said: &str, identity: RequestIdentity) -> Option<SegmentReader> {
+fn continue_with(
+    run: &Arc<RunCore>,
+    fresh: &[FreshResult],
+    said: &str,
+    identity: RequestIdentity,
+) -> Option<SegmentReader> {
     {
         let g = lock_run(run);
         if g.closed {
@@ -2578,7 +2893,11 @@ fn continue_with(run: &Arc<RunCore>, fresh: &[FreshResult], said: &str, identity
 
 /// Go resume（:2033）的主路径：把下一回合的增量消息写给驻留 run。
 /// tell 失败 → 杀 run 交回新起（Go abortFor 后 start 全量新起同款）。
-fn resume_run(run: &Arc<RunCore>, identity: &RequestIdentity, split: usize) -> Option<SegmentReader> {
+fn resume_run(
+    run: &Arc<RunCore>,
+    identity: &RequestIdentity,
+    split: usize,
+) -> Option<SegmentReader> {
     let reader = attach_segment(run, identity.clone());
     let offered = {
         let g = lock_run(run);
@@ -2619,11 +2938,25 @@ fn resume_spawn(
         names = ToolNames::default();
         allowed_all = true;
     }
-    let offered = if helper_tools.is_empty() { None } else { Some(&names) };
+    let offered = if helper_tools.is_empty() {
+        None
+    } else {
+        Some(&names)
+    };
     let blocks = render_turn(&identity.msgs[split..], offered);
-    let mut reader =
-        spawn_run(program, model, effort, &blocks, &helper_tools, names, allowed_all, identity.clone(), &[], Some(sid))
-            .map_err(|_| ())?;
+    let mut reader = spawn_run(
+        program,
+        model,
+        effort,
+        &blocks,
+        &helper_tools,
+        names,
+        allowed_all,
+        identity.clone(),
+        &[],
+        Some(sid),
+    )
+    .map_err(|_| ())?;
     // 偷看第一步：Event = 会话续上了（帧存回 reader，客户端不丢内容）；
     // Failed / 段收口 = 续不上（Go :1428-1432：加载不了会话的 Claude Code
     // 直接退，先喂回合它就一声不吭地结束）
@@ -2685,9 +3018,16 @@ impl SegmentReader {
                 // 别让客户端挂满 600s、也别重复吐超时帧
                 g.segment_done = true;
                 self.natural = true;
-                return Some(Step::Failed(504, "claude bridge turn exceeded its budget".into()));
+                return Some(Step::Failed(
+                    504,
+                    "claude bridge turn exceeded its budget".into(),
+                ));
             }
-            let (g2, _) = core.state.1.wait_timeout(g, Duration::from_millis(500)).unwrap_or_else(|p| p.into_inner());
+            let (g2, _) = core
+                .state
+                .1
+                .wait_timeout(g, Duration::from_millis(500))
+                .unwrap_or_else(|p| p.into_inner());
             g = g2;
         }
     }
@@ -2705,46 +3045,86 @@ impl SegmentReader {
                 Some(Step::Event(v)) => {
                     match v.get("type").and_then(|t| t.as_str()).unwrap_or("") {
                         "message_start" => {
-                            id = v.pointer("/message/id").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                            model = v.pointer("/message/model").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                            id = v
+                                .pointer("/message/id")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            model = v
+                                .pointer("/message/model")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("")
+                                .to_string();
                             if let Some(u) = v.pointer("/message/usage").filter(|u| u.is_object()) {
                                 usage = Some(u.clone());
                             }
                         }
                         "content_block_start" => {
-                            let index = v.get("index").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+                            let index =
+                                v.get("index").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
                             let block = v.get("content_block").cloned().unwrap_or(Value::Null);
                             blocks.push((index, block));
                         }
                         "content_block_delta" => {
-                            let index = v.get("index").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+                            let index =
+                                v.get("index").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
                             let delta = v.get("delta").cloned().unwrap_or(Value::Null);
-                            let Some((_, block)) = blocks.iter_mut().rev().find(|(i, _)| *i == index) else { continue };
+                            let Some((_, block)) =
+                                blocks.iter_mut().rev().find(|(i, _)| *i == index)
+                            else {
+                                continue;
+                            };
                             match delta.get("type").and_then(|t| t.as_str()).unwrap_or("") {
                                 "text_delta" => {
-                                    let t = delta.get("text").and_then(|x| x.as_str()).unwrap_or("");
-                                    let cur = block.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                                    let t =
+                                        delta.get("text").and_then(|x| x.as_str()).unwrap_or("");
+                                    let cur = block
+                                        .get("text")
+                                        .and_then(|x| x.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
                                     block["text"] = Value::String(cur + t);
                                 }
                                 "thinking_delta" => {
-                                    let t = delta.get("thinking").and_then(|x| x.as_str()).unwrap_or("");
-                                    let cur = block.get("thinking").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                                    let t = delta
+                                        .get("thinking")
+                                        .and_then(|x| x.as_str())
+                                        .unwrap_or("");
+                                    let cur = block
+                                        .get("thinking")
+                                        .and_then(|x| x.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
                                     block["thinking"] = Value::String(cur + t);
                                 }
                                 "signature_delta" => {
-                                    let t = delta.get("signature").and_then(|x| x.as_str()).unwrap_or("");
-                                    let cur = block.get("signature").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                                    let t = delta
+                                        .get("signature")
+                                        .and_then(|x| x.as_str())
+                                        .unwrap_or("");
+                                    let cur = block
+                                        .get("signature")
+                                        .and_then(|x| x.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
                                     block["signature"] = Value::String(cur + t);
                                 }
                                 "input_json_delta" => {
-                                    let t = delta.get("partial_json").and_then(|x| x.as_str()).unwrap_or("");
+                                    let t = delta
+                                        .get("partial_json")
+                                        .and_then(|x| x.as_str())
+                                        .unwrap_or("");
                                     *json_inputs.entry(index).or_default() += t;
                                 }
                                 _ => {}
                             }
                         }
                         "message_delta" => {
-                            if let Some(s) = v.pointer("/delta/stop_reason").and_then(|x| x.as_str()).filter(|s| !s.is_empty()) {
+                            if let Some(s) = v
+                                .pointer("/delta/stop_reason")
+                                .and_then(|x| x.as_str())
+                                .filter(|s| !s.is_empty())
+                            {
                                 stop = Some(s.to_string());
                             }
                             if let Some(u) = v.get("usage").filter(|u| u.is_object()) {
@@ -2761,9 +3141,16 @@ impl SegmentReader {
         // input_json_delta 的分片拼装成对象（拼不出就 {}，别让客户端解析炸）
         for (index, block) in blocks.iter_mut() {
             if let Some(raw) = json_inputs.remove(index) {
-                let parsed = serde_json::from_str::<Value>(raw.trim()).unwrap_or_else(|_| json!({}));
-                block["input"] = if parsed.is_object() { parsed } else { json!({}) };
-            } else if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") && block.get("input").is_none() {
+                let parsed =
+                    serde_json::from_str::<Value>(raw.trim()).unwrap_or_else(|_| json!({}));
+                block["input"] = if parsed.is_object() {
+                    parsed
+                } else {
+                    json!({})
+                };
+            } else if block.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+                && block.get("input").is_none()
+            {
                 block["input"] = json!({});
             }
         }
@@ -2867,7 +3254,10 @@ fn error_kind(status: u16) -> &'static str {
 
 /// anthropic 错误信封（grok_account 同款形状）。
 fn anthropic_error(status: u16, message: &str) -> Reply {
-    Reply::json(status, &json!({ "type": "error", "error": { "type": error_kind(status), "message": message } }))
+    Reply::json(
+        status,
+        &json!({ "type": "error", "error": { "type": error_kind(status), "message": message } }),
+    )
 }
 
 // =====================================================================
@@ -2918,7 +3308,10 @@ fn claude_limits_of(info: &Value) -> Vec<Value> {
             push(kind, used, resets);
         }
     }
-    let told = info.get("rateLimitType").and_then(|t| t.as_str()).unwrap_or("");
+    let told = info
+        .get("rateLimitType")
+        .and_then(|t| t.as_str())
+        .unwrap_or("");
     if !told.is_empty() {
         let already = info
             .get("unifiedWindows")
@@ -2926,10 +3319,18 @@ fn claude_limits_of(info: &Value) -> Vec<Value> {
             .is_some_and(|w| w.contains_key(told));
         if !already {
             match info.get("utilization").and_then(|u| u.as_f64()) {
-                Some(used) => push(told, used, info.get("resetsAt").and_then(|r| r.as_i64()).unwrap_or(0)),
+                Some(used) => push(
+                    told,
+                    used,
+                    info.get("resetsAt").and_then(|r| r.as_i64()).unwrap_or(0),
+                ),
                 None => {
                     if info.get("status").and_then(|s| s.as_str()) == Some("rejected") {
-                        push(told, 1.0, info.get("resetsAt").and_then(|r| r.as_i64()).unwrap_or(0));
+                        push(
+                            told,
+                            1.0,
+                            info.get("resetsAt").and_then(|r| r.as_i64()).unwrap_or(0),
+                        );
                     }
                 }
             }
@@ -2942,7 +3343,8 @@ fn rfc3339(secs: i64) -> Option<String> {
     if secs <= 0 {
         return None;
     }
-    chrono::DateTime::from_timestamp(secs, 0).map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+    chrono::DateTime::from_timestamp(secs, 0)
+        .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
 }
 
 /// 桥跑动时 Anthropic 告诉 Claude Code 的窗口（最新一次读数，30 分钟内新鲜）。
@@ -2958,7 +3360,9 @@ fn note_limits(windows: &[Value]) {
 
 fn cached_limits() -> Option<Vec<Value>> {
     let g = LIMITS_CACHE.lock().unwrap_or_else(|p| p.into_inner());
-    g.as_ref().filter(|(at, _)| at.elapsed() < LIMITS_FRESH).map(|(_, w)| w.clone())
+    g.as_ref()
+        .filter(|(at, _)| at.elapsed() < LIMITS_FRESH)
+        .map(|(_, w)| w.clone())
 }
 
 #[cfg(test)]
@@ -2995,7 +3399,9 @@ static USAGE_STATE: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
 fn run_usage_cli() -> Option<String> {
     let program = resolved_program()?;
     let mut cmd = usage_command(&program);
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = cmd.spawn().ok()?;
     let stdout = child.stdout.take()?;
     let child = Arc::new(Mutex::new(child));
@@ -3072,11 +3478,14 @@ static USAGE_BUSY: AtomicBool = AtomicBool::new(false);
 /// 后台跑一次 /usage，最多等 `USAGE_WAIT`。
 fn refresh_usage() {
     if !USAGE_BUSY.swap(true, Ordering::AcqRel) {
-        let spawned = std::thread::Builder::new().name("claude-usage".into()).spawn(|| {
-            let text = run_usage_cli();
-            *USAGE_STATE.lock().unwrap_or_else(|p| p.into_inner()) = Some((Instant::now(), text));
-            USAGE_BUSY.store(false, Ordering::Release);
-        });
+        let spawned = std::thread::Builder::new()
+            .name("claude-usage".into())
+            .spawn(|| {
+                let text = run_usage_cli();
+                *USAGE_STATE.lock().unwrap_or_else(|p| p.into_inner()) =
+                    Some((Instant::now(), text));
+                USAGE_BUSY.store(false, Ordering::Release);
+            });
         if spawned.is_err() {
             USAGE_BUSY.store(false, Ordering::Release);
         }
@@ -3206,15 +3615,22 @@ fn parse_reset(s: &str, span_secs: i64, now: i64) -> Option<i64> {
     let now_date = chrono::Local::now();
     let to_unix = |n: chrono::NaiveDateTime| -> Option<i64> {
         use chrono::TimeZone;
-        chrono::Local.from_local_datetime(&n).single().map(|t| t.timestamp())
+        chrono::Local
+            .from_local_datetime(&n)
+            .single()
+            .map(|t| t.timestamp())
     };
     // 只有钟点（"3:30pm"）：今天的这个钟点，过了就明天（Go :327 的裸钟点
     // 布局；窗口内取，过去最近兜底）
     let Some(day) = day else {
-        let base = chrono::NaiveDate::from_ymd_opt(now_date.year(), now_date.month(), now_date.day())?
-            .and_hms_opt(hour, minute, 0)?;
+        let base =
+            chrono::NaiveDate::from_ymd_opt(now_date.year(), now_date.month(), now_date.day())?
+                .and_hms_opt(hour, minute, 0)?;
         for offset in [0, 1, -1] {
-            if let Some(t) = base.checked_add_signed(chrono::Duration::days(offset)).and_then(|n| to_unix(n)) {
+            if let Some(t) = base
+                .checked_add_signed(chrono::Duration::days(offset))
+                .and_then(|n| to_unix(n))
+            {
                 let low = now - 24 * 3600;
                 let high = now + span_secs + 2 * 3600;
                 if t > low && t <= high {
@@ -3225,7 +3641,8 @@ fn parse_reset(s: &str, span_secs: i64, now: i64) -> Option<i64> {
         return None;
     };
     let month = month?;
-    let naive = |y: i32| chrono::NaiveDate::from_ymd_opt(y, month, day)?.and_hms_opt(hour, minute, 0);
+    let naive =
+        |y: i32| chrono::NaiveDate::from_ymd_opt(y, month, day)?.and_hms_opt(hour, minute, 0);
     if let Some(y) = year {
         return to_unix(naive(y)?);
     }
@@ -3258,7 +3675,12 @@ fn parse_usage_windows(text: &str, now: i64) -> Vec<Value> {
     const WEEK: i64 = 7 * 24 * 3600;
     let mut out: Vec<Value> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
-    let emit = |kind: &str, name: &str, span: i64, rest: &str, out: &mut Vec<Value>, seen: &mut Vec<String>| {
+    let emit = |kind: &str,
+                name: &str,
+                span: i64,
+                rest: &str,
+                out: &mut Vec<Value>,
+                seen: &mut Vec<String>| {
         if seen.iter().any(|s| s == name) {
             return;
         }
@@ -3288,11 +3710,22 @@ fn parse_usage_windows(text: &str, now: i64) -> Vec<Value> {
                 },
                 None => (String::new(), r),
             };
-            let scope = scope.strip_suffix(" only").unwrap_or(&scope).trim().to_string();
+            let scope = scope
+                .strip_suffix(" only")
+                .unwrap_or(&scope)
+                .trim()
+                .to_string();
             if scope.is_empty() || scope.eq_ignore_ascii_case("all models") {
                 emit("seven_day", "7 days", WEEK, rest, &mut out, &mut seen);
             } else {
-                emit("seven_day_scoped", &format!("7 days · {scope}"), WEEK, rest, &mut out, &mut seen);
+                emit(
+                    "seven_day_scoped",
+                    &format!("7 days · {scope}"),
+                    WEEK,
+                    rest,
+                    &mut out,
+                    &mut seen,
+                );
             }
         }
     }
@@ -3432,8 +3865,15 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
         "low" | "medium" | "high" | "xhigh" | "max" => Some(effort),
         _ => None,
     };
-    let wants_stream = parsed.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
-    let tools: Vec<Value> = parsed.get("tools").and_then(|t| t.as_array()).cloned().unwrap_or_default();
+    let wants_stream = parsed
+        .get("stream")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false);
+    let tools: Vec<Value> = parsed
+        .get("tools")
+        .and_then(|t| t.as_array())
+        .cloned()
+        .unwrap_or_default();
     let tool_choice = tool_choice_of(&parsed);
     let identity = RequestIdentity {
         owner: account.plan.clone(),
@@ -3443,7 +3883,11 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
         system: system_text(parsed.get("system").unwrap_or(&Value::Null)),
         tools_json: serde_json::to_string(&tools).unwrap_or_default(),
         tools_empty: tools.is_empty(),
-        msgs: parsed.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default(),
+        msgs: parsed
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .cloned()
+            .unwrap_or_default(),
     };
 
     // ① 工具结果回填（Go serveClaudeSubscription 的 match → continueWith，
@@ -3471,7 +3915,16 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
     // ③ 全量新起（Go start :943-947 同款回退）。
     if let Some((key, split)) = cold {
         if let Some(sid) = unshelve(&key, effort.as_deref()) {
-            if let Ok(reader) = resume_spawn(&program, model, effort.as_deref(), &identity, split, &tools, &tool_choice, &sid) {
+            if let Ok(reader) = resume_spawn(
+                &program,
+                model,
+                effort.as_deref(),
+                &identity,
+                split,
+                &tools,
+                &tool_choice,
+                &sid,
+            ) {
                 return Some(reply_of(reader, wants_stream, model));
             }
         }
@@ -3485,9 +3938,24 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
         names = ToolNames::default();
         allowed_all = true;
     }
-    let offered = if helper_tools.is_empty() { None } else { Some(&names) };
+    let offered = if helper_tools.is_empty() {
+        None
+    } else {
+        Some(&names)
+    };
     let prompt = render_prompt(&parsed, offered);
-    match spawn_run(&program, model, effort.as_deref(), &prompt, &helper_tools, names, allowed_all, identity, &[], None) {
+    match spawn_run(
+        &program,
+        model,
+        effort.as_deref(),
+        &prompt,
+        &helper_tools,
+        names,
+        allowed_all,
+        identity,
+        &[],
+        None,
+    ) {
         Ok(reader) => Some(reply_of(reader, wants_stream, model)),
         Err((status, msg)) => Some(anthropic_error(status, &msg)),
     }
@@ -3537,7 +4005,9 @@ mod tests {
     /// 沙箱世界：临时目录 + TEST_SEAM + XDG 重定向（grok/codex 测试同款，
     /// 全部取 TEST_SANDBOX_LOCK 串行）。
     fn world(seam_cli: Option<Program>, with_logins: bool) -> (Gateway, World) {
-        let lock = crate::engine_gateway::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let lock = crate::engine_gateway::TEST_SANDBOX_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         reset_for_tests();
         let dir = std::env::temp_dir().join(format!(
             "marionette-engine-claude-{}-{}",
@@ -3548,10 +4018,18 @@ mod tests {
         std::fs::create_dir_all(dir.join("home")).unwrap();
         std::fs::create_dir_all(dir.join("logins")).unwrap();
         std::fs::create_dir_all(dir.join("shelf")).unwrap();
-        std::fs::write(dir.join("magpie").join("providers.json"), r#"{"providers":[]}"#).unwrap();
+        std::fs::write(
+            dir.join("magpie").join("providers.json"),
+            r#"{"providers":[]}"#,
+        )
+        .unwrap();
         *TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = Some(Seam {
             home: dir.join("home"),
-            logins: if with_logins { Some(dir.join("logins")) } else { None },
+            logins: if with_logins {
+                Some(dir.join("logins"))
+            } else {
+                None
+            },
             shelf: Some(dir.join("shelf")),
             cli: seam_cli,
         });
@@ -3576,7 +4054,10 @@ mod tests {
         let node = find_node().expect("node on PATH (fake claude CLI needs it)");
         let script = world_dir.join("fake-claude.js");
         std::fs::write(&script, FAKE_CLI_JS).unwrap();
-        Program { program: node, prefix: vec![script.to_string_lossy().into_owned()] }
+        Program {
+            program: node,
+            prefix: vec![script.to_string_lossy().into_owned()],
+        }
     }
 
     fn find_node() -> Option<String> {
@@ -3592,7 +4073,11 @@ mod tests {
         if !out.status.success() {
             return None;
         }
-        String::from_utf8_lossy(&out.stdout).lines().next().map(|l| l.trim().to_string()).filter(|l| !l.is_empty())
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .next()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
     }
 
     const FAKE_CLI_JS: &str = r#"
@@ -3754,7 +4239,11 @@ if (mode === "usage") {
                 "subscriptionType": plan,
             }
         });
-        std::fs::write(world.dir.join("home").join(".credentials.json"), serde_json::to_vec(&creds).unwrap()).unwrap();
+        std::fs::write(
+            world.dir.join("home").join(".credentials.json"),
+            serde_json::to_vec(&creds).unwrap(),
+        )
+        .unwrap();
     }
 
     fn write_login(world: &World, plan: &str) {
@@ -3764,7 +4253,11 @@ if (mode === "usage") {
                 "accessToken": "test-login-token", "refreshToken": "test-login-refresh",
                 "expiresAt": (now_secs() + 7200) * 1000, "subscriptionType": plan } }
         }]);
-        std::fs::write(world.dir.join("logins").join("logins.json"), serde_json::to_vec(&logins).unwrap()).unwrap();
+        std::fs::write(
+            world.dir.join("logins").join("logins.json"),
+            serde_json::to_vec(&logins).unwrap(),
+        )
+        .unwrap();
     }
 
     fn messages_body(model: &str, stream: bool) -> Value {
@@ -3788,13 +4281,18 @@ if (mode === "usage") {
 
     fn read_stream(reply: Reply) -> String {
         match reply {
-            Reply::Stream { status, mut reader, .. } => {
+            Reply::Stream {
+                status, mut reader, ..
+            } => {
                 assert_eq!(status, 200);
                 let mut buf = String::new();
                 reader.read_to_string(&mut buf).unwrap();
                 buf
             }
-            Reply::Json { status, body } => panic!("expected stream, got json {status}: {}", String::from_utf8_lossy(&body)),
+            Reply::Json { status, body } => panic!(
+                "expected stream, got json {status}: {}",
+                String::from_utf8_lossy(&body)
+            ),
         }
     }
 
@@ -3823,7 +4321,10 @@ if (mode === "usage") {
         assert!(listed_rows(&[]).is_empty());
         assert!(quota_row(&[]).is_none());
         // intercept 返回 None（走原路径 → routes 404）
-        let reply = super::super::routes::route(&post(&messages_body("claude/claude-sonnet-5", false)), &gateway);
+        let reply = super::super::routes::route(
+            &post(&messages_body("claude/claude-sonnet-5", false)),
+            &gateway,
+        );
         match reply {
             Reply::Json { status, .. } => assert_eq!(status, 404),
             _ => panic!("expected 404"),
@@ -3845,7 +4346,10 @@ if (mode === "usage") {
         write_credentials(&w, "max");
         let before = std::fs::read(w.dir.join("home").join(".credentials.json")).unwrap();
         drop(discover());
-        let reply = super::super::routes::route(&post(&messages_body("claude/claude-sonnet-5", false)), &gateway);
+        let reply = super::super::routes::route(
+            &post(&messages_body("claude/claude-sonnet-5", false)),
+            &gateway,
+        );
         match reply {
             Reply::Json { status, .. } => assert_eq!(status, 404), // 没 CLI 仍 404
             _ => panic!("expected 404"),
@@ -3867,7 +4371,11 @@ if (mode === "usage") {
     fn signed_out_credentials_do_not_count() {
         let (_gateway, w) = world(None, false);
         let creds = json!({ "claudeAiOauth": { "accessToken": "", "refreshToken": "" } });
-        std::fs::write(w.dir.join("home").join(".credentials.json"), serde_json::to_vec(&creds).unwrap()).unwrap();
+        std::fs::write(
+            w.dir.join("home").join(".credentials.json"),
+            serde_json::to_vec(&creds).unwrap(),
+        )
+        .unwrap();
         assert!(discover().is_none());
     }
 
@@ -3881,45 +4389,117 @@ if (mode === "usage") {
         write_credentials(&w, "max");
         let cli = fake_cli(&w.dir);
         std::env::set_var("MARIONETTE_FAKE_CLAUDE_DUMP", w.dir.join("dump.json"));
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
-        let reply = intercept(&gateway, &post(&messages_body("claude/claude-sonnet-5", true)), Proto::Anthropic).expect("intercepted");
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(cli);
+        let reply = intercept(
+            &gateway,
+            &post(&messages_body("claude/claude-sonnet-5", true)),
+            Proto::Anthropic,
+        )
+        .expect("intercepted");
         let sse = read_stream(reply);
         let events = sse_events(&sse);
-        let types: Vec<&str> = events.iter().map(|e| e.get("type").and_then(|t| t.as_str()).unwrap_or("")).collect();
+        let types: Vec<&str> = events
+            .iter()
+            .map(|e| e.get("type").and_then(|t| t.as_str()).unwrap_or(""))
+            .collect();
         // 帧族断言：message_start 第一帧 → 块开/delta/停 → message_delta(带
         // stop_reason+usage) → message_stop（anthropic SDK 的硬顺序）
         assert_eq!(types.first(), Some(&"message_start"));
         assert_eq!(types.last(), Some(&"message_stop"));
         assert!(types.contains(&"content_block_delta"));
-        let delta = events.iter().find(|e| e.get("type").and_then(|t| t.as_str()) == Some("content_block_delta")).unwrap();
-        assert_eq!(delta.pointer("/delta/text").and_then(|t| t.as_str()), Some("你好，世界"));
-        let md = events.iter().find(|e| e.get("type").and_then(|t| t.as_str()) == Some("message_delta")).unwrap();
-        assert_eq!(md.pointer("/delta/stop_reason").and_then(|s| s.as_str()), Some("end_turn"));
-        assert_eq!(md.pointer("/usage/output_tokens").and_then(|u| u.as_i64()), Some(2));
+        let delta = events
+            .iter()
+            .find(|e| e.get("type").and_then(|t| t.as_str()) == Some("content_block_delta"))
+            .unwrap();
+        assert_eq!(
+            delta.pointer("/delta/text").and_then(|t| t.as_str()),
+            Some("你好，世界")
+        );
+        let md = events
+            .iter()
+            .find(|e| e.get("type").and_then(|t| t.as_str()) == Some("message_delta"))
+            .unwrap();
+        assert_eq!(
+            md.pointer("/delta/stop_reason").and_then(|s| s.as_str()),
+            Some("end_turn")
+        );
+        assert_eq!(
+            md.pointer("/usage/output_tokens").and_then(|u| u.as_i64()),
+            Some(2)
+        );
         let start = events.first().unwrap();
-        assert_eq!(start.pointer("/message/model").and_then(|m| m.as_str()), Some("claude-sonnet-5"));
+        assert_eq!(
+            start.pointer("/message/model").and_then(|m| m.as_str()),
+            Some("claude-sonnet-5")
+        );
         // 假 CLI 记录的 argv：--model 直传 + 桥参数族（Go claudeCLIArgs 同款）
         let dump = dump_of(&w);
-        let argv: Vec<String> = dump.get("argv").unwrap().as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+        let argv: Vec<String> = dump
+            .get("argv")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
         let joined = argv.join(" ");
-        for flag in ["-p", "--output-format stream-json", "--input-format stream-json", "--include-partial-messages", "--verbose", "--model claude-sonnet-5", "--tools ", "--strict-mcp-config", "--dangerously-skip-permissions"] {
+        for flag in [
+            "-p",
+            "--output-format stream-json",
+            "--input-format stream-json",
+            "--include-partial-messages",
+            "--verbose",
+            "--model claude-sonnet-5",
+            "--tools ",
+            "--strict-mcp-config",
+            "--dangerously-skip-permissions",
+        ] {
             assert!(joined.contains(flag), "argv missing `{flag}`: {joined}");
         }
-        assert!(!joined.contains("--mcp-config"), "no MCP helper in the core path");
+        assert!(
+            !joined.contains("--mcp-config"),
+            "no MCP helper in the core path"
+        );
         // 会话落盘开着（Go :1116 摘掉 --no-session-persistence）——续命的前提
-        assert!(!joined.contains("--no-session-persistence"), "sessions persist for the shelf: {joined}");
-        assert!(!joined.contains("--resume"), "a fresh run never resumes: {joined}");
+        assert!(
+            !joined.contains("--no-session-persistence"),
+            "sessions persist for the shelf: {joined}"
+        );
+        assert!(
+            !joined.contains("--resume"),
+            "a fresh run never resumes: {joined}"
+        );
         // stdin：一行 user 消息，content 是渲染后的 text 块（system 一块 +
         // 对话一块，Human: 标注）
         let stdin = dump.get("stdin").unwrap().as_str().unwrap();
         let line: Value = serde_json::from_str(stdin.trim_end()).unwrap();
         assert_eq!(line.pointer("/type").and_then(|t| t.as_str()), Some("user"));
-        assert_eq!(line.pointer("/message/role").and_then(|r| r.as_str()), Some("user"));
-        let sys_block = line.pointer("/message/content/0/text").and_then(|t| t.as_str()).unwrap();
-        assert!(sys_block.contains("<external_system_instructions>"), "system wrapped: {sys_block}");
+        assert_eq!(
+            line.pointer("/message/role").and_then(|r| r.as_str()),
+            Some("user")
+        );
+        let sys_block = line
+            .pointer("/message/content/0/text")
+            .and_then(|t| t.as_str())
+            .unwrap();
+        assert!(
+            sys_block.contains("<external_system_instructions>"),
+            "system wrapped: {sys_block}"
+        );
         assert!(sys_block.contains("You are a helpful assistant."));
-        let convo_block = line.pointer("/message/content/1/text").and_then(|t| t.as_str()).unwrap();
-        assert!(convo_block.contains("Human: 你好"), "conversation labeled: {convo_block}");
+        let convo_block = line
+            .pointer("/message/content/1/text")
+            .and_then(|t| t.as_str())
+            .unwrap();
+        assert!(
+            convo_block.contains("Human: 你好"),
+            "conversation labeled: {convo_block}"
+        );
         // ANTHROPIC_BASE_URL 必须被摘掉（否则桥会打回引擎自己）
         assert_eq!(dump.get("baseUrl"), Some(&Value::Null));
         std::env::remove_var("MARIONETTE_FAKE_CLAUDE_DUMP");
@@ -3930,18 +4510,40 @@ if (mode === "usage") {
         let (gateway, w) = world(None, false);
         write_credentials(&w, "max");
         let cli = fake_cli(&w.dir);
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
-        let reply = intercept(&gateway, &post(&messages_body("claude/claude-opus-5-5", false)), Proto::Anthropic).expect("intercepted");
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(cli);
+        let reply = intercept(
+            &gateway,
+            &post(&messages_body("claude/claude-opus-5-5", false)),
+            Proto::Anthropic,
+        )
+        .expect("intercepted");
         match reply {
             Reply::Json { status, body } => {
                 assert_eq!(status, 200);
                 let v: Value = serde_json::from_slice(&body).unwrap();
                 assert_eq!(v.get("type").and_then(|t| t.as_str()), Some("message"));
                 assert_eq!(v.get("role").and_then(|r| r.as_str()), Some("assistant"));
-                assert_eq!(v.get("model").and_then(|m| m.as_str()), Some("claude-opus-5-5"));
-                assert_eq!(v.pointer("/content/0/text").and_then(|t| t.as_str()), Some("你好，世界"));
-                assert_eq!(v.get("stop_reason").and_then(|s| s.as_str()), Some("end_turn"));
-                assert_eq!(v.pointer("/usage/output_tokens").and_then(|u| u.as_i64()), Some(2));
+                assert_eq!(
+                    v.get("model").and_then(|m| m.as_str()),
+                    Some("claude-opus-5-5")
+                );
+                assert_eq!(
+                    v.pointer("/content/0/text").and_then(|t| t.as_str()),
+                    Some("你好，世界")
+                );
+                assert_eq!(
+                    v.get("stop_reason").and_then(|s| s.as_str()),
+                    Some("end_turn")
+                );
+                assert_eq!(
+                    v.pointer("/usage/output_tokens").and_then(|u| u.as_i64()),
+                    Some(2)
+                );
             }
             _ => panic!("expected json"),
         }
@@ -3953,14 +4555,32 @@ if (mode === "usage") {
         write_credentials(&w, "max");
         let cli = fake_cli(&w.dir);
         std::env::set_var("MARIONETTE_FAKE_CLAUDE_MODE", "error");
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
-        let reply = intercept(&gateway, &post(&messages_body("claude/claude-sonnet-5", false)), Proto::Anthropic).expect("intercepted");
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(cli);
+        let reply = intercept(
+            &gateway,
+            &post(&messages_body("claude/claude-sonnet-5", false)),
+            Proto::Anthropic,
+        )
+        .expect("intercepted");
         match reply {
             Reply::Json { status, body } => {
                 assert_eq!(status, 429);
                 let v: Value = serde_json::from_slice(&body).unwrap();
-                assert_eq!(v.pointer("/error/type").and_then(|t| t.as_str()), Some("rate_limit_error"));
-                assert!(v.pointer("/error/message").unwrap().as_str().unwrap().contains("rate limited"));
+                assert_eq!(
+                    v.pointer("/error/type").and_then(|t| t.as_str()),
+                    Some("rate_limit_error")
+                );
+                assert!(v
+                    .pointer("/error/message")
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .contains("rate limited"));
             }
             _ => panic!("expected json"),
         }
@@ -3973,12 +4593,28 @@ if (mode === "usage") {
         write_credentials(&w, "max");
         let cli = fake_cli(&w.dir);
         std::env::set_var("MARIONETTE_FAKE_CLAUDE_MODE", "error");
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
-        let reply = intercept(&gateway, &post(&messages_body("claude/claude-sonnet-5", true)), Proto::Anthropic).expect("intercepted");
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(cli);
+        let reply = intercept(
+            &gateway,
+            &post(&messages_body("claude/claude-sonnet-5", true)),
+            Proto::Anthropic,
+        )
+        .expect("intercepted");
         let sse = read_stream(reply);
         let events = sse_events(&sse);
-        let err = events.iter().find(|e| e.get("type").and_then(|t| t.as_str()) == Some("error")).expect("error frame");
-        assert_eq!(err.pointer("/error/type").and_then(|t| t.as_str()), Some("rate_limit_error"));
+        let err = events
+            .iter()
+            .find(|e| e.get("type").and_then(|t| t.as_str()) == Some("error"))
+            .expect("error frame");
+        assert_eq!(
+            err.pointer("/error/type").and_then(|t| t.as_str()),
+            Some("rate_limit_error")
+        );
         std::env::remove_var("MARIONETTE_FAKE_CLAUDE_MODE");
     }
 
@@ -3990,11 +4626,24 @@ if (mode === "usage") {
         write_credentials(&w, "max");
         let cli = fake_cli(&w.dir);
         std::env::set_var("MARIONETTE_FAKE_CLAUDE_MODE", "noresult");
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
-        let reply = intercept(&gateway, &post(&messages_body("claude/claude-sonnet-5", true)), Proto::Anthropic).expect("intercepted");
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(cli);
+        let reply = intercept(
+            &gateway,
+            &post(&messages_body("claude/claude-sonnet-5", true)),
+            Proto::Anthropic,
+        )
+        .expect("intercepted");
         let sse = read_stream(reply);
         let events = sse_events(&sse);
-        let types: Vec<&str> = events.iter().map(|e| e.get("type").and_then(|t| t.as_str()).unwrap_or("")).collect();
+        let types: Vec<&str> = events
+            .iter()
+            .map(|e| e.get("type").and_then(|t| t.as_str()).unwrap_or(""))
+            .collect();
         assert_eq!(types.last(), Some(&"message_stop"));
         assert!(!types.contains(&"error"), "clean end, no error: {types:?}");
         std::env::remove_var("MARIONETTE_FAKE_CLAUDE_MODE");
@@ -4006,12 +4655,25 @@ if (mode === "usage") {
         write_credentials(&w, "max");
         let cli = fake_cli(&w.dir);
         std::env::set_var("MARIONETTE_FAKE_CLAUDE_MODE", "whole");
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
-        let reply = intercept(&gateway, &post(&messages_body("claude/claude-sonnet-5", false)), Proto::Anthropic).expect("intercepted");
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(cli);
+        let reply = intercept(
+            &gateway,
+            &post(&messages_body("claude/claude-sonnet-5", false)),
+            Proto::Anthropic,
+        )
+        .expect("intercepted");
         match reply {
             Reply::Json { status: _, body } => {
                 let v: Value = serde_json::from_slice(&body).unwrap();
-                assert_eq!(v.pointer("/content/0/text").and_then(|t| t.as_str()), Some("whole message reply"));
+                assert_eq!(
+                    v.pointer("/content/0/text").and_then(|t| t.as_str()),
+                    Some("whole message reply")
+                );
                 assert_eq!(v.get("id").and_then(|i| i.as_str()), Some("msg_whole"));
             }
             Reply::Stream { status, .. } => panic!("expected json, got stream {status}"),
@@ -4024,17 +4686,37 @@ if (mode === "usage") {
         let (gateway, w) = world(None, false);
         write_credentials(&w, "max");
         let cli = fake_cli(&w.dir);
-        std::env::set_var("MARIONETTE_FAKE_CLAUDE_DUMP", w.dir.join("dump-effort.json"));
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
+        std::env::set_var(
+            "MARIONETTE_FAKE_CLAUDE_DUMP",
+            w.dir.join("dump-effort.json"),
+        );
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(cli);
         let mut body = messages_body("claude/claude-opus-5", false);
         body["thinking"] = json!({ "type": "enabled", "budget_tokens": 24000 });
         let reply = intercept(&gateway, &post(&body), Proto::Anthropic).expect("intercepted");
         assert!(matches!(reply, Reply::Json { status: 200, .. }));
-        let dump: Value = serde_json::from_slice(&std::fs::read(w.dir.join("dump-effort.json")).unwrap()).unwrap();
-        let argv: Vec<String> = dump.get("argv").unwrap().as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+        let dump: Value =
+            serde_json::from_slice(&std::fs::read(w.dir.join("dump-effort.json")).unwrap())
+                .unwrap();
+        let argv: Vec<String> = dump
+            .get("argv")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
         let joined = argv.join(" ");
         assert!(joined.contains("--effort high"), "effort flag: {joined}");
-        assert!(joined.contains("--thinking-display summarized"), "thinking display: {joined}");
+        assert!(
+            joined.contains("--thinking-display summarized"),
+            "thinking display: {joined}"
+        );
         std::env::remove_var("MARIONETTE_FAKE_CLAUDE_DUMP");
     }
 
@@ -4066,7 +4748,10 @@ if (mode === "usage") {
         let blocks = render_prompt(&body, None);
         assert_eq!(blocks.len(), 2); // system + 对话
         let text = blocks[1].get("text").and_then(|t| t.as_str()).unwrap();
-        assert!(text.starts_with("<conversation_history>"), "history wrapper: {text}");
+        assert!(
+            text.starts_with("<conversation_history>"),
+            "history wrapper: {text}"
+        );
         assert!(text.contains("</conversation_history>\n\n<current_turn>"));
         assert!(text.contains("Human: 先看这个文件"));
         assert!(text.contains("Assistant: 我看过了"));
@@ -4131,7 +4816,10 @@ if (mode === "usage") {
             .filter_map(|b| b.get("text").and_then(Value::as_str))
             .collect::<Vec<_>>()
             .join("");
-        assert!(!text.contains("secret reasoning"), "thinking is never told as words");
+        assert!(
+            !text.contains("secret reasoning"),
+            "thinking is never told as words"
+        );
         assert!(!text.contains("sig=="));
         assert!(text.contains("Assistant: answer"));
         assert!(text.contains("Human: "));
@@ -4140,9 +4828,18 @@ if (mode === "usage") {
             .iter()
             .find(|b| b.get("type").and_then(Value::as_str) == Some("image"))
             .expect("the image must be sent as an image block, not omitted text");
-        assert_eq!(image.pointer("/source/type").and_then(Value::as_str), Some("base64"));
-        assert_eq!(image.pointer("/source/media_type").and_then(Value::as_str), Some("image/png"));
-        assert_eq!(image.pointer("/source/data").and_then(Value::as_str), Some("AAAA"));
+        assert_eq!(
+            image.pointer("/source/type").and_then(Value::as_str),
+            Some("base64")
+        );
+        assert_eq!(
+            image.pointer("/source/media_type").and_then(Value::as_str),
+            Some("image/png")
+        );
+        assert_eq!(
+            image.pointer("/source/data").and_then(Value::as_str),
+            Some("AAAA")
+        );
     }
 
     #[test]
@@ -4166,10 +4863,19 @@ if (mode === "usage") {
             ]
         });
         let blocks = render_prompt(&body, None);
-        let images = blocks.iter().filter(|b| b.get("type").and_then(Value::as_str) == Some("image")).collect::<Vec<_>>();
+        let images = blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(Value::as_str) == Some("image"))
+            .collect::<Vec<_>>();
         assert_eq!(images.len(), 2, "both user and tool images must survive");
-        assert_eq!(images[0].pointer("/source/type").and_then(Value::as_str), Some("url"));
-        assert_eq!(images[1].pointer("/source/type").and_then(Value::as_str), Some("base64"));
+        assert_eq!(
+            images[0].pointer("/source/type").and_then(Value::as_str),
+            Some("url")
+        );
+        assert_eq!(
+            images[1].pointer("/source/type").and_then(Value::as_str),
+            Some("base64")
+        );
     }
 
     // ---------------------------------------------------------------
@@ -4179,9 +4885,14 @@ if (mode === "usage") {
     #[test]
     fn user_defined_claude_provider_yields() {
         // 用户自有 claude 来源（API key 直连）→ 本模块让位
-        let lock = crate::engine_gateway::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let lock = crate::engine_gateway::TEST_SANDBOX_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         reset_for_tests();
-        let dir = std::env::temp_dir().join(format!("marionette-engine-claude-user-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "marionette-engine-claude-user-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(dir.join("magpie")).unwrap();
         std::fs::create_dir_all(dir.join("home")).unwrap();
         std::fs::write(
@@ -4189,7 +4900,12 @@ if (mode === "usage") {
             r#"{"providers":[{"id":"claude","name":"My Claude","anthropic":"https://example.com"}]}"#,
         )
         .unwrap();
-        *TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = Some(Seam { home: dir.join("home"), logins: None, shelf: Some(dir.join("shelf")), cli: None });
+        *TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = Some(Seam {
+            home: dir.join("home"),
+            logins: None,
+            shelf: Some(dir.join("shelf")),
+            cli: None,
+        });
         let prior = std::env::var("XDG_CONFIG_HOME").ok();
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         let gateway = Gateway::open().unwrap();
@@ -4197,10 +4913,20 @@ if (mode === "usage") {
             Some(p) => std::env::set_var("XDG_CONFIG_HOME", p),
             None => std::env::remove_var("XDG_CONFIG_HOME"),
         }
-        let providers = vec![Provider { id: "claude".into(), name: "My Claude".into(), anthropic: "https://example.com".into(), ..Default::default() }];
+        let providers = vec![Provider {
+            id: "claude".into(),
+            name: "My Claude".into(),
+            anthropic: "https://example.com".into(),
+            ..Default::default()
+        }];
         assert!(listed_rows(&providers).is_empty());
         assert!(quota_row(&providers).is_none());
-        assert!(intercept(&gateway, &post(&messages_body("claude/claude-sonnet-5", false)), Proto::Anthropic).is_none());
+        assert!(intercept(
+            &gateway,
+            &post(&messages_body("claude/claude-sonnet-5", false)),
+            Proto::Anthropic
+        )
+        .is_none());
         drop(lock);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -4210,8 +4936,19 @@ if (mode === "usage") {
         let (gateway, w) = world(None, false);
         write_credentials(&w, "max");
         let cli = fake_cli(&w.dir);
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
-        let request = Request { method: "POST".into(), path: "/v1/chat/completions".into(), headers: Vec::new(), body: serde_json::to_vec(&json!({"model":"claude/claude-sonnet-5","messages":[]})).unwrap() };
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(cli);
+        let request = Request {
+            method: "POST".into(),
+            path: "/v1/chat/completions".into(),
+            headers: Vec::new(),
+            body: serde_json::to_vec(&json!({"model":"claude/claude-sonnet-5","messages":[]}))
+                .unwrap(),
+        };
         assert!(intercept(&gateway, &request, Proto::Chat).is_none());
         assert!(intercept(&gateway, &request, Proto::Responses).is_none());
     }
@@ -4231,15 +4968,27 @@ if (mode === "usage") {
         let (gateway, w) = world(None, false);
         write_credentials(&w, "max");
         let cli = fake_cli(&w.dir);
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(cli);
         let request = post(&messages_body("claude/claude-sonnet-5", false));
         super::super::set_subscription_enabled_for_tests(Some(Vec::new()));
-        assert!(intercept(&gateway, &request, Proto::Anthropic).is_none(), "gated family must yield");
+        assert!(
+            intercept(&gateway, &request, Proto::Anthropic).is_none(),
+            "gated family must yield"
+        );
         assert!(listed_rows(&[]).is_empty(), "gated family must not list");
         super::super::set_subscription_enabled_for_tests(Some(vec!["claude".to_string()]));
-        let reply = intercept(&gateway, &request, Proto::Anthropic).expect("intercepted when enabled");
+        let reply =
+            intercept(&gateway, &request, Proto::Anthropic).expect("intercepted when enabled");
         assert!(matches!(reply, Reply::Json { status: 200, .. }));
-        assert!(!listed_rows(&[]).is_empty(), "enabled family lists its rows");
+        assert!(
+            !listed_rows(&[]).is_empty(),
+            "enabled family lists its rows"
+        );
     }
 
     #[test]
@@ -4247,11 +4996,22 @@ if (mode === "usage") {
         let (gateway, w) = world(None, false);
         write_credentials(&w, "max");
         let cli = fake_cli(&w.dir);
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(cli);
         // 夹带命令 / 空格 / 引号 / cmd 元字符 / 旗标伪装：一律 400，CLI 不被拉起。
-        for name in ["x&calc", "a b", "a\"b", "&whoami", "x|y", "a;b", "-flag", "%TEMP%", "a^b", "x>y"] {
-            let reply = intercept(&gateway, &post(&messages_body(&format!("claude/{name}"), false)), Proto::Anthropic)
-                .unwrap_or_else(|| panic!("{name} should be intercepted"));
+        for name in [
+            "x&calc", "a b", "a\"b", "&whoami", "x|y", "a;b", "-flag", "%TEMP%", "a^b", "x>y",
+        ] {
+            let reply = intercept(
+                &gateway,
+                &post(&messages_body(&format!("claude/{name}"), false)),
+                Proto::Anthropic,
+            )
+            .unwrap_or_else(|| panic!("{name} should be intercepted"));
             match reply {
                 Reply::Json { status, body } => {
                     assert_eq!(status, 400, "{name}");
@@ -4263,8 +5023,12 @@ if (mode === "usage") {
         }
         // 合法名字（含档位后缀形态）不受影响：正常 200 桥接。
         for name in ["claude-sonnet-5", "sonnet", "claude-opus-5:high"] {
-            let reply = intercept(&gateway, &post(&messages_body(&format!("claude/{name}"), false)), Proto::Anthropic)
-                .unwrap_or_else(|| panic!("{name} should be intercepted"));
+            let reply = intercept(
+                &gateway,
+                &post(&messages_body(&format!("claude/{name}"), false)),
+                Proto::Anthropic,
+            )
+            .unwrap_or_else(|| panic!("{name} should be intercepted"));
             assert!(matches!(reply, Reply::Json { status: 200, .. }), "{name}");
         }
     }
@@ -4275,20 +5039,32 @@ if (mode === "usage") {
         // `cmd.exe /C` 重拼接（那是空格路径打碎与模型名注入两个坑的来源）。
         let args = bridge_args("claude-opus-5", None, None);
         let cmd = build_command(
-            &Program { program: r"C:\John Smith 张三\claude.cmd".to_string(), prefix: Vec::new() },
+            &Program {
+                program: r"C:\John Smith 张三\claude.cmd".to_string(),
+                prefix: Vec::new(),
+            },
             &args,
         );
         let rendered = format!("{cmd:?}");
         // Debug 渲染会把 `\` 转义成 `\\`，断言用不含反斜杠的子串。
-        assert!(rendered.contains("claude.cmd") && rendered.contains("张三"), "{rendered}");
+        assert!(
+            rendered.contains("claude.cmd") && rendered.contains("张三"),
+            "{rendered}"
+        );
         assert!(!rendered.contains("\"cmd.exe\""), "{rendered}");
         // node+cli.js 前缀形态照旧支持。
         let cmd = build_command(
-            &Program { program: "node.exe".to_string(), prefix: vec![r"C:\cli.js".to_string()] },
+            &Program {
+                program: "node.exe".to_string(),
+                prefix: vec![r"C:\cli.js".to_string()],
+            },
             &args,
         );
         let rendered = format!("{cmd:?}");
-        assert!(rendered.contains("node.exe") && rendered.contains("cli.js"), "{rendered}");
+        assert!(
+            rendered.contains("node.exe") && rendered.contains("cli.js"),
+            "{rendered}"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -4300,17 +5076,33 @@ if (mode === "usage") {
         let (gateway, w) = world(None, false);
         write_credentials(&w, "max");
         let cli = fake_cli(&w.dir);
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
-        let reply = intercept(&gateway, &post(&messages_body("claude/claude-sonnet-5", false)), Proto::Anthropic).expect("intercepted");
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(cli);
+        let reply = intercept(
+            &gateway,
+            &post(&messages_body("claude/claude-sonnet-5", false)),
+            Proto::Anthropic,
+        )
+        .expect("intercepted");
         assert!(matches!(reply, Reply::Json { status: 200, .. }));
         let row = quota_row(&[]).expect("quota row from rate_limit_event");
         assert_eq!(row.get("provider").and_then(|p| p.as_str()), Some("claude"));
         let windows = row.get("windows").unwrap().as_array().unwrap();
-        let five = windows.iter().find(|x| x.get("name").and_then(|n| n.as_str()) == Some("5 hours")).expect("5h window");
+        let five = windows
+            .iter()
+            .find(|x| x.get("name").and_then(|n| n.as_str()) == Some("5 hours"))
+            .expect("5h window");
         assert_eq!(five.get("used").and_then(|u| u.as_f64()), Some(42.0));
         assert_eq!(five.get("remaining").and_then(|u| u.as_f64()), Some(58.0));
         assert!(five.get("resetsAt").is_some());
-        let week = windows.iter().find(|x| x.get("name").and_then(|n| n.as_str()) == Some("7 days")).expect("7d window");
+        let week = windows
+            .iter()
+            .find(|x| x.get("name").and_then(|n| n.as_str()) == Some("7 days"))
+            .expect("7d window");
         assert_eq!(week.get("used").and_then(|u| u.as_f64()), Some(7.0));
         assert_eq!(row.get("plan").and_then(|p| p.as_str()), Some("max"));
     }
@@ -4321,15 +5113,26 @@ if (mode === "usage") {
         write_credentials(&w, "pro");
         let cli = fake_cli(&w.dir);
         std::env::set_var("MARIONETTE_FAKE_CLAUDE_MODE", "usage");
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(cli);
         let _ = &gateway;
         let row = quota_row(&[]).expect("quota row from /usage");
         let windows = row.get("windows").unwrap().as_array().unwrap();
         assert_eq!(windows.len(), 2);
-        let five = windows.iter().find(|x| x.get("name").and_then(|n| n.as_str()) == Some("5 hours")).expect("5h");
+        let five = windows
+            .iter()
+            .find(|x| x.get("name").and_then(|n| n.as_str()) == Some("5 hours"))
+            .expect("5h");
         assert_eq!(five.get("used").and_then(|u| u.as_f64()), Some(13.0));
         assert!(five.get("resetsAt").is_some(), "reset parsed");
-        let week = windows.iter().find(|x| x.get("name").and_then(|n| n.as_str()) == Some("7 days")).expect("7d");
+        let week = windows
+            .iter()
+            .find(|x| x.get("name").and_then(|n| n.as_str()) == Some("7 days"))
+            .expect("7d");
         assert_eq!(week.get("used").and_then(|u| u.as_f64()), Some(4.0));
         assert_eq!(row.get("plan").and_then(|p| p.as_str()), Some("pro"));
         std::env::remove_var("MARIONETTE_FAKE_CLAUDE_MODE");
@@ -4349,8 +5152,15 @@ if (mode === "usage") {
         .unwrap();
         let script = dir.join("claude.cmd");
         std::fs::write(&script, "@type \"%~dp0out.json\"\r\n").unwrap();
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli =
-            Some(Program { program: script.to_string_lossy().into_owned(), prefix: Vec::new() });
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(Program {
+            program: script.to_string_lossy().into_owned(),
+            prefix: Vec::new(),
+        });
 
         let row = quota_row(&[]).expect("quota row from a spaced, non-ASCII path");
         assert_eq!(row["windows"][0]["used"], 27.0);
@@ -4368,20 +5178,31 @@ if (mode === "usage") {
             r#"setTimeout(() => console.log(JSON.stringify([{type:"result",is_error:false,result:"Current session: 42% used"}])), 4500);"#,
         )
         .unwrap();
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(Program {
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(Program {
             program: find_node().expect("node on PATH"),
             prefix: vec![script.to_string_lossy().into_owned()],
         });
 
         let started = Instant::now();
         assert!(quota_row(&[]).is_none(), "还没读到");
-        assert!(started.elapsed() < Duration::from_secs(4), "不能超过壳侧 4s 的超时");
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "不能超过壳侧 4s 的超时"
+        );
 
         let deadline = Instant::now() + Duration::from_secs(20);
         while USAGE_BUSY.load(Ordering::Acquire) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
         }
-        assert_eq!(quota_row(&[]).expect("后台读数已落缓存")["windows"][0]["used"], 42.0);
+        assert_eq!(
+            quota_row(&[]).expect("后台读数已落缓存")["windows"][0]["used"],
+            42.0
+        );
     }
 
     #[test]
@@ -4393,9 +5214,15 @@ if (mode === "usage") {
             now,
         );
         assert_eq!(windows.len(), 3);
-        assert!(windows.iter().any(|w| w.get("name").and_then(|n| n.as_str()) == Some("5 hours")));
-        assert!(windows.iter().any(|w| w.get("name").and_then(|n| n.as_str()) == Some("7 days")));
-        assert!(windows.iter().any(|w| w.get("name").and_then(|n| n.as_str()) == Some("7 days · Fable")));
+        assert!(windows
+            .iter()
+            .any(|w| w.get("name").and_then(|n| n.as_str()) == Some("5 hours")));
+        assert!(windows
+            .iter()
+            .any(|w| w.get("name").and_then(|n| n.as_str()) == Some("7 days")));
+        assert!(windows
+            .iter()
+            .any(|w| w.get("name").and_then(|n| n.as_str()) == Some("7 days · Fable")));
         for w in &windows {
             let used = w.get("used").and_then(|u| u.as_f64()).unwrap();
             assert!((0.0..=100.0).contains(&used));
@@ -4428,7 +5255,10 @@ if (mode === "usage") {
 
     fn jsonl_lines(path: &std::path::Path) -> Vec<Value> {
         let b = std::fs::read_to_string(path).unwrap_or_default();
-        b.lines().filter(|l| !l.trim().is_empty()).filter_map(|l| serde_json::from_str(l).ok()).collect()
+        b.lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect()
     }
 
     fn spawn_count(world: &World) -> usize {
@@ -4447,20 +5277,31 @@ if (mode === "usage") {
         let cli = fake_cli(&w.dir);
         std::env::set_var("MARIONETTE_FAKE_SPAWNS", w.dir.join("spawns.jsonl"));
         std::env::set_var("MARIONETTE_FAKE_STDIN_LOG", w.dir.join("stdinlog.jsonl"));
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(cli);
         let turn = |msgs: Value| {
             let mut body = messages_body("claude/claude-sonnet-5", false);
             body["messages"] = msgs;
             intercept(&gateway, &post(&body), Proto::Anthropic).expect("intercepted")
         };
         // 第一回合（one-off：不驻留）
-        assert!(matches!(turn(json!([{ "role": "user", "content": "你好" }])), Reply::Json { status: 200, .. }));
+        assert!(matches!(
+            turn(json!([{ "role": "user", "content": "你好" }])),
+            Reply::Json { status: 200, .. }
+        ));
         // 第二回合（起 run，收口后驻留）
-        assert!(matches!(turn(json!([
-            { "role": "user", "content": "你好" },
-            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
-            { "role": "user", "content": "第二问" }
-        ])), Reply::Json { status: 200, .. }));
+        assert!(matches!(
+            turn(json!([
+                { "role": "user", "content": "你好" },
+                { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+                { "role": "user", "content": "第二问" }
+            ])),
+            Reply::Json { status: 200, .. }
+        ));
         // 第三回合：复用驻留 run
         let reply = turn(json!([
             { "role": "user", "content": "你好" },
@@ -4473,7 +5314,10 @@ if (mode === "usage") {
             Reply::Json { status, body } => {
                 assert_eq!(status, 200);
                 let v: Value = serde_json::from_slice(&body).unwrap();
-                assert_eq!(v.pointer("/content/0/text").and_then(|t| t.as_str()), Some("你好，世界"));
+                assert_eq!(
+                    v.pointer("/content/0/text").and_then(|t| t.as_str()),
+                    Some("你好，世界")
+                );
             }
             Reply::Stream { status, .. } => panic!("expected json, got stream {status}"),
         }
@@ -4484,9 +5328,18 @@ if (mode === "usage") {
         let stdin = jsonl_lines(&w.dir.join("stdinlog.jsonl"));
         assert_eq!(stdin.len(), 3);
         let line3 = stdin[2].get("line").and_then(|l| l.as_str()).unwrap();
-        assert!(line3.contains("继续说点别的"), "turn fed to resident run: {line3}");
-        assert!(!line3.contains("external_system_instructions"), "no system re-send: {line3}");
-        assert!(!line3.contains("conversation_history"), "no whole-conversation replay: {line3}");
+        assert!(
+            line3.contains("继续说点别的"),
+            "turn fed to resident run: {line3}"
+        );
+        assert!(
+            !line3.contains("external_system_instructions"),
+            "no system re-send: {line3}"
+        );
+        assert!(
+            !line3.contains("conversation_history"),
+            "no whole-conversation replay: {line3}"
+        );
         std::env::remove_var("MARIONETTE_FAKE_SPAWNS");
         std::env::remove_var("MARIONETTE_FAKE_STDIN_LOG");
     }
@@ -4501,20 +5354,32 @@ if (mode === "usage") {
         let cli = fake_cli(&w.dir);
         std::env::set_var("MARIONETTE_FAKE_SPAWNS", w.dir.join("spawns.jsonl"));
         std::env::set_var("MARIONETTE_FAKE_STDIN_LOG", w.dir.join("stdinlog.jsonl"));
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
-        *TEST_IDLE_LONGEST.lock().unwrap_or_else(|p| p.into_inner()) = Some(Duration::from_millis(300));
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(cli);
+        *TEST_IDLE_LONGEST.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some(Duration::from_millis(300));
         let turn = |msgs: Value| {
             let mut body = messages_body("claude/claude-sonnet-5", false);
             body["messages"] = msgs;
             intercept(&gateway, &post(&body), Proto::Anthropic).expect("intercepted")
         };
         // 两回合把 run 驻留进池（第一回合 one-off 不驻留）
-        assert!(matches!(turn(json!([{ "role": "user", "content": "你好" }])), Reply::Json { status: 200, .. }));
-        assert!(matches!(turn(json!([
-            { "role": "user", "content": "你好" },
-            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
-            { "role": "user", "content": "第二问" }
-        ])), Reply::Json { status: 200, .. }));
+        assert!(matches!(
+            turn(json!([{ "role": "user", "content": "你好" }])),
+            Reply::Json { status: 200, .. }
+        ));
+        assert!(matches!(
+            turn(json!([
+                { "role": "user", "content": "你好" },
+                { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+                { "role": "user", "content": "第二问" }
+            ])),
+            Reply::Json { status: 200, .. }
+        ));
         let spawns_before = spawn_count(&w);
         std::thread::sleep(Duration::from_millis(500)); // 过期 + 看门狗收尸
         let reply = turn(json!([
@@ -4525,19 +5390,49 @@ if (mode === "usage") {
             { "role": "user", "content": "过期之后" }
         ]));
         assert!(matches!(reply, Reply::Json { status: 200, .. }));
-        assert_eq!(spawn_count(&w), spawns_before + 1, "expired idle run gives way to one resume spawn");
+        assert_eq!(
+            spawn_count(&w),
+            spawns_before + 1,
+            "expired idle run gives way to one resume spawn"
+        );
         // 过期的 run 入了架：这次起跑带 --resume（架条目已消费）
         let spawns = jsonl_lines(&w.dir.join("spawns.jsonl"));
-        let argv = spawns.last().unwrap().get("argv").and_then(|a| a.as_array()).unwrap();
-        let joined = argv.iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>().join(" ");
-        assert!(joined.contains("--resume sess-fake"), "resumed from the shelved session: {joined}");
+        let argv = spawns
+            .last()
+            .unwrap()
+            .get("argv")
+            .and_then(|a| a.as_array())
+            .unwrap();
+        let joined = argv
+            .iter()
+            .map(|v| v.as_str().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            joined.contains("--resume sess-fake"),
+            "resumed from the shelved session: {joined}"
+        );
         // 只喂增量：没有 system 包裹、没有历史回放，只有新问题
         let stdin = jsonl_lines(&w.dir.join("stdinlog.jsonl"));
-        let last = stdin.last().unwrap().get("line").and_then(|l| l.as_str()).unwrap();
-        assert!(last.contains("过期之后"), "increment fed to the resumed run: {last}");
-        assert!(!last.contains("conversation_history"), "no whole-conversation replay after resume: {last}");
+        let last = stdin
+            .last()
+            .unwrap()
+            .get("line")
+            .and_then(|l| l.as_str())
+            .unwrap();
+        assert!(
+            last.contains("过期之后"),
+            "increment fed to the resumed run: {last}"
+        );
+        assert!(
+            !last.contains("conversation_history"),
+            "no whole-conversation replay after resume: {last}"
+        );
         assert!(!last.contains("external_system_instructions"));
-        assert!(shelf_read().is_empty(), "shelf entry consumed by the resume");
+        assert!(
+            shelf_read().is_empty(),
+            "shelf entry consumed by the resume"
+        );
         std::env::remove_var("MARIONETTE_FAKE_SPAWNS");
         std::env::remove_var("MARIONETTE_FAKE_STDIN_LOG");
     }
@@ -4552,27 +5447,51 @@ if (mode === "usage") {
         let cli = fake_cli(&w.dir);
         std::env::set_var("MARIONETTE_FAKE_SPAWNS", w.dir.join("spawns.jsonl"));
         std::env::set_var("MARIONETTE_FAKE_STDIN_LOG", w.dir.join("stdinlog.jsonl"));
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(cli);
         *TEST_IDLE_MOST.lock().unwrap_or_else(|p| p.into_inner()) = Some(1);
-        let turn = |msgs: Value| intercept(&gateway, &post(&json!({
-            "model": "claude/claude-sonnet-5", "max_tokens": 1024, "stream": false,
-            "system": "You are a helpful assistant.", "messages": msgs,
-        })), Proto::Anthropic).expect("intercepted");
+        let turn = |msgs: Value| {
+            intercept(
+                &gateway,
+                &post(&json!({
+                    "model": "claude/claude-sonnet-5", "max_tokens": 1024, "stream": false,
+                    "system": "You are a helpful assistant.", "messages": msgs,
+                })),
+                Proto::Anthropic,
+            )
+            .expect("intercepted")
+        };
         // 会话 A 两回合（第二回合起 run 并驻留）
-        assert!(matches!(turn(json!([{ "role": "user", "content": "会话A第一轮" }])), Reply::Json { status: 200, .. }));
-        assert!(matches!(turn(json!([
-            { "role": "user", "content": "会话A第一轮" },
-            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
-            { "role": "user", "content": "会话A第二轮" }
-        ])), Reply::Json { status: 200, .. }));
+        assert!(matches!(
+            turn(json!([{ "role": "user", "content": "会话A第一轮" }])),
+            Reply::Json { status: 200, .. }
+        ));
+        assert!(matches!(
+            turn(json!([
+                { "role": "user", "content": "会话A第一轮" },
+                { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+                { "role": "user", "content": "会话A第二轮" }
+            ])),
+            Reply::Json { status: 200, .. }
+        ));
         let after_a = spawn_count(&w);
         // 会话 B 两回合：B 的驻留把 A 挤出池（容量 1），A 的 run 入架
-        assert!(matches!(turn(json!([{ "role": "user", "content": "会话B第一轮" }])), Reply::Json { status: 200, .. }));
-        assert!(matches!(turn(json!([
-            { "role": "user", "content": "会话B第一轮" },
-            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
-            { "role": "user", "content": "会话B第二轮" }
-        ])), Reply::Json { status: 200, .. }));
+        assert!(matches!(
+            turn(json!([{ "role": "user", "content": "会话B第一轮" }])),
+            Reply::Json { status: 200, .. }
+        ));
+        assert!(matches!(
+            turn(json!([
+                { "role": "user", "content": "会话B第一轮" },
+                { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+                { "role": "user", "content": "会话B第二轮" }
+            ])),
+            Reply::Json { status: 200, .. }
+        ));
         // A 的续回合：A 已被挤出池但架上有它的会话 → --resume 续跑
         let reply = turn(json!([
             { "role": "user", "content": "会话A第一轮" },
@@ -4582,15 +5501,42 @@ if (mode === "usage") {
             { "role": "user", "content": "会话A第三轮" }
         ]));
         assert!(matches!(reply, Reply::Json { status: 200, .. }));
-        assert_eq!(spawn_count(&w), after_a + 3, "B1(one-off) + B2(kept, evicts A) + A3 resumed");
+        assert_eq!(
+            spawn_count(&w),
+            after_a + 3,
+            "B1(one-off) + B2(kept, evicts A) + A3 resumed"
+        );
         let spawns = jsonl_lines(&w.dir.join("spawns.jsonl"));
-        let argv = spawns.last().unwrap().get("argv").and_then(|a| a.as_array()).unwrap();
-        let joined = argv.iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>().join(" ");
-        assert!(joined.contains("--resume sess-fake"), "the evicted session resumes: {joined}");
+        let argv = spawns
+            .last()
+            .unwrap()
+            .get("argv")
+            .and_then(|a| a.as_array())
+            .unwrap();
+        let joined = argv
+            .iter()
+            .map(|v| v.as_str().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            joined.contains("--resume sess-fake"),
+            "the evicted session resumes: {joined}"
+        );
         let stdin = jsonl_lines(&w.dir.join("stdinlog.jsonl"));
-        let last = stdin.last().unwrap().get("line").and_then(|l| l.as_str()).unwrap();
-        assert!(last.contains("会话A第三轮"), "only the new turn is fed: {last}");
-        assert!(!last.contains("conversation_history"), "no whole-conversation replay: {last}");
+        let last = stdin
+            .last()
+            .unwrap()
+            .get("line")
+            .and_then(|l| l.as_str())
+            .unwrap();
+        assert!(
+            last.contains("会话A第三轮"),
+            "only the new turn is fed: {last}"
+        );
+        assert!(
+            !last.contains("conversation_history"),
+            "no whole-conversation replay: {last}"
+        );
         std::env::remove_var("MARIONETTE_FAKE_SPAWNS");
         std::env::remove_var("MARIONETTE_FAKE_STDIN_LOG");
     }
@@ -4603,8 +5549,18 @@ if (mode === "usage") {
         write_credentials(&w, "max");
         let cli = fake_cli(&w.dir);
         std::env::set_var("MARIONETTE_FAKE_SPAWNS", w.dir.join("spawns.jsonl"));
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
-        let reply = intercept(&gateway, &post(&messages_body("claude/claude-sonnet-5", false)), Proto::Anthropic).expect("answered");
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(cli);
+        let reply = intercept(
+            &gateway,
+            &post(&messages_body("claude/claude-sonnet-5", false)),
+            Proto::Anthropic,
+        )
+        .expect("answered");
         assert!(matches!(reply, Reply::Json { status: 200, .. }));
         std::thread::sleep(Duration::from_millis(200));
         let p = POOL.lock().unwrap_or_else(|e| e.into_inner());
@@ -4640,62 +5596,110 @@ if (mode === "usage") {
         let cli = fake_cli(&w.dir);
         std::env::set_var("MARIONETTE_FAKE_SPAWNS", w.dir.join("spawns.jsonl"));
         std::env::set_var("MARIONETTE_FAKE_STDIN_LOG", w.dir.join("stdinlog.jsonl"));
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(cli);
         *TEST_IDLE_MOST.lock().unwrap_or_else(|p| p.into_inner()) = Some(1);
-        let turn = |msgs: Value| intercept(&gateway, &post(&json!({
-            "model": "claude/claude-sonnet-5", "max_tokens": 1024, "stream": false,
-            "system": "You are a helpful assistant.", "messages": msgs,
-        })), Proto::Anthropic).expect("intercepted");
+        let turn = |msgs: Value| {
+            intercept(
+                &gateway,
+                &post(&json!({
+                    "model": "claude/claude-sonnet-5", "max_tokens": 1024, "stream": false,
+                    "system": "You are a helpful assistant.", "messages": msgs,
+                })),
+                Proto::Anthropic,
+            )
+            .expect("intercepted")
+        };
         // A1（one-off）+ A2（起 run 并驻留）
-        assert!(matches!(turn(json!([{ "role": "user", "content": "会话A第一轮" }])), Reply::Json { status: 200, .. }));
-        assert!(matches!(turn(json!([
-            { "role": "user", "content": "会话A第一轮" },
-            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
-            { "role": "user", "content": "会话A第二轮" }
-        ])), Reply::Json { status: 200, .. }));
+        assert!(matches!(
+            turn(json!([{ "role": "user", "content": "会话A第一轮" }])),
+            Reply::Json { status: 200, .. }
+        ));
+        assert!(matches!(
+            turn(json!([
+                { "role": "user", "content": "会话A第一轮" },
+                { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+                { "role": "user", "content": "会话A第二轮" }
+            ])),
+            Reply::Json { status: 200, .. }
+        ));
         // B1 + B2：B2 的驻留把 A2 挤出池，A2 的会话入架（假 CLI 已落盘
         // sess-fake.jsonl，saved() 才肯收）
-        assert!(matches!(turn(json!([{ "role": "user", "content": "会话B第一轮" }])), Reply::Json { status: 200, .. }));
-        assert!(matches!(turn(json!([
-            { "role": "user", "content": "会话B第一轮" },
-            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
-            { "role": "user", "content": "会话B第二轮" }
-        ])), Reply::Json { status: 200, .. }));
+        assert!(matches!(
+            turn(json!([{ "role": "user", "content": "会话B第一轮" }])),
+            Reply::Json { status: 200, .. }
+        ));
+        assert!(matches!(
+            turn(json!([
+                { "role": "user", "content": "会话B第一轮" },
+                { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+                { "role": "user", "content": "会话B第二轮" }
+            ])),
+            Reply::Json { status: 200, .. }
+        ));
         let shelf: Value = serde_json::from_slice(&std::fs::read(shelf_file(&w)).unwrap()).unwrap();
-        assert_eq!(shelf.as_object().unwrap().len(), 1, "the evicted run's session is shelved");
+        assert_eq!(
+            shelf.as_object().unwrap().len(),
+            1,
+            "the evicted run's session is shelved"
+        );
         // A3：池不中、架命中 → resume（1 个新进程），stdin 只含增量
-        assert!(matches!(turn(json!([
-            { "role": "user", "content": "会话A第一轮" },
-            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
-            { "role": "user", "content": "会话A第二轮" },
-            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
-            { "role": "user", "content": "会话A第三轮" }
-        ])), Reply::Json { status: 200, .. }));
+        assert!(matches!(
+            turn(json!([
+                { "role": "user", "content": "会话A第一轮" },
+                { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+                { "role": "user", "content": "会话A第二轮" },
+                { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+                { "role": "user", "content": "会话A第三轮" }
+            ])),
+            Reply::Json { status: 200, .. }
+        ));
         assert_eq!(spawn_count(&w), 5, "A1 + A2 + B1 + B2 + A3(resume)");
         let spawns = jsonl_lines(&w.dir.join("spawns.jsonl"));
         let argv5 = spawns[4].get("argv").and_then(|a| a.as_array()).unwrap();
-        let joined5 = argv5.iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>().join(" ");
-        assert!(joined5.contains("--resume sess-fake"), "A3 resumes the shelved session: {joined5}");
+        let joined5 = argv5
+            .iter()
+            .map(|v| v.as_str().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            joined5.contains("--resume sess-fake"),
+            "A3 resumes the shelved session: {joined5}"
+        );
         let stdin = jsonl_lines(&w.dir.join("stdinlog.jsonl"));
         assert_eq!(stdin.len(), 5);
         let a3 = stdin[4].get("line").and_then(|l| l.as_str()).unwrap();
         assert!(a3.contains("会话A第三轮"), "only the new turn: {a3}");
         assert!(!a3.contains("conversation_history"), "no replay: {a3}");
-        assert!(!a3.contains("external_system_instructions"), "no system re-send: {a3}");
+        assert!(
+            !a3.contains("external_system_instructions"),
+            "no system re-send: {a3}"
+        );
         // A3 收口：它消费掉的架条目不复存在，A3 自己的 run 进池（容量 1
         // 挤出 B2 的 run → B2 入架）——架上仍是 1 条，但已是 A3 的新键
         let shelf: Value = serde_json::from_slice(&std::fs::read(shelf_file(&w)).unwrap()).unwrap();
-        assert_eq!(shelf.as_object().unwrap().len(), 1, "B2's evicted run is shelved; A3's own entry was consumed by its resume");
+        assert_eq!(
+            shelf.as_object().unwrap().len(),
+            1,
+            "B2's evicted run is shelved; A3's own entry was consumed by its resume"
+        );
         // A4：驻留复用，不再起进程
-        assert!(matches!(turn(json!([
-            { "role": "user", "content": "会话A第一轮" },
-            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
-            { "role": "user", "content": "会话A第二轮" },
-            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
-            { "role": "user", "content": "会话A第三轮" },
-            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
-            { "role": "user", "content": "会话A第四轮" }
-        ])), Reply::Json { status: 200, .. }));
+        assert!(matches!(
+            turn(json!([
+                { "role": "user", "content": "会话A第一轮" },
+                { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+                { "role": "user", "content": "会话A第二轮" },
+                { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+                { "role": "user", "content": "会话A第三轮" },
+                { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+                { "role": "user", "content": "会话A第四轮" }
+            ])),
+            Reply::Json { status: 200, .. }
+        ));
         assert_eq!(spawn_count(&w), 5, "A4 reuses the resident run");
         let stdin = jsonl_lines(&w.dir.join("stdinlog.jsonl"));
         assert_eq!(stdin.len(), 6);
@@ -4717,7 +5721,12 @@ if (mode === "usage") {
         let cli = fake_cli(&w.dir);
         std::env::set_var("MARIONETTE_FAKE_SPAWNS", w.dir.join("spawns.jsonl"));
         std::env::set_var("MARIONETTE_FAKE_STDIN_LOG", w.dir.join("stdinlog.jsonl"));
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(cli);
         // 直接写一条死条目（sess-ghost.jsonl 不存在）
         let msgs: Vec<Value> = vec![
             json!({ "role": "user", "content": "你好" }),
@@ -4735,20 +5744,47 @@ if (mode === "usage") {
             msgs: msgs.clone(),
         };
         let (key, _) = next_turn(&identity).expect("a next-turn key");
-        write_shelf_entry(&w, &key, ShelfEntry { session: "sess-ghost".into(), effort: None, at: now_secs() });
+        write_shelf_entry(
+            &w,
+            &key,
+            ShelfEntry {
+                session: "sess-ghost".into(),
+                effort: None,
+                at: now_secs(),
+            },
+        );
         let mut body = messages_body("claude/claude-sonnet-5", false);
         body["messages"] = Value::Array(msgs);
         let reply = intercept(&gateway, &post(&body), Proto::Anthropic).expect("intercepted");
         assert!(matches!(reply, Reply::Json { status: 200, .. }));
-        assert_eq!(spawn_count(&w), 1, "one fresh spawn, no doomed resume attempt");
+        assert_eq!(
+            spawn_count(&w),
+            1,
+            "one fresh spawn, no doomed resume attempt"
+        );
         let spawns = jsonl_lines(&w.dir.join("spawns.jsonl"));
         let argv = spawns[0].get("argv").and_then(|a| a.as_array()).unwrap();
-        let joined = argv.iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>().join(" ");
-        assert!(!joined.contains("--resume"), "dead entry is never resumed: {joined}");
+        let joined = argv
+            .iter()
+            .map(|v| v.as_str().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            !joined.contains("--resume"),
+            "dead entry is never resumed: {joined}"
+        );
         // 全量新起：整段对话（history 包裹 + system）
         let stdin = jsonl_lines(&w.dir.join("stdinlog.jsonl"));
-        let last = stdin.last().unwrap().get("line").and_then(|l| l.as_str()).unwrap();
-        assert!(last.contains("conversation_history"), "fresh spawn replays history: {last}");
+        let last = stdin
+            .last()
+            .unwrap()
+            .get("line")
+            .and_then(|l| l.as_str())
+            .unwrap();
+        assert!(
+            last.contains("conversation_history"),
+            "fresh spawn replays history: {last}"
+        );
         assert!(last.contains("external_system_instructions"));
         assert!(shelf_read().is_empty(), "the dead entry was pruned");
         for var in ["MARIONETTE_FAKE_SPAWNS", "MARIONETTE_FAKE_STDIN_LOG"] {
@@ -4768,24 +5804,48 @@ if (mode === "usage") {
         std::env::set_var("MARIONETTE_FAKE_CLAUDE_MODE", "resumeerror");
         std::env::set_var("MARIONETTE_FAKE_SPAWNS", w.dir.join("spawns.jsonl"));
         std::env::set_var("MARIONETTE_FAKE_STDIN_LOG", w.dir.join("stdinlog.jsonl"));
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(cli);
         *TEST_IDLE_MOST.lock().unwrap_or_else(|p| p.into_inner()) = Some(1);
-        let turn = |msgs: Value| intercept(&gateway, &post(&json!({
-            "model": "claude/claude-sonnet-5", "max_tokens": 1024, "stream": false,
-            "system": "You are a helpful assistant.", "messages": msgs,
-        })), Proto::Anthropic).expect("intercepted");
-        assert!(matches!(turn(json!([{ "role": "user", "content": "会话A第一轮" }])), Reply::Json { status: 200, .. }));
-        assert!(matches!(turn(json!([
-            { "role": "user", "content": "会话A第一轮" },
-            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
-            { "role": "user", "content": "会话A第二轮" }
-        ])), Reply::Json { status: 200, .. }));
-        assert!(matches!(turn(json!([{ "role": "user", "content": "会话B第一轮" }])), Reply::Json { status: 200, .. }));
-        assert!(matches!(turn(json!([
-            { "role": "user", "content": "会话B第一轮" },
-            { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
-            { "role": "user", "content": "会话B第二轮" }
-        ])), Reply::Json { status: 200, .. }));
+        let turn = |msgs: Value| {
+            intercept(
+                &gateway,
+                &post(&json!({
+                    "model": "claude/claude-sonnet-5", "max_tokens": 1024, "stream": false,
+                    "system": "You are a helpful assistant.", "messages": msgs,
+                })),
+                Proto::Anthropic,
+            )
+            .expect("intercepted")
+        };
+        assert!(matches!(
+            turn(json!([{ "role": "user", "content": "会话A第一轮" }])),
+            Reply::Json { status: 200, .. }
+        ));
+        assert!(matches!(
+            turn(json!([
+                { "role": "user", "content": "会话A第一轮" },
+                { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+                { "role": "user", "content": "会话A第二轮" }
+            ])),
+            Reply::Json { status: 200, .. }
+        ));
+        assert!(matches!(
+            turn(json!([{ "role": "user", "content": "会话B第一轮" }])),
+            Reply::Json { status: 200, .. }
+        ));
+        assert!(matches!(
+            turn(json!([
+                { "role": "user", "content": "会话B第一轮" },
+                { "role": "assistant", "content": [{ "type": "text", "text": "你好，世界" }] },
+                { "role": "user", "content": "会话B第二轮" }
+            ])),
+            Reply::Json { status: 200, .. }
+        ));
         // A3：resume 起跑 → CLI 退场 → 回退全量新起 → 200
         let a3_msgs = json!([
             { "role": "user", "content": "会话A第一轮" },
@@ -4811,28 +5871,70 @@ if (mode === "usage") {
             Reply::Json { status, body } => {
                 assert_eq!(status, 200);
                 let v: Value = serde_json::from_slice(&body).unwrap();
-                assert_eq!(v.pointer("/content/0/text").and_then(|t| t.as_str()), Some("你好，世界"));
+                assert_eq!(
+                    v.pointer("/content/0/text").and_then(|t| t.as_str()),
+                    Some("你好，世界")
+                );
             }
             Reply::Stream { status, .. } => panic!("expected json, got stream {status}"),
         }
-        assert_eq!(spawn_count(&w), 6, "A1 + A2 + B1 + B2 + resume attempt + fresh fallback");
+        assert_eq!(
+            spawn_count(&w),
+            6,
+            "A1 + A2 + B1 + B2 + resume attempt + fresh fallback"
+        );
         let spawns = jsonl_lines(&w.dir.join("spawns.jsonl"));
         let argv_of = |i: usize| {
-            spawns[i].get("argv").and_then(|a| a.as_array()).unwrap().iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>().join(" ")
+            spawns[i]
+                .get("argv")
+                .and_then(|a| a.as_array())
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap_or(""))
+                .collect::<Vec<_>>()
+                .join(" ")
         };
-        assert!(argv_of(4).contains("--resume sess-fake"), "the resume attempt was made first");
-        assert!(!argv_of(5).contains("--resume"), "the fallback spawns fresh");
+        assert!(
+            argv_of(4).contains("--resume sess-fake"),
+            "the resume attempt was made first"
+        );
+        assert!(
+            !argv_of(5).contains("--resume"),
+            "the fallback spawns fresh"
+        );
         let stdin = jsonl_lines(&w.dir.join("stdinlog.jsonl"));
-        let last = stdin.last().unwrap().get("line").and_then(|l| l.as_str()).unwrap();
-        assert!(last.contains("conversation_history"), "fallback replays the whole conversation: {last}");
+        let last = stdin
+            .last()
+            .unwrap()
+            .get("line")
+            .and_then(|l| l.as_str())
+            .unwrap();
+        assert!(
+            last.contains("conversation_history"),
+            "fallback replays the whole conversation: {last}"
+        );
         // 失败 resume 消费的条目不在了；回退的 run 收口时把 B2 的 run 挤出
         // 池入架（容量 1）——架上 1 条，但已是别的键
         let shelf = shelf_read();
-        assert!(!shelf.contains_key(&shelved_key), "the failed resume's entry was consumed");
-        assert_eq!(shelf.len(), 1, "the fallback run's completion shelved B2's evicted run");
+        assert!(
+            !shelf.contains_key(&shelved_key),
+            "the failed resume's entry was consumed"
+        );
+        assert_eq!(
+            shelf.len(),
+            1,
+            "the fallback run's completion shelved B2's evicted run"
+        );
         let sessions = claude_sessions().expect("sessions dir");
-        assert!(sessions.join("sess-fake.jsonl").is_file(), "the session file is left for the sweep, not deleted");
-        for var in ["MARIONETTE_FAKE_CLAUDE_MODE", "MARIONETTE_FAKE_SPAWNS", "MARIONETTE_FAKE_STDIN_LOG"] {
+        assert!(
+            sessions.join("sess-fake.jsonl").is_file(),
+            "the session file is left for the sweep, not deleted"
+        );
+        for var in [
+            "MARIONETTE_FAKE_CLAUDE_MODE",
+            "MARIONETTE_FAKE_SPAWNS",
+            "MARIONETTE_FAKE_STDIN_LOG",
+        ] {
             std::env::remove_var(var);
         }
         *TEST_IDLE_MOST.lock().unwrap_or_else(|p| p.into_inner()) = None;
@@ -4844,23 +5946,69 @@ if (mode === "usage") {
         // 但会话文件不在的（死条目）也清掉。条目内容是内容哈希的键——死
         // 了永远死，留着只占容量。
         let (_gateway, w) = world(None, false);
-        write_shelf_entry(&w, "k-old", ShelfEntry { session: "sess-old".into(), effort: None, at: now_millis() - 2 * 3600 * 1000 });
-        write_shelf_entry(&w, "k-fresh", ShelfEntry { session: "sess-new".into(), effort: None, at: now_millis() });
-        assert_eq!(unshelve("k-old", None), None, "expired entries are not served");
+        write_shelf_entry(
+            &w,
+            "k-old",
+            ShelfEntry {
+                session: "sess-old".into(),
+                effort: None,
+                at: now_millis() - 2 * 3600 * 1000,
+            },
+        );
+        write_shelf_entry(
+            &w,
+            "k-fresh",
+            ShelfEntry {
+                session: "sess-new".into(),
+                effort: None,
+                at: now_millis(),
+            },
+        );
+        assert_eq!(
+            unshelve("k-old", None),
+            None,
+            "expired entries are not served"
+        );
         let entries = shelf_read();
         assert!(!entries.contains_key("k-old"), "expired entry pruned");
-        assert!(entries.contains_key("k-fresh"), "fresh entry survives the prune");
-        assert_eq!(unshelve("k-fresh", None), None, "missing session file = dead entry");
+        assert!(
+            entries.contains_key("k-fresh"),
+            "fresh entry survives the prune"
+        );
+        assert_eq!(
+            unshelve("k-fresh", None),
+            None,
+            "missing session file = dead entry"
+        );
         assert!(shelf_read().is_empty(), "dead entry pruned");
         // 档位不一致：条目留着（同键同档位的后续回合还能用，1 小时内自然
         // 过期）；同档位的下一查认领（出架交 session id）
         let sessions = claude_sessions().expect("sessions dir");
         std::fs::create_dir_all(&sessions).unwrap();
         std::fs::write(sessions.join("sess-eff.jsonl"), "{}\n").unwrap();
-        write_shelf_entry(&w, "k-eff", ShelfEntry { session: "sess-eff".into(), effort: Some("high".into()), at: now_millis() });
-        assert_eq!(unshelve("k-eff", Some("low")), None, "effort mismatch does not resume");
-        assert!(shelf_read().contains_key("k-eff"), "entry kept for a same-effort turn");
-        assert_eq!(unshelve("k-eff", Some("high")).as_deref(), Some("sess-eff"), "matching effort claims the entry");
+        write_shelf_entry(
+            &w,
+            "k-eff",
+            ShelfEntry {
+                session: "sess-eff".into(),
+                effort: Some("high".into()),
+                at: now_millis(),
+            },
+        );
+        assert_eq!(
+            unshelve("k-eff", Some("low")),
+            None,
+            "effort mismatch does not resume"
+        );
+        assert!(
+            shelf_read().contains_key("k-eff"),
+            "entry kept for a same-effort turn"
+        );
+        assert_eq!(
+            unshelve("k-eff", Some("high")).as_deref(),
+            Some("sess-eff"),
+            "matching effort claims the entry"
+        );
         assert!(shelf_read().is_empty(), "claimed entry leaves the shelf");
         let _ = &w;
     }
@@ -4869,8 +6017,14 @@ if (mode === "usage") {
     fn session_paths_follow_the_go_encoding() {
         // claudeProjectName（Go :482）：字母数字之外的字符全换 `-`；sid
         // 护栏（Go removeSession :3465 加一档字符域）
-        assert_eq!(claude_project_name(r"C:\Users\a b\AppData\Local\Temp\marionette-claude-work"), "C--Users-a-b-AppData-Local-Temp-marionette-claude-work");
-        assert_eq!(claude_project_name("/tmp/marionette-claude-work"), "-tmp-marionette-claude-work");
+        assert_eq!(
+            claude_project_name(r"C:\Users\a b\AppData\Local\Temp\marionette-claude-work"),
+            "C--Users-a-b-AppData-Local-Temp-marionette-claude-work"
+        );
+        assert_eq!(
+            claude_project_name("/tmp/marionette-claude-work"),
+            "-tmp-marionette-claude-work"
+        );
         assert!(sid_ok("3f9c2b1e-4d5a-4f6b-8c7d-2e1f0a9b8c7d"));
         assert!(!sid_ok(""));
         assert!(!sid_ok("../escape"));
@@ -4904,7 +6058,12 @@ if (mode === "usage") {
         std::env::set_var("MARIONETTE_FAKE_SPAWNS", w.dir.join("spawns.jsonl"));
         std::env::set_var("MARIONETTE_FAKE_STDIN_LOG", w.dir.join("stdinlog.jsonl"));
         std::env::set_var("MARIONETTE_FAKE_MCP_LOG", w.dir.join("mcplog.jsonl"));
-        TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()).as_mut().unwrap().cli = Some(cli);
+        TEST_SEAM
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            .unwrap()
+            .cli = Some(cli);
         // 第一回合：带 tools 的请求 → 回 tool_use 块
         let mut body = messages_body("claude/claude-sonnet-5", true);
         body["tools"] = json!(weather_tools());
@@ -4912,16 +6071,45 @@ if (mode === "usage") {
         let reply = intercept(&gateway, &post(&body), Proto::Anthropic).expect("turn 1");
         let sse = read_stream(reply);
         let events = sse_events(&sse);
-        let types: Vec<&str> = events.iter().map(|e| e.get("type").and_then(|t| t.as_str()).unwrap_or("")).collect();
+        let types: Vec<&str> = events
+            .iter()
+            .map(|e| e.get("type").and_then(|t| t.as_str()).unwrap_or(""))
+            .collect();
         assert_eq!(types.first(), Some(&"message_start"));
-        assert_eq!(types.last(), Some(&"message_stop"), "stream closes at the tool_use message (park)");
-        let block = events.iter().find(|e| e.get("type").and_then(|t| t.as_str()) == Some("content_block_start")).expect("tool block");
+        assert_eq!(
+            types.last(),
+            Some(&"message_stop"),
+            "stream closes at the tool_use message (park)"
+        );
+        let block = events
+            .iter()
+            .find(|e| e.get("type").and_then(|t| t.as_str()) == Some("content_block_start"))
+            .expect("tool block");
         // 名字映射回 caller 原名（Go declaredName）——不是 mcp__marionette__ 前缀名
-        assert_eq!(block.pointer("/content_block/type").and_then(|t| t.as_str()), Some("tool_use"));
-        assert_eq!(block.pointer("/content_block/name").and_then(|t| t.as_str()), Some("get_weather"));
-        assert_eq!(block.pointer("/content_block/id").and_then(|t| t.as_str()), Some("toolu_01"));
-        let md = events.iter().find(|e| e.get("type").and_then(|t| t.as_str()) == Some("message_delta")).unwrap();
-        assert_eq!(md.pointer("/delta/stop_reason").and_then(|s| s.as_str()), Some("tool_use"));
+        assert_eq!(
+            block
+                .pointer("/content_block/type")
+                .and_then(|t| t.as_str()),
+            Some("tool_use")
+        );
+        assert_eq!(
+            block
+                .pointer("/content_block/name")
+                .and_then(|t| t.as_str()),
+            Some("get_weather")
+        );
+        assert_eq!(
+            block.pointer("/content_block/id").and_then(|t| t.as_str()),
+            Some("toolu_01")
+        );
+        let md = events
+            .iter()
+            .find(|e| e.get("type").and_then(|t| t.as_str()) == Some("message_delta"))
+            .unwrap();
+        assert_eq!(
+            md.pointer("/delta/stop_reason").and_then(|s| s.as_str()),
+            Some("tool_use")
+        );
         // 第二回合：caller 回 tool_result → match 命中 → 回填 → 续答
         let mut body2 = messages_body("claude/claude-sonnet-5", false);
         body2["tools"] = json!(weather_tools());
@@ -4937,38 +6125,86 @@ if (mode === "usage") {
             Reply::Json { status, body } => {
                 assert_eq!(status, 200);
                 let v: Value = serde_json::from_slice(&body).unwrap();
-                assert_eq!(v.pointer("/content/0/text").and_then(|t| t.as_str()), Some("天气结论：晴 25°C"));
-                assert_eq!(v.get("stop_reason").and_then(|s| s.as_str()), Some("end_turn"));
+                assert_eq!(
+                    v.pointer("/content/0/text").and_then(|t| t.as_str()),
+                    Some("天气结论：晴 25°C")
+                );
+                assert_eq!(
+                    v.get("stop_reason").and_then(|s| s.as_str()),
+                    Some("end_turn")
+                );
             }
             Reply::Stream { status, .. } => panic!("expected json, got stream {status}"),
         }
         // 全程一个进程（helper 回填在同一驻留 run 里完成）
-        assert_eq!(spawn_count(&w), 1, "tool round must complete in the resident run");
+        assert_eq!(
+            spawn_count(&w),
+            1,
+            "tool round must complete in the resident run"
+        );
         // 带 tools 的请求挂 --mcp-config（Go claudeCLIArgs :3965；无 tools
         // 的路径没有它——见 bridge_roundtrip 的断言）
         let spawns = jsonl_lines(&w.dir.join("spawns.jsonl"));
         let argv = spawns[0].get("argv").and_then(|a| a.as_array()).unwrap();
-        let joined = argv.iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>().join(" ");
-        assert!(joined.contains("--mcp-config"), "helper attached for a tools-bearing request: {joined}");
-        assert!(joined.contains("--tools "), "Claude Code built-ins stay off: {joined}");
+        let joined = argv
+            .iter()
+            .map(|v| v.as_str().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            joined.contains("--mcp-config"),
+            "helper attached for a tools-bearing request: {joined}"
+        );
+        assert!(
+            joined.contains("--tools "),
+            "Claude Code built-ins stay off: {joined}"
+        );
         // MCP 流水：initialize 应答、tools/list 宣告、tools/call 拿到 tool_result 的文本
         //（fake 的流水里 "req" 行是请求侧记账，带 body 的是应答行）
         let mcp = jsonl_lines(&w.dir.join("mcplog.jsonl"));
-        let answered = |m: &str| mcp.iter().find(|l| l.get("body").is_some() && l.get("method").and_then(|x| x.as_str()) == Some(m));
+        let answered = |m: &str| {
+            mcp.iter().find(|l| {
+                l.get("body").is_some() && l.get("method").and_then(|x| x.as_str()) == Some(m)
+            })
+        };
         let init = answered("initialize").expect("initialize round-trip");
-        assert!(init.get("body").and_then(|b| b.as_str()).unwrap_or("").contains("marionette"), "serverInfo");
+        assert!(
+            init.get("body")
+                .and_then(|b| b.as_str())
+                .unwrap_or("")
+                .contains("marionette"),
+            "serverInfo"
+        );
         let list = answered("tools/list").expect("tools/list round-trip");
         let list_body = list.get("body").and_then(|b| b.as_str()).unwrap_or("");
-        assert!(list_body.contains("get_weather"), "helper offers the caller's tool: {list_body}");
-        assert!(list_body.contains("inputSchema"), "schema announced: {list_body}");
+        assert!(
+            list_body.contains("get_weather"),
+            "helper offers the caller's tool: {list_body}"
+        );
+        assert!(
+            list_body.contains("inputSchema"),
+            "schema announced: {list_body}"
+        );
         let call = answered("tools/call").expect("tools/call round-trip");
         let call_body = call.get("body").and_then(|b| b.as_str()).unwrap_or("");
-        assert!(call_body.contains("晴 25°C"), "tool_result refilled into the helper: {call_body}");
+        assert!(
+            call_body.contains("晴 25°C"),
+            "tool_result refilled into the helper: {call_body}"
+        );
         assert!(call_body.contains("\"isError\":false"));
         // tools/call 之后没有新 spawn，第二回合也没再喂全量对话
         let stdin = jsonl_lines(&w.dir.join("stdinlog.jsonl"));
-        assert_eq!(stdin.len(), 1, "continuation runs without a new user line (results go through the helper)");
-        for var in ["MARIONETTE_FAKE_CLAUDE_MODE", "MARIONETTE_FAKE_SPAWNS", "MARIONETTE_FAKE_STDIN_LOG", "MARIONETTE_FAKE_MCP_LOG"] {
+        assert_eq!(
+            stdin.len(),
+            1,
+            "continuation runs without a new user line (results go through the helper)"
+        );
+        for var in [
+            "MARIONETTE_FAKE_CLAUDE_MODE",
+            "MARIONETTE_FAKE_SPAWNS",
+            "MARIONETTE_FAKE_STDIN_LOG",
+            "MARIONETTE_FAKE_MCP_LOG",
+        ] {
             std::env::remove_var(var);
         }
     }
@@ -5019,7 +6255,11 @@ if (mode === "usage") {
         let res = helper_call(&core, &json!({ "name": "get_weather", "arguments": {} }));
         let v = res.expect("refusal is a result, not an error");
         assert_eq!(v.pointer("/isError").and_then(|e| e.as_bool()), Some(true));
-        assert!(v.pointer("/content/0/text").and_then(|t| t.as_str()).unwrap_or("").contains("No tool can be used"));
+        assert!(v
+            .pointer("/content/0/text")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .contains("No tool can be used"));
         let _ = &w;
     }
 
@@ -5051,13 +6291,22 @@ if (mode === "usage") {
         assert!(a.starts_with("spawn_agent_"), "{a}");
         let suffix = &a[a.len() - 12..];
         assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()), "{a}");
-        assert_ne!(bridge_tool_name("spawn.agent"), bridge_tool_name("spawn-agent"));
+        assert_ne!(
+            bridge_tool_name("spawn.agent"),
+            bridge_tool_name("spawn-agent")
+        );
         // 已带 mcp__marionette__ 前缀的（caller 是 Claude 系）只取余下部分
         assert_eq!(bridge_tool_name("mcp__marionette__read_file"), "read_file");
         // 双向映射：模型名 → 原名、原名 → 模型全名
         let (_tools, names, _) = bridge_tools(&weather_tools(), "");
-        assert_eq!(names.declared_of("mcp__marionette__get_weather").as_deref(), Some("get_weather"));
-        assert_eq!(names.bridged_of("get_weather").as_deref(), Some("mcp__marionette__get_weather"));
+        assert_eq!(
+            names.declared_of("mcp__marionette__get_weather").as_deref(),
+            Some("get_weather")
+        );
+        assert_eq!(
+            names.bridged_of("get_weather").as_deref(),
+            Some("mcp__marionette__get_weather")
+        );
         // 没宣告的工具不映射（延迟加载口径）
         assert_eq!(names.declared_of("WebFetch"), None);
         assert_eq!(names.bridged_of("WebFetch"), None);
@@ -5106,14 +6355,20 @@ if (mode === "usage") {
             json!({ "role": "user", "content": [
                 { "type": "tool_result", "tool_use_id": "TU-xyz", "content": "结果" } ]}),
         ]);
-        assert_eq!(turn_key(&with_ids, &with_ids.msgs), turn_key(&renamed, &renamed.msgs));
+        assert_eq!(
+            turn_key(&with_ids, &with_ids.msgs),
+            turn_key(&renamed, &renamed.msgs)
+        );
         // 身份字段不同 → 不同键（model/system/tools）
         let mut other = one.clone();
         other.model = "claude-opus-5".into();
         assert_ne!(turn_key(&one, &one.msgs), turn_key(&other, &other.msgs));
         let mut with_system = one.clone();
         with_system.system = "别的人设".into();
-        assert_ne!(turn_key(&one, &one.msgs), turn_key(&with_system, &with_system.msgs));
+        assert_ne!(
+            turn_key(&one, &one.msgs),
+            turn_key(&with_system, &with_system.msgs)
+        );
         // nextTurn：新回合给键、纯工具续轮不给（走 match）
         let fresh = RequestIdentity {
             msgs: vec![
@@ -5135,7 +6390,10 @@ if (mode === "usage") {
             ],
             ..one.clone()
         };
-        assert!(next_turn(&tooling).is_none(), "tool-result continuation goes through match, not resume");
+        assert!(
+            next_turn(&tooling).is_none(),
+            "tool-result continuation goes through match, not resume"
+        );
     }
 
     #[test]

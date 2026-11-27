@@ -136,7 +136,10 @@ fn protect_secret(plain: &str) -> Result<Vec<u8>, String> {
         )
     };
     if ok == 0 {
-        return Err(crate::ts!("CryptProtectData 失败（DPAPI user 作用域加密）", "CryptProtectData failed (DPAPI user-scope encryption)"));
+        return Err(crate::ts!(
+            "CryptProtectData 失败（DPAPI user 作用域加密）",
+            "CryptProtectData failed (DPAPI user-scope encryption)"
+        ));
     }
     let cipher =
         unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
@@ -212,23 +215,38 @@ fn encrypt_stored(plain: &str) -> Result<String, String> {
 fn decrypt_stored(stored: &str) -> Result<String, String> {
     use base64::{engine::general_purpose::STANDARD as B64, Engine};
     let Some((prefix, payload)) = stored.split_once(':') else {
-        return Err(crate::ts!("无法识别的密文格式（缺少前缀）", "Unrecognized ciphertext format (missing prefix)"));
+        return Err(crate::ts!(
+            "无法识别的密文格式（缺少前缀）",
+            "Unrecognized ciphertext format (missing prefix)"
+        ));
     };
-    let raw = B64
-        .decode(payload)
-        .map_err(|e| crate::ts!("密文 base64 解码失败: {e}", "Ciphertext base64 decode failed: {e}"))?;
+    let raw = B64.decode(payload).map_err(|e| {
+        crate::ts!(
+            "密文 base64 解码失败: {e}",
+            "Ciphertext base64 decode failed: {e}"
+        )
+    })?;
     match prefix {
         // dpapi 密文只能在产生它的 Windows 用户上下文里解开；其他平台明确拒绝，
         // 而不是把密文字节当明文吐出去。
         "dpapi" => {
             if cfg!(windows) {
                 let plain = unprotect_secret(&raw)?;
-                String::from_utf8(plain).map_err(|_| crate::ts!("解密结果不是合法 UTF-8", "Decrypted result is not valid UTF-8"))
+                String::from_utf8(plain).map_err(|_| {
+                    crate::ts!(
+                        "解密结果不是合法 UTF-8",
+                        "Decrypted result is not valid UTF-8"
+                    )
+                })
             } else {
-                Err(crate::ts!("dpapi: 前缀的密文只能在 Windows 上解开", "dpapi: ciphertext can only be decrypted on Windows"))
+                Err(crate::ts!(
+                    "dpapi: 前缀的密文只能在 Windows 上解开",
+                    "dpapi: ciphertext can only be decrypted on Windows"
+                ))
             }
         }
-        "plain" => String::from_utf8(raw).map_err(|_| crate::ts!("内容不是合法 UTF-8", "Content is not valid UTF-8")),
+        "plain" => String::from_utf8(raw)
+            .map_err(|_| crate::ts!("内容不是合法 UTF-8", "Content is not valid UTF-8")),
         other => Err(crate::ts!(
             "无法识别的密文前缀 `{other}`（期望 dpapi: 或 plain:）",
             "Unrecognized ciphertext prefix `{other}` (expected dpapi: or plain:)"
@@ -273,10 +291,15 @@ fn temp_sibling(path: &Path) -> PathBuf {
 
 /// 原子写：先写临时兄弟文件，再 rename 顶上（镜像 write_auth_atomic）。
 fn write_store_atomic(path: &Path, store: &CredentialStore) -> Result<(), String> {
-    let body = serde_json::to_string_pretty(store)
-        .map_err(|e| crate::ts!("序列化 credentials.json 失败: {e}", "Failed to serialize credentials.json: {e}"))?;
+    let body = serde_json::to_string_pretty(store).map_err(|e| {
+        crate::ts!(
+            "序列化 credentials.json 失败: {e}",
+            "Failed to serialize credentials.json: {e}"
+        )
+    })?;
     let temp_path = temp_sibling(path);
-    fs::write(&temp_path, format!("{body}\n")).map_err(|e| crate::ts!("写入临时文件失败: {e}", "Failed to write temp file: {e}"))?;
+    fs::write(&temp_path, format!("{body}\n"))
+        .map_err(|e| crate::ts!("写入临时文件失败: {e}", "Failed to write temp file: {e}"))?;
     // rename 前落盘：掉电时 rename 已完成而数据未落盘会得到空 credentials。
     // Windows 的 FlushFileBuffers 要求句柄带写权限，所以不能只读 File::open。
     std::fs::OpenOptions::new()
@@ -285,11 +308,17 @@ fn write_store_atomic(path: &Path, store: &CredentialStore) -> Result<(), String
         .and_then(|file| file.sync_all())
         .map_err(|error| {
             let _ = fs::remove_file(&temp_path);
-            crate::ts!("临时文件落盘失败: {error}", "Failed to flush temp file: {error}")
+            crate::ts!(
+                "临时文件落盘失败: {error}",
+                "Failed to flush temp file: {error}"
+            )
         })?;
     if let Err(error) = fs::rename(&temp_path, path) {
         let _ = fs::remove_file(&temp_path);
-        return Err(crate::ts!("重命名临时文件失败: {error}", "Failed to rename temp file: {error}"));
+        return Err(crate::ts!(
+            "重命名临时文件失败: {error}",
+            "Failed to rename temp file: {error}"
+        ));
     }
     Ok(())
 }
@@ -327,7 +356,12 @@ pub fn load_store_at(path: &Path) -> Result<CredentialStore, String> {
     if !path.is_file() {
         return Ok(CredentialStore::default());
     }
-    let text = fs::read_to_string(path).map_err(|e| crate::ts!("读取 credentials.json 失败: {e}", "Failed to read credentials.json: {e}"))?;
+    let text = fs::read_to_string(path).map_err(|e| {
+        crate::ts!(
+            "读取 credentials.json 失败: {e}",
+            "Failed to read credentials.json: {e}"
+        )
+    })?;
     if text.trim().is_empty() {
         // 空文件是合法的全新开始，不是损坏（与 provider_usage 对空 auth.json 的立场一致）。
         return Ok(CredentialStore::default());
@@ -351,7 +385,12 @@ pub fn load_store_at(path: &Path) -> Result<CredentialStore, String> {
 /// 保存 store（原子写；父目录缺失时创建）。
 pub fn save_store_at(path: &Path, store: &CredentialStore) -> Result<(), String> {
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(|e| crate::ts!("创建 .marionette 目录失败: {e}", "Failed to create the .marionette directory: {e}"))?;
+        fs::create_dir_all(dir).map_err(|e| {
+            crate::ts!(
+                "创建 .marionette 目录失败: {e}",
+                "Failed to create the .marionette directory: {e}"
+            )
+        })?;
     }
     write_store_atomic(path, store)
 }
@@ -361,20 +400,31 @@ pub fn save_store_at(path: &Path, store: &CredentialStore) -> Result<(), String>
 pub fn add_key_plan_at(path: &Path, preset: &str, label: &str, key: &str) -> Result<(), String> {
     let preset = preset.trim();
     if preset.is_empty() {
-        return Err(crate::ts!("preset 不能为空（它同时是这条凭证的稳定 id）", "Preset cannot be empty (it is also this credential's stable id)"));
+        return Err(crate::ts!(
+            "preset 不能为空（它同时是这条凭证的稳定 id）",
+            "Preset cannot be empty (it is also this credential's stable id)"
+        ));
     }
     if !preset
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
-        return Err(crate::ts!("preset 只能用字母、数字、连字符、下划线", "Preset may only contain letters, digits, hyphens, and underscores"));
+        return Err(crate::ts!(
+            "preset 只能用字母、数字、连字符、下划线",
+            "Preset may only contain letters, digits, hyphens, and underscores"
+        ));
     }
     // 粘贴进来的 key 常带首尾换行；厂商 key 没有首尾空白语义，trim 掉。
     let key = key.trim();
     if key.is_empty() {
         return Err(crate::ts!("API Key 不能为空", "API key cannot be empty"));
     }
-    let secret = encrypt_stored(key).map_err(|e| crate::ts!("加密 API Key 失败: {e}", "Failed to encrypt the API key: {e}"))?;
+    let secret = encrypt_stored(key).map_err(|e| {
+        crate::ts!(
+            "加密 API Key 失败: {e}",
+            "Failed to encrypt the API key: {e}"
+        )
+    })?;
     let label = if label.trim().is_empty() {
         preset.to_string()
     } else {
@@ -409,14 +459,25 @@ pub fn add_key_plan_at(path: &Path, preset: &str, label: &str, key: &str) -> Res
     save_store_at(path, &store)
 }
 
-pub fn add_custom_provider(label: &str, key: &str, config: CustomProviderConfig) -> Result<String, String> {
-    let path=credentials_store_path().ok_or_else(||crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
-    add_custom_provider_at(&path,label,key,config)
+pub fn add_custom_provider(
+    label: &str,
+    key: &str,
+    config: CustomProviderConfig,
+) -> Result<String, String> {
+    let path = credentials_store_path()
+        .ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    add_custom_provider_at(&path, label, key, config)
 }
 
 /// 编辑一条手动自定义来源（见 [`update_custom_provider_at`]）。返回（可能变了的）条目 id。
-pub fn update_custom_provider(entry_id: &str, label: &str, key: Option<&str>, config: CustomProviderConfig) -> Result<String, String> {
-    let path = credentials_store_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+pub fn update_custom_provider(
+    entry_id: &str,
+    label: &str,
+    key: Option<&str>,
+    config: CustomProviderConfig,
+) -> Result<String, String> {
+    let path = credentials_store_path()
+        .ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     update_custom_provider_at(&path, entry_id, label, key, config)
 }
 
@@ -424,9 +485,23 @@ pub fn update_custom_provider(entry_id: &str, label: &str, key: Option<&str>, co
 /// 「获取模型」预览共用这一套：预览能过，保存就一定能过。
 pub(crate) fn clean_custom_endpoint(endpoint: &str) -> Result<String, String> {
     let endpoint = endpoint.trim().trim_end_matches('/');
-    let authority = endpoint.split("://").nth(1).unwrap_or("").split('/').next().unwrap_or("");
-    if authority.is_empty() || authority.contains('@') || endpoint.contains('?') || endpoint.contains('#') || !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
-        return Err(crate::ts!("请输入有效的 http/https 接口地址，认证信息请填在 API Key 中", "Enter a valid http/https endpoint; put authentication in the API key field"));
+    let authority = endpoint
+        .split("://")
+        .nth(1)
+        .unwrap_or("")
+        .split('/')
+        .next()
+        .unwrap_or("");
+    if authority.is_empty()
+        || authority.contains('@')
+        || endpoint.contains('?')
+        || endpoint.contains('#')
+        || !(endpoint.starts_with("https://") || endpoint.starts_with("http://"))
+    {
+        return Err(crate::ts!(
+            "请输入有效的 http/https 接口地址，认证信息请填在 API Key 中",
+            "Enter a valid http/https endpoint; put authentication in the API key field"
+        ));
     }
     Ok(endpoint.to_string())
 }
@@ -441,7 +516,10 @@ pub(crate) fn clean_custom_models(models: &[String]) -> Result<Vec<String>, Stri
             continue;
         }
         if model.contains(',') || model.chars().any(char::is_control) {
-            return Err(crate::ts!("模型 ID 不能包含逗号或控制字符", "Model IDs cannot contain commas or control characters"));
+            return Err(crate::ts!(
+                "模型 ID 不能包含逗号或控制字符",
+                "Model IDs cannot contain commas or control characters"
+            ));
         }
         if !out.iter().any(|m| m == model) {
             out.push(model.to_string());
@@ -458,20 +536,59 @@ fn custom_provider_id(label: &str, endpoint: &str, protocol: &str) -> String {
     format!("custom-{digest:x}")[..23].to_string()
 }
 
-pub(crate) fn add_custom_provider_at(path: &Path, label: &str, key: &str, config: CustomProviderConfig) -> Result<String, String> {
-    let label=label.trim();
-    if label.is_empty() { return Err(crate::ts!("请输入自定义来源名称", "Enter a custom source name")); }
-    if !matches!(config.protocol.as_str(), "chat" | "responses" | "anthropic") { return Err(crate::ts!("请选择支持的接口协议", "Choose a supported API protocol")); }
-    let endpoint=clean_custom_endpoint(&config.endpoint)?;
+pub(crate) fn add_custom_provider_at(
+    path: &Path,
+    label: &str,
+    key: &str,
+    config: CustomProviderConfig,
+) -> Result<String, String> {
+    let label = label.trim();
+    if label.is_empty() {
+        return Err(crate::ts!(
+            "请输入自定义来源名称",
+            "Enter a custom source name"
+        ));
+    }
+    if !matches!(config.protocol.as_str(), "chat" | "responses" | "anthropic") {
+        return Err(crate::ts!(
+            "请选择支持的接口协议",
+            "Choose a supported API protocol"
+        ));
+    }
+    let endpoint = clean_custom_endpoint(&config.endpoint)?;
     let models = clean_custom_models(&config.models)?;
-    let id=custom_provider_id(label,&endpoint,&config.protocol);
-    let mut store=load_store_at(&path)?;
-    let created_at=store.entries.iter().find(|e|e.id==id).map(|e|e.created_at.clone()).unwrap_or_else(now_epoch_secs);
-    let secret=if key.trim().is_empty() {None} else {Some(encrypt_stored(key.trim())?)};
-    store.entries.retain(|e|e.id!=id);
-    store.entries.push(CredentialEntry { id:id.clone(),kind:CredentialKind::KeyPlan,label:label.into(),preset:Some("custom".into()),secret,ref_path:None,host_agent:None,source:"manual".into(),created_at,last_used_at:None,
-        custom_provider:Some(CustomProviderConfig {endpoint:endpoint.into(),protocol:config.protocol,models}) });
-    save_store_at(&path,&store)?;
+    let id = custom_provider_id(label, &endpoint, &config.protocol);
+    let mut store = load_store_at(&path)?;
+    let created_at = store
+        .entries
+        .iter()
+        .find(|e| e.id == id)
+        .map(|e| e.created_at.clone())
+        .unwrap_or_else(now_epoch_secs);
+    let secret = if key.trim().is_empty() {
+        None
+    } else {
+        Some(encrypt_stored(key.trim())?)
+    };
+    store.entries.retain(|e| e.id != id);
+    store.entries.push(CredentialEntry {
+        id: id.clone(),
+        kind: CredentialKind::KeyPlan,
+        label: label.into(),
+        preset: Some("custom".into()),
+        secret,
+        ref_path: None,
+        host_agent: None,
+        source: "manual".into(),
+        created_at,
+        last_used_at: None,
+        custom_provider: Some(CustomProviderConfig {
+            endpoint: endpoint.into(),
+            protocol: config.protocol,
+            models,
+        }),
+    });
+    save_store_at(&path, &store)?;
     Ok(id)
 }
 
@@ -482,18 +599,43 @@ pub(crate) fn add_custom_provider_at(path: &Path, label: &str, key: &str, config
 ///   `Some("")`：改成无认证；`Some(k)`：换新 key。
 /// - 名称 / 地址 / 协议任一改动都会换 id → 旧条目退位，`createdAt` 保留。
 /// - 只认手动自定义来源（`preset = "custom"` 且带 `customProvider`），其余报错。
-fn update_custom_provider_at(path: &Path, entry_id: &str, label: &str, key: Option<&str>, config: CustomProviderConfig) -> Result<String, String> {
+fn update_custom_provider_at(
+    path: &Path,
+    entry_id: &str,
+    label: &str,
+    key: Option<&str>,
+    config: CustomProviderConfig,
+) -> Result<String, String> {
     let label = label.trim();
-    if label.is_empty() { return Err(crate::ts!("请输入自定义来源名称", "Enter a custom source name")); }
-    if !matches!(config.protocol.as_str(), "chat" | "responses" | "anthropic") { return Err(crate::ts!("请选择支持的接口协议", "Choose a supported API protocol")); }
+    if label.is_empty() {
+        return Err(crate::ts!(
+            "请输入自定义来源名称",
+            "Enter a custom source name"
+        ));
+    }
+    if !matches!(config.protocol.as_str(), "chat" | "responses" | "anthropic") {
+        return Err(crate::ts!(
+            "请选择支持的接口协议",
+            "Choose a supported API protocol"
+        ));
+    }
     let endpoint = clean_custom_endpoint(&config.endpoint)?;
     let models = clean_custom_models(&config.models)?;
     let mut store = load_store_at(path)?;
     let Some(old) = store.entries.iter().find(|e| e.id == entry_id).cloned() else {
-        return Err(crate::ts!("未找到凭证 `{entry_id}`", "Credential `{entry_id}` not found"));
+        return Err(crate::ts!(
+            "未找到凭证 `{entry_id}`",
+            "Credential `{entry_id}` not found"
+        ));
     };
-    if old.kind != CredentialKind::KeyPlan || old.preset.as_deref() != Some("custom") || old.custom_provider.is_none() {
-        return Err(crate::ts!("只能编辑手动添加的自定义来源", "Only manually added custom sources can be edited"));
+    if old.kind != CredentialKind::KeyPlan
+        || old.preset.as_deref() != Some("custom")
+        || old.custom_provider.is_none()
+    {
+        return Err(crate::ts!(
+            "只能编辑手动添加的自定义来源",
+            "Only manually added custom sources can be edited"
+        ));
     }
     let secret = match key {
         None => old.secret.clone(),
@@ -514,7 +656,11 @@ fn update_custom_provider_at(path: &Path, entry_id: &str, label: &str, key: Opti
         source: "manual".into(),
         created_at: old.created_at,
         last_used_at: old.last_used_at,
-        custom_provider: Some(CustomProviderConfig { endpoint, protocol: config.protocol, models }),
+        custom_provider: Some(CustomProviderConfig {
+            endpoint,
+            protocol: config.protocol,
+            models,
+        }),
     });
     save_store_at(path, &store)?;
     Ok(id)
@@ -526,7 +672,10 @@ pub fn delete_entry_at(path: &Path, id: &str) -> Result<(), String> {
     let before = store.entries.len();
     store.entries.retain(|e| e.id != id);
     if store.entries.len() == before {
-        return Err(crate::ts!("未找到凭证 `{id}`", "Credential `{id}` not found"));
+        return Err(crate::ts!(
+            "未找到凭证 `{id}`",
+            "Credential `{id}` not found"
+        ));
     }
     save_store_at(path, &store)
 }
@@ -718,9 +867,9 @@ fn peek_opencode_db_keys_at(db_path: &Path) -> Vec<(String, String)> {
     ) else {
         return Vec::new();
     };
-    let mut stmt = match conn.prepare(
-        "SELECT integration_id, value, active FROM credential WHERE active IS NOT 0",
-    ) {
+    let mut stmt = match conn
+        .prepare("SELECT integration_id, value, active FROM credential WHERE active IS NOT 0")
+    {
         Ok(stmt) => stmt,
         Err(_) => return Vec::new(),
     };
@@ -728,7 +877,10 @@ fn peek_opencode_db_keys_at(db_path: &Path) -> Vec<(String, String)> {
         .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0).unwrap_or_default(),
-                row.get::<_, Option<String>>(1).ok().flatten().unwrap_or_default(),
+                row.get::<_, Option<String>>(1)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default(),
                 row.get::<_, Option<i64>>(2).ok().flatten().unwrap_or(-1),
             ))
         })
@@ -765,10 +917,8 @@ fn merge_opencode_key_sources(
     db: Vec<(String, String)>,
     auth: Vec<(String, String)>,
 ) -> Vec<(String, String)> {
-    let owned: std::collections::HashSet<String> = db
-        .iter()
-        .map(|(id, _)| id.to_ascii_lowercase())
-        .collect();
+    let owned: std::collections::HashSet<String> =
+        db.iter().map(|(id, _)| id.to_ascii_lowercase()).collect();
     let mut out = db;
     out.extend(
         auth.into_iter()
@@ -849,19 +999,28 @@ fn scan_opencode_auth(path: &Path) -> AgentScan {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) => {
-            scan.error = Some(crate::ts!("读取 OpenCode auth.json 失败: {e}", "Failed to read OpenCode auth.json: {e}"));
+            scan.error = Some(crate::ts!(
+                "读取 OpenCode auth.json 失败: {e}",
+                "Failed to read OpenCode auth.json: {e}"
+            ));
             return scan;
         }
     };
     let auth: Value = match serde_json::from_str(&text) {
         Ok(value) => value,
         Err(e) => {
-            scan.error = Some(crate::ts!("OpenCode auth.json 解析失败（{e}）", "OpenCode auth.json parse failed ({e})"));
+            scan.error = Some(crate::ts!(
+                "OpenCode auth.json 解析失败（{e}）",
+                "OpenCode auth.json parse failed ({e})"
+            ));
             return scan;
         }
     };
     let Some(obj) = auth.as_object() else {
-        scan.error = Some(crate::ts!("OpenCode auth.json 顶层不是 JSON 对象", "OpenCode auth.json top level is not a JSON object"));
+        scan.error = Some(crate::ts!(
+            "OpenCode auth.json 顶层不是 JSON 对象",
+            "OpenCode auth.json top level is not a JSON object"
+        ));
         return scan;
     };
     for (provider, entry) in obj {
@@ -895,12 +1054,21 @@ fn scan_opencode_auth(path: &Path) -> AgentScan {
 /// 真实机器上的探测（含 %APPDATA%）走 [`scan_opencode`]，那里直接复用它。
 pub fn scan_opencode_at(home: &Path) -> AgentScan {
     let candidates = [
-        home.join(".local").join("share").join("opencode").join("auth.json"),
+        home.join(".local")
+            .join("share")
+            .join("opencode")
+            .join("auth.json"),
         home.join(".config").join("opencode").join("auth.json"),
     ];
     match candidates.iter().find(|p| p.is_file()) {
         Some(path) => scan_opencode_auth(path),
-        None => absent("opencode", &crate::ts!("未检测到 OpenCode（auth.json 不存在）", "OpenCode not detected (auth.json missing)")),
+        None => absent(
+            "opencode",
+            &crate::ts!(
+                "未检测到 OpenCode（auth.json 不存在）",
+                "OpenCode not detected (auth.json missing)"
+            ),
+        ),
     }
 }
 
@@ -926,7 +1094,10 @@ pub fn scan_claude_at(home: &Path) -> AgentScan {
             crate::ts!("未检测到 Claude Code", "Claude Code not detected")
         });
     } else if state.is_file() {
-        scan.note = Some(crate::ts!("检测到 ~/.claude.json（Claude Code 状态文件）", "Found ~/.claude.json (Claude Code state file)"));
+        scan.note = Some(crate::ts!(
+            "检测到 ~/.claude.json（Claude Code 状态文件）",
+            "Found ~/.claude.json (Claude Code state file)"
+        ));
     }
     scan
 }
@@ -954,7 +1125,10 @@ pub fn scan_codex_at(home: &Path) -> AgentScan {
         scan.entries.push(scan_entry(
             "codex/login",
             CredentialKind::Subscription,
-            &crate::ts!("Codex 登录（凭证在系统 secret storage，无法读取）", "Codex login (credentials are in system secret storage, unreadable)"),
+            &crate::ts!(
+                "Codex 登录（凭证在系统 secret storage，无法读取）",
+                "Codex login (credentials are in system secret storage, unreadable)"
+            ),
             "scan:codex",
             None,
             "codex",
@@ -980,8 +1154,12 @@ fn grok_config_channels(text: &str) -> Vec<String> {
         let Some(end) = line.find(']') else { continue };
         let header = line[1..end].trim();
         // 只认 `model.<name>`；`models`、`[model]` 本体、其他表都不算 channel。
-        let Some(rest) = header.strip_prefix("model") else { continue };
-        let Some(key_part) = rest.strip_prefix('.') else { continue };
+        let Some(rest) = header.strip_prefix("model") else {
+            continue;
+        };
+        let Some(key_part) = rest.strip_prefix('.') else {
+            continue;
+        };
         if let Some(name) = parse_toml_key_name(key_part) {
             if !name.is_empty() {
                 names.insert(name);
@@ -1020,10 +1198,19 @@ pub fn scan_grok_at(home: &Path) -> AgentScan {
     if auth_path.is_file() {
         // 只取 email 用于显示；key / expires_at 不读不存（§4.1 扫描清单）。
         let parsed = fs::read_to_string(&auth_path)
-            .map_err(|e| crate::ts!("读取 Grok auth.json 失败: {e}", "Failed to read Grok auth.json: {e}"))
+            .map_err(|e| {
+                crate::ts!(
+                    "读取 Grok auth.json 失败: {e}",
+                    "Failed to read Grok auth.json: {e}"
+                )
+            })
             .and_then(|text| {
-                serde_json::from_str::<Value>(&text)
-                    .map_err(|e| crate::ts!("Grok auth.json 解析失败（{e}）", "Grok auth.json parse failed ({e})"))
+                serde_json::from_str::<Value>(&text).map_err(|e| {
+                    crate::ts!(
+                        "Grok auth.json 解析失败（{e}）",
+                        "Grok auth.json parse failed ({e})"
+                    )
+                })
             });
         match parsed {
             Ok(auth) => {
@@ -1032,7 +1219,9 @@ pub fn scan_grok_at(home: &Path) -> AgentScan {
                     .and_then(Value::as_str)
                     .filter(|s| !s.is_empty());
                 let label = match email {
-                    Some(email) => crate::ts!("Grok 订阅（{email}）", "Grok subscription ({email})"),
+                    Some(email) => {
+                        crate::ts!("Grok 订阅（{email}）", "Grok subscription ({email})")
+                    }
                     None => crate::ts!("Grok 订阅", "Grok subscription"),
                 };
                 scan.entries.push(scan_entry(
@@ -1055,14 +1244,23 @@ pub fn scan_grok_at(home: &Path) -> AgentScan {
                     scan.entries.push(scan_entry(
                         &format!("grok/channel/{name}"),
                         CredentialKind::Reference,
-                        &crate::ts!("Grok 自定义 channel {name}", "Grok custom channel {name}", name = name),
+                        &crate::ts!(
+                            "Grok 自定义 channel {name}",
+                            "Grok custom channel {name}",
+                            name = name
+                        ),
                         "scan:grok",
                         Some(format!("{}#model.\"{name}\"", config_path.display())),
                         "grok",
                     ));
                 }
             }
-            Err(e) => scan.error = Some(crate::ts!("读取 Grok config.toml 失败: {e}", "Failed to read Grok config.toml: {e}")),
+            Err(e) => {
+                scan.error = Some(crate::ts!(
+                    "读取 Grok config.toml 失败: {e}",
+                    "Failed to read Grok config.toml: {e}"
+                ))
+            }
         }
     }
 
@@ -1093,25 +1291,29 @@ fn credentials_store_path() -> Option<PathBuf> {
 
 #[allow(dead_code)]
 pub fn load_store() -> Result<CredentialStore, String> {
-    let path = credentials_store_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    let path = credentials_store_path()
+        .ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     load_store_at(&path)
 }
 
 #[allow(dead_code)]
 pub fn save_store(store: &CredentialStore) -> Result<(), String> {
-    let path = credentials_store_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    let path = credentials_store_path()
+        .ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     save_store_at(&path, store)
 }
 
 #[allow(dead_code)]
 pub fn add_key_plan(preset: &str, label: &str, key: &str) -> Result<(), String> {
-    let path = credentials_store_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    let path = credentials_store_path()
+        .ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     add_key_plan_at(&path, preset, label, key)
 }
 
 /// 删除一条凭证（bridge_delete_entry 走这里）。id 不存在时报错。
 pub fn delete_entry(id: &str) -> Result<(), String> {
-    let path = credentials_store_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    let path = credentials_store_path()
+        .ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     delete_entry_at(&path, id)
 }
 
@@ -1128,7 +1330,8 @@ pub fn peek_secret(id: &str) -> Option<String> {
 
 #[allow(dead_code)]
 pub fn touch_last_used(id: &str) -> Result<(), String> {
-    let path = credentials_store_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    let path = credentials_store_path()
+        .ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     touch_last_used_at(&path, id)
 }
 
@@ -1139,7 +1342,13 @@ pub fn scan_opencode() -> AgentScan {
     // %APPDATA%），不在本模块复制第二份。
     match crate::provider_usage::opencode_auth_path() {
         Some(path) => scan_opencode_auth(&path),
-        None => absent("opencode", &crate::ts!("未检测到 OpenCode（auth.json 不存在）", "OpenCode not detected (auth.json missing)")),
+        None => absent(
+            "opencode",
+            &crate::ts!(
+                "未检测到 OpenCode（auth.json 不存在）",
+                "OpenCode not detected (auth.json missing)"
+            ),
+        ),
     }
 }
 
@@ -1147,7 +1356,10 @@ pub fn scan_opencode() -> AgentScan {
 pub fn scan_claude() -> AgentScan {
     match home_dir() {
         Some(home) => scan_claude_at(&home),
-        None => AgentScan::failed("claude", &crate::ts!("无法定位用户目录", "Could not locate the user directory")),
+        None => AgentScan::failed(
+            "claude",
+            &crate::ts!("无法定位用户目录", "Could not locate the user directory"),
+        ),
     }
 }
 
@@ -1155,7 +1367,10 @@ pub fn scan_claude() -> AgentScan {
 pub fn scan_codex() -> AgentScan {
     match home_dir() {
         Some(home) => scan_codex_at(&home),
-        None => AgentScan::failed("codex", &crate::ts!("无法定位用户目录", "Could not locate the user directory")),
+        None => AgentScan::failed(
+            "codex",
+            &crate::ts!("无法定位用户目录", "Could not locate the user directory"),
+        ),
     }
 }
 
@@ -1163,7 +1378,10 @@ pub fn scan_codex() -> AgentScan {
 pub fn scan_grok() -> AgentScan {
     match home_dir() {
         Some(home) => scan_grok_at(&home),
-        None => AgentScan::failed("grok", &crate::ts!("无法定位用户目录", "Could not locate the user directory")),
+        None => AgentScan::failed(
+            "grok",
+            &crate::ts!("无法定位用户目录", "Could not locate the user directory"),
+        ),
     }
 }
 
@@ -1172,10 +1390,22 @@ pub fn scan_all() -> ScanReport {
     match home_dir() {
         Some(home) => scan_all_at(&home),
         None => ScanReport {
-            opencode: AgentScan::failed("opencode", &crate::ts!("无法定位用户目录", "Could not locate the user directory")),
-            claude: AgentScan::failed("claude", &crate::ts!("无法定位用户目录", "Could not locate the user directory")),
-            codex: AgentScan::failed("codex", &crate::ts!("无法定位用户目录", "Could not locate the user directory")),
-            grok: AgentScan::failed("grok", &crate::ts!("无法定位用户目录", "Could not locate the user directory")),
+            opencode: AgentScan::failed(
+                "opencode",
+                &crate::ts!("无法定位用户目录", "Could not locate the user directory"),
+            ),
+            claude: AgentScan::failed(
+                "claude",
+                &crate::ts!("无法定位用户目录", "Could not locate the user directory"),
+            ),
+            codex: AgentScan::failed(
+                "codex",
+                &crate::ts!("无法定位用户目录", "Could not locate the user directory"),
+            ),
+            grok: AgentScan::failed(
+                "grok",
+                &crate::ts!("无法定位用户目录", "Could not locate the user directory"),
+            ),
         },
     }
 }
@@ -1185,9 +1415,8 @@ mod tests {
     use super::{
         add_key_plan_at, decrypt_stored, delete_entry_at, encrypt_stored, load_store_at,
         merge_opencode_key_sources, peek_opencode_api_keys_at, peek_opencode_db_keys_at,
-        peek_secret_at, peek_zcode_coding_plan_keys_at, scan_all_at, scan_claude_at,
-        scan_codex_at, scan_grok_at, scan_opencode_at, touch_last_used_at, CredentialEntry,
-        CredentialKind,
+        peek_secret_at, peek_zcode_coding_plan_keys_at, scan_all_at, scan_claude_at, scan_codex_at,
+        scan_grok_at, scan_opencode_at, touch_last_used_at, CredentialEntry, CredentialKind,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1223,20 +1452,38 @@ mod tests {
 
     #[test]
     fn custom_provider_roundtrip_rotation_and_deletion() {
-        let root=temp_home("custom_provider");
-        let path=root.join("credentials.json");
-        let config=super::CustomProviderConfig {endpoint:"https://ollama.com/v1/".into(),protocol:"chat".into(),models:vec!["deepseek-v4.1-flash:1017".into()]};
-        let id=super::add_custom_provider_at(&path,"Ollama","sk-fixture-private",config.clone()).unwrap();
-        let stored=super::load_store_at(&path).unwrap();
-        assert_eq!(stored.entries.len(),1);
-        assert_eq!(stored.entries[0].custom_provider.as_ref().unwrap().endpoint,"https://ollama.com/v1");
-        assert!(!fs::read_to_string(&path).unwrap().contains("sk-fixture-private"));
-        assert_eq!(super::peek_secret_at(&path,&id).unwrap().as_deref(),Some("sk-fixture-private"));
-        let rotated=super::add_custom_provider_at(&path,"Ollama","sk-fixture-rotated",config).unwrap();
-        assert_eq!(id,rotated);
-        assert_eq!(super::load_store_at(&path).unwrap().entries.len(),1);
-        assert_eq!(super::peek_secret_at(&path,&id).unwrap().as_deref(),Some("sk-fixture-rotated"));
-        super::delete_entry_at(&path,&id).unwrap();
+        let root = temp_home("custom_provider");
+        let path = root.join("credentials.json");
+        let config = super::CustomProviderConfig {
+            endpoint: "https://ollama.com/v1/".into(),
+            protocol: "chat".into(),
+            models: vec!["deepseek-v4.1-flash:1017".into()],
+        };
+        let id =
+            super::add_custom_provider_at(&path, "Ollama", "sk-fixture-private", config.clone())
+                .unwrap();
+        let stored = super::load_store_at(&path).unwrap();
+        assert_eq!(stored.entries.len(), 1);
+        assert_eq!(
+            stored.entries[0].custom_provider.as_ref().unwrap().endpoint,
+            "https://ollama.com/v1"
+        );
+        assert!(!fs::read_to_string(&path)
+            .unwrap()
+            .contains("sk-fixture-private"));
+        assert_eq!(
+            super::peek_secret_at(&path, &id).unwrap().as_deref(),
+            Some("sk-fixture-private")
+        );
+        let rotated =
+            super::add_custom_provider_at(&path, "Ollama", "sk-fixture-rotated", config).unwrap();
+        assert_eq!(id, rotated);
+        assert_eq!(super::load_store_at(&path).unwrap().entries.len(), 1);
+        assert_eq!(
+            super::peek_secret_at(&path, &id).unwrap().as_deref(),
+            Some("sk-fixture-rotated")
+        );
+        super::delete_entry_at(&path, &id).unwrap();
         assert!(super::load_store_at(&path).unwrap().entries.is_empty());
         fs::remove_dir_all(root).unwrap();
     }
@@ -1247,44 +1494,109 @@ mod tests {
     fn custom_provider_update_keeps_key_and_swaps_identity_when_needed() {
         let root = temp_home("custom_update");
         let path = root.join("credentials.json");
-        let config = |endpoint: &str, protocol: &str, models: &[&str]| super::CustomProviderConfig {
-            endpoint: endpoint.into(),
-            protocol: protocol.into(),
-            models: models.iter().map(|m| m.to_string()).collect(),
-        };
-        let id = super::add_custom_provider_at(&path, "Ollama", "sk-fixture-private", config("https://ollama.com/v1", "chat", &["a"])).unwrap();
+        let config =
+            |endpoint: &str, protocol: &str, models: &[&str]| super::CustomProviderConfig {
+                endpoint: endpoint.into(),
+                protocol: protocol.into(),
+                models: models.iter().map(|m| m.to_string()).collect(),
+            };
+        let id = super::add_custom_provider_at(
+            &path,
+            "Ollama",
+            "sk-fixture-private",
+            config("https://ollama.com/v1", "chat", &["a"]),
+        )
+        .unwrap();
         let before = super::load_store_at(&path).unwrap().entries.remove(0);
 
         // 只改模型清单：key = None 沿用原密钥（密文一个字节不变）。
-        let same = super::update_custom_provider_at(&path, &id, "Ollama", None, config("https://ollama.com/v1/", "chat", &["a", "b", " a ", ""])).unwrap();
+        let same = super::update_custom_provider_at(
+            &path,
+            &id,
+            "Ollama",
+            None,
+            config("https://ollama.com/v1/", "chat", &["a", "b", " a ", ""]),
+        )
+        .unwrap();
         assert_eq!(same, id, "name/endpoint/protocol unchanged → same id");
         let after = super::load_store_at(&path).unwrap().entries.remove(0);
-        assert_eq!(after.secret, before.secret, "ciphertext moves as is — no decrypt/re-encrypt");
+        assert_eq!(
+            after.secret, before.secret,
+            "ciphertext moves as is — no decrypt/re-encrypt"
+        );
         assert_eq!(after.created_at, before.created_at);
-        let models: Vec<&str> = after.custom_provider.as_ref().unwrap().models.iter().map(String::as_str).collect();
-        assert_eq!(models, vec!["a", "b"], "trimmed, blanks dropped, order kept");
+        let models: Vec<&str> = after
+            .custom_provider
+            .as_ref()
+            .unwrap()
+            .models
+            .iter()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            models,
+            vec!["a", "b"],
+            "trimmed, blanks dropped, order kept"
+        );
 
         // 清空模型清单 = 回到 live 目录；显式清空 key = 改成无认证。
-        let live = super::update_custom_provider_at(&path, &id, "Ollama", Some(""), config("https://ollama.com/v1", "chat", &[])).unwrap();
+        let live = super::update_custom_provider_at(
+            &path,
+            &id,
+            "Ollama",
+            Some(""),
+            config("https://ollama.com/v1", "chat", &[]),
+        )
+        .unwrap();
         assert_eq!(live, id);
         let after = super::load_store_at(&path).unwrap().entries.remove(0);
-        assert!(after.secret.is_none(), "Some(\"\") means no auth from now on");
+        assert!(
+            after.secret.is_none(),
+            "Some(\"\") means no auth from now on"
+        );
         assert!(after.custom_provider.as_ref().unwrap().models.is_empty());
 
         // 改名：换 id，旧条目退位，createdAt 保留，条目总数不变。
-        let renamed = super::update_custom_provider_at(&path, &id, "Ollama Cloud", Some("sk-new"), config("https://ollama.com/v1", "chat", &[])).unwrap();
+        let renamed = super::update_custom_provider_at(
+            &path,
+            &id,
+            "Ollama Cloud",
+            Some("sk-new"),
+            config("https://ollama.com/v1", "chat", &[]),
+        )
+        .unwrap();
         assert_ne!(renamed, id);
         let store = super::load_store_at(&path).unwrap();
         assert_eq!(store.entries.len(), 1);
         assert_eq!(store.entries[0].label, "Ollama Cloud");
         assert_eq!(store.entries[0].created_at, before.created_at);
-        assert_eq!(super::peek_secret_at(&path, &renamed).unwrap().as_deref(), Some("sk-new"));
+        assert_eq!(
+            super::peek_secret_at(&path, &renamed).unwrap().as_deref(),
+            Some("sk-new")
+        );
 
         // preset 钥匙条目不是自定义来源：拒绝编辑、原样不动；不存在的条目报错而不是新建。
         add_key_plan_at(&path, "deepseek", "DeepSeek", "sk-preset").unwrap();
-        assert!(super::update_custom_provider_at(&path, "deepseek", "x", None, config("https://a.com/v1", "chat", &[])).is_err());
-        assert_eq!(super::peek_secret_at(&path, "deepseek").unwrap().as_deref(), Some("sk-preset"));
-        assert!(super::update_custom_provider_at(&path, "custom-nope", "x", None, config("https://a.com/v1", "chat", &[])).is_err());
+        assert!(super::update_custom_provider_at(
+            &path,
+            "deepseek",
+            "x",
+            None,
+            config("https://a.com/v1", "chat", &[])
+        )
+        .is_err());
+        assert_eq!(
+            super::peek_secret_at(&path, "deepseek").unwrap().as_deref(),
+            Some("sk-preset")
+        );
+        assert!(super::update_custom_provider_at(
+            &path,
+            "custom-nope",
+            "x",
+            None,
+            config("https://a.com/v1", "chat", &[])
+        )
+        .is_err());
         assert_eq!(super::load_store_at(&path).unwrap().entries.len(), 2);
         fs::remove_dir_all(root).unwrap();
     }
@@ -1343,16 +1655,28 @@ mod tests {
         assert!(store.entries.is_empty());
         assert_eq!(store.version, 1);
 
-        add_key_plan_at(&store_path, "opencode-go", "OpenCode Go", "sk-lifecycle-9f2").unwrap();
+        add_key_plan_at(
+            &store_path,
+            "opencode-go",
+            "OpenCode Go",
+            "sk-lifecycle-9f2",
+        )
+        .unwrap();
 
         // 落盘是 schema 形状 + 密文，绝不出现明文。
         let raw = fs::read_to_string(&store_path).unwrap();
-        assert!(!raw.contains("sk-lifecycle-9f2"), "store 落盘不能含明文 key");
+        assert!(
+            !raw.contains("sk-lifecycle-9f2"),
+            "store 落盘不能含明文 key"
+        );
         let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(parsed["version"], serde_json::json!(1));
         assert_eq!(parsed["entries"][0]["kind"], serde_json::json!("key-plan"));
         assert_eq!(parsed["entries"][0]["id"], serde_json::json!("opencode-go"));
-        assert_eq!(parsed["entries"][0]["preset"], serde_json::json!("opencode-go"));
+        assert_eq!(
+            parsed["entries"][0]["preset"],
+            serde_json::json!("opencode-go")
+        );
         assert_eq!(parsed["entries"][0]["source"], serde_json::json!("manual"));
         assert!(parsed["entries"][0]["createdAt"].is_string());
         let stored_secret = parsed["entries"][0]["secret"].as_str().unwrap();
@@ -1363,7 +1687,9 @@ mod tests {
 
         // peek 解回明文。
         assert_eq!(
-            peek_secret_at(&store_path, "opencode-go").unwrap().as_deref(),
+            peek_secret_at(&store_path, "opencode-go")
+                .unwrap()
+                .as_deref(),
             Some("sk-lifecycle-9f2")
         );
 
@@ -1379,7 +1705,9 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&store_path).unwrap()).unwrap();
         assert_eq!(parsed["entries"].as_array().unwrap().len(), 1);
         assert_eq!(
-            peek_secret_at(&store_path, "opencode-go").unwrap().as_deref(),
+            peek_secret_at(&store_path, "opencode-go")
+                .unwrap()
+                .as_deref(),
             Some("sk-rotated-77")
         );
 
@@ -1449,7 +1777,11 @@ mod tests {
     #[test]
     fn opencode_scan_classifies_api_and_oauth_without_copying_keys() {
         let home = temp_home("opencode");
-        let auth_path = home.join(".local").join("share").join("opencode").join("auth.json");
+        let auth_path = home
+            .join(".local")
+            .join("share")
+            .join("opencode")
+            .join("auth.json");
         write_file(
             &auth_path,
             r#"{
@@ -1492,7 +1824,9 @@ mod tests {
         assert!(!leaked.contains("rt-x"));
 
         // 纯读：原文件一字未动。
-        assert!(fs::read_to_string(&auth_path).unwrap().contains("sk-opencode-secret"));
+        assert!(fs::read_to_string(&auth_path)
+            .unwrap()
+            .contains("sk-opencode-secret"));
 
         let _ = fs::remove_dir_all(&home);
     }
@@ -1502,7 +1836,11 @@ mod tests {
     #[test]
     fn peek_opencode_api_keys_reads_only_api_entries() {
         let home = temp_home("opencode_peek");
-        let auth_path = home.join(".local").join("share").join("opencode").join("auth.json");
+        let auth_path = home
+            .join(".local")
+            .join("share")
+            .join("opencode")
+            .join("auth.json");
         write_file(
             &auth_path,
             r#"{
@@ -1540,7 +1878,11 @@ mod tests {
     #[test]
     fn opencode_db_keys_prefer_active_and_skip_oauth() {
         let home = temp_home("opencode_db");
-        let db_path = home.join(".local").join("share").join("opencode").join("opencode.db");
+        let db_path = home
+            .join(".local")
+            .join("share")
+            .join("opencode")
+            .join("opencode.db");
         fs::create_dir_all(db_path.parent().unwrap()).unwrap();
         {
             use rusqlite::{params, Connection};
@@ -1682,7 +2024,11 @@ mod tests {
     #[test]
     fn opencode_scan_reports_corrupt_auth_json_as_error() {
         let home = temp_home("opencode_corrupt");
-        let auth_path = home.join(".local").join("share").join("opencode").join("auth.json");
+        let auth_path = home
+            .join(".local")
+            .join("share")
+            .join("opencode")
+            .join("auth.json");
         write_file(&auth_path, r#"{"deepseek":{"key":"sk-x","#);
 
         let scan = scan_opencode_at(&home);
@@ -1712,7 +2058,11 @@ mod tests {
         assert_eq!(entry.kind, CredentialKind::Subscription);
         assert_eq!(entry.label, "Claude Code 登录");
         assert!(entry.secret.is_none());
-        assert!(scan.note.as_deref().unwrap_or_default().contains(".claude.json"));
+        assert!(scan
+            .note
+            .as_deref()
+            .unwrap_or_default()
+            .contains(".claude.json"));
 
         // 只有 ~/.claude.json（状态文件在、凭证不在）→ 只有提示，没有条目。
         let home = temp_home("claude_state_only");
@@ -1750,7 +2100,11 @@ mod tests {
         let scan = scan_codex_at(&home);
         let entry = find_entry(&scan.entries, "codex/login");
         assert_eq!(entry.kind, CredentialKind::Subscription);
-        assert!(entry.label.contains("secret storage"), "label = {}", entry.label);
+        assert!(
+            entry.label.contains("secret storage"),
+            "label = {}",
+            entry.label
+        );
 
         // 什么都没有 → 缺失提示。
         let home = temp_home("codex_absent");
@@ -1800,7 +2154,11 @@ x = 1
 
         let login = find_entry(&scan.entries, "grok/login");
         assert_eq!(login.kind, CredentialKind::Subscription);
-        assert!(login.label.contains("dev@example.com"), "label = {}", login.label);
+        assert!(
+            login.label.contains("dev@example.com"),
+            "label = {}",
+            login.label
+        );
         assert!(login.secret.is_none());
 
         // channel：quoted / 带点 / 裸 key 都认；[models] 与 [other] 不算。
@@ -1819,7 +2177,11 @@ x = 1
             ]
         );
         let fast = find_entry(&scan.entries, "grok/channel/grok/custom-fast");
-        assert!(fast.ref_path.as_deref().unwrap().contains("#model.\"grok/custom-fast\""));
+        assert!(fast
+            .ref_path
+            .as_deref()
+            .unwrap()
+            .contains("#model.\"grok/custom-fast\""));
 
         // 明文 key（auth.json 的、config.toml 内联的）都不进扫描结果。
         let leaked = serde_json::to_string(&scan).unwrap();
@@ -1846,7 +2208,11 @@ x = 1
         let home = temp_home("all");
         // opencode 损坏 → error；grok 只有 config.toml → 正常出 channel 条目。
         write_file(
-            &home.join(".local").join("share").join("opencode").join("auth.json"),
+            &home
+                .join(".local")
+                .join("share")
+                .join("opencode")
+                .join("auth.json"),
             "{broken",
         );
         write_file(

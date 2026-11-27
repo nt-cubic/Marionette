@@ -124,8 +124,9 @@ pub fn generate_handoff_with_storage(
 /// a previous switch does not count — switching agents twice on a fresh dialog
 /// must not start producing notes.
 fn has_transcript_content(events: &[Value]) -> bool {
-    events.iter().any(|e| {
-        match e.get("type").and_then(Value::as_str) {
+    events
+        .iter()
+        .any(|e| match e.get("type").and_then(Value::as_str) {
             Some("user_message" | "assistant_message" | "thought") => e
                 .get("text")
                 .and_then(Value::as_str)
@@ -133,8 +134,7 @@ fn has_transcript_content(events: &[Value]) -> bool {
                 .unwrap_or(false),
             Some("tool_call" | "plan_prompt" | "ask_prompt") => true,
             _ => false,
-        }
-    })
+        })
 }
 
 fn sanitize_session_id(session_id: &str) -> String {
@@ -213,10 +213,7 @@ fn recent_plans(events: &[Value], limit: usize) -> Vec<HandoffPlan> {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .unwrap_or("Plan");
-            let status = e
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or("pending");
+            let status = e.get("status").and_then(Value::as_str).unwrap_or("pending");
             let decision = e
                 .get("decisionLabel")
                 .and_then(Value::as_str)
@@ -253,8 +250,7 @@ fn recent_asks(events: &[Value], limit: usize) -> Vec<HandoffAsk> {
                 .get("questions")
                 .and_then(Value::as_array)
                 .map(|arr| {
-                    arr
-                        .iter()
+                    arr.iter()
                         .enumerate()
                         .filter_map(|(i, q)| {
                             let question = q
@@ -332,8 +328,13 @@ fn render_markdown(
     let mut out = String::new();
     out.push_str("# Marionette Handoff\n\n");
     out.push_str(&format!("- Generated: `{created_at}`\n"));
-    out.push_str(&format!("- Project: **{project_name}** (`{}`)\n", project_root.display()));
-    out.push_str(&format!("- Session: **{session_label}** (`{session_id}`)\n"));
+    out.push_str(&format!(
+        "- Project: **{project_name}** (`{}`)\n",
+        project_root.display()
+    ));
+    out.push_str(&format!(
+        "- Session: **{session_label}** (`{session_id}`)\n"
+    ));
     out.push_str(&format!(
         "- From: **{source_agent_label}** (`{source_agent_id}`)\n"
     ));
@@ -417,7 +418,10 @@ fn render_prefill(
     out.push_str(&format!(
         "Continue from a Marionette handoff (previous agent: {source_agent_label} → you: {target_agent_label}).\n\n"
     ));
-    out.push_str(&format!("Project: {project_name} ({})\n", project_root.display()));
+    out.push_str(&format!(
+        "Project: {project_name} ({})\n",
+        project_root.display()
+    ));
     out.push_str(&format!("Session: {session_label}\n"));
     // Prefer relative-looking path under project for agent readability.
     let rel = handoff_path
@@ -428,7 +432,9 @@ fn render_prefill(
         .strip_prefix(project_root)
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| latest_path.display().to_string());
-    out.push_str(&format!("Full notes: `{rel}` (latest shortcut: `{latest}`)\n\n"));
+    out.push_str(&format!(
+        "Full notes: `{rel}` (latest shortcut: `{latest}`)\n\n"
+    ));
     if !user_msgs.is_empty() {
         out.push_str("Recent user asks:\n");
         let start = user_msgs.len().saturating_sub(3);
@@ -529,7 +535,11 @@ mod tests {
         let res = gen(&root, &transcript).expect("generate");
         assert!(res.is_none(), "empty dialog must not produce a handoff");
         assert!(!root.join(".marionette").join("handoff.md").exists());
-        assert!(!root.join(".marionette").join("handoff").join("s-test.md").exists());
+        assert!(!root
+            .join(".marionette")
+            .join("handoff")
+            .join("s-test.md")
+            .exists());
         cleanup(&root);
     }
 

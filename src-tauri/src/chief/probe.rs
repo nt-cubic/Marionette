@@ -150,13 +150,9 @@ pub fn maybe_run_env_probe(app: AppHandle) {
                     "env probe report",
                     Some(&serde_json::to_string(&value).unwrap_or_default()),
                 ),
-                Err(error) => crate::debug_log::append(
-                    "chief",
-                    "error",
-                    "",
-                    "env probe failed",
-                    Some(&error),
-                ),
+                Err(error) => {
+                    crate::debug_log::append("chief", "error", "", "env probe failed", Some(&error))
+                }
             }
         });
     if spawned.is_err() {
@@ -179,7 +175,10 @@ pub fn maybe_run_env_probe(app: AppHandle) {
 pub fn maybe_run_env_e2e(app: AppHandle) {
     let task_spec = std::env::var("MARIONETTE_CHIEF_E2E_TASK").ok();
     let inbound_text = std::env::var("MARIONETTE_CHIEF_E2E_INBOUND").ok();
-    let (task_spec, inbound_text) = match (task_spec.filter(|s| !s.trim().is_empty()), inbound_text.filter(|s| !s.trim().is_empty())) {
+    let (task_spec, inbound_text) = match (
+        task_spec.filter(|s| !s.trim().is_empty()),
+        inbound_text.filter(|s| !s.trim().is_empty()),
+    ) {
         (None, None) => return,
         pair => pair,
     };
@@ -190,14 +189,26 @@ pub fn maybe_run_env_e2e(app: AppHandle) {
             if let Some(spec) = task_spec {
                 let parts: Vec<&str> = spec.splitn(2, '|').collect();
                 if parts.len() != 2 {
-                    crate::debug_log::append("chief", "error", "", "e2e: bad E2E_TASK spec (want projectId|goal)", Some(&spec));
+                    crate::debug_log::append(
+                        "chief",
+                        "error",
+                        "",
+                        "e2e: bad E2E_TASK spec (want projectId|goal)",
+                        Some(&spec),
+                    );
                     return;
                 }
                 let (project_id, goal) = (parts[0].to_string(), parts[1].to_string());
                 let chief_sid = match super::broker::chief_session_ensure(&app) {
                     Ok(sid) => sid,
                     Err(error) => {
-                        crate::debug_log::append("chief", "error", "", "e2e: chief session bootstrap failed", Some(&error));
+                        crate::debug_log::append(
+                            "chief",
+                            "error",
+                            "",
+                            "e2e: chief session bootstrap failed",
+                            Some(&error),
+                        );
                         return;
                     }
                 };
@@ -220,7 +231,9 @@ pub fn maybe_run_env_e2e(app: AppHandle) {
                 let outcome = super::broker::chief_inbound_text(&app, &text);
                 let line = match outcome {
                     Ok(super::broker::InboundOutcome::Sent) => "inbound sent to chief".to_string(),
-                    Ok(super::broker::InboundOutcome::Queued) => "inbound queued (chief busy)".to_string(),
+                    Ok(super::broker::InboundOutcome::Queued) => {
+                        "inbound queued (chief busy)".to_string()
+                    }
                     Err(error) => format!("inbound failed: {error}"),
                 };
                 crate::debug_log::append("chief", "info", "", "e2e report (inbound)", Some(&line));
@@ -280,7 +293,8 @@ fn drive_sync(
     match accepted {
         Ok(_) => {
             prompt_accepted = true;
-            let timeout = Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TURN_TIMEOUT_SECS).min(3600));
+            let timeout =
+                Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TURN_TIMEOUT_SECS).min(3600));
             turn_idle = acp.wait_turn_idle(&sid, timeout);
             if !turn_idle {
                 // 超时先取消当前回合再收尸，避免进程挂着等下一次交互。

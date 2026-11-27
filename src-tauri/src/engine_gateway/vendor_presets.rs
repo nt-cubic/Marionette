@@ -122,7 +122,10 @@ mod tests {
 
     #[test]
     fn table_lookups() {
-        assert_eq!(find("deepseek").unwrap().chat, "https://api.deepseek.com/v1");
+        assert_eq!(
+            find("deepseek").unwrap().chat,
+            "https://api.deepseek.com/v1"
+        );
         // 大小写不敏感；表外名字是 None（走自定义来源路径）。
         assert!(find("Zhipu").is_some());
         assert!(find("my-relay").is_none());

@@ -53,7 +53,10 @@ fn home_dir() -> Option<PathBuf> {
 pub fn opencode_auth_path() -> Option<PathBuf> {
     let home = home_dir()?;
     let candidates = [
-        home.join(".local").join("share").join("opencode").join("auth.json"),
+        home.join(".local")
+            .join("share")
+            .join("opencode")
+            .join("auth.json"),
         home.join(".config").join("opencode").join("auth.json"),
         std::env::var_os("APPDATA")
             .map(PathBuf::from)
@@ -67,8 +70,7 @@ fn load_auth_json() -> Result<Value, String> {
     let path = opencode_auth_path().ok_or_else(|| {
         "OpenCode auth.json not found (run `opencode providers login` first)".to_string()
     })?;
-    let text = fs::read_to_string(&path)
-        .map_err(|e| format!("Read auth.json failed: {e}"))?;
+    let text = fs::read_to_string(&path).map_err(|e| format!("Read auth.json failed: {e}"))?;
     serde_json::from_str(&text).map_err(|e| format!("Parse auth.json failed: {e}"))
 }
 
@@ -132,15 +134,30 @@ fn builtin_catalog() -> Vec<ProviderMeta> {
         }
     }
     vec![
-        b("deepseek", "DeepSeek", &["deepseek"], ProbeStrategy::Deepseek),
-        b("openrouter", "OpenRouter", &["openrouter"], ProbeStrategy::Openrouter),
+        b(
+            "deepseek",
+            "DeepSeek",
+            &["deepseek"],
+            ProbeStrategy::Deepseek,
+        ),
+        b(
+            "openrouter",
+            "OpenRouter",
+            &["openrouter"],
+            ProbeStrategy::Openrouter,
+        ),
         b(
             "openai",
             "OpenAI",
             &["openai", "chatgpt", "codex"],
             ProbeStrategy::Openai,
         ),
-        b("anthropic", "Anthropic", &["anthropic"], ProbeStrategy::None),
+        b(
+            "anthropic",
+            "Anthropic",
+            &["anthropic"],
+            ProbeStrategy::None,
+        ),
         b("google", "Google", &["google"], ProbeStrategy::None),
         b("xai", "xAI (Grok)", &["xai", "grok"], ProbeStrategy::None),
         // Z.AI (z.ai) 与智谱 open.bigmodel.cn 是两家厂商（附录 B1「zai 不映射
@@ -258,7 +275,8 @@ fn merged_catalog() -> Vec<ProviderMeta> {
             }
         }
     }
-    let mut by_id: std::collections::BTreeMap<String, ProviderMeta> = std::collections::BTreeMap::new();
+    let mut by_id: std::collections::BTreeMap<String, ProviderMeta> =
+        std::collections::BTreeMap::new();
     for p in builtin_catalog() {
         by_id.insert(p.id.clone(), p);
     }
@@ -299,7 +317,9 @@ pub fn peek_provider_key(provider: &str) -> Option<String> {
         .filter(|k| !k.trim().is_empty());
     from_db.or_else(|| {
         let auth = load_auth_json().ok()?;
-        auth_key_for(&auth, provider).ok().filter(|k| !k.trim().is_empty())
+        auth_key_for(&auth, provider)
+            .ok()
+            .filter(|k| !k.trim().is_empty())
     })
 }
 
@@ -525,9 +545,15 @@ fn reset_hint_secs(raw: f64) -> Option<String> {
         ));
     }
     if remaining < 172_800.0 {
-        return Some(format!("resets in {}h", (remaining / 3600.0).round() as u64));
+        return Some(format!(
+            "resets in {}h",
+            (remaining / 3600.0).round() as u64
+        ));
     }
-    Some(format!("resets in {}d", (remaining / 86_400.0).round() as u64))
+    Some(format!(
+        "resets in {}d",
+        (remaining / 86_400.0).round() as u64
+    ))
 }
 
 /// Strict-UTC ISO-8601 (`YYYY-MM-DDTHH:MM:SS[.fff][Z]`) → Unix seconds.
@@ -619,7 +645,10 @@ fn openai_window_identity(window: &Value) -> (String, String) {
             let hours = seconds / 3_600;
             (format!("window-{seconds}"), format!("{hours}-hour limit"))
         }
-        Some(seconds) => (format!("window-{seconds}"), format!("{seconds}-second limit")),
+        Some(seconds) => (
+            format!("window-{seconds}"),
+            format!("{seconds}-second limit"),
+        ),
         None => ("rate-limit".into(), "Rate limit".into()),
     }
 }
@@ -932,9 +961,9 @@ fn glm_reject_message(code: i64, msg: &str) -> String {
     let msg = msg.trim();
     match code {
         1000..=1005 => format!("GLM key rejected (code {code}): {msg} — check the Zhipu API key"),
-        1113 | 1302..=1399 => format!(
-            "GLM quota hit (code {code}): {msg} — top up or upgrade the coding plan"
-        ),
+        1113 | 1302..=1399 => {
+            format!("GLM quota hit (code {code}): {msg} — top up or upgrade the coding plan")
+        }
         1220 => format!("GLM refused this key/account (code {code}): {msg}"),
         1210..=1229 | 1261 | 1301 => {
             format!("GLM rejected the request (code {code}): {msg}")
@@ -1063,9 +1092,7 @@ fn generate_opencode_session_id() -> String {
 /// which keeps one session id per process run.
 fn opencode_usage_session_id() -> String {
     static SESSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    SESSION
-        .get_or_init(generate_opencode_session_id)
-        .clone()
+    SESSION.get_or_init(generate_opencode_session_id).clone()
 }
 
 /// Turn a raw HTTP error from the Go usage endpoint into a friendly message.
@@ -1253,11 +1280,9 @@ pub fn probe_provider_usage(model_id: Option<String>) -> ProviderUsageSnapshot {
             Err(e) => Err(e),
         },
         "openai" | "codex" | "chatgpt" => match chatgpt_oauth_for(&auth, &provider) {
-            Ok(oauth) => probe_openai_chatgpt(
-                &oauth.access_token,
-                oauth.account_id.as_deref(),
-                model_ref,
-            ),
+            Ok(oauth) => {
+                probe_openai_chatgpt(&oauth.access_token, oauth.account_id.as_deref(), model_ref)
+            }
             Err(e) => Err(e),
         },
         "openrouter" => match auth_key_for(&auth, "openrouter") {
@@ -1401,7 +1426,9 @@ pub struct ProviderInfo {
 
 /// Provider id → human label (catalog first).
 fn provider_display_name(id: &str) -> String {
-    find_meta(id).map(|m| m.label).unwrap_or_else(|| id.to_string())
+    find_meta(id)
+        .map(|m| m.label)
+        .unwrap_or_else(|| id.to_string())
 }
 
 /// Read `auth.json` for a mutation.
@@ -1414,7 +1441,8 @@ fn read_auth_for_write(path: &std::path::Path) -> Result<serde_json::Map<String,
     if !path.is_file() {
         return Ok(serde_json::Map::new());
     }
-    let text = fs::read_to_string(path).map_err(|e| crate::ts!("读取 auth.json 失败: {e}", "Failed to read auth.json: {e}"))?;
+    let text = fs::read_to_string(path)
+        .map_err(|e| crate::ts!("读取 auth.json 失败: {e}", "Failed to read auth.json: {e}"))?;
     if text.trim().is_empty() {
         return Ok(serde_json::Map::new());
     }
@@ -1448,13 +1476,21 @@ fn write_auth_atomic(
     path: &std::path::Path,
     auth: &serde_json::Map<String, Value>,
 ) -> Result<(), String> {
-    let json_str = serde_json::to_string_pretty(&Value::Object(auth.clone()))
-        .map_err(|e| crate::ts!("序列化 auth.json 失败: {e}", "Failed to serialize auth.json: {e}"))?;
+    let json_str = serde_json::to_string_pretty(&Value::Object(auth.clone())).map_err(|e| {
+        crate::ts!(
+            "序列化 auth.json 失败: {e}",
+            "Failed to serialize auth.json: {e}"
+        )
+    })?;
     let temp_path = temp_sibling(path);
-    fs::write(&temp_path, &json_str).map_err(|e| crate::ts!("写入临时文件失败: {e}", "Failed to write temp file: {e}"))?;
+    fs::write(&temp_path, &json_str)
+        .map_err(|e| crate::ts!("写入临时文件失败: {e}", "Failed to write temp file: {e}"))?;
     if let Err(error) = fs::rename(&temp_path, path) {
         let _ = fs::remove_file(&temp_path);
-        return Err(crate::ts!("重命名临时文件失败: {error}", "Failed to rename temp file: {error}"));
+        return Err(crate::ts!(
+            "重命名临时文件失败: {error}",
+            "Failed to rename temp file: {error}"
+        ));
     }
     Ok(())
 }
@@ -1619,7 +1655,11 @@ pub fn list_providers() -> Result<Vec<ProviderInfo>, String> {
         });
     }
 
-    out.sort_by(|a, b| a.label.to_ascii_lowercase().cmp(&b.label.to_ascii_lowercase()));
+    out.sort_by(|a, b| {
+        a.label
+            .to_ascii_lowercase()
+            .cmp(&b.label.to_ascii_lowercase())
+    });
     Ok(out)
 }
 
@@ -1631,10 +1671,18 @@ pub fn upsert_provider_meta(
     probe_strategy: String,
 ) -> Result<(), String> {
     let id = id.trim().to_ascii_lowercase();
-    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Err(crate::ts!("Provider id 只能用字母、数字、连字符", "Provider id may only contain letters, digits, and hyphens"));
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(crate::ts!(
+            "Provider id 只能用字母、数字、连字符",
+            "Provider id may only contain letters, digits, and hyphens"
+        ));
     }
-    let path = providers_json_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    let path = providers_json_path()
+        .ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Create .marionette failed: {e}"))?;
     }
@@ -1673,7 +1721,8 @@ pub fn upsert_provider_meta(
 /// Remove user catalog meta only (auth.json key is left alone).
 pub fn delete_provider_meta(id: String) -> Result<(), String> {
     let id = id.trim().to_ascii_lowercase();
-    let path = providers_json_path().ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
+    let path = providers_json_path()
+        .ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     if !path.is_file() {
         return Ok(());
     }
@@ -1727,7 +1776,7 @@ mod tests {
     use super::{
         auth_key_for, builtin_catalog, chatgpt_oauth_for, find_meta, generate_opencode_session_id,
         glm_reject_message, money, opencode_usage_error, parse_glm_usage, parse_iso8601_utc,
-        parse_kimi_balance, parse_opencode_usage, parse_openai_usage, reset_hint_secs,
+        parse_kimi_balance, parse_openai_usage, parse_opencode_usage, reset_hint_secs,
         split_model_id, ProbeStrategy,
     };
     use serde_json::json;
@@ -1880,13 +1929,21 @@ mod tests {
         });
         let parsed = parse_glm_usage(&json).unwrap();
         assert_eq!(parsed.level.as_deref(), Some("pro"));
-        assert_eq!(parsed.windows.len(), 2, "unknown units/types must be skipped");
+        assert_eq!(
+            parsed.windows.len(),
+            2,
+            "unknown units/types must be skipped"
+        );
         assert_eq!(parsed.windows[0].id, "hourly");
         assert_eq!(parsed.windows[0].label, "Hourly limit");
         assert_eq!(parsed.windows[0].percentage, Some(42.0));
         assert_eq!(parsed.windows[0].kind, "rate_limit");
         assert!(
-            parsed.windows[0].detail.as_deref().unwrap().starts_with("resets"),
+            parsed.windows[0]
+                .detail
+                .as_deref()
+                .unwrap()
+                .starts_with("resets"),
             "detail: {:?}",
             parsed.windows[0].detail
         );
@@ -1958,7 +2015,11 @@ mod tests {
         assert_eq!(windows[0].percentage, Some(42.0));
         assert_eq!(windows[0].kind, "rate_limit");
         assert!(
-            windows[0].detail.as_deref().unwrap().starts_with("resets in"),
+            windows[0]
+                .detail
+                .as_deref()
+                .unwrap()
+                .starts_with("resets in"),
             "detail: {:?}",
             windows[0].detail
         );
@@ -2002,11 +2063,11 @@ mod tests {
         assert_eq!(id.len(), 4 + 12 + 14, "id = {id}");
         let hex = &id[4..16];
         assert!(
-            hex.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            hex.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
             "hex part = {hex}"
         );
-        const BASE62: &str =
-            "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+        const BASE62: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
         let tail = &id[16..];
         assert!(
             tail.chars().all(|c| BASE62.contains(c)),
@@ -2020,14 +2081,8 @@ mod tests {
 
     #[test]
     fn iso8601_utc_parsing() {
-        assert_eq!(
-            parse_iso8601_utc("1970-01-01T00:00:00Z"),
-            Some(0.0)
-        );
-        assert_eq!(
-            parse_iso8601_utc("1970-01-02T00:00:00Z"),
-            Some(86_400.0)
-        );
+        assert_eq!(parse_iso8601_utc("1970-01-01T00:00:00Z"), Some(0.0));
+        assert_eq!(parse_iso8601_utc("1970-01-02T00:00:00Z"), Some(86_400.0));
         // 2026-10-16T00:00:00Z = day 20742 since epoch.
         assert_eq!(
             parse_iso8601_utc("2026-10-16T00:00:00Z"),
@@ -2076,10 +2131,7 @@ mod tests {
 
     #[test]
     fn write_and_read_provider_key() {
-        let dir = std::env::temp_dir().join(format!(
-            "marionette_test_auth_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("marionette_test_auth_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let auth_path = dir.join("auth.json");
@@ -2126,10 +2178,8 @@ mod tests {
 
     #[test]
     fn delete_removes_provider_key() {
-        let dir = std::env::temp_dir().join(format!(
-            "marionette_test_delete_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("marionette_test_delete_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let auth_path = dir.join("auth.json");
@@ -2142,7 +2192,10 @@ mod tests {
 
         let content = std::fs::read_to_string(&auth_path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert!(parsed.get("deepseek").is_none(), "deepseek should be removed");
+        assert!(
+            parsed.get("deepseek").is_none(),
+            "deepseek should be removed"
+        );
         assert_eq!(
             parsed["openrouter"]["key"].as_str(),
             Some("sk-222"),
@@ -2150,7 +2203,8 @@ mod tests {
         );
 
         // Delete non-existent returns error
-        let err = super::delete_provider_key_at("nonexistent", Some(&auth_path), false).unwrap_err();
+        let err =
+            super::delete_provider_key_at("nonexistent", Some(&auth_path), false).unwrap_err();
         assert!(err.contains("not found"));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2160,10 +2214,8 @@ mod tests {
     /// unless the caller passes `force` — the refresh token is unrecoverable.
     #[test]
     fn oauth_entries_are_protected_unless_forced() {
-        let dir = std::env::temp_dir().join(format!(
-            "marionette_test_oauth_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("marionette_test_oauth_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let auth_path = dir.join("auth.json");
@@ -2176,8 +2228,7 @@ mod tests {
         let err = super::write_provider_key_at("anthropic", "sk-new", Some(&auth_path), false)
             .unwrap_err();
         assert!(err.contains("OAuth"), "write should refuse: {err}");
-        let err =
-            super::delete_provider_key_at("anthropic", Some(&auth_path), false).unwrap_err();
+        let err = super::delete_provider_key_at("anthropic", Some(&auth_path), false).unwrap_err();
         assert!(err.contains("OAuth"), "delete should refuse: {err}");
 
         // Refusing must not have touched the file.
@@ -2233,10 +2284,8 @@ mod tests {
     /// only the new key and silently dropped every other provider.
     #[test]
     fn corrupt_auth_json_aborts_instead_of_wiping() {
-        let dir = std::env::temp_dir().join(format!(
-            "marionette_test_corrupt_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("marionette_test_corrupt_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let auth_path = dir.join("auth.json");
@@ -2254,8 +2303,7 @@ mod tests {
 
         // A top-level array is refused too, rather than rewritten as an object.
         std::fs::write(&auth_path, "[]").unwrap();
-        let err =
-            super::delete_provider_key_at("deepseek", Some(&auth_path), false).unwrap_err();
+        let err = super::delete_provider_key_at("deepseek", Some(&auth_path), false).unwrap_err();
         assert!(err.contains("JSON 对象"), "unexpected error: {err}");
         assert_eq!(std::fs::read_to_string(&auth_path).unwrap(), "[]");
 
@@ -2271,10 +2319,7 @@ mod tests {
 
     #[test]
     fn list_providers_from_written_keys() {
-        let dir = std::env::temp_dir().join(format!(
-            "marionette_test_list_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("marionette_test_list_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let auth_path = dir.join("auth.json");

@@ -121,7 +121,9 @@ pub(crate) fn fold_decoded(
         let t_ms = json_i64(&event, "time").unwrap_or(0);
         match json_str(&event, "type") {
             Some("assistant/message") => {
-                let Some(usage) = data.get("usage") else { continue };
+                let Some(usage) = data.get("usage") else {
+                    continue;
+                };
                 let input = json_u64(usage, "inputTokens").unwrap_or(0);
                 let cached = json_u64(usage, "cacheReadTokens").unwrap_or(0);
                 let cache_creation = json_u64(usage, "cacheWriteTokens").unwrap_or(0);
@@ -172,15 +174,15 @@ pub(crate) fn fold_decoded(
                     continue; // injection (approval/instructions/context/skill)
                 }
                 if first_user_text.is_none() {
-                    if let Some(text) = data
-                        .get("content")
-                        .and_then(|c| c.as_array())
-                        .and_then(|items| {
-                            items
-                                .iter()
-                                .find(|b| json_str(b, "type") == Some("text"))
-                                .and_then(|b| json_str(b, "text"))
-                        })
+                    if let Some(text) =
+                        data.get("content")
+                            .and_then(|c| c.as_array())
+                            .and_then(|items| {
+                                items
+                                    .iter()
+                                    .find(|b| json_str(b, "type") == Some("text"))
+                                    .and_then(|b| json_str(b, "text"))
+                            })
                     {
                         first_user_text = Some(text.chars().take(80).collect());
                     }
@@ -189,7 +191,9 @@ pub(crate) fn fold_decoded(
             }
             Some("request/header") => {
                 let config = data.get("header").and_then(|h| h.get("config"));
-                let model_name = config.and_then(|c| json_str(c, "model")).filter(|m| !m.is_empty());
+                let model_name = config
+                    .and_then(|c| json_str(c, "model"))
+                    .filter(|m| !m.is_empty());
                 let provider = config
                     .and_then(|c| json_str(c, "provider"))
                     .filter(|p| !p.is_empty());
@@ -233,14 +237,18 @@ fn session_log_path(dir: &Path) -> Option<PathBuf> {
     let mut best: Option<(u64, PathBuf)> = None;
     for entry in fs::read_dir(dir).ok()?.flatten() {
         let file_name = entry.file_name();
-        let Some(name) = file_name.to_str() else { continue };
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
         let Some(num) = name
             .strip_prefix("session.v")
             .and_then(|rest| rest.strip_suffix(".jsonl.zstd"))
         else {
             continue;
         };
-        let Ok(version) = num.parse::<u64>() else { continue };
+        let Ok(version) = num.parse::<u64>() else {
+            continue;
+        };
         if best.as_ref().map_or(true, |(v, _)| version > *v) {
             best = Some((version, entry.path()));
         }
@@ -255,7 +263,12 @@ fn parse_session_dir(dir: &Path, keep_from_ms: i64) -> Option<SessionFacts> {
     fold_decoded(&compressed, &native_id, keep_from_ms)
 }
 
-pub(crate) fn scan(root: &Path, cache: &mut Cache, force: bool, keep_from_ms: i64) -> SourceOutcome {
+pub(crate) fn scan(
+    root: &Path,
+    cache: &mut Cache,
+    force: bool,
+    keep_from_ms: i64,
+) -> SourceOutcome {
     let mut outcome = SourceOutcome::new(AGENT, Some(root.to_string_lossy().into_owned()));
     let mut live_keys: Vec<String> = Vec::new();
     let mut sessions: Vec<SessionFacts> = Vec::new();
@@ -276,7 +289,9 @@ pub(crate) fn scan(root: &Path, cache: &mut Cache, force: bool, keep_from_ms: i6
     dirs.sort();
     outcome.files = dirs.len() as u32;
     for dir in dirs {
-        let Some(zstd_path) = session_log_path(&dir) else { continue };
+        let Some(zstd_path) = session_log_path(&dir) else {
+            continue;
+        };
         let fp = stamp_files(&zstd_path, &[]);
         let key = format!("{AGENT}::{}", dir.to_string_lossy());
         if !force {
@@ -386,7 +401,10 @@ mod tests {
         // == 17360), so output gains the reasoning leg.
         assert_eq!(facts.hours[0].output, 595 + 578 + 300);
         assert_eq!(facts.hours[0].reasoning, 300);
-        assert_eq!(facts.hours[0].model.as_deref(), Some("deepseek-official::deepseek-flash"));
+        assert_eq!(
+            facts.hours[0].model.as_deref(),
+            Some("deepseek-official::deepseek-flash")
+        );
         assert_eq!(facts.ctx_series.len(), 2);
         assert_eq!(facts.ctx_series[0][1], 11915 + 384);
     }
@@ -427,13 +445,23 @@ mod tests {
         fs::write(dir.join("session.v3.jsonl.zstd"), b"").unwrap();
         fs::write(dir.join("session.v4.jsonl.zstd"), b"").unwrap();
         assert_eq!(
-            session_log_path(&dir).unwrap().file_name().unwrap().to_str().unwrap(),
+            session_log_path(&dir)
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "session.v4.jsonl.zstd"
         );
 
         fs::write(dir.join("session.v5.jsonl.zstd"), b"").unwrap();
         assert_eq!(
-            session_log_path(&dir).unwrap().file_name().unwrap().to_str().unwrap(),
+            session_log_path(&dir)
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "session.v5.jsonl.zstd"
         );
 
@@ -441,7 +469,12 @@ mod tests {
         fs::write(dir.join("session.notes.txt"), b"").unwrap();
         fs::write(dir.join("session.vX.jsonl.zstd"), b"").unwrap();
         assert_eq!(
-            session_log_path(&dir).unwrap().file_name().unwrap().to_str().unwrap(),
+            session_log_path(&dir)
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "session.v5.jsonl.zstd"
         );
         fs::remove_dir_all(&root).ok();
@@ -498,7 +531,8 @@ mod tests {
                     let (block, remaining) = rest.split_at(take);
                     rest = remaining;
                     let last = u32::from(rest.is_empty());
-                    let header: u32 = last | (BlockType::Raw as u32) << 1 | (block.len() as u32) << 3;
+                    let header: u32 =
+                        last | (BlockType::Raw as u32) << 1 | (block.len() as u32) << 3;
                     out.push((header & 0xff) as u8);
                     out.push((header >> 8) as u8);
                     out.push((header >> 16) as u8);

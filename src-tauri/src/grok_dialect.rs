@@ -82,17 +82,13 @@ pub(crate) fn register_upstream_for_test(preset_id: &str, base: &str) {
         Ok(state) => state,
         Err(error) => panic!("grok 方言规整器未启动: {error}"),
     };
-    state
-        .upstreams
-        .lock()
-        .unwrap()
-        .insert(
-            preset_id.to_string(),
-            UpstreamPair {
-                chat: base.to_string(),
-                anthropic: Some(base.to_string()),
-            },
-        );
+    state.upstreams.lock().unwrap().insert(
+        preset_id.to_string(),
+        UpstreamPair {
+            chat: base.to_string(),
+            anthropic: Some(base.to_string()),
+        },
+    );
 }
 
 // ─── 学习式剥离闭环（docs/cross-agent-bridge.md 附录 B4 第 1 条）────────────
@@ -304,9 +300,8 @@ fn handle(mut request: tiny_http::Request) {
             forward_response(request, call.call());
         }
         _ => {
-            let _ = request.respond(
-                Response::from_string("method not forwarded").with_status_code(405),
-            );
+            let _ = request
+                .respond(Response::from_string("method not forwarded").with_status_code(405));
         }
     }
 }
@@ -364,9 +359,7 @@ fn find_indexed_field(text: &str) -> Option<String> {
 fn find_top_level_field(text: &str) -> Option<String> {
     const MARKER: &str = "Unknown parameter:";
     let index = text.find(MARKER)?;
-    let token = text[index + MARKER.len()..]
-        .split_whitespace()
-        .next()?;
+    let token = text[index + MARKER.len()..].split_whitespace().next()?;
     let token = token.strip_suffix('.').unwrap_or(token);
     let token = strip_matching_quotes(token);
     if is_plausible_field(token)
@@ -581,9 +574,8 @@ fn forward_response(request: tiny_http::Request, result: Result<ureq::Response, 
         Ok(response) => response,
         Err(ureq::Error::Status(_, response)) => response,
         Err(error) => {
-            let _ = request.respond(
-                Response::from_string(format!("upstream: {error}")).with_status_code(502),
-            );
+            let _ = request
+                .respond(Response::from_string(format!("upstream: {error}")).with_status_code(502));
             return;
         }
     };
@@ -858,9 +850,7 @@ mod tests {
     fn extra_headers_only_for_opencode_go() {
         assert!(extra_headers_for("deepseek").is_empty());
         let headers = extra_headers_for("opencode-go");
-        assert!(headers
-            .iter()
-            .any(|(name, _)| name == "x-opencode-session"));
+        assert!(headers.iter().any(|(name, _)| name == "x-opencode-session"));
     }
 
     /// 端到端：假上游断言收到的 body 无 model_id、头带会话信息；应答字节直通。
@@ -868,7 +858,10 @@ mod tests {
     fn end_to_end_forwards_strips_and_adds_headers() {
         let upstream = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let upstream_port = upstream.local_addr().unwrap().port();
-        register_upstream_for_test("e2e-preset", &format!("http://127.0.0.1:{upstream_port}/v1"));
+        register_upstream_for_test(
+            "e2e-preset",
+            &format!("http://127.0.0.1:{upstream_port}/v1"),
+        );
 
         let received = Arc::new(Mutex::new(Vec::new()));
         let captured = Arc::clone(&received);
@@ -908,7 +901,8 @@ mod tests {
 
         let base = channel_base_url("e2e-preset").unwrap();
         let client = ureq::AgentBuilder::new().build();
-        let body = r#"{"model":"m","messages":[{"role":"assistant","content":"a","model_id":"m"}]}"#;
+        let body =
+            r#"{"model":"m","messages":[{"role":"assistant","content":"a","model_id":"m"}]}"#;
         let response = client
             .post(&format!("{base}/chat/completions"))
             .set("Authorization", "Bearer sk-marionette-spike")
@@ -920,8 +914,14 @@ mod tests {
         assert!(text.contains("{\"ok\":true}"));
 
         let raw = String::from_utf8(received.lock().unwrap().clone()).unwrap();
-        assert!(raw.contains("POST /v1/chat/completions"), "上游应收到拼好的路径: {raw}");
-        assert!(raw.contains("authorization: Bearer sk-marionette-spike") || raw.contains("Authorization: Bearer sk-marionette-spike"));
+        assert!(
+            raw.contains("POST /v1/chat/completions"),
+            "上游应收到拼好的路径: {raw}"
+        );
+        assert!(
+            raw.contains("authorization: Bearer sk-marionette-spike")
+                || raw.contains("Authorization: Bearer sk-marionette-spike")
+        );
         assert!(!raw.contains("model_id"), "方言字段必须被剥掉: {raw}");
     }
 
@@ -935,17 +935,13 @@ mod tests {
             Ok(state) => state,
             Err(error) => panic!("规整器未启动: {error}"),
         };
-        state
-            .upstreams
-            .lock()
-            .unwrap()
-            .insert(
-                "e2e-anth".to_string(),
-                UpstreamPair {
-                    chat: format!("http://127.0.0.1:{upstream_port}/v1"),
-                    anthropic: Some(format!("http://127.0.0.1:{upstream_port}/anthroot")),
-                },
-            );
+        state.upstreams.lock().unwrap().insert(
+            "e2e-anth".to_string(),
+            UpstreamPair {
+                chat: format!("http://127.0.0.1:{upstream_port}/v1"),
+                anthropic: Some(format!("http://127.0.0.1:{upstream_port}/anthroot")),
+            },
+        );
         let received = Arc::new(Mutex::new(String::new()));
         let captured = Arc::clone(&received);
         std::thread::spawn(move || {
@@ -992,7 +988,10 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), 200);
         let raw = received.lock().unwrap().clone();
-        assert!(raw.contains("/anthroot/v1/messages"), "应路由到 anthropic 根形态: {raw}");
+        assert!(
+            raw.contains("/anthroot/v1/messages"),
+            "应路由到 anthropic 根形态: {raw}"
+        );
     }
 
     // ─── 学习式剥离闭环 ─────────────────────────────────────────────────────
@@ -1059,7 +1058,9 @@ mod tests {
         let captured = Arc::clone(&received);
         std::thread::spawn(move || {
             for (status, content_type, body) in plan {
-                let Ok((mut stream, _)) = listener.accept() else { return };
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
                 let raw = read_one_request(&mut stream);
                 captured.lock().unwrap().push(raw);
                 let head = format!(
@@ -1097,7 +1098,9 @@ mod tests {
     fn parses_known_unknown_field_shapes() {
         // OpenAI 风格（尾句点可选）。
         assert_eq!(
-            parse_unknown_field("Unrecognized request argument supplied: messages[2].future_field."),
+            parse_unknown_field(
+                "Unrecognized request argument supplied: messages[2].future_field."
+            ),
             Some("messages[*].future_field".to_string())
         );
         assert_eq!(
@@ -1172,11 +1175,17 @@ mod tests {
             parsed["messages"][0].get("weird").is_none(),
             "学到的消息字段要剥"
         );
-        assert!(parsed["messages"][0].get("model_id").is_none(), "硬编码照常");
+        assert!(
+            parsed["messages"][0].get("model_id").is_none(),
+            "硬编码照常"
+        );
         // 其它 preset 不受影响（学习态按 preset 隔离）。
         let out2 = adapt_body("unit-adapt-other", "chat/completions", body.to_vec());
         let parsed2: serde_json::Value = serde_json::from_slice(&out2).unwrap();
-        assert!(parsed2["messages"][0].get("weird").is_some(), "没学过的字段保留");
+        assert!(
+            parsed2["messages"][0].get("weird").is_some(),
+            "没学过的字段保留"
+        );
         assert!(parsed2.get("vendor_thing").is_some());
     }
 
@@ -1219,18 +1228,28 @@ mod tests {
         let client = ureq::AgentBuilder::new().build();
         let body = r#"{"model":"m","messages":[{"role":"user","content":"u","future_field":"x"}]}"#;
 
-        let (status, text) =
-            post_and_read(&client, &format!("{base}/chat/completions"), body.as_bytes());
+        let (status, text) = post_and_read(
+            &client,
+            &format!("{base}/chat/completions"),
+            body.as_bytes(),
+        );
         assert_eq!(status, 200);
         assert!(text.contains("{\"ok\":true}"));
 
         // 后续请求：学习态已在，直接被剥——上游不会再收到该字段。
-        let (status, _) =
-            post_and_read(&client, &format!("{base}/chat/completions"), body.as_bytes());
+        let (status, _) = post_and_read(
+            &client,
+            &format!("{base}/chat/completions"),
+            body.as_bytes(),
+        );
         assert_eq!(status, 200);
 
         let hits = received.lock().unwrap().clone();
-        assert_eq!(hits.len(), 3, "初始 + 一次重试 + 第二个客户端请求: {hits:?}");
+        assert_eq!(
+            hits.len(),
+            3,
+            "初始 + 一次重试 + 第二个客户端请求: {hits:?}"
+        );
         assert!(hits[0].contains("future_field"), "首个请求带方言字段");
         assert!(!hits[1].contains("future_field"), "重发必须已剥掉");
         assert!(!hits[2].contains("future_field"), "后续请求必须预剥");
@@ -1253,10 +1272,14 @@ mod tests {
 
         let base = channel_base_url("lrn-top").unwrap();
         let client = ureq::AgentBuilder::new().build();
-        let body = r#"{"model":"m","vendor_thing":true,"messages":[{"role":"user","content":"u"}]}"#;
+        let body =
+            r#"{"model":"m","vendor_thing":true,"messages":[{"role":"user","content":"u"}]}"#;
 
-        let (status, text) =
-            post_and_read(&client, &format!("{base}/chat/completions"), body.as_bytes());
+        let (status, text) = post_and_read(
+            &client,
+            &format!("{base}/chat/completions"),
+            body.as_bytes(),
+        );
         assert_eq!(status, 200);
         assert!(text.contains("{\"ok\":true}"));
         let hits = received.lock().unwrap().clone();
@@ -1289,10 +1312,16 @@ mod tests {
         let client = ureq::AgentBuilder::new().build();
         let body = r#"{"model":"m","messages":[{"role":"user","content":"u"}]}"#;
 
-        let (status, text) =
-            post_and_read(&client, &format!("{base}/chat/completions"), body.as_bytes());
+        let (status, text) = post_and_read(
+            &client,
+            &format!("{base}/chat/completions"),
+            body.as_bytes(),
+        );
         assert_eq!(status, 400, "重试耗尽后把最后一次真实应答回给 agent");
-        assert!(text.contains("future_4"), "客户端看到的是最后的残余错误: {text}");
+        assert!(
+            text.contains("future_4"),
+            "客户端看到的是最后的残余错误: {text}"
+        );
         assert_eq!(received.lock().unwrap().len(), 4, "初始 + 3 次重试");
         assert_eq!(
             learned_fields_for("lrn-cap3").len(),
@@ -1325,8 +1354,11 @@ mod tests {
         let client = ureq::AgentBuilder::new().build();
         let body = r#"{"model":"m","messages":[{"role":"user","content":"u","future_17":1}]}"#;
 
-        let (status, _) =
-            post_and_read(&client, &format!("{base}/chat/completions"), body.as_bytes());
+        let (status, _) = post_and_read(
+            &client,
+            &format!("{base}/chat/completions"),
+            body.as_bytes(),
+        );
         assert_eq!(status, 400);
         assert_eq!(received.lock().unwrap().len(), 1, "满态：零重试");
         assert!(!learned_contains("lrn-limit", "messages[*].future_17"));
@@ -1339,16 +1371,18 @@ mod tests {
         let error_json =
             b"{\"error\":{\"message\":\"Model not found\",\"type\":\"invalid_request_error\"}}"
                 .to_vec();
-        let (port, received) =
-            fake_upstream(vec![(400, "application/json", error_json.clone())]);
+        let (port, received) = fake_upstream(vec![(400, "application/json", error_json.clone())]);
         register_upstream_for_test("lrn-miss", &format!("http://127.0.0.1:{port}/v1"));
 
         let base = channel_base_url("lrn-miss").unwrap();
         let client = ureq::AgentBuilder::new().build();
         let body = r#"{"model":"m","messages":[{"role":"user","content":"u"}]}"#;
 
-        let (status, text) =
-            post_and_read(&client, &format!("{base}/chat/completions"), body.as_bytes());
+        let (status, text) = post_and_read(
+            &client,
+            &format!("{base}/chat/completions"),
+            body.as_bytes(),
+        );
         assert_eq!(status, 400);
         assert_eq!(text.as_bytes(), error_json.as_slice(), "应答原样透传");
         assert_eq!(received.lock().unwrap().len(), 1, "形状不匹配：零重试");
@@ -1388,10 +1422,14 @@ mod tests {
 
         let base = channel_base_url("lrn-known").unwrap();
         let client = ureq::AgentBuilder::new().build();
-        let body = r#"{"model":"m","messages":[{"role":"assistant","content":"a","model_id":"m"}]}"#;
+        let body =
+            r#"{"model":"m","messages":[{"role":"assistant","content":"a","model_id":"m"}]}"#;
 
-        let (status, _) =
-            post_and_read(&client, &format!("{base}/chat/completions"), body.as_bytes());
+        let (status, _) = post_and_read(
+            &client,
+            &format!("{base}/chat/completions"),
+            body.as_bytes(),
+        );
         assert_eq!(status, 400);
         assert_eq!(received.lock().unwrap().len(), 1, "已在剥的字段：零重试");
         assert!(

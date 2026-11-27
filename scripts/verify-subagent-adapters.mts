@@ -20,7 +20,11 @@ import {
   parseCodexSubagentActivity,
   recoverSubagentToolName,
 } from "../src/lib/subagentAdapters.ts";
-import { clusterActivityRuns, isSubagentEvent } from "../src/lib/turnActivity.ts";
+import {
+  classifyToolCall,
+  clusterActivityRuns,
+  isSubagentEvent,
+} from "../src/lib/turnActivity.ts";
 import { isLiveSubagentEvent } from "../src/lib/liveSubagents.ts";
 
 let passed = 0;
@@ -180,6 +184,52 @@ check("create_goal is not a nested agent", () => {
     }),
     null,
   );
+});
+
+check("shell commands mentioning subagent names stay ordinary commands", () => {
+  const title = "git grep -n -e subagents -e spawn_subagent -- src/lib/subagentAdapters.ts";
+  const input = JSON.stringify({
+    command: title,
+    cwd: "D:\\work",
+  });
+  assert.equal(isSubagentTool("bash", title, input), false);
+  assert.equal(isSubagentTool("agent", title, input), false);
+  assert.equal(
+    isSubagentTool("agent", title, '{"command":"git grep -e subagents -- src/lib/subagentAdapters.ts'),
+    false,
+  );
+  assert.equal(isSubagentTool(title), false);
+  assert.equal(isSubagentTool("Get-Content src/lib/subagentAdapters.ts"), false);
+  assert.equal(
+    classifyToolCall(toolEvent({ toolName: "agent", title, input })),
+    "command",
+  );
+  assert.equal(
+    recoverSubagentToolName({ name: "bash", title, input }),
+    null,
+  );
+
+  const part = toolUpdate({
+    name: "bash",
+    title,
+    status: "completed",
+    rawInput: { command: title, cwd: "D:\\work" },
+  });
+  assert.equal(part?.toolName, "bash");
+  assert.equal(isSubagentTool(part?.toolName, part?.toolTitle, part?.toolInput), false);
+});
+
+check("shell command variants mentioning subagent stay ordinary commands", () => {
+  const title = "run subagent scan";
+  for (const input of [
+    JSON.stringify({ command: ["git", "grep", "subagent", "--", "src"] }),
+    JSON.stringify({ cmd: ["pwsh", "-NoProfile", "-Command", "rg subagent src"] }),
+    JSON.stringify({ script: "git grep -n subagent -- src" }),
+  ]) {
+    assert.equal(isSubagentTool("task", title, input), false);
+    assert.equal(recoverSubagentToolName({ name: "task", title, input }), null);
+    assert.equal(classifyToolCall(toolEvent({ toolName: "task", title, input })), "command");
+  }
 });
 
 check("a description title with run_in_background input is still a spawn", () => {

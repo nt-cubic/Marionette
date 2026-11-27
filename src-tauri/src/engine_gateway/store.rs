@@ -129,7 +129,13 @@ impl Store {
                 Some(error),
             ),
         };
-        Ok(Store { path, file, disk_raw, read_blocked, write_blocked })
+        Ok(Store {
+            path,
+            file,
+            disk_raw,
+            read_blocked,
+            write_blocked,
+        })
     }
 
     /// 从磁盘重读（magpie heldFresh 同语义：跑着的网关在下一个请求看到
@@ -234,7 +240,12 @@ impl Store {
             .groups
             .iter()
             .find(|g| g.id == id || g.name == id)
-            .or_else(|| self.file.groups.iter().find(|g| g.former.iter().any(|f| f == id)))
+            .or_else(|| {
+                self.file
+                    .groups
+                    .iter()
+                    .find(|g| g.former.iter().any(|f| f == id))
+            })
     }
 
     pub fn groups(&self) -> &[Group] {
@@ -304,12 +315,16 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(1);
 
-    let parent = path.parent().ok_or_else(|| format!("no parent for {}", path.display()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("no parent for {}", path.display()))?;
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp = parent.join(format!(
         ".{}.{}.{}.tmp",
-        path.file_name().and_then(|s| s.to_str()).unwrap_or("providers"),
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("providers"),
         std::process::id(),
         seq
     ));
@@ -341,7 +356,11 @@ fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
         )
     };
-    if ok == 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
+    if ok == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(not(windows))]
@@ -394,7 +413,13 @@ mod tests {
         assert!(store.write_blocked().is_none());
         store.upsert(provider("first", "k1"));
         store.save().unwrap();
-        assert_eq!(decode(&std::fs::read(&path).unwrap()).unwrap().providers.len(), 1);
+        assert_eq!(
+            decode(&std::fs::read(&path).unwrap())
+                .unwrap()
+                .providers
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -411,7 +436,10 @@ mod tests {
         assert_eq!(std::fs::read(backup_path(&path)).unwrap(), original);
         let saved = decode(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved.providers[0].id, "added");
-        assert_eq!(saved.extra["custom"]["keep"], true, "unknown fields survive a write");
+        assert_eq!(
+            saved.extra["custom"]["keep"], true,
+            "unknown fields survive a write"
+        );
     }
 
     #[test]
@@ -425,7 +453,11 @@ mod tests {
         assert!(store.write_blocked().is_some());
         store.upsert(provider("new", "secret"));
         assert!(store.save().is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), corrupt, "original bytes stay untouched");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            corrupt,
+            "original bytes stay untouched"
+        );
 
         let unreadable = temp_path();
         std::fs::create_dir_all(&unreadable).unwrap();
@@ -433,7 +465,10 @@ mod tests {
         assert!(store.write_blocked().is_some());
         store.upsert(provider("new", "secret"));
         assert!(store.save().is_err());
-        assert!(unreadable.is_dir(), "a path collision is not replaced by a file");
+        assert!(
+            unreadable.is_dir(),
+            "a path collision is not replaced by a file"
+        );
     }
 
     #[test]

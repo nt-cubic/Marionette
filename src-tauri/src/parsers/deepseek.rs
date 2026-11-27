@@ -10,7 +10,11 @@ pub struct DeepSeekParser;
 
 fn sessions_root() -> Option<PathBuf> {
     env_dir("DEEPSEEK_ACP_SESSIONS_ROOT").or_else(|| {
-        Some(env_dir("DSH_HOME").or_else(|| home_join(".dsh"))?.join("sessions"))
+        Some(
+            env_dir("DSH_HOME")
+                .or_else(|| home_join(".dsh"))?
+                .join("sessions"),
+        )
     })
 }
 
@@ -24,7 +28,12 @@ impl AgentParser for DeepSeekParser {
 
     fn list(&self, project_root: &str) -> Result<Vec<ExternalConversation>, String> {
         let roots = sessions_root().into_iter().collect::<Vec<_>>();
-        Ok(jsonl_agents_list("deepseek", "deepseek", &roots, project_root))
+        Ok(jsonl_agents_list(
+            "deepseek",
+            "deepseek",
+            &roots,
+            project_root,
+        ))
     }
 
     fn load(&self, locator: &str) -> Result<Vec<Value>, String> {

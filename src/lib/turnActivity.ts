@@ -2,6 +2,7 @@ import type { SessionEvent } from "./types";
 import { isSubagentTool, isToolInProgress } from "./activityHealth";
 import { collectToolImageSrcs } from "./imageAttachments";
 import { normalizeToolName } from "./toolCallNormalize";
+import { looksLikeCommandExecutionInput } from "./subagentAdapters";
 
 /**
  * Per-tool-call classification + Claude-Code-style labels ("Read",
@@ -111,6 +112,9 @@ function inputVariant(input: string | undefined): string {
 
 /** Stable bucket for a tool-call event (normalized name, title, then variant). */
 export function classifyToolCall(event: ToolCallEvent): ToolActivityKind {
+  // A shell payload remains a command even in legacy rows whose toolName was
+  // previously polluted to `agent` by a title containing "subagent".
+  if (looksLikeCommandExecutionInput(event.input)) return "command";
   const fromName = classifyName(normalizeToolName(event.toolName || event.title));
   if (fromName !== "other") return fromName;
   const variant = inputVariant(event.input);

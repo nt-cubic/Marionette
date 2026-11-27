@@ -12,6 +12,7 @@ import {
   type DragEvent as ReactDragEvent,
 } from "react";
 import {
+  clampEffortIdToLiveMenu,
   expandAcpConfigAttempts,
   getAcpSupplement,
   mergeAcpCapabilities,
@@ -78,6 +79,7 @@ import { isPageDragSource, onDragText } from "../lib/dragText";
 import { foldLocalSingleGroups, splitModelMeta } from "../lib/modelMenu";
 import {
   modelProviderGroup,
+  modelProviderLabelForId,
   modelRowLabel,
   modelTooltip,
   prettyEffortLabel,
@@ -194,6 +196,7 @@ type ComposerProps = {
       modeLabel?: string | null;
       modelId?: string | null;
       modelLabel?: string | null;
+      providerLabel?: string | null;
       /**
        * Effort as displayed. The parent persists these with the dialog so a
        * selection that was inherited (never explicitly picked here) is not
@@ -215,6 +218,7 @@ type ComposerProps = {
       modeLabel?: string | null;
       modelId?: string | null;
       modelLabel?: string | null;
+      providerLabel?: string | null;
       effortId?: string | null;
       effort?: number | null;
       effortLabel?: string | null;
@@ -1804,8 +1808,14 @@ export function Composer({
       // config id, try the saved value once. Rejection keeps disk intact
       // (commitUpdate reverts the chip).
       const options = live.effortOptions ?? [];
+      // A saved "max" from another model is not on this model's menu. Clamp so
+      // the chip, the wire and disk all say the same thing (2026-11-27: opencode
+      // answered -32602 effort not found: max while the chip still claimed Max).
+      const targetEffortId = prefEffortId
+        ? clampEffortIdToLiveMenu(prefEffortId, live)
+        : null;
       const liveEffortIdOk =
-        Boolean(prefEffortId) && options.some((o) => o.id === prefEffortId);
+        Boolean(targetEffortId) && options.some((o) => o.id === targetEffortId);
       const liveNumericOk =
         prefEffort != null &&
         live.thinkingEffort != null &&
@@ -1814,18 +1824,18 @@ export function Composer({
       const effortRejectedLive = effortWriteRejectedFor(live, live.currentModel);
       const canTryEffortId =
         !effortRejectedLive &&
-        Boolean(prefEffortId) &&
+        Boolean(targetEffortId) &&
         (liveEffortIdOk || (Boolean(live.effortConfigId) && needModelWait));
 
-      if (prefEffortId && !canTryEffortId) {
+      if (targetEffortId && !canTryEffortId) {
         // Not on this model's menu and we have no config id to probe — leave
         // the agent default on the chip; disk still holds the preference.
         if (alive()) setCurrentEffortId(live.currentEffortId);
         unpinOption("effortId");
-      } else if (canTryEffortId && prefEffortId) {
-        if (alive()) setCurrentEffortId(prefEffortId);
-        if (prefEffortId !== live.currentEffortId) {
-          await commitUpdate({ effortId: prefEffortId }, () => {
+      } else if (canTryEffortId && targetEffortId) {
+        if (alive()) setCurrentEffortId(targetEffortId);
+        if (targetEffortId !== live.currentEffortId) {
+          await commitUpdate({ effortId: targetEffortId }, () => {
             if (alive()) {
               unpinOption("effortId");
               setCurrentEffortId(live.currentEffortId);
@@ -1952,6 +1962,18 @@ export function Composer({
         bridgeActive && bridgeSelection && !bridgeStale
           ? bridgeSelection.label
           : (sentWith && caps?.models.find((m) => m.id === sentWith)?.label) || sentWith || null;
+      const nativeProvider = sentWith
+        ? modelProviderGroup(caps?.models.find((m) => m.id === sentWith) ?? {
+            id: sentWith,
+            label: sentWith,
+            description: undefined,
+          })
+        : null;
+      const providerLabel =
+        (bridgeActive && bridgeSelection && !bridgeStale
+          ? modelProviderLabelForId(bridgeSelection.modelId, modelSources)
+          : modelProviderLabelForId(sentWith, modelSources)) ??
+        (nativeProvider && nativeProvider !== "Models" ? nativeProvider : null);
       const effortOpts = caps?.effortOptions ?? [];
       const effortLabelVal =
         currentEffortId != null
@@ -1971,6 +1993,7 @@ export function Composer({
         modeLabel,
         modelId,
         modelLabel,
+        providerLabel,
         effortId: currentEffortId,
         effort: currentEffort,
         effortLabel: effortLabelVal,

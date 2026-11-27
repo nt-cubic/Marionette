@@ -68,10 +68,14 @@ fn timer_worker() {
     };
     loop {
         let task = {
-            let mut guard = queue.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut guard = queue
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             loop {
                 let Some((&at, _)) = guard.iter().next() else {
-                    guard = cond.wait(guard).unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard = cond
+                        .wait(guard)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     continue;
                 };
                 let now = Instant::now();
@@ -483,8 +487,7 @@ impl AcpService {
         // Antigravity: prefer Marionette's installed tree over a PATH copy —
         // the installer verified the required sibling; a hand-dropped PATH
         // entry may be a "fake success" single-file extract.
-        let (command, args) = if agent_id.as_deref() == Some(crate::antigravity_support::AGENT_ID)
-        {
+        let (command, args) = if agent_id.as_deref() == Some(crate::antigravity_support::AGENT_ID) {
             match crate::antigravity_support::installed_entry() {
                 Some(entry) => (entry.to_string_lossy().to_string(), args),
                 None => (command, args),
@@ -492,17 +495,17 @@ impl AcpService {
         } else {
             (command, args)
         };
-        let (command, args) = if let Some(site) = agent_id
-            .as_deref()
-            .and_then(crate::web_chat_bridge::site)
-        {
-            let bridge = crate::web_chat_bridge::ensure_extracted()?;
-            ("node".to_string(), vec![bridge.to_string_lossy().into_owned(), site.into()])
-        } else {
-            (command, args)
-        };
-        let (command, mut args) =
-            crate::process_util::prefer_fast_acp_launch(&command, &args);
+        let (command, args) =
+            if let Some(site) = agent_id.as_deref().and_then(crate::web_chat_bridge::site) {
+                let bridge = crate::web_chat_bridge::ensure_extracted()?;
+                (
+                    "node".to_string(),
+                    vec![bridge.to_string_lossy().into_owned(), site.into()],
+                )
+            } else {
+                (command, args)
+            };
+        let (command, mut args) = crate::process_util::prefer_fast_acp_launch(&command, &args);
         // Grok: project-scoped MCP is gated by folder trust. Marionette opens
         // the project on the user's behalf — grant trust for this cwd and make
         // sure `--trust` is on the argv even if an older agent row lacked it.
@@ -585,7 +588,11 @@ impl AcpService {
                 if npm_bin.is_dir() {
                     let mut path = std::env::var_os("PATH").unwrap_or_default();
                     let npm_str = npm_bin.to_string_lossy();
-                    if !path.to_string_lossy().to_ascii_lowercase().contains(&npm_str.to_ascii_lowercase()) {
+                    if !path
+                        .to_string_lossy()
+                        .to_ascii_lowercase()
+                        .contains(&npm_str.to_ascii_lowercase())
+                    {
                         let mut new_path = npm_bin.into_os_string();
                         new_path.push(";");
                         new_path.push(&path);
@@ -816,6 +823,9 @@ impl AcpService {
                 crate::engine::wake_if_installed();
                 match crate::model_bridge::refresh_pi_marionette_route() {
                     Ok(true) => {
+                        if let Some(agent_dir) = crate::model_bridge::pi_agent_dir() {
+                            child_command.env("PI_CODING_AGENT_DIR", &agent_dir);
+                        }
                         child_command
                             .env(crate::dsh_bridge::MARIONETTE_TOKEN_ENV, &crate::engine::gateway_token());
                         crate::debug_log::append(
@@ -1126,9 +1136,9 @@ impl AcpService {
         if agent_id.as_deref() == Some(crate::antigravity_support::AGENT_ID) {
             // 跨用引擎绑定 → 走 Antigravity 官方 gateway auth：本地 Gemini
             // 协议面把请求转给引擎。没有绑定 → 回原生 Google 登录。
-            let gateway_base = if crate::model_bridge::binding_for(&session_id)
-                .is_some_and(|selection| selection.entry_id == crate::engine::ENGINE_ENTRY_ID)
-            {
+            let gateway_selection = crate::model_bridge::binding_for(&session_id)
+                .filter(|selection| selection.entry_id == crate::engine::ENGINE_ENTRY_ID);
+            let gateway_base = if gateway_selection.is_some() {
                 match crate::antigravity_bridge::ensure_serving() {
                     Ok(base) => Some(base),
                     Err(error) => {
@@ -1167,10 +1177,12 @@ impl AcpService {
                         &session_id,
                         "antigravity settings sync",
                         Some(match report {
-                            crate::antigravity_support::SettingsSync::Written =>
-                                "auth.type written to settings.json",
-                            crate::antigravity_support::SettingsSync::AlreadyCurrent =>
-                                "settings.json auth.type already current",
+                            crate::antigravity_support::SettingsSync::Written => {
+                                "auth.type written to settings.json"
+                            }
+                            crate::antigravity_support::SettingsSync::AlreadyCurrent => {
+                                "settings.json auth.type already current"
+                            }
                             _ => "settings.json not strict JSON — left alone",
                         }),
                     );
@@ -1181,6 +1193,20 @@ impl AcpService {
                     .env("AGY_LLM_GATEWAY_URL", &base)
                     .env("AGY_LLM_GATEWAY_API_KEY", &crate::engine::gateway_token())
                     .env("AGY_LLM_GATEWAY_WIRE_PROTOCOL", "genai");
+                if let Some(selection) = gateway_selection.as_ref() {
+                    // Antigravity refuses a gateway catalog above 32 models. A
+                    // full engine catalog currently has hundreds, so advertise
+                    // only the selected worker model. Its internal titling path
+                    // also requires at least one Flash-family model.
+                    let (catalog, _) = crate::engine::catalog_direct_or_cached();
+                    child_command.env(
+                        "AGY_LLM_GATEWAY_MODELS",
+                        crate::antigravity_support::gateway_model_allowlist(
+                            &selection.model_id,
+                            &catalog,
+                        ),
+                    );
+                }
                 crate::debug_log::append(
                     "bridge",
                     "info",
@@ -1480,10 +1506,8 @@ impl AcpService {
                         process
                             .codex_providers_available
                             .store(true, Ordering::SeqCst);
-                        let params = crate::model_bridge::codex_providers_set_params(
-                            &base_url,
-                            &api_key,
-                        );
+                        let params =
+                            crate::model_bridge::codex_providers_set_params(&base_url, &api_key);
                         match request_quiet(&process, "providers/set", params) {
                             Ok(_) => {
                                 process.codex_bridge_routed.store(true, Ordering::SeqCst);
@@ -1555,10 +1579,7 @@ impl AcpService {
                     None => (Vec::new(), Vec::new()),
                 }
             } else {
-                let reason = agent_id
-                    .as_deref()
-                    .unwrap_or("(none)")
-                    .to_string();
+                let reason = agent_id.as_deref().unwrap_or("(none)").to_string();
                 (
                     Vec::new(),
                     vec![format!("{reason} (mcp wire policy: skip/never)")],
@@ -1726,8 +1747,7 @@ impl AcpService {
         ) {
             Ok(value) => value,
             Err(error)
-                if !mcp_servers.is_empty()
-                    && format!("{error}").contains("Invalid params") =>
+                if !mcp_servers.is_empty() && format!("{error}").contains("Invalid params") =>
             {
                 crate::debug_log::append(
                     "context",
@@ -1852,7 +1872,11 @@ impl AcpService {
     pub fn agent_session_id(&self, session_id: &str) -> Option<String> {
         let sessions = self.sessions.lock().ok()?;
         let process = sessions.get(session_id)?;
-        process.agent_session_id.lock().ok().and_then(|guard| guard.clone())
+        process
+            .agent_session_id
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
     }
 
     /// X3（2026-11-06 内存压制批）：把一个会话进程树的物理工作集压出去
@@ -1993,9 +2017,7 @@ impl AcpService {
                                     Some(&base_url),
                                 );
                             }
-                            Err(error) => {
-                                problems.push(format!("providers/set failed: {error}"))
-                            }
+                            Err(error) => problems.push(format!("providers/set failed: {error}")),
                         }
                     }
                     None => problems.push("no engine route for this binding".to_string()),
@@ -2012,8 +2034,7 @@ impl AcpService {
                         effort.as_deref(),
                     );
                     if !crate::engine::codex_alias_in_place(session_id, builtin, &engine_model) {
-                        problems
-                            .push(format!("routing group for {builtin} is not in the engine"));
+                        problems.push(format!("routing group for {builtin} is not in the engine"));
                     }
                 }
                 None => problems.push("codex did not report its current model".to_string()),
@@ -2106,9 +2127,9 @@ impl AcpService {
             // per-model gate latched below): answer locally instead of firing
             // another doomed RPC on every prompt / restore.
             if update.target == ConfigTarget::Effort
-                && self.get_capabilities(session_id).is_some_and(|caps| {
-                    effort_write_rejected(&caps, caps.current_model.as_deref())
-                })
+                && self
+                    .get_capabilities(session_id)
+                    .is_some_and(|caps| effort_write_rejected(&caps, caps.current_model.as_deref()))
             {
                 continue;
             }
@@ -2146,87 +2167,81 @@ impl AcpService {
             let bridged_codex = self.session_codex_engine_bound(session_id);
             if bridged_codex
                 && update.target == ConfigTarget::Model
-                && update
-                    .value
-                    .as_str()
-                    .is_some_and(|id| id.contains('/'))
+                && update.value.as_str().is_some_and(|id| id.contains('/'))
             {
                 last_result = json!({});
                 continue;
             }
-            let skip_config_option = process
-                .config_option_unsupported
-                .load(Ordering::Relaxed);
+            let skip_config_option = process.config_option_unsupported.load(Ordering::Relaxed);
             let attempted = if bridged_codex
                 && matches!(update.target, ConfigTarget::Model | ConfigTarget::Effort)
             {
                 Ok(json!({}))
             } else {
                 match &update.config_id {
-                // Already know this agent has no set_config_option — don't probe again.
-                Some(_) if skip_config_option => self.legacy_set_config(
-                    &process,
-                    &agent_session_id,
-                    session_id,
-                    &update,
-                ),
-                Some(config_id) => {
-                    let advertised = config_id_is_advertised(caps.as_ref(), update.target, config_id);
-                    let params = json!({
-                        "sessionId": agent_session_id,
-                        "configId": config_id,
-                        "value": update.value,
-                    });
-                    // Quiet: a -32601 here is an expected capability answer, not a
-                    // fault. Without this the UI renders "Agent error: Method not
-                    // found" even when the legacy fallback succeeds.
-                    match request_quiet(&process, "session/set_config_option", params) {
-                        Ok(value) => Ok(value),
-                        // Pre-v2 agents (Grok) have no set_config_option at all;
-                        // the per-knob RPCs are the only way in. A value rejection
-                        // is a different thing and must still surface.
-                        Err(error) if is_method_not_found(&error) => {
-                            process
-                                .config_option_unsupported
-                                .store(true, Ordering::Relaxed);
-                            self.legacy_set_config(
-                                &process,
-                                &agent_session_id,
-                                session_id,
-                                &update,
-                            )
-                        }
-                        // Grok ≥ 1.0 *does* implement set_config_option, but it
-                        // advertises no `mode` option (plan/build is session/set_mode)
-                        // and answers -32602 for that invented id. Without this the
-                        // mode chip fails on an agent that simply uses another RPC.
-                        Err(error) if !advertised && is_invalid_params(&error) => {
-                            self.legacy_set_config(
-                                &process,
-                                &agent_session_id,
-                                session_id,
-                                &update,
-                            )
-                        }
-                        // The agent speaks set_config_option but rejects effort
-                        // writes for this model outright (grok's per-model gate).
-                        // Latch the model so the Composer drops the Effort chip
-                        // and the write above is answered locally next time; the
-                        // error still surfaces once for the user.
-                        Err(error)
-                            if update.target == ConfigTarget::Effort
-                                && is_invalid_params(&error)
-                                && is_effort_reject_error(&error) =>
-                        {
-                            self.latch_effort_reject_model(session_id);
+                    // Already know this agent has no set_config_option — don't probe again.
+                    Some(_) if skip_config_option => {
+                        self.legacy_set_config(&process, &agent_session_id, session_id, &update)
+                    }
+                    Some(config_id) => {
+                        let advertised =
+                            config_id_is_advertised(caps.as_ref(), update.target, config_id);
+                        let params = json!({
+                            "sessionId": agent_session_id,
+                            "configId": config_id,
+                            "value": update.value,
+                        });
+                        // Quiet: a -32601 here is an expected capability answer, not a
+                        // fault. Without this the UI renders "Agent error: Method not
+                        // found" even when the legacy fallback succeeds.
+                        match request_quiet(&process, "session/set_config_option", params) {
+                            Ok(value) => Ok(value),
+                            // Pre-v2 agents (Grok) have no set_config_option at all;
+                            // the per-knob RPCs are the only way in. A value rejection
+                            // is a different thing and must still surface.
+                            Err(error) if is_method_not_found(&error) => {
+                                process
+                                    .config_option_unsupported
+                                    .store(true, Ordering::Relaxed);
+                                self.legacy_set_config(
+                                    &process,
+                                    &agent_session_id,
+                                    session_id,
+                                    &update,
+                                )
+                            }
+                            // Grok ≥ 1.0 *does* implement set_config_option, but it
+                            // advertises no `mode` option (plan/build is session/set_mode)
+                            // and answers -32602 for that invented id. Without this the
+                            // mode chip fails on an agent that simply uses another RPC.
+                            Err(error) if !advertised && is_invalid_params(&error) => self
+                                .legacy_set_config(
+                                    &process,
+                                    &agent_session_id,
+                                    session_id,
+                                    &update,
+                                ),
+                            // The agent speaks set_config_option but rejects effort
+                            // writes for this model outright (grok's per-model gate).
+                            // Latch the model so the Composer drops the Effort chip
+                            // and the write above is answered locally next time; the
+                            // error still surfaces once for the user.
                             Err(error)
+                                if update.target == ConfigTarget::Effort
+                                    && is_invalid_params(&error)
+                                    && is_effort_reject_error(&error) =>
+                            {
+                                self.latch_effort_reject_model(session_id);
+                                Err(error)
+                            }
+                            Err(error) => Err(error),
                         }
-                        Err(error) => Err(error),
+                    }
+                    // No advertised config id: legacy RPC is the only transport.
+                    None => {
+                        self.legacy_set_config(&process, &agent_session_id, session_id, &update)
                     }
                 }
-                // No advertised config id: legacy RPC is the only transport.
-                None => self.legacy_set_config(&process, &agent_session_id, session_id, &update),
-            }
             };
             last_result = attempted?;
 
@@ -2285,7 +2300,8 @@ impl AcpService {
                     caps.as_ref().and_then(|c| c.current_effort_id.as_deref()),
                 );
             }
-            if update.target == ConfigTarget::Effort && self.session_codex_engine_bound(session_id) {
+            if update.target == ConfigTarget::Effort && self.session_codex_engine_bound(session_id)
+            {
                 let agent_of_session = self
                     .session_agents
                     .lock()
@@ -2400,19 +2416,12 @@ impl AcpService {
             return;
         }
         let current = caps.current_effort_id.clone();
-        let already_sent_with_model = process
-            .config_option_unsupported
-            .load(Ordering::Relaxed);
+        let already_sent_with_model = process.config_option_unsupported.load(Ordering::Relaxed);
 
         if let Some(effort) = desired {
             if current.as_deref() != Some(effort.as_str()) && !already_sent_with_model {
-                let sent = send_effort_for_model(
-                    process,
-                    agent_session_id,
-                    &caps,
-                    &model_id,
-                    &effort,
-                );
+                let sent =
+                    send_effort_for_model(process, agent_session_id, &caps, &model_id, &effort);
                 if let Err(error) = sent {
                     crate::debug_log::append(
                         "acp",
@@ -2574,11 +2583,7 @@ impl AcpService {
     }
 
     /// Resolve a UI-gated `session/request_permission` **or** elicitation approval.
-    pub fn respond_permission(
-        &self,
-        request_id: &str,
-        option_id: &str,
-    ) -> Result<(), String> {
+    pub fn respond_permission(&self, request_id: &str, option_id: &str) -> Result<(), String> {
         // Prefer classic ACP permission waiters.
         let classic = {
             let mut map = self
@@ -2608,7 +2613,11 @@ impl AcpService {
             if let Some(label) = option_label {
                 outcome["optionLabel"] = serde_json::json!(label);
             }
-            write_response(&pending.process, pending.rpc_id, json!({ "outcome": outcome }));
+            write_response(
+                &pending.process,
+                pending.rpc_id,
+                json!({ "outcome": outcome }),
+            );
             return Ok(());
         }
 
@@ -2678,9 +2687,7 @@ impl AcpService {
             map.remove(request_id)
         };
         let Some(pending) = elic else {
-            return Err(format!(
-                "Unknown or expired question request: {request_id}"
-            ));
+            return Err(format!("Unknown or expired question request: {request_id}"));
         };
         if pending.kind != "questions" {
             if let Ok(mut map) = self.elicitations.lock() {
@@ -2717,9 +2724,8 @@ impl AcpService {
                 .plan_approvals
                 .lock()
                 .map_err(|_| "Plan approval lock poisoned".to_string())?;
-            map.remove(request_id).ok_or_else(|| {
-                format!("Unknown or expired plan approval request: {request_id}")
-            })?
+            map.remove(request_id)
+                .ok_or_else(|| format!("Unknown or expired plan approval request: {request_id}"))?
         };
         write_response(
             &pending.process,
@@ -2777,16 +2783,11 @@ impl AcpService {
             );
         }
         if process.in_flight_prompt_id.load(Ordering::SeqCst) != 0 {
-            return Err(
-                "A turn is already in flight on this session — interrupt it first".into(),
-            );
+            return Err("A turn is already in flight on this session — interrupt it first".into());
         }
 
         let caps = self.get_capabilities(session_id);
-        let images_ok = caps
-            .as_ref()
-            .map(|c| c.prompt_image)
-            .unwrap_or(false);
+        let images_ok = caps.as_ref().map(|c| c.prompt_image).unwrap_or(false);
         let local_file_upload = process.local_file_upload.load(Ordering::Relaxed);
 
         let mut prompt_blocks: Vec<Value> = Vec::new();
@@ -2797,11 +2798,7 @@ impl AcpService {
         // 也不消耗首条标记：记忆卡拼在前面后整条消息不以 / 开头，Grok 不再按
         // 内置命令拦截，会为它真跑一轮模型（点一下 Always approve 就自己开跑）。
         let prompt_is_slash = text.trim_start().starts_with('/');
-        if !prompt_is_slash
-            && !process
-                .memory_card_sent
-                .swap(true, Ordering::Relaxed)
-        {
+        if !prompt_is_slash && !process.memory_card_sent.swap(true, Ordering::Relaxed) {
             if let Some(card) = crate::memory::compose_card() {
                 prompt_blocks.push(json!({ "type": "text", "text": card }));
             }
@@ -2818,7 +2815,10 @@ impl AcpService {
                             // Web uploads must be all-or-nothing: never send the
                             // text after silently dropping an unreadable image.
                             if local_file_upload {
-                                return Err(crate::ts!("图片附件读取失败，消息未发送：{err}", "Failed to read an image attachment; message not sent: {err}"));
+                                return Err(crate::ts!(
+                                    "图片附件读取失败，消息未发送：{err}",
+                                    "Failed to read an image attachment; message not sent: {err}"
+                                ));
                             }
                             crate::debug_log::append(
                                 "acp",
@@ -2856,9 +2856,7 @@ impl AcpService {
             .compare_exchange(0, id, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            return Err(
-                "A turn is already in flight on this session — interrupt it first".into(),
-            );
+            return Err("A turn is already in flight on this session — interrupt it first".into());
         }
         let mut prompt_params = json!({
             "sessionId": agent_session_id,
@@ -2953,9 +2951,7 @@ impl AcpService {
         // emit turn/complete so the UI leaves Working immediately.
         let cancelled_prompt_id = take_in_flight_prompt_id(&process.in_flight_prompt_id);
         if let Some(id) = cancelled_prompt_id {
-            process
-                .cancelling_prompt_id
-                .store(id, Ordering::SeqCst);
+            process.cancelling_prompt_id.store(id, Ordering::SeqCst);
         }
         if let Err(error) = notify(
             &process,
@@ -3536,18 +3532,30 @@ pub(crate) fn model_entry_images(entry: &Value) -> Option<bool> {
         }
     }
     fn from_node(node: &Value) -> Option<bool> {
-        for key in ["supportsImage", "supportsImages", "supports_image", "vision", "supportsVision"] {
+        for key in [
+            "supportsImage",
+            "supportsImages",
+            "supports_image",
+            "vision",
+            "supportsVision",
+        ] {
             if let Some(b) = node.get(key).and_then(Value::as_bool) {
                 return Some(b);
             }
         }
         for key in ["inputModalities", "input_modalities"] {
-            if let Some(found) = node.get(key).and_then(Value::as_array).and_then(|l| from_list(l)) {
+            if let Some(found) = node
+                .get(key)
+                .and_then(Value::as_array)
+                .and_then(|l| from_list(l))
+            {
                 return Some(found);
             }
         }
         if let Some(m) = node.get("modalities") {
-            let list = m.as_array().or_else(|| m.get("input").and_then(Value::as_array));
+            let list = m
+                .as_array()
+                .or_else(|| m.get("input").and_then(Value::as_array));
             if let Some(found) = list.and_then(|l| from_list(l)) {
                 return Some(found);
             }
@@ -3558,7 +3566,11 @@ pub(crate) fn model_entry_images(entry: &Value) -> Option<bool> {
                     return Some(b);
                 }
             }
-            if let Some(found) = caps.get("input").and_then(Value::as_array).and_then(|l| from_list(l)) {
+            if let Some(found) = caps
+                .get("input")
+                .and_then(Value::as_array)
+                .and_then(|l| from_list(l))
+            {
                 return Some(found);
             }
         }
@@ -3879,7 +3891,6 @@ fn with_grok_trust_flag(args: Vec<String>) -> Vec<String> {
     out
 }
 
-
 fn read_stdout(
     app: AppHandle,
     session_id: String,
@@ -3972,13 +3983,7 @@ fn read_stdout(
                         "error"
                     };
                     let kind = if result.is_ok() { "response" } else { "error" };
-                    emit_turn_complete(
-                        &app,
-                        &session_id,
-                        kind,
-                        stop_reason,
-                        message.clone(),
-                    );
+                    emit_turn_complete(&app, &session_id, kind, stop_reason, message.clone());
                 } else if is_cancel_ack {
                     let _ = process.cancelling_prompt_id.compare_exchange(
                         id,
@@ -4039,13 +4044,7 @@ fn read_stdout(
         if let Some(id) = message.get("id").cloned() {
             if let Some(method) = message.get("method").and_then(Value::as_str) {
                 let params = message.get("params").cloned().unwrap_or(Value::Null);
-                emit_event(
-                    &app,
-                    &session_id,
-                    "request",
-                    Some(method),
-                    message.clone(),
-                );
+                emit_event(&app, &session_id, "request", Some(method), message.clone());
                 handle_agent_request(
                     &process,
                     &app,
@@ -4438,11 +4437,7 @@ fn handle_agent_request(
             let plan = match crate::elicitation::classify_elicitation(&params, claude_like) {
                 Ok(p) => p,
                 Err(e) => {
-                    write_response(
-                        process,
-                        id,
-                        crate::elicitation::elicitation_decline(),
-                    );
+                    write_response(process, id, crate::elicitation::elicitation_decline());
                     emit_event(
                         app,
                         session_id,
@@ -4668,25 +4663,14 @@ fn handle_agent_request(
             let terminals = Arc::clone(terminals);
             let marionette_session = session_id.to_string();
             let method = method.to_string();
-            let agent_sid = process
-                .agent_session_id
-                .lock()
-                .ok()
-                .and_then(|g| g.clone());
+            let agent_sid = process.agent_session_id.lock().ok().and_then(|g| g.clone());
             thread::spawn(move || {
-                match terminals.handle(
-                    &method,
-                    &params,
-                    &marionette_session,
-                    agent_sid.as_deref(),
-                ) {
+                match terminals.handle(&method, &params, &marionette_session, agent_sid.as_deref())
+                {
                     Ok(result) => write_response(&process, id, result),
-                    Err(err) => write_error_response(
-                        &process,
-                        id,
-                        err.code() as i64,
-                        err.message(),
-                    ),
+                    Err(err) => {
+                        write_error_response(&process, id, err.code() as i64, err.message())
+                    }
                 }
             });
         }
@@ -4817,7 +4801,12 @@ fn build_ask_user_question_result(answers: Value, declined: bool) -> Value {
             } else if selected.len() == 1 {
                 Value::String(selected[0].to_string())
             } else if !selected.is_empty() {
-                Value::Array(selected.iter().map(|s| Value::String(s.to_string())).collect())
+                Value::Array(
+                    selected
+                        .iter()
+                        .map(|s| Value::String(s.to_string()))
+                        .collect(),
+                )
             } else {
                 continue;
             };
@@ -4908,7 +4897,10 @@ fn permission_summary(params: &Value) -> (String, Option<String>) {
         return (title, detail);
     }
     if let Some(title) = params.get("title").and_then(Value::as_str) {
-        return (title.to_string(), extract_plan_markdown_from_permission(params));
+        return (
+            title.to_string(),
+            extract_plan_markdown_from_permission(params),
+        );
     }
     (
         "Permission required".to_string(),
@@ -5049,8 +5041,15 @@ fn read_text_file_for_agent(params: &Value) -> Result<String, String> {
     let path = PathBuf::from(path);
     let content =
         fs::read_to_string(&path).map_err(|error| format!("Read {path:?} failed: {error}"))?;
-    let line = params.get("line").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
-    let limit = params.get("limit").and_then(Value::as_u64).map(|n| n as usize);
+    let line = params
+        .get("line")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .max(1) as usize;
+    let limit = params
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize);
     if line <= 1 && limit.is_none() {
         return Ok(content);
     }
@@ -5203,8 +5202,14 @@ mod tests {
     #[test]
     fn stderr_tail_keeps_last_lines_without_ansi() {
         let tail = Arc::new(Mutex::new(Vec::new()));
-        push_stderr_tail(&tail, "\u{1b}[91mError: \u{1b}[0mConfiguration is invalid at OPENCODE_CONFIG_CONTENT");
-        push_stderr_tail(&tail, "↳ Missing key provider.marionette.models.grok/grok-4.7@500k.limit.output");
+        push_stderr_tail(
+            &tail,
+            "\u{1b}[91mError: \u{1b}[0mConfiguration is invalid at OPENCODE_CONFIG_CONTENT",
+        );
+        push_stderr_tail(
+            &tail,
+            "↳ Missing key provider.marionette.models.grok/grok-4.7@500k.limit.output",
+        );
         push_stderr_tail(&tail, "   ");
         let text = stderr_tail_text(&tail);
         assert!(text.contains("Error: Configuration is invalid at OPENCODE_CONFIG_CONTENT"));
@@ -5214,11 +5219,15 @@ mod tests {
 
     #[test]
     fn dsh_package_found_from_unwrapped_npm_launcher() {
-        let root = std::env::temp_dir().join(format!("marionette-dsh-lookup-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("marionette-dsh-lookup-{}", std::process::id()));
         let package = root.join("node_modules").join("@deepseek-ai").join("dsh");
         fs::create_dir_all(package.join("lib")).unwrap();
         fs::write(package.join("package.json"), "{}").unwrap();
-        assert_eq!(dsh_package_from_resolved(&package.join("lib").join("bin.js")), Some(package.clone()));
+        assert_eq!(
+            dsh_package_from_resolved(&package.join("lib").join("bin.js")),
+            Some(package.clone())
+        );
         assert_eq!(dsh_package_from_resolved(&root.join("dsh.cmd")), None);
         fs::remove_dir_all(root).unwrap();
     }
@@ -5240,7 +5249,10 @@ mod tests {
             lnk
         };
         // Full target path …\ZCode.exe → parent dir.
-        let lnk = write_lnk("with-exe.lnk", "\0\0D:\\Program Files\\ZCode\\ZCode.exe\0\0");
+        let lnk = write_lnk(
+            "with-exe.lnk",
+            "\0\0D:\\Program Files\\ZCode\\ZCode.exe\0\0",
+        );
         assert_eq!(
             lnk_candidate_dirs(&lnk).first().map(PathBuf::as_path),
             Some(Path::new("D:\\Program Files\\ZCode"))
@@ -5264,10 +5276,8 @@ mod tests {
     /// missed a present desktop install.
     #[test]
     fn lnk_ansi_localbasepath_survives_utf16_junk_prefix() {
-        let root = std::env::temp_dir().join(format!(
-            "marionette-zcode-ansi-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("marionette-zcode-ansi-{}", std::process::id()));
         let install = root.join("ZCode");
         let glm = install.join("resources").join("glm");
         fs::create_dir_all(&glm).unwrap();
@@ -5352,7 +5362,9 @@ mod tests {
             Some(7)
         );
         assert_eq!(
-            caps.model_default_efforts.get("deepseek-flash").map(String::as_str),
+            caps.model_default_efforts
+                .get("deepseek-flash")
+                .map(String::as_str),
             Some("max")
         );
     }
@@ -5476,7 +5488,9 @@ mod tests {
         assert_eq!(caps.current_effort_id.as_deref(), Some("max"));
         assert_eq!(caps.effort_options.len(), 7);
         assert_eq!(
-            caps.model_default_efforts.get("grok-4.6").map(String::as_str),
+            caps.model_default_efforts
+                .get("grok-4.6")
+                .map(String::as_str),
             Some("high")
         );
 
@@ -5521,11 +5535,7 @@ mod tests {
 
         // grok bridge, no written menu → None (5f796506 behavior).
         assert_eq!(
-            effort_for_model(
-                &caps,
-                "marionette/grok/grok-4.6",
-                &BridgeEffortGate::NoMenu
-            ),
+            effort_for_model(&caps, "marionette/grok/grok-4.6", &BridgeEffortGate::NoMenu),
             None
         );
 
@@ -5640,7 +5650,8 @@ mod tests {
         assert!(is_invalid_params(gate));
         assert!(is_effort_reject_error(gate));
 
-        let unknown = r#"{"code":-32602,"message":"Invalid params","data":"unknown reasoning_effort value"}"#;
+        let unknown =
+            r#"{"code":-32602,"message":"Invalid params","data":"unknown reasoning_effort value"}"#;
         assert!(is_invalid_params(unknown));
         assert!(!is_effort_reject_error(unknown));
     }
@@ -5719,12 +5730,28 @@ mod tests {
         // Grok advertises `model` but no `mode`/`effort` option.
         let mut caps = parse_session_capabilities(&json!({ "sessionId": "s1" }));
         caps.model_config_id = Some("model".to_string());
-        assert!(config_id_is_advertised(Some(&caps), ConfigTarget::Model, "model"));
-        assert!(!config_id_is_advertised(Some(&caps), ConfigTarget::Mode, "mode"));
-        assert!(!config_id_is_advertised(Some(&caps), ConfigTarget::Effort, "effort"));
+        assert!(config_id_is_advertised(
+            Some(&caps),
+            ConfigTarget::Model,
+            "model"
+        ));
+        assert!(!config_id_is_advertised(
+            Some(&caps),
+            ConfigTarget::Mode,
+            "mode"
+        ));
+        assert!(!config_id_is_advertised(
+            Some(&caps),
+            ConfigTarget::Effort,
+            "effort"
+        ));
         // Claude's advertised effort id must never take the legacy path.
         caps.effort_config_id = Some("effort".to_string());
-        assert!(config_id_is_advertised(Some(&caps), ConfigTarget::Effort, "effort"));
+        assert!(config_id_is_advertised(
+            Some(&caps),
+            ConfigTarget::Effort,
+            "effort"
+        ));
         // No snapshot at all: nothing is advertised, so nothing is trusted.
         assert!(!config_id_is_advertised(None, ConfigTarget::Model, "model"));
     }
@@ -5891,7 +5918,10 @@ mod tests {
             vec!["standard", "ptc", "minimal", "cordis"]
         );
         assert_eq!(
-            caps.modes.iter().map(|m| m.label.clone()).collect::<Vec<_>>(),
+            caps.modes
+                .iter()
+                .map(|m| m.label.clone())
+                .collect::<Vec<_>>(),
             vec!["Standard", "PTC", "Minimal", "Creator"]
         );
         assert_eq!(caps.current_mode.as_deref(), Some("standard"));
@@ -5919,8 +5949,7 @@ mod tests {
             vec!["off", "low", "high", "max"]
         );
 
-        let updates =
-            expand_config_updates(&json!({ "mode": "minimal" }), Some(&caps)).unwrap();
+        let updates = expand_config_updates(&json!({ "mode": "minimal" }), Some(&caps)).unwrap();
         assert_eq!(updates[0].config_id.as_deref(), Some("agent"));
         assert_eq!(updates[0].value, json!("minimal"));
     }
@@ -6029,7 +6058,10 @@ mod tests {
             // The reasoning select is the effort knob, not a model catalog.
             assert_eq!(caps.effort_config_id.as_deref(), Some("reasoning"));
             assert_eq!(
-                caps.effort_options.iter().map(|o| o.id.clone()).collect::<Vec<_>>(),
+                caps.effort_options
+                    .iter()
+                    .map(|o| o.id.clone())
+                    .collect::<Vec<_>>(),
                 vec!["off", "low", "high", "max"]
             );
             assert_eq!(caps.current_effort_id.as_deref(), Some("high"));
@@ -6051,7 +6083,10 @@ mod tests {
             assert_eq!(caps.permission_config_id.as_deref(), Some("sandbox"));
             assert_eq!(caps.permission_label.as_deref(), Some("文件权限"));
             assert_eq!(
-                caps.permission_options.iter().map(|o| o.id.clone()).collect::<Vec<_>>(),
+                caps.permission_options
+                    .iter()
+                    .map(|o| o.id.clone())
+                    .collect::<Vec<_>>(),
                 vec!["read-only", "workspace-write", "danger-full-access"]
             );
             assert_eq!(caps.current_permission.as_deref(), Some("workspace-write"));
@@ -6116,7 +6151,10 @@ mod tests {
         assert_eq!(caps.models.len(), 1);
         assert_eq!(caps.effort_config_id.as_deref(), Some("reasoning_effort"));
         assert_eq!(
-            caps.effort_options.iter().map(|o| o.id.clone()).collect::<Vec<_>>(),
+            caps.effort_options
+                .iter()
+                .map(|o| o.id.clone())
+                .collect::<Vec<_>>(),
             vec!["low", "medium"]
         );
         assert!(!caps.effort_in_model_id);
@@ -6154,7 +6192,10 @@ mod tests {
         assert!(caps.effort_options.is_empty());
         assert!(caps.effort_in_model_id);
         assert_eq!(
-            caps.models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            caps.models
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["gpt-5.6-luna"]
         );
         assert_eq!(
@@ -6201,15 +6242,24 @@ mod tests {
         assert_eq!(caps.current_model.as_deref(), Some("gpt-5.6-luna"));
         assert_eq!(caps.current_effort_id.as_deref(), Some("high"));
         assert_eq!(
-            caps.models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            caps.models
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["gpt-5.6-luna", "gpt-5.4"]
         );
         assert_eq!(
-            caps.effort_options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(),
+            caps.effort_options
+                .iter()
+                .map(|o| o.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["low", "high", "xhigh"]
         );
         assert_eq!(
-            caps.models.iter().map(|m| m.label.as_str()).collect::<Vec<_>>(),
+            caps.models
+                .iter()
+                .map(|m| m.label.as_str())
+                .collect::<Vec<_>>(),
             vec!["GPT-5.6 Luna", "GPT-5.4"]
         );
         assert!(caps.effort_in_model_id);
@@ -6329,7 +6379,11 @@ mod tests {
         let mut merged = next;
         carry_forward_unsaid(&mut merged, &prev);
         assert_eq!(
-            merged.modes.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
+            merged
+                .modes
+                .iter()
+                .map(|m| m.id.clone())
+                .collect::<Vec<_>>(),
             vec!["default", "plan"]
         );
         assert_eq!(merged.current_mode.as_deref(), Some("default"));
@@ -6483,7 +6537,10 @@ mod tests {
         let out = coalesce_stream_chunks(batch);
 
         let after: String = out.iter().filter_map(chunk_text).collect();
-        assert_eq!(before, after, "coalescing must not alter a single character");
+        assert_eq!(
+            before, after,
+            "coalescing must not alter a single character"
+        );
         assert_eq!(
             out.len(),
             3,
@@ -6572,7 +6629,10 @@ mod tests {
         // Queueing is decoupled from writing, so the failure shows up on a
         // later send — but it must show up, not swallow outbound traffic.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while tx.send(json!({ "jsonrpc": "2.0", "method": "session/cancel" })).is_ok() {
+        while tx
+            .send(json!({ "jsonrpc": "2.0", "method": "session/cancel" }))
+            .is_ok()
+        {
             assert!(
                 std::time::Instant::now() < deadline,
                 "a dead writer thread never surfaced as a send error"
@@ -6625,7 +6685,10 @@ mod tests {
         assert_eq!(chunk_defer_ms_for(0, false), CHUNK_DEFER_HIDDEN_MS);
         assert_eq!(chunk_defer_ms_for(2, true), CHUNK_DEFER_DEGRADED_MS);
         assert!(chunk_defer_ms_for(1, true) >= CHUNK_DEFER_DEGRADED_MS);
-        assert_eq!(chunk_defer_ms_for(0, true), CHUNK_DEFER_HIDDEN_MS.max(CHUNK_DEFER_DEGRADED_MS));
+        assert_eq!(
+            chunk_defer_ms_for(0, true),
+            CHUNK_DEFER_HIDDEN_MS.max(CHUNK_DEFER_DEGRADED_MS)
+        );
     }
 
     #[test]
@@ -6672,9 +6735,11 @@ mod tests {
             2,
             "unreported defaults to focused"
         );
-        set_stream_interests(&[("interest-test-detach".to_string(), 2u8)]
-            .into_iter()
-            .collect());
+        set_stream_interests(
+            &[("interest-test-detach".to_string(), 2u8)]
+                .into_iter()
+                .collect(),
+        );
         set_detached_visible("interest-test-detach", false);
         assert_eq!(
             stream_interest_of("interest-test-detach").load(Ordering::Relaxed),
@@ -6708,18 +6773,44 @@ mod tests {
     #[test]
     fn model_entry_images_reads_the_shapes_catalogs_use() {
         // booleans, on the entry or in _meta
-        assert_eq!(model_entry_images(&json!({ "modelId": "a", "supportsImage": true })), Some(true));
-        assert_eq!(model_entry_images(&json!({ "modelId": "a", "_meta": { "vision": false } })), Some(false));
+        assert_eq!(
+            model_entry_images(&json!({ "modelId": "a", "supportsImage": true })),
+            Some(true)
+        );
+        assert_eq!(
+            model_entry_images(&json!({ "modelId": "a", "_meta": { "vision": false } })),
+            Some(false)
+        );
         // modality lists
-        assert_eq!(model_entry_images(&json!({ "inputModalities": ["text", "image"] })), Some(true));
-        assert_eq!(model_entry_images(&json!({ "_meta": { "modalities": { "input": ["text"], "output": ["text"] } } })), Some(false));
-        assert_eq!(model_entry_images(&json!({ "modalities": ["Text", "IMAGE"] })), Some(true));
+        assert_eq!(
+            model_entry_images(&json!({ "inputModalities": ["text", "image"] })),
+            Some(true)
+        );
+        assert_eq!(
+            model_entry_images(
+                &json!({ "_meta": { "modalities": { "input": ["text"], "output": ["text"] } } })
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            model_entry_images(&json!({ "modalities": ["Text", "IMAGE"] })),
+            Some(true)
+        );
         // capabilities block
-        assert_eq!(model_entry_images(&json!({ "capabilities": { "image": true } })), Some(true));
-        assert_eq!(model_entry_images(&json!({ "capabilities": { "input": ["text"] } })), Some(false));
+        assert_eq!(
+            model_entry_images(&json!({ "capabilities": { "image": true } })),
+            Some(true)
+        );
+        assert_eq!(
+            model_entry_images(&json!({ "capabilities": { "input": ["text"] } })),
+            Some(false)
+        );
         // not said: empty list, unrelated keys, a vision-sounding name
         assert_eq!(model_entry_images(&json!({ "inputModalities": [] })), None);
-        assert_eq!(model_entry_images(&json!({ "modelId": "deepseek-v4-vision", "name": "Vision" })), None);
+        assert_eq!(
+            model_entry_images(&json!({ "modelId": "deepseek-v4-vision", "name": "Vision" })),
+            None
+        );
         assert_eq!(model_entry_images(&json!({})), None);
     }
 
@@ -6739,7 +6830,10 @@ mod tests {
         let caps = parse_session_capabilities(&response);
         assert_eq!(caps.model_images.get("grok-4.6"), Some(&true));
         assert_eq!(caps.model_images.get("text-only"), Some(&false));
-        assert!(!caps.model_images.contains_key("silent"), "an unstated model stays unknown");
+        assert!(
+            !caps.model_images.contains_key("silent"),
+            "an unstated model stays unknown"
+        );
         // a set_config_option echo that says nothing about models keeps the flags
         let mut echo = parse_session_capabilities(&json!({ "sessionId": "s1" }));
         let mut prev = caps.clone();
@@ -6748,7 +6842,10 @@ mod tests {
         assert_eq!(echo.model_images.get("grok-4.6"), Some(&true));
         assert_eq!(echo.agent_prompt_image, Some(false));
         // initialize said nothing → None, not false
-        assert_eq!(parse_session_capabilities(&json!({ "sessionId": "s1" })).agent_prompt_image, None);
+        assert_eq!(
+            parse_session_capabilities(&json!({ "sessionId": "s1" })).agent_prompt_image,
+            None
+        );
     }
 
     /// deepseek-acp 0.9.0 initialize: close/fork only. No additionalDirectories.
@@ -6777,12 +6874,21 @@ mod tests {
             &[r"C:\Users\me\Pictures".into()],
             advertises_additional_directories(&deepseek_initialize()),
         );
-        assert_eq!(params.get("cwd").and_then(Value::as_str), Some(r"D:\Projects\惊蛰"));
+        assert_eq!(
+            params.get("cwd").and_then(Value::as_str),
+            Some(r"D:\Projects\惊蛰")
+        );
         assert!(
             params.get("additionalDirectories").is_none(),
             "DSH session/new must not carry additionalDirectories: {params}"
         );
-        assert_eq!(params.get("mcpServers").and_then(Value::as_array).map(|a| a.len()), Some(0));
+        assert_eq!(
+            params
+                .get("mcpServers")
+                .and_then(Value::as_array)
+                .map(|a| a.len()),
+            Some(0)
+        );
     }
 
     #[test]
@@ -6850,10 +6956,7 @@ mod tests {
         let (edit_title, edit_detail) = permission_summary(&edit);
         assert_eq!(edit_title, "Edit App.tsx");
         assert!(
-            edit_detail
-                .as_deref()
-                .unwrap_or("")
-                .contains("App.tsx"),
+            edit_detail.as_deref().unwrap_or("").contains("App.tsx"),
             "edit detail should still mention the path/input: {edit_detail:?}"
         );
     }
@@ -6944,7 +7047,9 @@ fn stream_interests() -> &'static Mutex<HashMap<String, Arc<AtomicU8>>> {
 /// 0 = hidden, 1 = visible but unfocused, 2 = focused. Unknown sessions
 /// default to 2 so a UI that never reports keeps today's behaviour.
 fn stream_interest_of(session_id: &str) -> Arc<AtomicU8> {
-    let mut map = stream_interests().lock().expect("stream_interests poisoned");
+    let mut map = stream_interests()
+        .lock()
+        .expect("stream_interests poisoned");
     map.entry(session_id.to_string())
         .or_insert_with(|| Arc::new(AtomicU8::new(2)))
         .clone()
@@ -7148,7 +7253,12 @@ fn file_for_replay(payload: &AcpEvent) {
 /// Events for one session with `seq > since_seq`, oldest first, filtered to
 /// the window that would have received them live (`target`: "main" or
 /// "detached-<id>"). Never includes `since_seq` itself.
-pub fn replay_events(session_id: &str, since_seq: u64, target: &str, limit: usize) -> Vec<AcpEvent> {
+pub fn replay_events(
+    session_id: &str,
+    since_seq: u64,
+    target: &str,
+    limit: usize,
+) -> Vec<AcpEvent> {
     let Some(rings) = replay_rings().lock().ok() else {
         return Vec::new();
     };
@@ -7261,12 +7371,7 @@ fn emit_turn_complete(
 
 /// Queue `turn/complete` when the caller has no `AppHandle` (cancel/stop).
 /// Relies on the session still having a registered emitter.
-fn emit_turn_complete_for_session(
-    session_id: &str,
-    kind: &str,
-    stop_reason: &str,
-    data: Value,
-) {
+fn emit_turn_complete_for_session(session_id: &str, kind: &str, stop_reason: &str, data: Value) {
     let payload = match data {
         Value::Object(mut map) => {
             map.insert("stopReason".into(), json!(stop_reason));
@@ -7355,7 +7460,11 @@ pub fn spawn_pipeline_watchdog() {
                     "watchdog",
                     if moved { "debug" } else { "info" },
                     "",
-                    if moved { "pipeline heartbeat" } else { "pipeline heartbeat (no movement)" },
+                    if moved {
+                        "pipeline heartbeat"
+                    } else {
+                        "pipeline heartbeat (no movement)"
+                    },
                     Some(&pipeline_summary()),
                 );
             }
@@ -7376,7 +7485,10 @@ pub fn spawn_pipeline_watchdog() {
             reported = true;
             let what = match &stuck_emit {
                 Some((label, age)) => {
-                    format!("app.emit has not returned for {}s on {label}", age.as_secs())
+                    format!(
+                        "app.emit has not returned for {}s on {label}",
+                        age.as_secs()
+                    )
                 }
                 None => "events queued but the dispatch thread is not draining them".to_string(),
             };
@@ -7396,11 +7508,16 @@ pub fn spawn_pipeline_watchdog() {
 /// side, so walk from the `dsh` launcher on PATH, with the default Windows npm
 /// prefix as fallback.
 fn dsh_package_from_resolved(path: &Path) -> Option<PathBuf> {
-    path.ancestors().find(|ancestor| {
-        ancestor.file_name().is_some_and(|name| name == "dsh")
-            && ancestor.join("package.json").is_file()
-            && ancestor.parent().and_then(|p| p.file_name()).is_some_and(|name| name == "@deepseek-ai")
-    }).map(Path::to_path_buf)
+    path.ancestors()
+        .find(|ancestor| {
+            ancestor.file_name().is_some_and(|name| name == "dsh")
+                && ancestor.join("package.json").is_file()
+                && ancestor
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .is_some_and(|name| name == "@deepseek-ai")
+        })
+        .map(Path::to_path_buf)
 }
 
 fn dsh_runtime_dir() -> Option<PathBuf> {
@@ -7791,7 +7908,9 @@ fn coalesce_stream_chunks(batch: Vec<UiEvent>) -> Vec<UiEvent> {
         let merged = match (key, out.last_mut()) {
             (Some(key), Some(previous)) if chunk_key(previous).as_ref() == Some(&key) => {
                 match (chunk_text(&event), chunk_text(previous)) {
-                    (Some(extra), Some(existing)) if existing.len() + extra.len() <= MAX_MERGED_TEXT => {
+                    (Some(extra), Some(existing))
+                        if existing.len() + extra.len() <= MAX_MERGED_TEXT =>
+                    {
                         let combined = format!("{existing}{extra}");
                         set_chunk_text(previous, combined)
                     }
@@ -7868,22 +7987,31 @@ fn emit_now(app: &AppHandle, session_id: &str, event: UiEvent) -> Duration {
     );
     // Chief 任务状态机（waiting_user / 解除）：只看 worker 会话的等待类
     // 事件；其它会话与事件一次方法名比较即返回。
-    crate::chief::broker::observe_chief_event(app, session_id, event.method.as_deref(), &event.data);
+    crate::chief::broker::observe_chief_event(
+        app,
+        session_id,
+        event.method.as_deref(),
+        &event.data,
+    );
     // Developer diary on disk — not a product UI surface.
-    let summary = event
-        .method
-        .clone()
-        .unwrap_or_else(|| event.kind.clone());
+    let summary = event.method.clone().unwrap_or_else(|| event.kind.clone());
     // Token chunks are tiny and frequent; serializing the whole JSON payload
     // for the diary is more expensive than delivering the event to the UI.
     let detail = if chunk_key(&event).is_some()
-        || event.data.pointer("/params/update/_meta/marionette.webReply").is_some()
+        || event
+            .data
+            .pointer("/params/update/_meta/marionette.webReply")
+            .is_some()
     {
         None
     } else {
         serde_json::to_string(&event.data).ok()
     };
-    let level = if event.kind == "error" { "error" } else { "info" };
+    let level = if event.kind == "error" {
+        "error"
+    } else {
+        "info"
+    };
 
     let log_started = Instant::now();
     crate::debug_log::append("acp", level, session_id, &summary, detail.as_deref());

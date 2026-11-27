@@ -234,7 +234,11 @@ impl Affinity {
     /// 模型下线/换模型时仍按账号粘）；未命中的候选保持原序（Go :723 只把
     /// 命中的挪到最前）。无粘性 / 回主标记置位 / 记录全过期 → 原样返回
     /// （拷贝；Go 里对应 Why="main"/超期不 keep 的分支）。
-    pub(crate) fn affine(&self, session: &str, candidates: &[(String, String)]) -> Vec<(String, String)> {
+    pub(crate) fn affine(
+        &self,
+        session: &str,
+        candidates: &[(String, String)],
+    ) -> Vec<(String, String)> {
         let mut out: Vec<(String, String)> = Vec::with_capacity(candidates.len());
         let mut used = vec![false; candidates.len()];
         let table = self.table.lock().unwrap_or_else(|p| p.into_inner());
@@ -253,7 +257,9 @@ impl Affinity {
         for entry in recent.into_iter().rev() {
             // 表尾最新 → rev 迭代即「最近回答序」
             let hit = (0..candidates.len())
-                .find(|&i| !used[i] && candidates[i].0 == entry.id && candidates[i].1 == entry.model)
+                .find(|&i| {
+                    !used[i] && candidates[i].0 == entry.id && candidates[i].1 == entry.model
+                })
                 .or_else(|| {
                     (0..candidates.len()).find(|&i| !used[i] && candidates[i].0 == entry.id)
                 });
@@ -340,7 +346,11 @@ fn fresh(at: u64, now: u64) -> bool {
 
 /// 会话还有没有活着的答者记录（新鲜度 = 最近一次回答时间）。
 fn session_fresh(st: &SessionStick, now: u64) -> bool {
-    st.answers.iter().map(|e| e.at).max().is_some_and(|at| fresh(at, now))
+    st.answers
+        .iter()
+        .map(|e| e.at)
+        .max()
+        .is_some_and(|at| fresh(at, now))
 }
 
 /// 单会话收敛：清过期/无 id 的答者，留最近 ANSWERS_KEPT 条。
@@ -358,7 +368,12 @@ fn trim_table(table: &mut HashMap<String, SessionStick>, now: u64) {
     if table.len() > SESSIONS_KEPT {
         let mut recency: Vec<(String, u64)> = table
             .iter()
-            .map(|(k, st)| (k.clone(), st.answers.iter().map(|e| e.at).max().unwrap_or(0)))
+            .map(|(k, st)| {
+                (
+                    k.clone(),
+                    st.answers.iter().map(|e| e.at).max().unwrap_or(0),
+                )
+            })
             .collect();
         recency.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0))); // 新→旧，同刻按键名稳定
         for (k, _) in recency.into_iter().skip(SESSIONS_KEPT) {
@@ -411,7 +426,11 @@ mod tests {
     fn seed_from_body_prompt_cache_key() {
         // chat / responses 两方言同字段（chat.go:76 / responses.go:284）
         assert_eq!(
-            stick_key(&[], &json!({"prompt_cache_key": "thread-1", "messages": []})).as_deref(),
+            stick_key(
+                &[],
+                &json!({"prompt_cache_key": "thread-1", "messages": []})
+            )
+            .as_deref(),
             Some("thread-1")
         );
         assert_eq!(
@@ -426,13 +445,21 @@ mod tests {
     fn seed_from_body_metadata_user_id() {
         // anthropic 方言（Claude Code 的用户标识，ir.go:381）
         assert_eq!(
-            stick_key(&[], &json!({"metadata": {"user_id": "user_77"}, "messages": []})).as_deref(),
+            stick_key(
+                &[],
+                &json!({"metadata": {"user_id": "user_77"}, "messages": []})
+            )
+            .as_deref(),
             Some("user_77")
         );
         assert_eq!(stick_key(&[], &json!({"metadata": {}})), None);
         // 同在体里：prompt_cache_key 优先于 metadata.user_id
         assert_eq!(
-            stick_key(&[], &json!({"prompt_cache_key": "t", "metadata": {"user_id": "u"}})).as_deref(),
+            stick_key(
+                &[],
+                &json!({"prompt_cache_key": "t", "metadata": {"user_id": "u"}})
+            )
+            .as_deref(),
             Some("t")
         );
     }
@@ -441,7 +468,11 @@ mod tests {
     fn seed_header_priority_case_and_body_fallback() {
         // x-opencode-session 第一优先（openCodeSeed :30）→ X-Magpie-Session
         // （sessionOf :10390 排最前）→ sessionHeaders 列表序
-        let h = headers(&[("x-magpie-session", "ms"), ("x-opencode-session", "oc"), ("x-session-id", "sid")]);
+        let h = headers(&[
+            ("x-magpie-session", "ms"),
+            ("x-opencode-session", "oc"),
+            ("x-session-id", "sid"),
+        ]);
         assert_eq!(stick_key(&h, &json!({})).as_deref(), Some("oc"));
         let h = headers(&[("x-magpie-session", "ms"), ("x-session-id", "sid")]);
         assert_eq!(stick_key(&h, &json!({})).as_deref(), Some("ms"));
@@ -492,7 +523,10 @@ mod tests {
         }
         let cands = cs(&[("p3", "m3"), ("p1", "m1"), ("p2", "m2")]);
         // 最近回答序：p1（最新）→ p2；其余 p3 保持原序在后
-        assert_eq!(aff.affine("s", &cands), cs(&[("p1", "m1"), ("p2", "m2"), ("p3", "m3")]));
+        assert_eq!(
+            aff.affine("s", &cands),
+            cs(&[("p1", "m1"), ("p2", "m2"), ("p3", "m3")])
+        );
         // 没人答过的会话：原样
         assert_eq!(aff.affine("other", &cands), cands);
     }
@@ -503,7 +537,10 @@ mod tests {
         let aff = mem();
         aff.answered("s", "p1", "mB");
         let cands = cs(&[("p0", "m0"), ("p1", "mA"), ("p1", "mB")]);
-        assert_eq!(aff.affine("s", &cands), cs(&[("p1", "mB"), ("p0", "m0"), ("p1", "mA")]));
+        assert_eq!(
+            aff.affine("s", &cands),
+            cs(&[("p1", "mB"), ("p0", "m0"), ("p1", "mA")])
+        );
         // 宽匹配：答过的模型不在候选里，仍按账号粘（模型下线场景，Go :600）
         let aff = mem();
         aff.answered("s", "p1", "mB");
@@ -558,7 +595,11 @@ mod tests {
         let aff = Affinity::load_at(&path);
         let cands = cs(&[("p2", "mX"), ("p1", "m1"), ("p3", "m3"), ("p2", "m2")]);
         let out = aff.affine("s1", &cands);
-        assert_eq!(out[..3], cs(&[("p3", "m3"), ("p2", "m2"), ("p1", "m1")])[..], "Drop 落盘的那笔也在");
+        assert_eq!(
+            out[..3],
+            cs(&[("p3", "m3"), ("p2", "m2"), ("p1", "m1")])[..],
+            "Drop 落盘的那笔也在"
+        );
         assert_eq!(out[3], c("p2", "mX"), "没答过的候选垫底保持原序");
         assert_eq!(aff.affine("s2", &cands), cands, "未知会话无粘性");
         drop(aff);
@@ -579,7 +620,8 @@ mod tests {
             "坏文件 fail-open 成空表"
         );
         // 是 JSON 但条目缺字段（Go decodeJSON 整档失败同口径：整表 fail-open）
-        std::fs::write(&path, br#"{"s": {"answers": [{"model": "m", "at": 123}]}}"#).expect("write");
+        std::fs::write(&path, br#"{"s": {"answers": [{"model": "m", "at": 123}]}}"#)
+            .expect("write");
         assert_eq!(
             Affinity::load_at(&path).affine("s", &cands),
             cands,
@@ -612,12 +654,22 @@ mod tests {
         let path = dir.join("affinity.json");
         let now = now_ms();
         let entries: Vec<StickEntry> = (0..10)
-            .map(|i| StickEntry { id: format!("p{i}"), model: "m".into(), at: now + i })
+            .map(|i| StickEntry {
+                id: format!("p{i}"),
+                model: "m".into(),
+                at: now + i,
+            })
             .collect();
         std::fs::write(
             &path,
-            serde_json::to_vec(&HashMap::from([("s".to_string(), SessionStick { answers: entries, back_to_main: false })]))
-                .expect("json"),
+            serde_json::to_vec(&HashMap::from([(
+                "s".to_string(),
+                SessionStick {
+                    answers: entries,
+                    back_to_main: false,
+                },
+            )]))
+            .expect("json"),
         )
         .expect("write");
         let re = Affinity::load_at(&path);
@@ -643,7 +695,11 @@ mod tests {
                 table.insert(
                     format!("sess-{i:05}"),
                     SessionStick {
-                        answers: vec![StickEntry { id: "p".into(), model: "m".into(), at: base + i }],
+                        answers: vec![StickEntry {
+                            id: "p".into(),
+                            model: "m".into(),
+                            at: base + i,
+                        }],
                         back_to_main: false,
                     },
                 );
@@ -653,7 +709,11 @@ mod tests {
         let re = Affinity::load_at(&path);
         {
             let table = re.table.lock().unwrap_or_else(|p| p.into_inner());
-            assert_eq!(table.len(), SESSIONS_KEPT, "全表 LRU 上限（Go sticksKept :86）");
+            assert_eq!(
+                table.len(),
+                SESSIONS_KEPT,
+                "全表 LRU 上限（Go sticksKept :86）"
+            );
             assert!(!table.contains_key("sess-00000"), "丢最老");
             assert!(table.contains_key("sess-04099"), "留最新");
         }
@@ -680,7 +740,10 @@ mod tests {
         let fresh_at = now_ms();
         std::fs::write(
             dir.join("magpie").join("affinity.json"),
-            format!(r#"{{"s1": {{"answers": [{{"id": "p1", "model": "m1", "at": {}}}]}}}}"#, fresh_at),
+            format!(
+                r#"{{"s1": {{"answers": [{{"id": "p1", "model": "m1", "at": {}}}]}}}}"#,
+                fresh_at
+            ),
         )
         .expect("write");
         let prior = std::env::var("XDG_CONFIG_HOME").ok();
@@ -691,7 +754,11 @@ mod tests {
             None => std::env::remove_var("XDG_CONFIG_HOME"),
         }
         let cands = cs(&[("p2", "m2"), ("p1", "m1")]);
-        assert_eq!(aff.affine("s1", &cands), cs(&[("p1", "m1"), ("p2", "m2")]), "从 config_dir 读到粘性");
+        assert_eq!(
+            aff.affine("s1", &cands),
+            cs(&[("p1", "m1"), ("p2", "m2")]),
+            "从 config_dir 读到粘性"
+        );
         drop(aff); // Drop 写回沙箱目录内，不外漏
         let _ = std::fs::remove_dir_all(&dir);
     }

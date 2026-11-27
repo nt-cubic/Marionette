@@ -222,7 +222,12 @@ pub(crate) fn check_access(session_id: &str, name: &str) -> Result<(), String> {
 
 /// Chief 控制工具的 dispatch。拒绝一路是 envelope 返回值；Err 只留给
 /// host 侧意外（MCP 层会把 Err 变成 isError=true 的工具结果）。
-pub fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Result<Value, String> {
+pub fn dispatch(
+    app: &AppHandle,
+    session_id: &str,
+    name: &str,
+    args: &Value,
+) -> Result<Value, String> {
     check_access(session_id, name)?;
     match name {
         PROJECTS_LIST => Ok(broker::chief_projects_list(session_id)),
@@ -233,7 +238,9 @@ pub fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> 
         MODELS_LIST => {
             let agent_id = args.get("agentId").and_then(Value::as_str).unwrap_or("");
             if agent_id.is_empty() {
-                return Ok(json!({ "ok": false, "error": "bad_request", "note": "agentId 必填。" }));
+                return Ok(
+                    json!({ "ok": false, "error": "bad_request", "note": "agentId 必填。" }),
+                );
             }
             Ok(broker::chief_models_list(agent_id))
         }
@@ -253,17 +260,23 @@ pub fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> 
         TASK_RESUME => Ok(broker::chief_task_resume(app, session_id, args)),
         MEMORY_RECALL => {
             let Some(profile) = super::staff_commands::profile_for_session(session_id) else {
-                return Ok(json!({ "ok": false, "error": "staff_missing", "note": "当前会话没有员工档案。" }));
+                return Ok(
+                    json!({ "ok": false, "error": "staff_missing", "note": "当前会话没有员工档案。" }),
+                );
             };
             let days = args.get("recentDays").and_then(Value::as_u64).unwrap_or(7) as usize;
             match super::memory::recall(&profile.staff_id, days) {
                 Ok(snapshot) => Ok(json!({ "ok": true, "memory": snapshot })),
-                Err(error) => Ok(json!({ "ok": false, "error": "memory_read_failed", "note": error })),
+                Err(error) => {
+                    Ok(json!({ "ok": false, "error": "memory_read_failed", "note": error }))
+                }
             }
         }
         MEMORY_PROPOSE => {
             let Some(profile) = super::staff_commands::profile_for_session(session_id) else {
-                return Ok(json!({ "ok": false, "error": "staff_missing", "note": "当前会话没有员工档案。" }));
+                return Ok(
+                    json!({ "ok": false, "error": "staff_missing", "note": "当前会话没有员工档案。" }),
+                );
             };
             let kind = args.get("kind").and_then(Value::as_str).unwrap_or("lesson");
             let text = args.get("text").and_then(Value::as_str).unwrap_or("");
@@ -278,18 +291,30 @@ pub fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> 
             }
             match super::memory::append_proposal(&profile.staff_id, kind, text, refs) {
                 Ok(proposal) => Ok(json!({ "ok": true, "proposal": proposal })),
-                Err(error) => Ok(json!({ "ok": false, "error": "memory_propose_failed", "note": error })),
+                Err(error) => {
+                    Ok(json!({ "ok": false, "error": "memory_propose_failed", "note": error }))
+                }
             }
         }
         COMMITMENT_ADD => {
             let Some(profile) = super::staff_commands::profile_for_session(session_id) else {
-                return Ok(json!({ "ok": false, "error": "staff_missing", "note": "当前会话没有员工档案。" }));
+                return Ok(
+                    json!({ "ok": false, "error": "staff_missing", "note": "当前会话没有员工档案。" }),
+                );
             };
-            let text = args.get("text").and_then(Value::as_str).unwrap_or("").trim();
+            let text = args
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
             if text.is_empty() {
                 return Ok(json!({ "ok": false, "error": "bad_request", "note": "text 必填。" }));
             }
-            let kind = match args.get("kind").and_then(Value::as_str).unwrap_or("follow_up") {
+            let kind = match args
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or("follow_up")
+            {
                 "reminder" => super::commitments::CommitmentKind::Reminder,
                 "promise" => super::commitments::CommitmentKind::Promise,
                 "condition" => super::commitments::CommitmentKind::Condition,
@@ -300,8 +325,14 @@ pub fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> 
                 text: text.to_string(),
                 kind,
                 due_at: args.get("dueAt").and_then(Value::as_u64).unwrap_or(0),
-                condition: args.get("condition").and_then(Value::as_str).map(str::to_string),
-                source_ref: args.get("sourceRef").and_then(Value::as_str).map(str::to_string),
+                condition: args
+                    .get("condition")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                source_ref: args
+                    .get("sourceRef")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
                 ..Default::default()
             };
             match super::commitments::with_ledger(|ledger| {
@@ -309,14 +340,21 @@ pub fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> 
                 Ok(row)
             }) {
                 Ok(commitment) => Ok(json!({ "ok": true, "commitment": commitment })),
-                Err(error) => Ok(json!({ "ok": false, "error": "commitment_add_failed", "note": error })),
+                Err(error) => {
+                    Ok(json!({ "ok": false, "error": "commitment_add_failed", "note": error }))
+                }
             }
         }
         COMMITMENT_LIST => {
             let Some(profile) = super::staff_commands::profile_for_session(session_id) else {
-                return Ok(json!({ "ok": false, "error": "staff_missing", "note": "当前会话没有员工档案。" }));
+                return Ok(
+                    json!({ "ok": false, "error": "staff_missing", "note": "当前会话没有员工档案。" }),
+                );
             };
-            let include_terminal = args.get("includeTerminal").and_then(Value::as_bool).unwrap_or(false);
+            let include_terminal = args
+                .get("includeTerminal")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let rows = super::commitments::load()
                 .commitments
                 .into_iter()
@@ -327,13 +365,23 @@ pub fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> 
         }
         COMMITMENT_COMPLETE => {
             let Some(profile) = super::staff_commands::profile_for_session(session_id) else {
-                return Ok(json!({ "ok": false, "error": "staff_missing", "note": "当前会话没有员工档案。" }));
+                return Ok(
+                    json!({ "ok": false, "error": "staff_missing", "note": "当前会话没有员工档案。" }),
+                );
             };
-            let commitment_id = args.get("commitmentId").and_then(Value::as_str).unwrap_or("");
+            let commitment_id = args
+                .get("commitmentId")
+                .and_then(Value::as_str)
+                .unwrap_or("");
             if commitment_id.is_empty() {
-                return Ok(json!({ "ok": false, "error": "bad_request", "note": "commitmentId 必填。" }));
+                return Ok(
+                    json!({ "ok": false, "error": "bad_request", "note": "commitmentId 必填。" }),
+                );
             }
-            let cancelled = args.get("cancelled").and_then(Value::as_bool).unwrap_or(false);
+            let cancelled = args
+                .get("cancelled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             match super::commitments::with_ledger(|ledger| {
                 let current = ledger
                     .get(commitment_id)
@@ -348,12 +396,16 @@ pub fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> 
                 }
             }) {
                 Ok(commitment) => Ok(json!({ "ok": true, "commitment": commitment })),
-                Err(error) => Ok(json!({ "ok": false, "error": "commitment_complete_failed", "note": error })),
+                Err(error) => {
+                    Ok(json!({ "ok": false, "error": "commitment_complete_failed", "note": error }))
+                }
             }
         }
         STAFF_STATUS => {
             let Some(profile) = super::staff_commands::profile_for_session(session_id) else {
-                return Ok(json!({ "ok": false, "error": "staff_missing", "note": "当前会话没有员工档案。" }));
+                return Ok(
+                    json!({ "ok": false, "error": "staff_missing", "note": "当前会话没有员工档案。" }),
+                );
             };
             let tasks = super::store::load_tasks()
                 .into_iter()
@@ -387,7 +439,9 @@ mod tests {
         let list = schemas.as_array().expect("array");
         assert_eq!(list.len(), ALL.len());
         for name in ALL {
-            let found = list.iter().any(|t| t.get("name").and_then(Value::as_str) == Some(*name));
+            let found = list
+                .iter()
+                .any(|t| t.get("name").and_then(Value::as_str) == Some(*name));
             assert!(found, "missing schema for {name}");
         }
         // 关键 schema 红线：task_start 必填四个字段，且**没有**任何提权字段。
@@ -395,11 +449,31 @@ mod tests {
             .iter()
             .find(|t| t.get("name").and_then(Value::as_str) == Some(TASK_START))
             .unwrap();
-        let required = start.pointer("/inputSchema/required").unwrap().as_array().unwrap();
+        let required = start
+            .pointer("/inputSchema/required")
+            .unwrap()
+            .as_array()
+            .unwrap();
         assert_eq!(required.len(), 4);
-        let props = start.pointer("/inputSchema/properties").unwrap().as_object().unwrap();
-        for forbidden in ["cwd", "permissionMode", "mcpServers", "providerApiKey", "env", "shellCommand", "addProjectRoot", "alwaysApprove"] {
-            assert!(!props.contains_key(forbidden), "task_start must not offer `{forbidden}`");
+        let props = start
+            .pointer("/inputSchema/properties")
+            .unwrap()
+            .as_object()
+            .unwrap();
+        for forbidden in [
+            "cwd",
+            "permissionMode",
+            "mcpServers",
+            "providerApiKey",
+            "env",
+            "shellCommand",
+            "addProjectRoot",
+            "alwaysApprove",
+        ] {
+            assert!(
+                !props.contains_key(forbidden),
+                "task_start must not offer `{forbidden}`"
+            );
         }
     }
 
@@ -407,7 +481,10 @@ mod tests {
     fn unknown_names_fail_closed() {
         assert!(is_chief_tool(TASK_START));
         assert!(!is_chief_tool("browser_click"));
-        assert!(!is_chief_tool("marionette_task_approve"), "Chief 永远不该有 approve 工具");
+        assert!(
+            !is_chief_tool("marionette_task_approve"),
+            "Chief 永远不该有 approve 工具"
+        );
         assert!(!is_chief_tool("shell_exec"));
     }
 }

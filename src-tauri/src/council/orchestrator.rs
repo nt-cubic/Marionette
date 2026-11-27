@@ -58,7 +58,10 @@ pub struct Semaphore {
 
 impl Semaphore {
     pub fn new(permits: u32) -> Self {
-        Semaphore { permits: Mutex::new(permits), cond: Condvar::new() }
+        Semaphore {
+            permits: Mutex::new(permits),
+            cond: Condvar::new(),
+        }
     }
 
     pub fn acquire(&self) {
@@ -87,7 +90,10 @@ pub struct RunHandle {
 
 impl RunHandle {
     fn new() -> Self {
-        RunHandle { cancel: AtomicBool::new(false), pause: AtomicBool::new(false) }
+        RunHandle {
+            cancel: AtomicBool::new(false),
+            pause: AtomicBool::new(false),
+        }
     }
 }
 
@@ -112,7 +118,11 @@ pub struct RunClients {
 }
 
 /// 启动(或重启)run 的 orchestrator 线程。幂等:已有活线程 → Err。
-pub fn start_run(emitter: CouncilEventEmitter, run_id: String, clients: RunClients) -> Result<(), String> {
+pub fn start_run(
+    emitter: CouncilEventEmitter,
+    run_id: String,
+    clients: RunClients,
+) -> Result<(), String> {
     {
         let runs = registry().lock().unwrap();
         if runs.contains_key(&run_id) {
@@ -126,14 +136,24 @@ pub fn start_run(emitter: CouncilEventEmitter, run_id: String, clients: RunClien
         let _ = crate::engine::ensure_bridge_ready_if_installed(Duration::from_secs(20));
     }
     let handle = Arc::new(RunHandle::new());
-    registry().lock().unwrap().insert(run_id.clone(), handle.clone());
+    registry()
+        .lock()
+        .unwrap()
+        .insert(run_id.clone(), handle.clone());
     let rid = run_id.clone();
     std::thread::Builder::new()
         .name(format!("council-{rid}"))
         .spawn(move || {
-            let model: Arc<dyn ModelClient> =
-                clients.model.unwrap_or_else(|| Arc::new(EngineClient::default()));
-            let result = run_loop(&emitter, &rid, &handle, model.as_ref(), clients.harness.as_deref());
+            let model: Arc<dyn ModelClient> = clients
+                .model
+                .unwrap_or_else(|| Arc::new(EngineClient::default()));
+            let result = run_loop(
+                &emitter,
+                &rid,
+                &handle,
+                model.as_ref(),
+                clients.harness.as_deref(),
+            );
             registry().lock().unwrap().remove(&rid);
             if let Err(e) = result {
                 emitter.emit(&rid, "error", json!({ "message": e }));
@@ -210,17 +230,41 @@ pub fn resolve_approval(
     let record = apply_transition(
         &mut state,
         RunPhase::Verifying,
-        Some(&format!("用户{verdict}破坏性验证命令({} 条)", pending.commands.len())),
+        Some(&format!(
+            "用户{verdict}破坏性验证命令({} 条)",
+            pending.commands.len()
+        )),
     )?;
     let _ = store::append_transition(run_id, &record);
     // 决定进消息账本(人话留痕,审议时间线可见)。
-    let mut content = format!("用户{verdict}破坏性验证命令:\n{}", pending.commands.iter().map(|c| format!("- `{c}`")).collect::<Vec<_>>().join("\n"));
+    let mut content = format!(
+        "用户{verdict}破坏性验证命令:\n{}",
+        pending
+            .commands
+            .iter()
+            .map(|c| format!("- `{c}`"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
     if let Some(n) = note.map(str::trim).filter(|n| !n.is_empty()) {
         content.push_str(&format!("\n\n备注:{n}"));
     }
-    let msg = new_message(run_id, state.round, "system", "all", MessageKind::Status, None, &content, Some(json!({ "approval": verdict })));
+    let msg = new_message(
+        run_id,
+        state.round,
+        "system",
+        "all",
+        MessageKind::Status,
+        None,
+        &content,
+        Some(json!({ "approval": verdict })),
+    );
     let _ = store::append_message(run_id, &msg);
-    emitter.emit(run_id, "message", serde_json::to_value(&msg).unwrap_or(json!({})));
+    emitter.emit(
+        run_id,
+        "message",
+        serde_json::to_value(&msg).unwrap_or(json!({})),
+    );
     let _ = store::save_state(&state)?;
     start_run(emitter, run_id.to_string(), clients)?;
     Ok(state)
@@ -230,7 +274,9 @@ pub fn resolve_approval(
 /// Paused。返回被标记的 run id 列表。
 pub fn recover_orphaned_runs(emitter: &CouncilEventEmitter) -> Vec<String> {
     let mut recovered = Vec::new();
-    let Ok(runs) = store::list_runs() else { return recovered };
+    let Ok(runs) = store::list_runs() else {
+        return recovered;
+    };
     for summary in runs {
         if run_is_live(&summary.run_id) {
             continue;
@@ -245,10 +291,15 @@ pub fn recover_orphaned_runs(emitter: &CouncilEventEmitter) -> Vec<String> {
             continue;
         }
         if let Ok(mut state) = store::load_state(&summary.run_id) {
-            if let Ok(record) = apply_transition(&mut state, RunPhase::Paused, Some("进程重启恢复")) {
+            if let Ok(record) = apply_transition(&mut state, RunPhase::Paused, Some("进程重启恢复"))
+            {
                 let _ = store::append_transition(&summary.run_id, &record);
                 let _ = store::save_state(&state);
-                emitter.emit(&summary.run_id, "phase", json!({ "phase": "paused", "reason": "recovered" }));
+                emitter.emit(
+                    &summary.run_id,
+                    "phase",
+                    json!({ "phase": "paused", "reason": "recovered" }),
+                );
                 recovered.push(summary.run_id.clone());
             }
         }
@@ -270,7 +321,11 @@ fn migrate_tasks(
     use super::tasks::TaskStatus;
     let mut out = Vec::new();
     for new_step in &new_plan.steps {
-        let old_detail = old_plan.steps.iter().find(|s| s.id == new_step.id).map(|s| s.detail.clone());
+        let old_detail = old_plan
+            .steps
+            .iter()
+            .find(|s| s.id == new_step.id)
+            .map(|s| s.detail.clone());
         let current_prog = current.iter().find(|t| t.step_id == new_step.id);
         let keep = match (current_prog, &old_detail) {
             (Some(prog), Some(old)) => prog.status == TaskStatus::Merged && *old == new_step.detail,
@@ -337,17 +392,39 @@ fn run_loop(
 
     loop {
         if handle.cancel.load(Ordering::SeqCst) {
-            transition(&mut state, run_id, emitter, RunPhase::Cancelled, Some("用户取消"));
+            transition(
+                &mut state,
+                run_id,
+                emitter,
+                RunPhase::Cancelled,
+                Some("用户取消"),
+            );
             emitter.emit(run_id, "finished", json!({ "phase": "cancelled" }));
             return Ok(());
         }
         if handle.pause.load(Ordering::SeqCst) {
-            transition(&mut state, run_id, emitter, RunPhase::Paused, Some("用户暂停"));
+            transition(
+                &mut state,
+                run_id,
+                emitter,
+                RunPhase::Paused,
+                Some("用户暂停"),
+            );
             return Ok(());
         }
         if let Some(bust) = budget_exhausted(&spec, &state) {
-            transition(&mut state, run_id, emitter, RunPhase::BudgetExhausted, Some(&bust));
-            emitter.emit(run_id, "finished", json!({ "phase": "budget_exhausted", "reason": bust }));
+            transition(
+                &mut state,
+                run_id,
+                emitter,
+                RunPhase::BudgetExhausted,
+                Some(&bust),
+            );
+            emitter.emit(
+                run_id,
+                "finished",
+                json!({ "phase": "budget_exhausted", "reason": bust }),
+            );
             return Ok(());
         }
 
@@ -358,21 +435,62 @@ fn run_loop(
 
             RunPhase::Analyzing => {
                 if messages.iter().any(|m| m.kind == MessageKind::Briefing) {
-                    transition(&mut state, run_id, emitter, RunPhase::Proposing, Some("briefing 已存在,跳过"));
+                    transition(
+                        &mut state,
+                        run_id,
+                        emitter,
+                        RunPhase::Proposing,
+                        Some("briefing 已存在,跳过"),
+                    );
                     continue;
                 }
                 let chair = chair_of(&spec).ok_or("找不到主席成员")?;
                 let (system, user) = prompts::briefing_prompt(&spec, chair);
-                set_member_status(&mut state, run_id, emitter, &chair.id, MemberRuntimeStatus::Working);
-                match call_model(&mut state, client, handle, &chair.model, &system, &user, "briefing") {
+                set_member_status(
+                    &mut state,
+                    run_id,
+                    emitter,
+                    &chair.id,
+                    MemberRuntimeStatus::Working,
+                );
+                match call_model(
+                    &mut state,
+                    client,
+                    handle,
+                    &chair.model,
+                    &system,
+                    &user,
+                    "briefing",
+                ) {
                     Ok(out) => {
-                        let msg = new_message(run_id, 0, "chair", "all", MessageKind::Briefing, None, &out.content, None);
+                        let msg = new_message(
+                            run_id,
+                            0,
+                            "chair",
+                            "all",
+                            MessageKind::Briefing,
+                            None,
+                            &out.content,
+                            None,
+                        );
                         persist_message(&mut messages, run_id, emitter, msg);
-                        set_member_status(&mut state, run_id, emitter, &chair.id, MemberRuntimeStatus::Done);
+                        set_member_status(
+                            &mut state,
+                            run_id,
+                            emitter,
+                            &chair.id,
+                            MemberRuntimeStatus::Done,
+                        );
                         transition(&mut state, run_id, emitter, RunPhase::Proposing, None);
                     }
                     Err(e) => {
-                        set_member_status(&mut state, run_id, emitter, &chair.id, MemberRuntimeStatus::Failed { reason: e.clone() });
+                        set_member_status(
+                            &mut state,
+                            run_id,
+                            emitter,
+                            &chair.id,
+                            MemberRuntimeStatus::Failed { reason: e.clone() },
+                        );
                         fail_run(&mut state, run_id, emitter, format!("开场简报失败:{e}"));
                         return Ok(());
                     }
@@ -381,16 +499,30 @@ fn run_loop(
 
             RunPhase::Proposing => {
                 if proposals_complete(&spec, &messages) {
-                    transition(&mut state, run_id, emitter, RunPhase::Reviewing, Some("提案齐全"));
+                    transition(
+                        &mut state,
+                        run_id,
+                        emitter,
+                        RunPhase::Reviewing,
+                        Some("提案齐全"),
+                    );
                     continue;
                 }
-                let briefing = messages.iter().find(|m| m.kind == MessageKind::Briefing).cloned();
+                let briefing = messages
+                    .iter()
+                    .find(|m| m.kind == MessageKind::Briefing)
+                    .cloned();
                 let jobs: Vec<Job> = spec
                     .members
                     .iter()
-                    .filter(|m| !messages.iter().any(|x| x.from == m.id && x.kind == MessageKind::Proposal))
+                    .filter(|m| {
+                        !messages
+                            .iter()
+                            .any(|x| x.from == m.id && x.kind == MessageKind::Proposal)
+                    })
                     .map(|member| {
-                        let (system, user) = prompts::proposal_prompt(&spec, member, briefing.as_ref());
+                        let (system, user) =
+                            prompts::proposal_prompt(&spec, member, briefing.as_ref());
                         Job {
                             member_id: member.id.clone(),
                             model: member.model.clone(),
@@ -400,7 +532,17 @@ fn run_loop(
                         }
                     })
                     .collect();
-                let ok = fan_out(emitter, &spec, &mut state, &mut messages, client, &sem, handle, jobs, "proposal");
+                let ok = fan_out(
+                    emitter,
+                    &spec,
+                    &mut state,
+                    &mut messages,
+                    client,
+                    &sem,
+                    handle,
+                    jobs,
+                    "proposal",
+                );
                 if ok == 0 && !proposals_complete(&spec, &messages) {
                     fail_run(&mut state, run_id, emitter, "所有成员提案失败".into());
                     return Ok(());
@@ -411,15 +553,23 @@ fn run_loop(
             RunPhase::Reviewing => {
                 let round = state.round;
                 if !critiques_complete(&spec, &messages, round) {
-                    let briefing = messages.iter().find(|m| m.kind == MessageKind::Briefing).cloned();
+                    let briefing = messages
+                        .iter()
+                        .find(|m| m.kind == MessageKind::Briefing)
+                        .cloned();
                     let jobs: Vec<Job> = spec
                         .members
                         .iter()
                         .filter(|m| {
-                            !messages.iter().any(|x| x.from == m.id && x.kind == MessageKind::Critique && x.round == round)
+                            !messages.iter().any(|x| {
+                                x.from == m.id
+                                    && x.kind == MessageKind::Critique
+                                    && x.round == round
+                            })
                         })
                         .map(|member| {
-                            let others = prompts::latest_positions_for_review(&messages, &member.id, round);
+                            let others =
+                                prompts::latest_positions_for_review(&messages, &member.id, round);
                             if others.is_empty() {
                                 return Job {
                                     member_id: member.id.clone(),
@@ -429,25 +579,68 @@ fn run_loop(
                                     intent: Intent::Skip,
                                 };
                             }
-                            let (system, user) = prompts::critique_prompt(&spec, member, round, briefing.as_ref(), &others);
-                            Job { member_id: member.id.clone(), model: member.model.clone(), system, user, intent: Intent::Critique }
+                            let (system, user) = prompts::critique_prompt(
+                                &spec,
+                                member,
+                                round,
+                                briefing.as_ref(),
+                                &others,
+                            );
+                            Job {
+                                member_id: member.id.clone(),
+                                model: member.model.clone(),
+                                system,
+                                user,
+                                intent: Intent::Critique,
+                            }
                         })
                         .collect();
-                    let ok = fan_out(emitter, &spec, &mut state, &mut messages, client, &sem, handle, jobs, "critique");
+                    let ok = fan_out(
+                        emitter,
+                        &spec,
+                        &mut state,
+                        &mut messages,
+                        client,
+                        &sem,
+                        handle,
+                        jobs,
+                        "critique",
+                    );
                     if ok == 0 && !critiques_complete(&spec, &messages, round) {
-                        emitter.emit(run_id, "warn", json!({ "message": "本轮质询全部失败,降级进综合" }));
-                        transition(&mut state, run_id, emitter, RunPhase::Synthesizing, Some("质询失败降级"));
+                        emitter.emit(
+                            run_id,
+                            "warn",
+                            json!({ "message": "本轮质询全部失败,降级进综合" }),
+                        );
+                        transition(
+                            &mut state,
+                            run_id,
+                            emitter,
+                            RunPhase::Synthesizing,
+                            Some("质询失败降级"),
+                        );
                         continue;
                     }
                 }
                 // 质询齐备后的去向。
-                let needs_revision = !prompts::authors_needing_revision(&messages, round).is_empty();
+                let needs_revision =
+                    !prompts::authors_needing_revision(&messages, round).is_empty();
                 let more_rounds = round < spec.rounds;
                 if needs_revision && more_rounds {
                     transition(&mut state, run_id, emitter, RunPhase::Revising, None);
                 } else {
-                    let reason = if needs_revision { "轮次耗尽,带未决分歧进综合" } else { "无待修订项,进综合" };
-                    transition(&mut state, run_id, emitter, RunPhase::Synthesizing, Some(reason));
+                    let reason = if needs_revision {
+                        "轮次耗尽,带未决分歧进综合"
+                    } else {
+                        "无待修订项,进综合"
+                    };
+                    transition(
+                        &mut state,
+                        run_id,
+                        emitter,
+                        RunPhase::Synthesizing,
+                        Some(reason),
+                    );
                 }
             }
 
@@ -456,14 +649,21 @@ fn run_loop(
                 if revisions_complete(&spec, &messages, round) {
                     state.round += 1;
                     let next_round = state.round;
-                    transition(&mut state, run_id, emitter, RunPhase::Reviewing, Some(&format!("进入第 {next_round} 轮评审")));
+                    transition(
+                        &mut state,
+                        run_id,
+                        emitter,
+                        RunPhase::Reviewing,
+                        Some(&format!("进入第 {next_round} 轮评审")),
+                    );
                     continue;
                 }
                 let jobs: Vec<Job> = spec
                     .members
                     .iter()
                     .map(|member| {
-                        let critiques = prompts::pending_critiques_for(&messages, &member.id, round);
+                        let critiques =
+                            prompts::pending_critiques_for(&messages, &member.id, round);
                         let own = prompts::latest_own_position(&messages, &member.id);
                         match (critiques.is_empty(), own) {
                             (true, _) | (_, None) => Job {
@@ -474,16 +674,40 @@ fn run_loop(
                                 intent: Intent::Skip,
                             },
                             (false, Some(own)) => {
-                                let (system, user) = prompts::revision_prompt(&spec, member, round, &own, &critiques);
-                                Job { member_id: member.id.clone(), model: member.model.clone(), system, user, intent: Intent::Revision }
+                                let (system, user) = prompts::revision_prompt(
+                                    &spec, member, round, &own, &critiques,
+                                );
+                                Job {
+                                    member_id: member.id.clone(),
+                                    model: member.model.clone(),
+                                    system,
+                                    user,
+                                    intent: Intent::Revision,
+                                }
                             }
                         }
                     })
                     .collect();
-                fan_out(emitter, &spec, &mut state, &mut messages, client, &sem, handle, jobs, "revision");
+                fan_out(
+                    emitter,
+                    &spec,
+                    &mut state,
+                    &mut messages,
+                    client,
+                    &sem,
+                    handle,
+                    jobs,
+                    "revision",
+                );
                 state.round += 1;
                 let next_round = state.round;
-                transition(&mut state, run_id, emitter, RunPhase::Reviewing, Some(&format!("进入第 {next_round} 轮评审")));
+                transition(
+                    &mut state,
+                    run_id,
+                    emitter,
+                    RunPhase::Reviewing,
+                    Some(&format!("进入第 {next_round} 轮评审")),
+                );
             }
 
             RunPhase::Synthesizing => {
@@ -505,7 +729,8 @@ fn run_loop(
                     .collect();
                 if !contributors.is_empty() && !leads.is_empty() {
                     for contributor in &contributors {
-                        let Some(output) = prompts::latest_own_position(&messages, &contributor.id) else {
+                        let Some(output) = prompts::latest_own_position(&messages, &contributor.id)
+                        else {
                             continue;
                         };
                         let round = output.round;
@@ -515,9 +740,15 @@ fn run_loop(
                                 m.kind == MessageKind::Endorsement
                                     && m.from == lead.id
                                     && m.round == round
-                                    && m.meta.as_ref().and_then(|v| v.get("targetAuthor")).and_then(|v| v.as_str())
+                                    && m.meta
+                                        .as_ref()
+                                        .and_then(|v| v.get("targetAuthor"))
+                                        .and_then(|v| v.as_str())
                                         == Some(contributor.id.as_str())
-                                    && m.meta.as_ref().and_then(|v| v.get("targetKind")).and_then(|v| v.as_str())
+                                    && m.meta
+                                        .as_ref()
+                                        .and_then(|v| v.get("targetKind"))
+                                        .and_then(|v| v.as_str())
                                         == Some(target_kind.as_str())
                             });
                             if already {
@@ -528,7 +759,15 @@ fn run_loop(
                             }
                             let (system, user) =
                                 prompts::endorsement_prompt(&spec, lead, contributor, &output);
-                            match call_model(&mut state, client, handle, &lead.model, &system, &user, "endorsement") {
+                            match call_model(
+                                &mut state,
+                                client,
+                                handle,
+                                &lead.model,
+                                &system,
+                                &user,
+                                "endorsement",
+                            ) {
                                 Ok(out) => {
                                     let verdict = prompts::parse_endorsement(&out.content);
                                     let (verdict_str, reason) = match verdict {
@@ -545,8 +784,18 @@ fn run_loop(
                                         Some(output.message_id.clone()),
                                         &format!(
                                             "{}:{}",
-                                            if verdict_str == "endorse" { "认可" } else if verdict_str == "reject" { "否决" } else { "无法解析" },
-                                            if reason.is_empty() { out.content.chars().take(200).collect::<String>() } else { reason.clone() }
+                                            if verdict_str == "endorse" {
+                                                "认可"
+                                            } else if verdict_str == "reject" {
+                                                "否决"
+                                            } else {
+                                                "无法解析"
+                                            },
+                                            if reason.is_empty() {
+                                                out.content.chars().take(200).collect::<String>()
+                                            } else {
+                                                reason.clone()
+                                            }
                                         ),
                                         Some(json!({
                                             "targetAuthor": contributor.id,
@@ -556,15 +805,29 @@ fn run_loop(
                                         })),
                                     );
                                     persist_message(&mut messages, run_id, emitter, msg);
-                                    set_member_status(&mut state, run_id, emitter, &lead.id, MemberRuntimeStatus::Done);
+                                    set_member_status(
+                                        &mut state,
+                                        run_id,
+                                        emitter,
+                                        &lead.id,
+                                        MemberRuntimeStatus::Done,
+                                    );
                                 }
                                 Err(e) => {
                                     // 单个背书失败不毒化 run:记录状态消息,
                                     // 该 contributor 的产出按"零背书"进入
                                     // 综合(chair 的采信规则会兜住)。
                                     let msg = new_message(
-                                        run_id, round, "system", "all", MessageKind::Status, None,
-                                        &format!("成员 `{}` 对 `{}` 的背书调用失败:{e}", lead.id, contributor.id),
+                                        run_id,
+                                        round,
+                                        "system",
+                                        "all",
+                                        MessageKind::Status,
+                                        None,
+                                        &format!(
+                                            "成员 `{}` 对 `{}` 的背书调用失败:{e}",
+                                            lead.id, contributor.id
+                                        ),
                                         Some(json!({ "member": lead.id, "failed": true })),
                                     );
                                     persist_message(&mut messages, run_id, emitter, msg);
@@ -576,14 +839,43 @@ fn run_loop(
                 // 1) synthesis(恢复跳过:已存在则不重调)。
                 if !messages.iter().any(|m| m.kind == MessageKind::Synthesis) {
                     let (system, user) = prompts::synthesis_prompt(&spec, chair, &messages);
-                    set_member_status(&mut state, run_id, emitter, &chair.id, MemberRuntimeStatus::Working);
-                    match call_model(&mut state, client, handle, &chair.model, &system, &user, "synthesis") {
+                    set_member_status(
+                        &mut state,
+                        run_id,
+                        emitter,
+                        &chair.id,
+                        MemberRuntimeStatus::Working,
+                    );
+                    match call_model(
+                        &mut state,
+                        client,
+                        handle,
+                        &chair.model,
+                        &system,
+                        &user,
+                        "synthesis",
+                    ) {
                         Ok(out) => {
-                            let msg = new_message(run_id, state.round, &chair.id, "all", MessageKind::Synthesis, None, &out.content, None);
+                            let msg = new_message(
+                                run_id,
+                                state.round,
+                                &chair.id,
+                                "all",
+                                MessageKind::Synthesis,
+                                None,
+                                &out.content,
+                                None,
+                            );
                             persist_message(&mut messages, run_id, emitter, msg);
                         }
                         Err(e) => {
-                            set_member_status(&mut state, run_id, emitter, &chair.id, MemberRuntimeStatus::Failed { reason: e.clone() });
+                            set_member_status(
+                                &mut state,
+                                run_id,
+                                emitter,
+                                &chair.id,
+                                MemberRuntimeStatus::Failed { reason: e.clone() },
+                            );
                             fail_run(&mut state, run_id, emitter, format!("综合失败:{e}"));
                             return Ok(());
                         }
@@ -597,7 +889,15 @@ fn run_loop(
                         .cloned()
                         .expect("synthesis 刚落账");
                     let (system, user) = prompts::plan_prompt(&spec, chair, &synthesis);
-                    let raw = match call_model(&mut state, client, handle, &chair.model, &system, &user, "plan") {
+                    let raw = match call_model(
+                        &mut state,
+                        client,
+                        handle,
+                        &chair.model,
+                        &system,
+                        &user,
+                        "plan",
+                    ) {
                         Ok(out) => out.content,
                         Err(e) => {
                             fail_run(&mut state, run_id, emitter, format!("计划生成失败:{e}"));
@@ -610,16 +910,34 @@ fn run_loop(
                             // 一次修复机会(架构审计 §5:两次失败 → Failed)。
                             emitter.emit(run_id, "warn", json!({ "message": "计划 JSON 解析失败,请求修复", "error": first_error }));
                             let (rs, ru) = prompts::plan_repair_prompt(chair, &raw, &first_error);
-                            match call_model(&mut state, client, handle, &chair.model, &rs, &ru, "plan-repair") {
+                            match call_model(
+                                &mut state,
+                                client,
+                                handle,
+                                &chair.model,
+                                &rs,
+                                &ru,
+                                "plan-repair",
+                            ) {
                                 Ok(out) => match parse_plan(&out.content) {
                                     Ok(p) => (p, out.content),
                                     Err(second) => {
-                                        fail_run(&mut state, run_id, emitter, format!("计划 JSON 两次解析失败:{second}"));
+                                        fail_run(
+                                            &mut state,
+                                            run_id,
+                                            emitter,
+                                            format!("计划 JSON 两次解析失败:{second}"),
+                                        );
                                         return Ok(());
                                     }
                                 },
                                 Err(e) => {
-                                    fail_run(&mut state, run_id, emitter, format!("计划修复调用失败:{e}"));
+                                    fail_run(
+                                        &mut state,
+                                        run_id,
+                                        emitter,
+                                        format!("计划修复调用失败:{e}"),
+                                    );
                                     return Ok(());
                                 }
                             }
@@ -627,10 +945,25 @@ fn run_loop(
                     };
                     store::save_plan(run_id, &plan)?;
                     let meta = json!({ "planJson": plan_json });
-                    let msg = new_message(run_id, state.round, &chair.id, "all", MessageKind::Plan, None, &plan.summary, Some(meta));
+                    let msg = new_message(
+                        run_id,
+                        state.round,
+                        &chair.id,
+                        "all",
+                        MessageKind::Plan,
+                        None,
+                        &plan.summary,
+                        Some(meta),
+                    );
                     persist_message(&mut messages, run_id, emitter, msg);
                 }
-                set_member_status(&mut state, run_id, emitter, &chair.id, MemberRuntimeStatus::Done);
+                set_member_status(
+                    &mut state,
+                    run_id,
+                    emitter,
+                    &chair.id,
+                    MemberRuntimeStatus::Done,
+                );
                 // M5:审议落幕,把各模型表现(产出/背书/失败)记进
                 // model-stats.json——能力画像的历史信号源。
                 super::formation::record_deliberation_outcome(&spec, &messages);
@@ -647,7 +980,12 @@ fn run_loop(
 
             RunPhase::Executing => {
                 let Some(h) = harness else {
-                    fail_run(&mut state, run_id, emitter, "执行阶段没有可用的 agent harness".into());
+                    fail_run(
+                        &mut state,
+                        run_id,
+                        emitter,
+                        "执行阶段没有可用的 agent harness".into(),
+                    );
                     return Ok(());
                 };
                 let Some(executor) = spec.executor.clone() else {
@@ -688,7 +1026,11 @@ fn run_loop(
                 let project_root = std::path::PathBuf::from(&executor.cwd);
                 let use_worktrees = crate::git_service::is_git_worktree(&project_root);
                 if !use_worktrees {
-                    emitter.emit(run_id, "warn", json!({ "message": "目录不是 git 仓库:并行任务退化为串行执行,无隔离" }));
+                    emitter.emit(
+                        run_id,
+                        "warn",
+                        json!({ "message": "目录不是 git 仓库:并行任务退化为串行执行,无隔离" }),
+                    );
                 }
                 let exec_ctx = super::executor::ExecuteContext {
                     run_id,
@@ -708,13 +1050,22 @@ fn run_loop(
                 };
                 while super::tasks::work_remaining(&plan, &state.tasks) {
                     if handle.cancel.load(Ordering::SeqCst) {
-                        transition(&mut state, run_id, emitter, RunPhase::Cancelled, Some("用户取消"));
+                        transition(
+                            &mut state,
+                            run_id,
+                            emitter,
+                            RunPhase::Cancelled,
+                            Some("用户取消"),
+                        );
                         emitter.emit(run_id, "finished", json!({ "phase": "cancelled" }));
                         return Ok(());
                     }
                     let mut tasks_snapshot = state.tasks.clone();
-                    let progressed =
-                        super::executor::execute_ready_batch(&exec_ctx, &mut tasks_snapshot, &mut task_emitter);
+                    let progressed = super::executor::execute_ready_batch(
+                        &exec_ctx,
+                        &mut tasks_snapshot,
+                        &mut task_emitter,
+                    );
                     state.tasks = tasks_snapshot;
                     let _ = store::save_state(&state);
                     if !progressed {
@@ -723,7 +1074,11 @@ fn run_loop(
                 }
                 // 合并 Staged(worktree)任务;冲突显式失败(验收 #10)。
                 let mut tasks_snapshot = state.tasks.clone();
-                let (_merged, conflicts) = super::executor::merge_staged(&exec_ctx, &mut tasks_snapshot, &mut task_emitter);
+                let (_merged, conflicts) = super::executor::merge_staged(
+                    &exec_ctx,
+                    &mut tasks_snapshot,
+                    &mut task_emitter,
+                );
                 state.tasks = tasks_snapshot;
                 super::tasks::finalize_skipped(&plan, &mut state.tasks);
                 let _ = store::save_state(&state);
@@ -745,7 +1100,12 @@ fn run_loop(
                 if settled {
                     transition(&mut state, run_id, emitter, RunPhase::Verifying, None);
                 } else {
-                    fail_run(&mut state, run_id, emitter, format!("{conflicts} 个任务执行/合并失败"));
+                    fail_run(
+                        &mut state,
+                        run_id,
+                        emitter,
+                        format!("{conflicts} 个任务执行/合并失败"),
+                    );
                     return Ok(());
                 }
             }
@@ -756,13 +1116,20 @@ fn run_loop(
                     return Ok(());
                 };
                 let Some(executor) = spec.executor.clone() else {
-                    transition(&mut state, run_id, emitter, RunPhase::Completed, Some("无执行器,跳过验证"));
+                    transition(
+                        &mut state,
+                        run_id,
+                        emitter,
+                        RunPhase::Completed,
+                        Some("无执行器,跳过验证"),
+                    );
                     return Ok(());
                 };
                 let cwd = std::path::PathBuf::from(&executor.cwd);
                 let approved = state.approved_verifications.clone().unwrap_or_default();
                 let rejected = state.rejected_verifications.clone().unwrap_or_default();
-                let results = super::verify::run_all(&cwd, &plan.verification, 900, &approved, &rejected);
+                let results =
+                    super::verify::run_all(&cwd, &plan.verification, 900, &approved, &rejected);
                 let evidence = super::verify::render_evidence(&results);
                 let all_ok = results.iter().all(|r| r.ok);
                 let msg = new_message(
@@ -776,7 +1143,11 @@ fn run_loop(
                     Some(json!({ "attempt": state.verify_attempts, "allOk": all_ok })),
                 );
                 persist_message(&mut messages, run_id, emitter, msg);
-                emitter.emit(run_id, "verify", serde_json::to_value(&results).unwrap_or(json!([])));
+                emitter.emit(
+                    run_id,
+                    "verify",
+                    serde_json::to_value(&results).unwrap_or(json!([])),
+                );
 
                 // DSH 式 Attention 门:存在破坏性命令等人工裁决 → 挂起
                 // (不静默当失败烧修复次数,也不静默执行)。唯一出口是
@@ -789,26 +1160,60 @@ fn run_loop(
                         round: state.round,
                     });
                     let _ = store::save_state(&state);
-                    transition(&mut state, run_id, emitter, RunPhase::AwaitingApproval, Some("验证含破坏性命令,等待人工裁决"));
-                    emitter.emit(run_id, "attention", json!({ "commands": awaiting, "phase": "awaiting_approval" }));
+                    transition(
+                        &mut state,
+                        run_id,
+                        emitter,
+                        RunPhase::AwaitingApproval,
+                        Some("验证含破坏性命令,等待人工裁决"),
+                    );
+                    emitter.emit(
+                        run_id,
+                        "attention",
+                        json!({ "commands": awaiting, "phase": "awaiting_approval" }),
+                    );
                     return Ok(());
                 }
 
                 if all_ok {
-                    transition(&mut state, run_id, emitter, RunPhase::Completed, Some("验证全部通过"));
+                    transition(
+                        &mut state,
+                        run_id,
+                        emitter,
+                        RunPhase::Completed,
+                        Some("验证全部通过"),
+                    );
                     emitter.emit(run_id, "finished", json!({ "phase": "completed" }));
                     return Ok(());
                 }
                 // 失败 → 受限修复回路(默认上限 3,任务书 §4.3)。
                 if state.verify_attempts >= MAX_VERIFY_ATTEMPTS {
-                    fail_run(&mut state, run_id, emitter, format!("验证失败且修复次数已用尽({MAX_VERIFY_ATTEMPTS} 次)"));
+                    fail_run(
+                        &mut state,
+                        run_id,
+                        emitter,
+                        format!("验证失败且修复次数已用尽({MAX_VERIFY_ATTEMPTS} 次)"),
+                    );
                     return Ok(());
                 }
                 state.verify_attempts += 1;
                 let chair = chair_of(&spec).ok_or("找不到主席成员")?;
-                let (system, user) =
-                    prompts::repair_round_prompt(&spec, chair, &plan, &evidence, state.verify_attempts);
-                let repaired_raw = match call_model(&mut state, client, handle, &chair.model, &system, &user, "plan-repair") {
+                let (system, user) = prompts::repair_round_prompt(
+                    &spec,
+                    chair,
+                    &plan,
+                    &evidence,
+                    state.verify_attempts,
+                );
+                let repaired_raw = match call_model(
+                    &mut state,
+                    client,
+                    handle,
+                    &chair.model,
+                    &system,
+                    &user,
+                    "plan-repair",
+                ) {
                     Ok(out) => out.content,
                     Err(e) => {
                         fail_run(&mut state, run_id, emitter, format!("修复计划生成失败:{e}"));
@@ -820,16 +1225,34 @@ fn run_loop(
                     Err(first) => {
                         emitter.emit(run_id, "warn", json!({ "message": "修复计划 JSON 解析失败,请求一次修复", "error": first }));
                         let (rs, ru) = prompts::plan_repair_prompt(chair, &repaired_raw, &first);
-                        match call_model(&mut state, client, handle, &chair.model, &rs, &ru, "plan-repair-retry") {
+                        match call_model(
+                            &mut state,
+                            client,
+                            handle,
+                            &chair.model,
+                            &rs,
+                            &ru,
+                            "plan-repair-retry",
+                        ) {
                             Ok(out) => match parse_plan(&out.content) {
                                 Ok(p) => p,
                                 Err(second) => {
-                                    fail_run(&mut state, run_id, emitter, format!("修复计划两次解析失败:{second}"));
+                                    fail_run(
+                                        &mut state,
+                                        run_id,
+                                        emitter,
+                                        format!("修复计划两次解析失败:{second}"),
+                                    );
                                     return Ok(());
                                 }
                             },
                             Err(e) => {
-                                fail_run(&mut state, run_id, emitter, format!("修复计划调用失败:{e}"));
+                                fail_run(
+                                    &mut state,
+                                    run_id,
+                                    emitter,
+                                    format!("修复计划调用失败:{e}"),
+                                );
                                 return Ok(());
                             }
                         }
@@ -858,7 +1281,13 @@ fn run_loop(
                     "warn",
                     json!({ "message": format!("验证失败,进入第 {} 次修复:计划已修订,受影响任务复位重跑", state.verify_attempts) }),
                 );
-                transition(&mut state, run_id, emitter, RunPhase::Executing, Some("验证失败,修订计划后重执行"));
+                transition(
+                    &mut state,
+                    run_id,
+                    emitter,
+                    RunPhase::Executing,
+                    Some("验证失败,修订计划后重执行"),
+                );
                 continue;
             }
 
@@ -876,7 +1305,12 @@ fn run_loop(
                         );
                     }
                     None => {
-                        fail_run(&mut state, run_id, emitter, "等待裁决但没有待裁决项(状态不一致)".into());
+                        fail_run(
+                            &mut state,
+                            run_id,
+                            emitter,
+                            "等待裁决但没有待裁决项(状态不一致)".into(),
+                        );
                     }
                 }
                 return Ok(());
@@ -884,7 +1318,12 @@ fn run_loop(
 
             _ => {
                 let stuck = phase_name(state.phase).to_string();
-                fail_run(&mut state, run_id, emitter, format!("编排器遇到未实现的阶段 {stuck}"));
+                fail_run(
+                    &mut state,
+                    run_id,
+                    emitter,
+                    format!("编排器遇到未实现的阶段 {stuck}"),
+                );
                 return Ok(());
             }
         }
@@ -926,7 +1365,11 @@ fn fan_out(
                 let result = call_with_retry(client, handle, &job.model, &job.system, &job.user);
                 sem.release();
                 let _ = tx.send(match result {
-                    Ok((out, _retried)) => FanResult::Ok(job.member_id, out, job.system.chars().count() + job.user.chars().count()),
+                    Ok((out, _retried)) => FanResult::Ok(
+                        job.member_id,
+                        out,
+                        job.system.chars().count() + job.user.chars().count(),
+                    ),
                     Err(e) => FanResult::Err(job.member_id, e),
                 });
             });
@@ -946,7 +1389,13 @@ fn fan_out(
                         estimate_tokens(prompt_chars) + estimate_tokens(out.output_chars);
                     let msg = fan_message(label, spec, state.round, &member_id, &out.content);
                     persist_message(messages, &run_id, emitter, msg);
-                    set_member_status(state, &run_id, emitter, &member_id, MemberRuntimeStatus::Done);
+                    set_member_status(
+                        state,
+                        &run_id,
+                        emitter,
+                        &member_id,
+                        MemberRuntimeStatus::Done,
+                    );
                 }
                 FanResult::Err(member_id, e) => {
                     // 单成员失败:记 Status 消息 + 成员 Failed,run 继续
@@ -962,7 +1411,13 @@ fn fan_out(
                         Some(json!({ "member": member_id, "failed": true })),
                     );
                     persist_message(messages, &run_id, emitter, msg);
-                    set_member_status(state, &run_id, emitter, &member_id, MemberRuntimeStatus::Failed { reason: e });
+                    set_member_status(
+                        state,
+                        &run_id,
+                        emitter,
+                        &member_id,
+                        MemberRuntimeStatus::Failed { reason: e },
+                    );
                 }
             }
         }
@@ -977,10 +1432,25 @@ enum FanResult {
     Err(String, String),
 }
 
-fn fan_message(label: &str, spec: &CouncilSpec, round: u32, member_id: &str, content: &str) -> CouncilMessage {
+fn fan_message(
+    label: &str,
+    spec: &CouncilSpec,
+    round: u32,
+    member_id: &str,
+    content: &str,
+) -> CouncilMessage {
     let run_id = &spec.run_id;
     match label {
-        "proposal" => new_message(run_id, round, member_id, "all", MessageKind::Proposal, None, content, None),
+        "proposal" => new_message(
+            run_id,
+            round,
+            member_id,
+            "all",
+            MessageKind::Proposal,
+            None,
+            content,
+            None,
+        ),
         "critique" => {
             // 质询面向其余全部作者(meta 记录目标集,Phase C 路由与
             // 验收 #4 的判定都用它)。
@@ -1001,8 +1471,26 @@ fn fan_message(label: &str, spec: &CouncilSpec, round: u32, member_id: &str, con
                 Some(json!({ "targetAuthors": targets })),
             )
         }
-        "revision" => new_message(run_id, round, member_id, "all", MessageKind::Revision, None, content, None),
-        _ => new_message(run_id, round, member_id, "all", MessageKind::Status, None, content, None),
+        "revision" => new_message(
+            run_id,
+            round,
+            member_id,
+            "all",
+            MessageKind::Revision,
+            None,
+            content,
+            None,
+        ),
+        _ => new_message(
+            run_id,
+            round,
+            member_id,
+            "all",
+            MessageKind::Status,
+            None,
+            content,
+            None,
+        ),
     }
 }
 
@@ -1022,8 +1510,8 @@ fn call_model(
     }
     let (out, _retried) = call_with_retry(client, handle, model, system, user)?;
     state.budget_usage.requests += 1;
-    state.budget_usage.tokens_est +=
-        estimate_tokens(system.chars().count() + user.chars().count()) + estimate_tokens(out.output_chars);
+    state.budget_usage.tokens_est += estimate_tokens(system.chars().count() + user.chars().count())
+        + estimate_tokens(out.output_chars);
     if state.budget_usage.started_at == 0 {
         state.budget_usage.started_at = now_millis();
     }
@@ -1063,14 +1551,17 @@ fn call_with_retry_impl(
         user: user.to_string(),
         max_tokens: None,
     };
-    let cancelled =
-        || handle.cancel.load(Ordering::SeqCst) || handle.pause.load(Ordering::SeqCst);
+    let cancelled = || handle.cancel.load(Ordering::SeqCst) || handle.pause.load(Ordering::SeqCst);
     let mut attempt = 0usize;
     let mut retried = false;
     let mut last_err = String::new();
     loop {
         if cancelled() {
-            return Err(if last_err.is_empty() { "调用被取消".to_string() } else { format!("{last_err};退避中被取消") });
+            return Err(if last_err.is_empty() {
+                "调用被取消".to_string()
+            } else {
+                format!("{last_err};退避中被取消")
+            });
         }
         match client.complete(&req) {
             Ok(out) => return Ok((out, retried)),
@@ -1109,18 +1600,21 @@ fn call_with_retry_impl(
 // ---------------------------------------------------------------------------
 
 pub fn proposals_complete(spec: &CouncilSpec, messages: &[CouncilMessage]) -> bool {
-    spec.members
-        .iter()
-        .all(|m| messages.iter().any(|x| x.from == m.id && x.kind == MessageKind::Proposal))
+    spec.members.iter().all(|m| {
+        messages
+            .iter()
+            .any(|x| x.from == m.id && x.kind == MessageKind::Proposal)
+    })
 }
 
 pub fn critiques_complete(spec: &CouncilSpec, messages: &[CouncilMessage], round: u32) -> bool {
     // 每个非主席成员在 round 内至少一条质询(chair 也质询,但 chair
     // 缺席不阻塞——它还要做综合)。
-    spec.members
-        .iter()
-        .filter(|m| !m.is_chair)
-        .all(|m| messages.iter().any(|x| x.from == m.id && x.kind == MessageKind::Critique && x.round == round))
+    spec.members.iter().filter(|m| !m.is_chair).all(|m| {
+        messages
+            .iter()
+            .any(|x| x.from == m.id && x.kind == MessageKind::Critique && x.round == round)
+    })
 }
 
 pub fn revisions_complete(spec: &CouncilSpec, messages: &[CouncilMessage], round: u32) -> bool {
@@ -1128,7 +1622,9 @@ pub fn revisions_complete(spec: &CouncilSpec, messages: &[CouncilMessage], round
     authors.is_empty()
         || spec.members.iter().all(|m| {
             !authors.contains(&m.id)
-                || messages.iter().any(|x| x.from == m.id && x.kind == MessageKind::Revision && x.round >= round)
+                || messages
+                    .iter()
+                    .any(|x| x.from == m.id && x.kind == MessageKind::Revision && x.round >= round)
         })
 }
 
@@ -1199,7 +1695,11 @@ fn persist_message(
         return;
     }
     if store::append_message(run_id, &msg).is_ok() {
-        emitter.emit(run_id, "message", serde_json::to_value(&msg).unwrap_or(json!({})));
+        emitter.emit(
+            run_id,
+            "message",
+            serde_json::to_value(&msg).unwrap_or(json!({})),
+        );
         messages.push(msg);
     }
 }
@@ -1211,7 +1711,9 @@ fn set_member_status(
     member_id: &str,
     status: MemberRuntimeStatus,
 ) {
-    state.member_status.insert(member_id.to_string(), status.clone());
+    state
+        .member_status
+        .insert(member_id.to_string(), status.clone());
     state.updated_at = now_millis();
     let _ = store::save_state(state);
     emitter.emit(
@@ -1240,7 +1742,11 @@ fn transition(
         }
         Err(e) => {
             // 非法转移是编排器 bug,记录并按 Failed 收尾(fail closed)。
-            emitter.emit(run_id, "error", json!({ "message": format!("状态转移被拒:{e}") }));
+            emitter.emit(
+                run_id,
+                "error",
+                json!({ "message": format!("状态转移被拒:{e}") }),
+            );
             state.error = Some(e);
             let _ = store::save_state(state);
         }
@@ -1250,7 +1756,11 @@ fn transition(
 fn fail_run(state: &mut CouncilState, run_id: &str, emitter: &CouncilEventEmitter, reason: String) {
     state.error = Some(reason.clone());
     transition(state, run_id, emitter, RunPhase::Failed, Some(&reason));
-    emitter.emit(run_id, "finished", json!({ "phase": "failed", "error": reason }));
+    emitter.emit(
+        run_id,
+        "finished",
+        json!({ "phase": "failed", "error": reason }),
+    );
 }
 
 /// 解析计划输出:剥 ```json 围栏 → PlanDoc。
@@ -1261,7 +1771,12 @@ pub fn parse_plan(raw: &str) -> Result<PlanDoc, String> {
     if !value.is_object() {
         return Err("计划不是 JSON 对象".into());
     }
-    let summary = value.get("summary").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let summary = value
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if summary.is_empty() {
         return Err("计划缺 summary".into());
     }
@@ -1275,15 +1790,34 @@ pub fn parse_plan(raw: &str) -> Result<PlanDoc, String> {
                 .unwrap_or_else(|| format!("s{}", i + 1));
             steps.push(PlanStep {
                 id,
-                title: s.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                detail: s.get("detail").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                title: s
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                detail: s
+                    .get("detail")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 depends_on: s
                     .get("dependsOn")
                     .and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|x| x.as_str().map(|x| x.to_string())).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(|x| x.to_string()))
+                            .collect()
+                    })
                     .unwrap_or_default(),
-                acceptance: s.get("acceptance").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                owner_hint: s.get("ownerHint").and_then(|v| v.as_str()).map(|v| v.to_string()),
+                acceptance: s
+                    .get("acceptance")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                owner_hint: s
+                    .get("ownerHint")
+                    .and_then(|v| v.as_str())
+                    .map(|v| v.to_string()),
             });
         }
     }
@@ -1294,7 +1828,11 @@ pub fn parse_plan(raw: &str) -> Result<PlanDoc, String> {
         value
             .get(key)
             .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(|x| x.to_string())).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(|x| x.to_string()))
+                    .collect()
+            })
             .unwrap_or_default()
     };
     Ok(PlanDoc {
@@ -1329,12 +1867,18 @@ mod tests {
     const MOCK_PLAN: &str = r#"{"summary":"合并后的方案概述","steps":[{"id":"s1","title":"实现核心","detail":"写代码","dependsOn":[],"acceptance":"测试通过","ownerHint":"engineer"},{"id":"s2","title":"补测试","detail":"写测试","dependsOn":["s1"],"acceptance":"cargo test 绿"}],"openQuestions":["Q1 需实验"],"acceptance":["全部步骤完成"],"verification":["cargo test"]}"#;
 
     /// 与 store::tests 共用同一把串行锁(同一个 ROOT_OVERRIDE)。
-    struct Sandbox(std::path::PathBuf, Option<std::sync::MutexGuard<'static, ()>>);
+    struct Sandbox(
+        std::path::PathBuf,
+        Option<std::sync::MutexGuard<'static, ()>>,
+    );
 
     impl Sandbox {
         fn new(tag: &str) -> Self {
-            let guard: std::sync::MutexGuard<'static, ()> = store::tests::SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-            let dir = std::env::temp_dir().join(format!("marionette-council-orch-{tag}-{}", new_run_id()));
+            let guard: std::sync::MutexGuard<'static, ()> = store::tests::SANDBOX_LOCK
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let dir = std::env::temp_dir()
+                .join(format!("marionette-council-orch-{tag}-{}", new_run_id()));
             let _ = fs::remove_dir_all(&dir);
             store::set_root_override_for_tests(Some(dir.clone()));
             Sandbox(dir, Some(guard))
@@ -1379,7 +1923,11 @@ mod tests {
 
     fn wait_phase(run_id: &str, phase: RunPhase, timeout_ms: u64) {
         wait_for(
-            || store::load_state(run_id).map(|s| s.phase == phase).unwrap_or(false),
+            || {
+                store::load_state(run_id)
+                    .map(|s| s.phase == phase)
+                    .unwrap_or(false)
+            },
             timeout_ms,
         );
     }
@@ -1394,7 +1942,12 @@ mod tests {
         wait_for(
             || {
                 store::load_messages(run_id)
-                    .map(|ms| ms.iter().filter(|m| m.kind == MessageKind::Proposal).count() == 3)
+                    .map(|ms| {
+                        ms.iter()
+                            .filter(|m| m.kind == MessageKind::Proposal)
+                            .count()
+                            == 3
+                    })
                     .unwrap_or(false)
             },
             timeout_ms,
@@ -1428,7 +1981,15 @@ mod tests {
                 mock.enqueue(&m.model, vec!["member-resp".to_string()]);
             }
         }
-        start_run(CouncilEventEmitter::new(None), spec.run_id.clone(), crate::council::orchestrator::RunClients { model: Some(mock.clone()), harness: None }).unwrap();
+        start_run(
+            CouncilEventEmitter::new(None),
+            spec.run_id.clone(),
+            crate::council::orchestrator::RunClients {
+                model: Some(mock.clone()),
+                harness: None,
+            },
+        )
+        .unwrap();
         wait_phase(&spec.run_id, RunPhase::PlanReady, 30_000);
 
         let state = store::load_state(&spec.run_id).unwrap();
@@ -1437,15 +1998,24 @@ mod tests {
         let count = |k: MessageKind| messages.iter().filter(|m| m.kind == k).count();
         assert_eq!(count(MessageKind::Briefing), 1);
         assert_eq!(count(MessageKind::Proposal), 3, "三份独立提案(含主席)");
-        assert!(count(MessageKind::Critique) >= 2, "非主席成员各至少一条质询");
+        assert!(
+            count(MessageKind::Critique) >= 2,
+            "非主席成员各至少一条质询"
+        );
         assert_eq!(count(MessageKind::Synthesis), 1);
         assert_eq!(count(MessageKind::Plan), 1);
-        let plan = store::load_plan(&spec.run_id).unwrap().expect("plan.json 落盘");
+        let plan = store::load_plan(&spec.run_id)
+            .unwrap()
+            .expect("plan.json 落盘");
         assert!(!plan.steps.is_empty());
         let transitions = store::load_transitions(&spec.run_id).unwrap();
         // rounds=1 的合法链:created→analyzing→proposing→reviewing→synthesizing→plan_ready = 5。
         assert!(transitions.len() >= 5, "审计链完整:{}", transitions.len());
-        assert_eq!(transitions.last().unwrap().to, RunPhase::PlanReady, "链尾必须是 plan_ready");
+        assert_eq!(
+            transitions.last().unwrap().to,
+            RunPhase::PlanReady,
+            "链尾必须是 plan_ready"
+        );
         let models: std::collections::HashSet<String> = mock.models_called().into_iter().collect();
         assert_eq!(models.len(), 3, "三个不同模型都收到请求(验收 #1)");
     }
@@ -1468,7 +2038,15 @@ mod tests {
                 mock.enqueue(&m.model, vec![mark.to_string()]);
             }
         }
-        start_run(CouncilEventEmitter::new(None), spec.run_id.clone(), crate::council::orchestrator::RunClients { model: Some(mock.clone()), harness: None }).unwrap();
+        start_run(
+            CouncilEventEmitter::new(None),
+            spec.run_id.clone(),
+            crate::council::orchestrator::RunClients {
+                model: Some(mock.clone()),
+                harness: None,
+            },
+        )
+        .unwrap();
         wait_all_member_proposals(&spec.run_id, 30_000);
         cancel_run(&spec.run_id).ok();
 
@@ -1512,10 +2090,21 @@ mod tests {
                 mock.enqueue(&m.model, vec!["resp".into()]);
             }
         }
-        start_run(CouncilEventEmitter::new(None), spec.run_id.clone(), crate::council::orchestrator::RunClients { model: Some(mock.clone()), harness: None }).unwrap();
+        start_run(
+            CouncilEventEmitter::new(None),
+            spec.run_id.clone(),
+            crate::council::orchestrator::RunClients {
+                model: Some(mock.clone()),
+                harness: None,
+            },
+        )
+        .unwrap();
         wait_phase(&spec.run_id, RunPhase::PlanReady, 30_000);
         let messages = store::load_messages(&spec.run_id).unwrap();
-        let critiques: Vec<_> = messages.iter().filter(|m| m.kind == MessageKind::Critique).collect();
+        let critiques: Vec<_> = messages
+            .iter()
+            .filter(|m| m.kind == MessageKind::Critique)
+            .collect();
         assert!(!critiques.is_empty());
         // prompts::pending_critiques_for 已单测路由;这里验证可见性函数
         // 对真实消息流的行为:每个被质询作者都能取到自己的质询。
@@ -1527,7 +2116,10 @@ mod tests {
         }
         // 质询 prompt 里确实渲染了他人方案(验收 #4 的输入面)。
         let calls = mock.calls.lock().unwrap().clone();
-        let critique_calls: Vec<_> = calls.iter().filter(|c| c.prompt.contains("逐份质询")).collect();
+        let critique_calls: Vec<_> = calls
+            .iter()
+            .filter(|c| c.prompt.contains("逐份质询"))
+            .collect();
         assert!(!critique_calls.is_empty(), "质询调用存在");
         for c in &critique_calls {
             assert!(c.prompt.contains("的方案"), "质询输入包含署名方案");
@@ -1543,18 +2135,35 @@ mod tests {
         let victim = spec.members.iter().find(|m| !m.is_chair).unwrap().clone();
         for m in &spec.members {
             if m.id != victim.id {
-                let resp = if m.is_chair { MOCK_PLAN.to_string() } else { "ok resp".into() };
+                let resp = if m.is_chair {
+                    MOCK_PLAN.to_string()
+                } else {
+                    "ok resp".into()
+                };
                 mock.enqueue(&m.model, vec![resp]);
             }
         }
-        start_run(CouncilEventEmitter::new(None), spec.run_id.clone(), crate::council::orchestrator::RunClients { model: Some(mock.clone()), harness: None }).unwrap();
+        start_run(
+            CouncilEventEmitter::new(None),
+            spec.run_id.clone(),
+            crate::council::orchestrator::RunClients {
+                model: Some(mock.clone()),
+                harness: None,
+            },
+        )
+        .unwrap();
         wait_phase(&spec.run_id, RunPhase::PlanReady, 30_000);
         let state = store::load_state(&spec.run_id).unwrap();
         assert_eq!(state.phase, RunPhase::PlanReady, "run 未被单成员失败毒化");
         let messages = store::load_messages(&spec.run_id).unwrap();
-        assert!(messages.iter().any(|m| m.kind == MessageKind::Status && m.content.contains("失败")));
+        assert!(messages
+            .iter()
+            .any(|m| m.kind == MessageKind::Status && m.content.contains("失败")));
         assert_eq!(
-            messages.iter().filter(|m| m.kind == MessageKind::Proposal).count(),
+            messages
+                .iter()
+                .filter(|m| m.kind == MessageKind::Proposal)
+                .count(),
             2,
             "受害者的提案缺席,其余 2 份正常"
         );
@@ -1584,8 +2193,7 @@ mod tests {
             // 质询 prompt 独有特征串(prompts.rs critique_prompt);只武装
             // 一次——resume 起的第二条 run 的质询调用必须正常应答。
             // 先判特征串再消耗武装:swap 先行会被第一个调用(简报)吃掉。
-            let is_critique =
-                req.system.contains("请逐份质询") || req.user.contains("请逐份质询");
+            let is_critique = req.system.contains("请逐份质询") || req.user.contains("请逐份质询");
             if is_critique && self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 panic!("模拟 worker 线程崩溃于质询调用(测试注入)");
             }
@@ -1602,16 +2210,31 @@ mod tests {
             armed: std::sync::atomic::AtomicBool::new(true),
         });
         for (i, m) in spec.members.iter().enumerate() {
-            let resp = if m.is_chair { MOCK_PLAN.to_string() } else { format!("R{i}") };
+            let resp = if m.is_chair {
+                MOCK_PLAN.to_string()
+            } else {
+                format!("R{i}")
+            };
             client.inner.enqueue(&m.model, vec![resp]);
         }
-        start_run(CouncilEventEmitter::new(None), spec.run_id.clone(), crate::council::orchestrator::RunClients { model: Some(client.clone() as Arc<dyn ModelClient>), harness: None }).unwrap();
+        start_run(
+            CouncilEventEmitter::new(None),
+            spec.run_id.clone(),
+            crate::council::orchestrator::RunClients {
+                model: Some(client.clone() as Arc<dyn ModelClient>),
+                harness: None,
+            },
+        )
+        .unwrap();
         // 三份提案落盘后 run 进 Reviewing,首条质询调用触发注入的 panic。
         wait_all_member_proposals(&spec.run_id, 30_000);
         wait_for(|| !client.is_armed(), 30_000);
         // scope 传播 + 线程退场;之后注册表条目仍残留 = 清理代码没跑。
         std::thread::sleep(Duration::from_millis(300));
-        assert!(run_is_live(&spec.run_id), "崩溃后注册表条目应残留(清理代码未及执行)");
+        assert!(
+            run_is_live(&spec.run_id),
+            "崩溃后注册表条目应残留(清理代码未及执行)"
+        );
         registry().lock().unwrap().remove(&spec.run_id);
         let calls_before = client.inner.call_count();
         let proposals_before = store::load_messages(&spec.run_id)
@@ -1622,25 +2245,56 @@ mod tests {
         assert_eq!(proposals_before, 3);
         // resume:同一客户端看增量(armed 已消费,质询正常应答)。
         let proposal_calls = |m: &MockClient| {
-            m.calls.lock().unwrap().iter().filter(|c| c.prompt.contains("独立完成对以下任务的技术提案")).count()
+            m.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| c.prompt.contains("独立完成对以下任务的技术提案"))
+                .count()
         };
         let brief_calls = |m: &MockClient| {
             // briefing_prompt 独有特征串(质询/修订 prompt 里的简报引用段不含它)。
-            m.calls.lock().unwrap().iter().filter(|c| c.prompt.contains("为以下任务产出开场简报")).count()
+            m.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| c.prompt.contains("为以下任务产出开场简报"))
+                .count()
         };
         let proposals_before = proposal_calls(&client.inner);
         let briefs_before = brief_calls(&client.inner);
-        start_run(CouncilEventEmitter::new(None), spec.run_id.clone(), crate::council::orchestrator::RunClients { model: Some(client.clone() as Arc<dyn ModelClient>), harness: None }).unwrap();
+        start_run(
+            CouncilEventEmitter::new(None),
+            spec.run_id.clone(),
+            crate::council::orchestrator::RunClients {
+                model: Some(client.clone() as Arc<dyn ModelClient>),
+                harness: None,
+            },
+        )
+        .unwrap();
         wait_phase(&spec.run_id, RunPhase::PlanReady, 30_000);
         // 恢复绝不重放已完成的 briefing/proposal(验收 #7:不重放副作用)。
-        assert_eq!(proposal_calls(&client.inner), proposals_before, "提案调用零重放");
+        assert_eq!(
+            proposal_calls(&client.inner),
+            proposals_before,
+            "提案调用零重放"
+        );
         assert_eq!(brief_calls(&client.inner), briefs_before, "简报调用零重放");
-        assert!(client.inner.call_count() > calls_before, "恢复后确有新调用(续跑质询及以后)");
+        assert!(
+            client.inner.call_count() > calls_before,
+            "恢复后确有新调用(续跑质询及以后)"
+        );
         let state = store::load_state(&spec.run_id).unwrap();
         assert_eq!(state.phase, RunPhase::PlanReady);
         // briefing 仍只有一条(未重放)。
         let messages = store::load_messages(&spec.run_id).unwrap();
-        assert_eq!(messages.iter().filter(|m| m.kind == MessageKind::Briefing).count(), 1);
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|m| m.kind == MessageKind::Briefing)
+                .count(),
+            1
+        );
     }
 
     /// 验收 #8:取消后不再发起模型调用。
@@ -1654,7 +2308,15 @@ mod tests {
         for m in &spec.members {
             mock.enqueue(&m.model, vec!["resp".into()]);
         }
-        start_run(CouncilEventEmitter::new(None), spec.run_id.clone(), crate::council::orchestrator::RunClients { model: Some(mock.clone()), harness: None }).unwrap();
+        start_run(
+            CouncilEventEmitter::new(None),
+            spec.run_id.clone(),
+            crate::council::orchestrator::RunClients {
+                model: Some(mock.clone()),
+                harness: None,
+            },
+        )
+        .unwrap();
         wait_for(
             || {
                 store::load_messages(&spec.run_id)
@@ -1697,7 +2359,15 @@ mod tests {
         for m in &spec.members {
             mock.enqueue(&m.model, vec!["r".into()]);
         }
-        start_run(CouncilEventEmitter::new(None), spec.run_id.clone(), crate::council::orchestrator::RunClients { model: Some(mock.clone()), harness: None }).unwrap();
+        start_run(
+            CouncilEventEmitter::new(None),
+            spec.run_id.clone(),
+            crate::council::orchestrator::RunClients {
+                model: Some(mock.clone()),
+                harness: None,
+            },
+        )
+        .unwrap();
         wait_phase(&spec.run_id, RunPhase::BudgetExhausted, 30_000);
         let state = store::load_state(&spec.run_id).unwrap();
         assert!(state.phase.is_terminal());
@@ -1718,20 +2388,34 @@ mod tests {
                 mock.enqueue(&m.model, vec!["other".into()]);
             }
         }
-        start_run(CouncilEventEmitter::new(None), spec.run_id.clone(), crate::council::orchestrator::RunClients { model: Some(mock.clone()), harness: None }).unwrap();
+        start_run(
+            CouncilEventEmitter::new(None),
+            spec.run_id.clone(),
+            crate::council::orchestrator::RunClients {
+                model: Some(mock.clone()),
+                harness: None,
+            },
+        )
+        .unwrap();
         wait_all_member_proposals(&spec.run_id, 30_000);
         cancel_run(&spec.run_id).ok();
         let messages = store::load_messages(&spec.run_id).unwrap();
         let glm = &spec.members[0].id;
         let ds = &spec.members[2].id;
-        assert!(messages.iter().any(|m| m.from == *glm && m.kind == MessageKind::Proposal));
-        assert!(messages.iter().any(|m| m.from == *ds && m.kind == MessageKind::Proposal));
+        assert!(messages
+            .iter()
+            .any(|m| m.from == *glm && m.kind == MessageKind::Proposal));
+        assert!(messages
+            .iter()
+            .any(|m| m.from == *ds && m.kind == MessageKind::Proposal));
         let proposal_calls = mock
             .calls
             .lock()
             .unwrap()
             .iter()
-            .filter(|c| c.prompt.contains("独立完成对以下任务的技术提案") && c.model == shared_model)
+            .filter(|c| {
+                c.prompt.contains("独立完成对以下任务的技术提案") && c.model == shared_model
+            })
             .count();
         assert_eq!(proposal_calls, 2, "同模型的两个成员各自被调用");
     }
@@ -1746,13 +2430,36 @@ mod tests {
         let repo = std::env::temp_dir().join(format!("marionette-council-repair-{}", new_run_id()));
         let _ = std::fs::remove_dir_all(&repo);
         std::fs::create_dir_all(&repo).unwrap();
-        for args in [vec!["init", "-q"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
-            assert!(std::process::Command::new("git").args(args).current_dir(&repo).status().unwrap().success());
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "t@t"],
+            vec!["config", "user.name", "t"],
+        ] {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success());
         }
-        std::fs::write(repo.join("seed.txt"), "seed
-").unwrap();
-        assert!(std::process::Command::new("git").args(["add", "--all"]).current_dir(&repo).status().unwrap().success());
-        assert!(std::process::Command::new("git").args(["commit", "-q", "-m", "init"]).current_dir(&repo).status().unwrap().success());
+        std::fs::write(
+            repo.join("seed.txt"),
+            "seed
+",
+        )
+        .unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["add", "--all"])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .args(["commit", "-q", "-m", "init"])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
 
         let mut spec = setup_run(&sandbox, "repair");
         spec.mode = CouncilMode::CouncilAndExecution;
@@ -1774,8 +2481,16 @@ mod tests {
         // 状态推进到 Executing(测试内直接落状态;approve 是 UI 命令)。
         let mut state = store::load_state(&spec.run_id).unwrap();
         let mut phase = RunPhase::Created;
-        for hop in [RunPhase::Analyzing, RunPhase::Proposing, RunPhase::Reviewing, RunPhase::Synthesizing, RunPhase::PlanReady, RunPhase::Executing] {
-            let rec = crate::council::state::apply_transition(&mut state, hop, Some("test")).unwrap();
+        for hop in [
+            RunPhase::Analyzing,
+            RunPhase::Proposing,
+            RunPhase::Reviewing,
+            RunPhase::Synthesizing,
+            RunPhase::PlanReady,
+            RunPhase::Executing,
+        ] {
+            let rec =
+                crate::council::state::apply_transition(&mut state, hop, Some("test")).unwrap();
             store::append_transition(&spec.run_id, &rec).unwrap();
             phase = hop;
         }
@@ -1791,13 +2506,21 @@ mod tests {
         start_run(
             CouncilEventEmitter::new(None),
             spec.run_id.clone(),
-            RunClients { model: Some(mock.clone()), harness: Some(harness) },
+            RunClients {
+                model: Some(mock.clone()),
+                harness: Some(harness),
+            },
         )
         .unwrap();
         wait_phase(&spec.run_id, RunPhase::Completed, 60_000);
 
         let final_state = store::load_state(&spec.run_id).unwrap();
-        assert_eq!(final_state.phase, RunPhase::Completed, "修复后应完成:{:?}", final_state.error);
+        assert_eq!(
+            final_state.phase,
+            RunPhase::Completed,
+            "修复后应完成:{:?}",
+            final_state.error
+        );
         assert_eq!(final_state.verify_attempts, 1, "恰好一轮修复");
         // 文件最终是修复后的内容。
         let content = std::fs::read_to_string(repo.join("out.txt")).unwrap();
@@ -1805,7 +2528,8 @@ mod tests {
         // 计划版本留痕:两条 Plan 消息(v1 未走消息流,这里是修复轮的 v2;至少一条 repair)。
         let messages = store::load_messages(&spec.run_id).unwrap();
         assert!(messages.iter().any(|m| m.kind == MessageKind::Evidence));
-        assert!(messages.iter().any(|m| m.kind == MessageKind::Plan && m.meta.as_ref().and_then(|v| v.get("repairRound")).is_some()));
+        assert!(messages.iter().any(|m| m.kind == MessageKind::Plan
+            && m.meta.as_ref().and_then(|v| v.get("repairRound")).is_some()));
         // 最终 plan.json 是 v2。
         let plan = store::load_plan(&spec.run_id).unwrap().unwrap();
         assert!(plan.steps[0].detail.contains("good"));
@@ -1819,13 +2543,36 @@ mod tests {
         let repo = std::env::temp_dir().join(format!("marionette-council-bound-{}", new_run_id()));
         let _ = std::fs::remove_dir_all(&repo);
         std::fs::create_dir_all(&repo).unwrap();
-        for args in [vec!["init", "-q"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
-            assert!(std::process::Command::new("git").args(args).current_dir(&repo).status().unwrap().success());
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "t@t"],
+            vec!["config", "user.name", "t"],
+        ] {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success());
         }
-        std::fs::write(repo.join("seed.txt"), "seed
-").unwrap();
-        assert!(std::process::Command::new("git").args(["add", "--all"]).current_dir(&repo).status().unwrap().success());
-        assert!(std::process::Command::new("git").args(["commit", "-q", "-m", "init"]).current_dir(&repo).status().unwrap().success());
+        std::fs::write(
+            repo.join("seed.txt"),
+            "seed
+",
+        )
+        .unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["add", "--all"])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .args(["commit", "-q", "-m", "init"])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
 
         let mut spec = setup_run(&sandbox, "bound");
         spec.mode = CouncilMode::Autonomous;
@@ -1846,8 +2593,16 @@ mod tests {
         store::save_plan(&spec.run_id, &plan).unwrap();
 
         let mut state = store::load_state(&spec.run_id).unwrap();
-        for hop in [RunPhase::Analyzing, RunPhase::Proposing, RunPhase::Reviewing, RunPhase::Synthesizing, RunPhase::PlanReady, RunPhase::Executing] {
-            let rec = crate::council::state::apply_transition(&mut state, hop, Some("test")).unwrap();
+        for hop in [
+            RunPhase::Analyzing,
+            RunPhase::Proposing,
+            RunPhase::Reviewing,
+            RunPhase::Synthesizing,
+            RunPhase::PlanReady,
+            RunPhase::Executing,
+        ] {
+            let rec =
+                crate::council::state::apply_transition(&mut state, hop, Some("test")).unwrap();
             store::append_transition(&spec.run_id, &rec).unwrap();
         }
         store::save_state(&state).unwrap();
@@ -1859,13 +2614,23 @@ mod tests {
         start_run(
             CouncilEventEmitter::new(None),
             spec.run_id.clone(),
-            RunClients { model: Some(mock), harness: Some(harness) },
+            RunClients {
+                model: Some(mock),
+                harness: Some(harness),
+            },
         )
         .unwrap();
         wait_phase(&spec.run_id, RunPhase::Failed, 120_000);
         let final_state = store::load_state(&spec.run_id).unwrap();
-        assert_eq!(final_state.verify_attempts, MAX_VERIFY_ATTEMPTS, "恰好用尽 3 次修复");
-        assert!(final_state.error.as_deref().unwrap_or("").contains("修复次数已用尽"));
+        assert_eq!(
+            final_state.verify_attempts, MAX_VERIFY_ATTEMPTS,
+            "恰好用尽 3 次修复"
+        );
+        assert!(final_state
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("修复次数已用尽"));
         let _ = std::fs::remove_dir_all(&repo);
     }
 
@@ -1888,32 +2653,58 @@ mod tests {
             vec![r#"{"verdict":"endorse","reason":"推理与结论一致"}"#.to_string()],
         );
         mock.enqueue(&spec.members[1].model, vec![MOCK_PLAN.to_string()]);
-        mock.enqueue(&spec.members[2].model, vec!["调研结论:三种备选方案".to_string()]);
+        mock.enqueue(
+            &spec.members[2].model,
+            vec!["调研结论:三种备选方案".to_string()],
+        );
 
         start_run(
             CouncilEventEmitter::new(None),
             spec.run_id.clone(),
-            RunClients { model: Some(mock.clone()), harness: None },
+            RunClients {
+                model: Some(mock.clone()),
+                harness: None,
+            },
         )
         .unwrap();
         wait_phase(&spec.run_id, RunPhase::PlanReady, 60_000);
 
         let messages = store::load_messages(&spec.run_id).unwrap();
-        let endorsements: Vec<&CouncilMessage> =
-            messages.iter().filter(|m| m.kind == MessageKind::Endorsement).collect();
+        let endorsements: Vec<&CouncilMessage> = messages
+            .iter()
+            .filter(|m| m.kind == MessageKind::Endorsement)
+            .collect();
         assert!(!endorsements.is_empty(), "应产生背书消息");
         for e in &endorsements {
             assert_eq!(e.from, spec.members[0].id, "背书只能由 lead 发出");
             let meta = e.meta.as_ref().unwrap();
-            assert_eq!(meta.get("targetAuthor").and_then(|v| v.as_str()), Some(spec.members[2].id.as_str()));
-            assert_eq!(meta.get("targetKind").and_then(|v| v.as_str()), Some("Proposal"));
-            assert_eq!(meta.get("verdict").and_then(|v| v.as_str()), Some("endorse"));
+            assert_eq!(
+                meta.get("targetAuthor").and_then(|v| v.as_str()),
+                Some(spec.members[2].id.as_str())
+            );
+            assert_eq!(
+                meta.get("targetKind").and_then(|v| v.as_str()),
+                Some("Proposal")
+            );
+            assert_eq!(
+                meta.get("verdict").and_then(|v| v.as_str()),
+                Some("endorse")
+            );
         }
         let calls = mock.calls.lock().unwrap().clone();
-        let synthesis_call = calls.iter().find(|c| c.prompt.contains("输出综合")).expect("有综合调用");
-        assert!(synthesis_call.prompt.contains("〔lead 背书:认可 1"), "综合输入应带背书标记");
+        let synthesis_call = calls
+            .iter()
+            .find(|c| c.prompt.contains("输出综合"))
+            .expect("有综合调用");
+        assert!(
+            synthesis_call.prompt.contains("〔lead 背书:认可 1"),
+            "综合输入应带背书标记"
+        );
         let stats = crate::council::formation::load_model_stats();
-        let entry = stats.models.get(&spec.members[2].model).expect("统计应含 contributor 模型");
+        let entry = stats
+            .models
+            .get(&spec.members[2].model)
+            .expect("统计应含 contributor 模型");
         assert_eq!(entry.runs, 1);
         assert!(entry.endorsed >= 1, "收到认可背书:{:?}", entry);
     }
@@ -1927,13 +2718,20 @@ mod tests {
         store::save_spec(&spec).unwrap();
         let mock = Arc::new(MockClient::new());
         for m in &spec.members {
-            let resp = if m.is_chair { MOCK_PLAN.to_string() } else { "resp".to_string() };
+            let resp = if m.is_chair {
+                MOCK_PLAN.to_string()
+            } else {
+                "resp".to_string()
+            };
             mock.enqueue(&m.model, vec![resp]);
         }
         start_run(
             CouncilEventEmitter::new(None),
             spec.run_id.clone(),
-            RunClients { model: Some(mock.clone()), harness: None },
+            RunClients {
+                model: Some(mock.clone()),
+                harness: None,
+            },
         )
         .unwrap();
         wait_phase(&spec.run_id, RunPhase::PlanReady, 60_000);
@@ -1943,7 +2741,10 @@ mod tests {
             "全员 lead 时不应有背书消息"
         );
         let calls = mock.calls.lock().unwrap().clone();
-        assert!(calls.iter().all(|c| !c.prompt.contains("待检验的产出")), "零背书调用");
+        assert!(
+            calls.iter().all(|c| !c.prompt.contains("待检验的产出")),
+            "零背书调用"
+        );
     }
 
     /// 背书否决路径:lead 全部 reject → synthesis 输入标「认可 0 / 否决」,
@@ -1961,17 +2762,29 @@ mod tests {
             vec![r#"{"verdict":"reject","reason":"复杂度分析错误,忽略了最坏情况"}"#.to_string()],
         );
         mock.enqueue(&spec.members[1].model, vec![MOCK_PLAN.to_string()]);
-        mock.enqueue(&spec.members[2].model, vec!["方案:用 O(n^2) 暴力扫描".to_string()]);
+        mock.enqueue(
+            &spec.members[2].model,
+            vec!["方案:用 O(n^2) 暴力扫描".to_string()],
+        );
         start_run(
             CouncilEventEmitter::new(None),
             spec.run_id.clone(),
-            RunClients { model: Some(mock.clone()), harness: None },
+            RunClients {
+                model: Some(mock.clone()),
+                harness: None,
+            },
         )
         .unwrap();
         wait_phase(&spec.run_id, RunPhase::PlanReady, 60_000);
         let calls = mock.calls.lock().unwrap().clone();
-        let synthesis_call = calls.iter().find(|c| c.prompt.contains("输出综合")).expect("有综合调用");
-        assert!(synthesis_call.prompt.contains("认可 0 / 否决 1"), "否决要在综合输入可见");
+        let synthesis_call = calls
+            .iter()
+            .find(|c| c.prompt.contains("输出综合"))
+            .expect("有综合调用");
+        assert!(
+            synthesis_call.prompt.contains("认可 0 / 否决 1"),
+            "否决要在综合输入可见"
+        );
         let messages = store::load_messages(&spec.run_id).unwrap();
         assert!(messages
             .iter()
@@ -1986,7 +2799,10 @@ mod tests {
         assert_eq!(plan.steps.len(), 1);
         assert_eq!(plan.verification, vec!["cargo test".to_string()]);
         assert!(parse_plan("不是 JSON").is_err());
-        assert!(parse_plan("{\"summary\":\"s\",\"steps\":[]}").is_err(), "空步骤拒绝");
+        assert!(
+            parse_plan("{\"summary\":\"s\",\"steps\":[]}").is_err(),
+            "空步骤拒绝"
+        );
     }
 
     /// Attention 门端到端(DSH 式):破坏性验证命令 → AwaitingApproval
@@ -1998,8 +2814,17 @@ mod tests {
         let repo = std::env::temp_dir().join(format!("marionette-council-attn-a-{}", new_run_id()));
         let _ = std::fs::remove_dir_all(&repo);
         std::fs::create_dir_all(&repo).unwrap();
-        for args in [vec!["init", "-q"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
-            assert!(std::process::Command::new("git").args(args).current_dir(&repo).status().unwrap().success());
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "t@t"],
+            vec!["config", "user.name", "t"],
+        ] {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success());
         }
         let mut spec = setup_run(&sandbox, "attn-approve");
         spec.mode = CouncilMode::Autonomous;
@@ -2018,8 +2843,16 @@ mod tests {
         .unwrap();
         store::save_plan(&spec.run_id, &plan).unwrap();
         let mut state = store::load_state(&spec.run_id).unwrap();
-        for hop in [RunPhase::Analyzing, RunPhase::Proposing, RunPhase::Reviewing, RunPhase::Synthesizing, RunPhase::PlanReady, RunPhase::Executing] {
-            let rec = crate::council::state::apply_transition(&mut state, hop, Some("test")).unwrap();
+        for hop in [
+            RunPhase::Analyzing,
+            RunPhase::Proposing,
+            RunPhase::Reviewing,
+            RunPhase::Synthesizing,
+            RunPhase::PlanReady,
+            RunPhase::Executing,
+        ] {
+            let rec =
+                crate::council::state::apply_transition(&mut state, hop, Some("test")).unwrap();
             store::append_transition(&spec.run_id, &rec).unwrap();
         }
         store::save_state(&state).unwrap();
@@ -2031,7 +2864,10 @@ mod tests {
         start_run(
             CouncilEventEmitter::new(None),
             spec.run_id.clone(),
-            RunClients { model: Some(mock.clone()), harness: Some(harness) },
+            RunClients {
+                model: Some(mock.clone()),
+                harness: Some(harness),
+            },
         )
         .unwrap();
         wait_phase(&spec.run_id, RunPhase::AwaitingApproval, 60_000);
@@ -2051,7 +2887,10 @@ mod tests {
             &spec.run_id,
             true,
             Some("我确认这条命令"),
-            RunClients { model: Some(mock.clone()), harness: Some(Arc::new(crate::council::executor::ScriptedHarness)) },
+            RunClients {
+                model: Some(mock.clone()),
+                harness: Some(Arc::new(crate::council::executor::ScriptedHarness)),
+            },
         )
         .unwrap();
         wait_phase(&spec.run_id, RunPhase::Completed, 120_000);
@@ -2062,9 +2901,14 @@ mod tests {
             "批准名单持久留痕"
         );
         assert_eq!(final_state.pending_approval, None);
-        assert_eq!(final_state.verify_attempts, 1, "批准的命令真执行并失败,恰好一轮修复");
+        assert_eq!(
+            final_state.verify_attempts, 1,
+            "批准的命令真执行并失败,恰好一轮修复"
+        );
         let messages = store::load_messages(&spec.run_id).unwrap();
-        assert!(messages.iter().any(|m| m.kind == MessageKind::Status && m.content.contains("批准放行")));
+        assert!(messages
+            .iter()
+            .any(|m| m.kind == MessageKind::Status && m.content.contains("批准放行")));
         let transitions = store::load_transitions(&spec.run_id).unwrap();
         assert!(transitions
             .iter()
@@ -2080,8 +2924,17 @@ mod tests {
         let repo = std::env::temp_dir().join(format!("marionette-council-attn-r-{}", new_run_id()));
         let _ = std::fs::remove_dir_all(&repo);
         std::fs::create_dir_all(&repo).unwrap();
-        for args in [vec!["init", "-q"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
-            assert!(std::process::Command::new("git").args(args).current_dir(&repo).status().unwrap().success());
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "t@t"],
+            vec!["config", "user.name", "t"],
+        ] {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success());
         }
         let mut spec = setup_run(&sandbox, "attn-reject");
         spec.mode = CouncilMode::Autonomous;
@@ -2098,8 +2951,16 @@ mod tests {
         .unwrap();
         store::save_plan(&spec.run_id, &plan).unwrap();
         let mut state = store::load_state(&spec.run_id).unwrap();
-        for hop in [RunPhase::Analyzing, RunPhase::Proposing, RunPhase::Reviewing, RunPhase::Synthesizing, RunPhase::PlanReady, RunPhase::Executing] {
-            let rec = crate::council::state::apply_transition(&mut state, hop, Some("test")).unwrap();
+        for hop in [
+            RunPhase::Analyzing,
+            RunPhase::Proposing,
+            RunPhase::Reviewing,
+            RunPhase::Synthesizing,
+            RunPhase::PlanReady,
+            RunPhase::Executing,
+        ] {
+            let rec =
+                crate::council::state::apply_transition(&mut state, hop, Some("test")).unwrap();
             store::append_transition(&spec.run_id, &rec).unwrap();
         }
         store::save_state(&state).unwrap();
@@ -2111,7 +2972,10 @@ mod tests {
         start_run(
             CouncilEventEmitter::new(None),
             spec.run_id.clone(),
-            RunClients { model: Some(mock.clone()), harness: Some(harness) },
+            RunClients {
+                model: Some(mock.clone()),
+                harness: Some(harness),
+            },
         )
         .unwrap();
         wait_phase(&spec.run_id, RunPhase::AwaitingApproval, 60_000);
@@ -2122,7 +2986,10 @@ mod tests {
             &spec.run_id,
             false,
             None,
-            RunClients { model: Some(mock.clone()), harness: Some(Arc::new(crate::council::executor::ScriptedHarness)) },
+            RunClients {
+                model: Some(mock.clone()),
+                harness: Some(Arc::new(crate::council::executor::ScriptedHarness)),
+            },
         )
         .unwrap();
         wait_phase(&spec.run_id, RunPhase::Completed, 120_000);
@@ -2136,7 +3003,10 @@ mod tests {
         // 全程最多进入 AwaitingApproval 一次(拒绝后不二次挂起)。
         let transitions = store::load_transitions(&spec.run_id).unwrap();
         assert_eq!(
-            transitions.iter().filter(|t| t.to == RunPhase::AwaitingApproval).count(),
+            transitions
+                .iter()
+                .filter(|t| t.to == RunPhase::AwaitingApproval)
+                .count(),
             1,
             "拒绝后不得再次挂起"
         );

@@ -74,13 +74,21 @@ pub fn load_config() -> ChiefConfig {
         Ok(raw) => match serde_json::from_str::<ChiefConfig>(&raw) {
             Ok(config) => config,
             Err(err) => {
-                warn("chief", "chief config unreadable — using defaults", Some(&err.to_string()));
+                warn(
+                    "chief",
+                    "chief config unreadable — using defaults",
+                    Some(&err.to_string()),
+                );
                 ChiefConfig::default()
             }
         },
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => ChiefConfig::default(),
         Err(err) => {
-            warn("chief", "chief config read failed — using defaults", Some(&err.to_string()));
+            warn(
+                "chief",
+                "chief config read failed — using defaults",
+                Some(&err.to_string()),
+            );
             ChiefConfig::default()
         }
     };
@@ -104,19 +112,30 @@ fn decode_tasks(raw: &str) -> Vec<Task> {
     let parsed: Value = match serde_json::from_str(raw) {
         Ok(value) => value,
         Err(err) => {
-            warn("chief", "tasks.json unreadable — starting empty", Some(&err.to_string()));
+            warn(
+                "chief",
+                "tasks.json unreadable — starting empty",
+                Some(&err.to_string()),
+            );
             return Vec::new();
         }
     };
     let list = if parsed.is_array() {
         parsed
     } else {
-        parsed.get("tasks").cloned().unwrap_or(Value::Array(Vec::new()))
+        parsed
+            .get("tasks")
+            .cloned()
+            .unwrap_or(Value::Array(Vec::new()))
     };
     match serde_json::from_value::<Vec<Task>>(list) {
         Ok(tasks) => tasks,
         Err(err) => {
-            warn("chief", "tasks.json entries unreadable — starting empty", Some(&err.to_string()));
+            warn(
+                "chief",
+                "tasks.json entries unreadable — starting empty",
+                Some(&err.to_string()),
+            );
             Vec::new()
         }
     }
@@ -132,7 +151,11 @@ pub fn load_tasks() -> Vec<Task> {
         Ok(raw) => decode_tasks(&raw),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(err) => {
-            warn("chief", "tasks.json read failed — starting empty", Some(&err.to_string()));
+            warn(
+                "chief",
+                "tasks.json read failed — starting empty",
+                Some(&err.to_string()),
+            );
             Vec::new()
         }
     }
@@ -171,7 +194,9 @@ pub fn find_by_request_id(request_id: &str) -> Option<Task> {
 }
 
 pub fn find_task(task_id: &str) -> Option<Task> {
-    load_tasks().into_iter().find(|task| task.task_id == task_id)
+    load_tasks()
+        .into_iter()
+        .find(|task| task.task_id == task_id)
 }
 
 /// 启动恢复：所有非终态任务标 `interrupted`（02-architecture.md §10.1：
@@ -233,9 +258,7 @@ pub fn prune_ledger(retention_ms: u64) -> Result<usize, String> {
     let mut kept: Vec<Task> = Vec::with_capacity(tasks.len());
     let mut dropped = 0usize;
     for task in tasks {
-        if !task.status.is_terminal()
-            || now.saturating_sub(task.updated_at) <= retention_ms
-        {
+        if !task.status.is_terminal() || now.saturating_sub(task.updated_at) <= retention_ms {
             kept.push(task);
         } else {
             dropped += 1;
@@ -487,10 +510,7 @@ mod tests {
         })
         .unwrap();
         let loaded = load_config();
-        assert_eq!(
-            loaded.mode,
-            super::super::types::RemoteWorkMode::Chief
-        );
+        assert_eq!(loaded.mode, super::super::types::RemoteWorkMode::Chief);
         assert_eq!(loaded.max_concurrent_workers, 2);
         // 坏档 fail-open
         std::fs::write(root.join("config.json"), "{not json").unwrap();
@@ -554,7 +574,10 @@ mod tests {
             .filter(|t| t.task_id == running.task_id || t.task_id == waiting.task_id)
             .map(|t| t.status)
             .collect();
-        assert_eq!(statuses, vec![TaskStatus::Interrupted, TaskStatus::Interrupted]);
+        assert_eq!(
+            statuses,
+            vec![TaskStatus::Interrupted, TaskStatus::Interrupted]
+        );
         // completed 不被碰
         let done_now = find_task(&done.task_id).unwrap();
         assert_eq!(done_now.status, TaskStatus::Completed);
@@ -647,10 +670,7 @@ mod tests {
         .unwrap();
         let dropped = prune_ledger(30 * 24 * 3600 * 1000).unwrap();
         assert_eq!(dropped, 1);
-        let remaining: Vec<String> = load_tasks()
-            .into_iter()
-            .map(|t| t.task_id)
-            .collect();
+        let remaining: Vec<String> = load_tasks().into_iter().map(|t| t.task_id).collect();
         assert!(!remaining.contains(&stale_id), "40 天前的终态任务应被修剪");
         assert!(remaining.contains(&fresh_id), "新完成的终态任务保留");
         assert!(

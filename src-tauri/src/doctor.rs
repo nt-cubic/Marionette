@@ -50,7 +50,13 @@ struct Finding {
 
 impl Finding {
     fn new(area: &'static str, level: Level, title: impl Into<String>) -> Self {
-        Self { area, level, title: title.into(), lines: Vec::new(), fix: None }
+        Self {
+            area,
+            level,
+            title: title.into(),
+            lines: Vec::new(),
+            fix: None,
+        }
     }
     fn line(mut self, line: impl Into<String>) -> Self {
         self.lines.push(line.into());
@@ -116,8 +122,20 @@ pub fn run_cli() -> i32 {
 fn render(findings: &[Finding]) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "Marionette doctor  v{}", env!("CARGO_PKG_VERSION"));
-    let _ = writeln!(out, "exe  : {}", std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default());
-    let _ = writeln!(out, "home : {}", crate::app_paths::global_dir().map(|p| p.display().to_string()).unwrap_or_else(|e| e));
+    let _ = writeln!(
+        out,
+        "exe  : {}",
+        std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default()
+    );
+    let _ = writeln!(
+        out,
+        "home : {}",
+        crate::app_paths::global_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|e| e)
+    );
     let _ = writeln!(out, "{}", "-".repeat(72));
     for f in findings {
         let _ = writeln!(out, "[{}] {:<10} {}", f.level.tag(), f.area, f.title);
@@ -134,7 +152,11 @@ fn render(findings: &[Finding]) -> String {
     let fail = findings.iter().filter(|f| f.level == Level::Fail).count();
     let _ = writeln!(out, "{ok} ok / {warn} warn / {fail} fail");
     if let Ok(home) = crate::app_paths::global_dir() {
-        let _ = writeln!(out, "report: {}", home.join("logs").join("doctor-report.txt").display());
+        let _ = writeln!(
+            out,
+            "report: {}",
+            home.join("logs").join("doctor-report.txt").display()
+        );
     }
     out
 }
@@ -151,7 +173,10 @@ fn collect() -> (Vec<Finding>, i32) {
     findings.push(check_providers(home.as_deref()));
     findings.push(check_bindings(home.as_deref(), &catalog_ids));
     findings.push(check_session_prefs(home.as_deref(), &catalog_ids));
-    findings.push(check_codex(engine_live.map(|(port, _)| port)));
+    findings.push(check_codex(
+        engine_live.map(|(port, _)| port),
+        codex_session_bound(home.as_deref()),
+    ));
     findings.push(check_logs(home.as_deref()));
 
     let exit = if findings.iter().any(|f| f.level == Level::Fail) {
@@ -176,10 +201,47 @@ fn check_data_dir() -> Finding {
     }
 }
 
+/// What the live probe learned.
+enum EngineProbe {
+    Serving {
+        port: u16,
+        models: usize,
+    },
+    /// The port answered but refused our bearer token. This is its own state:
+    /// a fresh process only knows the fallback literal, the real token lives in
+    /// `<engine_dir>/serve-token.txt`, and reporting "not running" here is a lie
+    /// that sends the user chasing the wrong problem.
+    Unauthorized {
+        port: u16,
+    },
+    Absent,
+}
+
+/// The bearer token the running engine expects. `engine::gateway_token()` is
+/// per-process (None in a fresh doctor process -> literal fallback), so read the
+/// installation token off disk first, exactly like the engine does on startup.
+fn probe_token() -> String {
+    if let Ok(dir) = crate::engine::engine_dir() {
+        if let Ok(text) = std::fs::read_to_string(dir.join("serve-token.txt")) {
+            let token = text.trim();
+            if !token.is_empty() {
+                return token.to_string();
+            }
+        }
+    }
+    crate::engine::gateway_token()
+}
+
 /// Live engine probe from *another* process: `serve.json` first, then the
-/// historical default ports. Returns (port, models).
-fn probe_engine() -> Option<(u16, usize)> {
-    let token = crate::engine::gateway_token();
+/// historical default ports.
+///
+/// Two passes on purpose: the FIRST `/v1/models` against a cold engine builds
+/// the whole catalog (7.4s measured 2026-11-27 with 686 models), so a short
+/// liveness timeout would report "not running" while the port is in fact
+/// serving. Pass 1 is fast per port; pass 2 gives the authoritative port a
+/// generous budget so "asleep" and "slow to answer once" stay distinguishable.
+fn probe_engine() -> EngineProbe {
+    let token = probe_token();
     let mut candidates: Vec<u16> = Vec::new();
     if let Ok(dir) = crate::engine::engine_dir() {
         if let Ok(text) = std::fs::read_to_string(dir.join("serve.json")) {
@@ -190,38 +252,54 @@ fn probe_engine() -> Option<(u16, usize)> {
             }
         }
     }
+    let authoritative = candidates.first().copied().unwrap_or(3425);
     for port in [3425u16, 3426, 3427, 3428, 3429] {
         if !candidates.contains(&port) {
             candidates.push(port);
         }
     }
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_millis(800))
-        .build();
-    for port in candidates {
-        let url = format!("http://127.0.0.1:{port}/v1/models");
-        let Ok(resp) = agent
-            .get(&url)
-            .set("Authorization", &format!("Bearer {token}"))
-            .call()
-        else {
-            continue;
-        };
-        let count = resp
-            .into_json::<serde_json::Value>()
-            .ok()
-            .and_then(|v| v.get("data").and_then(|d| d.as_array()).map(|a| a.len()))
-            .unwrap_or(0);
-        if count > 0 {
-            return Some((port, count));
+    let mut denied: Option<u16> = None;
+    let passes: [(u64, Vec<u16>); 2] = [(800, candidates), (25_000, vec![authoritative])];
+    for (timeout_ms, ports) in passes {
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_millis(timeout_ms))
+            .build();
+        for port in ports {
+            let url = format!("http://127.0.0.1:{port}/v1/models");
+            let resp = match agent
+                .get(&url)
+                .set("Authorization", &format!("Bearer {token}"))
+                .call()
+            {
+                Ok(resp) => resp,
+                Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
+                    denied = Some(port);
+                    continue;
+                }
+                Err(_) => continue,
+            };
+            let count = resp
+                .into_json::<serde_json::Value>()
+                .ok()
+                .and_then(|v| v.get("data").and_then(|d| d.as_array()).map(|a| a.len()))
+                .unwrap_or(0);
+            if count > 0 {
+                return EngineProbe::Serving {
+                    port,
+                    models: count,
+                };
+            }
         }
     }
-    None
+    match denied {
+        Some(port) => EngineProbe::Unauthorized { port },
+        None => EngineProbe::Absent,
+    }
 }
 
 fn check_engine() -> (Option<(u16, usize)>, Finding) {
     match probe_engine() {
-        Some((port, models)) => (
+        EngineProbe::Serving { port, models } => (
             Some((port, models)),
             Finding::new(
                 "engine",
@@ -229,7 +307,18 @@ fn check_engine() -> (Option<(u16, usize)>, Finding) {
                 format!("serving on 127.0.0.1:{port} ({models} models)"),
             ),
         ),
-        None => (
+        EngineProbe::Unauthorized { port } => (
+            None,
+            Finding::new(
+                "engine",
+                Level::Warn,
+                format!("127.0.0.1:{port} answered 401 with the token on disk"),
+            )
+            .line("The engine is up but rejects the bearer token from engine/serve-token.txt.")
+            .line("Every bridge injection and every shared request would be refused.")
+            .fix("Restart Marionette (it re-mints the token when the file is unreadable)."),
+        ),
+        EngineProbe::Absent => (
             None,
             Finding::new("engine", Level::Warn, "not running (not answered on 127.0.0.1:3425-3429)")
                 .line("Bridges that are injected at spawn time (opencode/pi/dsh/zcode, codex alias) are only written while the engine is up.")
@@ -249,10 +338,18 @@ fn check_catalog(engine_running: bool) -> (Vec<String>, Finding) {
                 .fix("Open model settings once and press refresh; check the engine log if sources are red."),
         );
     }
-    let source = if offline || !engine_running { "offline cache" } else { "live" };
+    let source = if offline || !engine_running {
+        "offline cache"
+    } else {
+        "live"
+    };
     (
         ids,
-        Finding::new("catalog", Level::Ok, format!("{} models ({source})", rows.len())),
+        Finding::new(
+            "catalog",
+            Level::Ok,
+            format!("{} models ({source})", rows.len()),
+        ),
     )
 }
 
@@ -266,10 +363,16 @@ fn check_providers(home: Option<&Path>) -> Finding {
     }
     let parsed = std::fs::read_to_string(&path)
         .map_err(|e| e.to_string())
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).map_err(|e| e.to_string()));
+        .and_then(|text| {
+            serde_json::from_str::<serde_json::Value>(&text).map_err(|e| e.to_string())
+        });
     match parsed {
         Ok(value) => {
-            let list = value.get("providers").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let list = value
+                .get("providers")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
             if list.is_empty() {
                 Finding::new("providers", Level::Warn, "no registered sources")
                     .fix("Add an API key or sign in to a subscription in model settings.")
@@ -308,12 +411,20 @@ fn check_bindings(home: Option<&Path>, catalog: &[String]) -> Finding {
         .collect();
     dead.sort();
     if dead.is_empty() {
-        Finding::new("bindings", Level::Ok, format!("{} binding(s), all resolvable", file.bindings.len()))
+        Finding::new(
+            "bindings",
+            Level::Ok,
+            format!("{} binding(s), all resolvable", file.bindings.len()),
+        )
     } else {
         let mut f = Finding::new(
             "bindings",
             Level::Warn,
-            format!("{} of {} binding(s) point at a model the engine no longer lists", dead.len(), file.bindings.len()),
+            format!(
+                "{} of {} binding(s) point at a model the engine no longer lists",
+                dead.len(),
+                file.bindings.len()
+            ),
         );
         for (sid, model) in dead.iter().take(5) {
             f = f.line(format!("{sid} -> {model}"));
@@ -335,26 +446,48 @@ fn check_session_prefs(home: Option<&Path>, catalog: &[String]) -> Finding {
         if let Ok(list) = serde_json::from_str::<Vec<serde_json::Value>>(&text) {
             for project in list {
                 if let Some(root) = project.get("rootPath").and_then(|v| v.as_str()) {
-                    files.push(crate::app_paths::project_dir(Path::new(root)).join("sessions").join("index.json"));
+                    files.push(
+                        crate::app_paths::project_dir(Path::new(root))
+                            .join("sessions")
+                            .join("index.json"),
+                    );
                 }
             }
         }
     }
 
     for file in files {
-        let Ok(text) = std::fs::read_to_string(&file) else { continue };
-        let Ok(list) = serde_json::from_str::<Vec<serde_json::Value>>(&text) else { continue };
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let Ok(list) = serde_json::from_str::<Vec<serde_json::Value>>(&text) else {
+            continue;
+        };
         for session in list {
-            let pref = session.get("preferredModel").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let pref = session
+                .get("preferredModel")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
             if pref.is_empty() {
                 continue;
             }
             total += 1;
-            let Some(inner) = bridge_wire_inner(pref) else { continue };
+            let Some(inner) = bridge_wire_inner(pref) else {
+                continue;
+            };
             if !catalog.iter().any(|id| id == inner) {
                 stale.push((
-                    session.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string(),
-                    session.get("agentId").and_then(|v| v.as_str()).unwrap_or("?").to_string(),
+                    session
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?")
+                        .to_string(),
+                    session
+                        .get("agentId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?")
+                        .to_string(),
                     pref.to_string(),
                 ));
             }
@@ -362,12 +495,19 @@ fn check_session_prefs(home: Option<&Path>, catalog: &[String]) -> Finding {
     }
 
     if stale.is_empty() {
-        Finding::new("session-prefs", Level::Ok, format!("{total} saved model choice(s), all resolvable"))
+        Finding::new(
+            "session-prefs",
+            Level::Ok,
+            format!("{total} saved model choice(s), all resolvable"),
+        )
     } else {
         let mut f = Finding::new(
             "session-prefs",
             Level::Warn,
-            format!("{} saved choice(s) name a shared model the engine no longer lists", stale.len()),
+            format!(
+                "{} saved choice(s) name a shared model the engine no longer lists",
+                stale.len()
+            ),
         );
         for (sid, agent, pref) in stale.iter().take(5) {
             f = f.line(format!("{sid} [{agent}] -> {pref}"));
@@ -376,13 +516,64 @@ fn check_session_prefs(home: Option<&Path>, catalog: &[String]) -> Finding {
     }
 }
 
-fn check_codex(engine_base: Option<u16>) -> Finding {
+/// Is any codex session currently set to a shared (engine) model? Only then
+/// does a missing `~/.codex/config.toml` bridge matter: with no shared pick,
+/// codex sessions legitimately use the subscription and warning every run would
+/// cry wolf (the "green means quiet" rule).
+fn codex_session_bound(home: Option<&Path>) -> bool {
+    let Some(home) = home else { return false };
+    let mut files = vec![home.join("chats").join("sessions").join("index.json")];
+    if let Ok(text) = std::fs::read_to_string(home.join("projects.json")) {
+        if let Ok(list) = serde_json::from_str::<Vec<serde_json::Value>>(&text) {
+            for project in list {
+                if let Some(root) = project.get("rootPath").and_then(|v| v.as_str()) {
+                    files.push(
+                        crate::app_paths::project_dir(Path::new(root))
+                            .join("sessions")
+                            .join("index.json"),
+                    );
+                }
+            }
+        }
+    }
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let Ok(list) = serde_json::from_str::<Vec<serde_json::Value>>(&text) else {
+            continue;
+        };
+        for session in list {
+            let agent = session
+                .get("agentId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if agent != "codex" && agent != "codex-acp" {
+                continue;
+            }
+            let pref = session
+                .get("preferredModel")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if bridge_wire_inner(pref).is_some() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn check_codex(engine_base: Option<u16>, session_bound: bool) -> Finding {
     let Some(home) = std::env::var_os("USERPROFILE").map(PathBuf::from) else {
         return Finding::new("codex", Level::Ok, "skipped");
     };
     let config = home.join(".codex").join("config.toml");
     if !config.exists() {
-        return Finding::new("codex", Level::Ok, "not installed (no ~/.codex/config.toml)");
+        return Finding::new(
+            "codex",
+            Level::Ok,
+            "not installed (no ~/.codex/config.toml)",
+        );
     }
     let text = std::fs::read_to_string(&config).unwrap_or_default();
     let points_at_engine = text.contains("127.0.0.1") || text.contains("localhost");
@@ -397,6 +588,11 @@ fn check_codex(engine_base: Option<u16>) -> Finding {
                     .fix("Open a Codex session once; the next spawn rewrites providers/set.")
             }
         }
+        (Some(_), false) if !session_bound => Finding::new(
+            "codex",
+            Level::Ok,
+            "native only (engine up, no codex session on a shared model)",
+        ),
         (Some(_), false) => Finding::new("codex", Level::Warn, "engine is running but ~/.codex/config.toml is not bridged")
             .fix("Open a Codex session with a shared model bound; if it still uses the subscription, that is the burn case."),
         (None, true) => Finding::new("codex", Level::Ok, "bridged, engine asleep (starts on demand)")
@@ -411,13 +607,20 @@ fn check_logs(home: Option<&Path>) -> Finding {
     };
     let dir = home.join("logs");
     let mut hits: Vec<(u128, String)> = Vec::new();
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
     let window = Duration::from_secs(24 * 3600).as_millis();
 
     for name in ["dev.log", "dev.log.1"] {
-        let Ok(text) = std::fs::read_to_string(dir.join(name)) else { continue };
+        let Ok(text) = std::fs::read_to_string(dir.join(name)) else {
+            continue;
+        };
         for line in text.lines() {
-            if !(line.contains("[warn]") || line.contains("[error]")) || line.contains("session/update") {
+            if !(line.contains("[warn]") || line.contains("[error]"))
+                || line.contains("session/update")
+            {
                 continue;
             }
             if !DEGRADED_MARKERS.iter().any(|m| line.contains(m)) {
@@ -439,10 +642,18 @@ fn check_logs(home: Option<&Path>) -> Finding {
     }
 
     if hits.is_empty() {
-        return Finding::new("logs", Level::Ok, "no degraded wiring lines in the last 24h");
+        return Finding::new(
+            "logs",
+            Level::Ok,
+            "no degraded wiring lines in the last 24h",
+        );
     }
     hits.sort_by_key(|(ts, _)| *ts);
-    let mut f = Finding::new("logs", Level::Warn, format!("{} degraded wiring line(s) in the last 24h", hits.len()));
+    let mut f = Finding::new(
+        "logs",
+        Level::Warn,
+        format!("{} degraded wiring line(s) in the last 24h", hits.len()),
+    );
     for (_, line) in hits.iter().rev().take(3) {
         f = f.line(short(line, 180));
     }
@@ -457,15 +668,17 @@ fn apply_fixes() -> Vec<Finding> {
     let Some(home) = crate::app_paths::global_dir().ok() else {
         return vec![Finding::new("fix", Level::Fail, "no data dir")];
     };
-    if probe_engine().is_some() {
+    if !matches!(probe_engine(), EngineProbe::Absent) {
         return vec![Finding::new("fix", Level::Fail, "close Marionette first")
             .line("The running app keeps sessions and bindings in memory; it would overwrite these repairs.")];
     }
     let (rows, _) = crate::engine::catalog_direct_or_cached_entries();
     let catalog: Vec<String> = rows.into_iter().map(|row| row.id).collect();
     if catalog.is_empty() {
-        return vec![Finding::new("fix", Level::Fail, "no catalog to compare against")
-            .line("Run the app once so the engine writes a catalog, then retry.")];
+        return vec![
+            Finding::new("fix", Level::Fail, "no catalog to compare against")
+                .line("Run the app once so the engine writes a catalog, then retry."),
+        ];
     }
     let mut out = fix_bindings(&home, &catalog);
     out.extend(fix_session_prefs(&home, &catalog));
@@ -481,8 +694,10 @@ fn fix_bindings(home: &Path, catalog: &[String]) -> Vec<Finding> {
         return Vec::new();
     }
     let Ok(mut file) = crate::model_bridge::load_bindings_at(&path) else {
-        return vec![Finding::new("fix", Level::Fail, "bridge-bindings.json unreadable")
-            .fix("Delete it; sessions fall back to their own model.")];
+        return vec![
+            Finding::new("fix", Level::Fail, "bridge-bindings.json unreadable")
+                .fix("Delete it; sessions fall back to their own model."),
+        ];
     };
     let before = file.bindings.len();
     let dead: Vec<String> = file
@@ -499,10 +714,18 @@ fn fix_bindings(home: &Path, catalog: &[String]) -> Vec<Finding> {
         file.bindings.remove(sid);
     }
     let Ok(body) = serde_json::to_string_pretty(&file) else {
-        return vec![Finding::new("fix", Level::Fail, "could not serialise bindings")];
+        return vec![Finding::new(
+            "fix",
+            Level::Fail,
+            "could not serialise bindings",
+        )];
     };
     if std::fs::write(&path, format!("{body}\n")).is_err() {
-        return vec![Finding::new("fix", Level::Fail, "could not write bridge-bindings.json")];
+        return vec![Finding::new(
+            "fix",
+            Level::Fail,
+            "could not write bridge-bindings.json",
+        )];
     }
     vec![Finding::new(
         "fix",
@@ -516,8 +739,12 @@ fn fix_session_prefs(home: &Path, catalog: &[String]) -> Vec<Finding> {
     let mut cleared = 0usize;
     let mut touched: Vec<String> = Vec::new();
     for file in session_index_files(home) {
-        let Ok(text) = std::fs::read_to_string(&file) else { continue };
-        let Ok(mut list) = serde_json::from_str::<Vec<serde_json::Value>>(&text) else { continue };
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let Ok(mut list) = serde_json::from_str::<Vec<serde_json::Value>>(&text) else {
+            continue;
+        };
         let mut changed = false;
         for session in list.iter_mut() {
             let pref = session
@@ -525,7 +752,9 @@ fn fix_session_prefs(home: &Path, catalog: &[String]) -> Vec<Finding> {
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
             let Some(pref) = pref else { continue };
-            let Some(inner) = bridge_wire_inner(&pref) else { continue };
+            let Some(inner) = bridge_wire_inner(&pref) else {
+                continue;
+            };
             if catalog.iter().any(|id| id == inner) {
                 continue;
             }
@@ -595,4 +824,3 @@ fn short(text: &str, max: usize) -> String {
     out.push_str("...");
     out
 }
-

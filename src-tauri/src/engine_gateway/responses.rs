@@ -181,7 +181,12 @@ fn attempt(
         )
     };
     if !responses_url.is_empty() {
-        let target = DirectTarget { provider_id: &cand.provider, base: &responses_url, key: &key, headers: &headers };
+        let target = DirectTarget {
+            provider_id: &cand.provider,
+            base: &responses_url,
+            key: &key,
+            headers: &headers,
+        };
         match passthrough(gateway, &target, body, &cand.model, log) {
             // 预设表给了 responses 端点不等于厂商真有（DeepSeek 一类：用户机上
             // magpie 学到后把它清空了）：端点不存在（404/405/501）且来源有 chat
@@ -214,7 +219,9 @@ fn attempt(
 /// native Responses target = 端点在、但模型不是原生 Responses，codex 带的
 /// `reasoning.context` 不能直通。翻译路径不转发 `reasoning.context`。
 fn passthrough_fallback_to_chat(reply: &Reply) -> bool {
-    let Reply::Json { status, body } = reply else { return false };
+    let Reply::Json { status, body } = reply else {
+        return false;
+    };
     match *status {
         404 | 405 | 501 => true,
         400 => native_responses_reasoning_context_refusal(body),
@@ -276,17 +283,20 @@ fn passthrough(
 ) -> Attempt {
     let out_body = rewrite_model(body, bare);
     // cap 已知时先合身再发（免吃一次拒答）。
-    let out_body = bodycap::prefit_shape(gateway, target.provider_id, bodycap::Shape::Responses, &out_body)
-        .unwrap_or(out_body);
+    let out_body = bodycap::prefit_shape(
+        gateway,
+        target.provider_id,
+        bodycap::Shape::Responses,
+        &out_body,
+    )
+    .unwrap_or(out_body);
     let streaming = serde_json::from_slice::<Value>(&out_body)
         .ok()
         .and_then(|v| v.get("stream").and_then(|s| s.as_bool()))
         .unwrap_or(false);
     let response = match send_direct(target, &out_body) {
         Ok(r) => r,
-        Err(e) => {
-            return Attempt::Retry(Reply::error(502, &format!("responses passthrough: {e}")))
-        }
+        Err(e) => return Attempt::Retry(Reply::error(502, &format!("responses passthrough: {e}"))),
     };
     let status = response.status();
     if status < 400 {
@@ -302,12 +312,21 @@ fn passthrough(
             return Attempt::Done(Reply::Stream {
                 status,
                 content_type: response.content_type().to_string(),
-                reader: Box::new(super::usage_ledger::TapReader::new(tap, response.into_reader())),
+                reader: Box::new(super::usage_ledger::TapReader::new(
+                    tap,
+                    response.into_reader(),
+                )),
             });
         }
         let mut buf = Vec::new();
         let _ = response.into_reader().read_to_end(&mut buf);
-        log.whole(&gateway.usage, super::usage_ledger::Dialect::Responses, target.provider_id, status, &buf);
+        log.whole(
+            &gateway.usage,
+            super::usage_ledger::Dialect::Responses,
+            target.provider_id,
+            status,
+            &buf,
+        );
         return Attempt::Done(Reply::Json { status, body: buf });
     }
     let mut buf = Vec::new();
@@ -325,7 +344,11 @@ fn passthrough(
     }
     let retry = super::groups::retryable(status, &buf);
     let reply = Reply::Json { status, body: buf };
-    if retry { Attempt::Retry(reply) } else { Attempt::Done(reply) }
+    if retry {
+        Attempt::Retry(reply)
+    } else {
+        Attempt::Done(reply)
+    }
 }
 
 /// bodycap refit 重发的终局应答挂 usage 记账（流包 tap、整块扫描）。
@@ -336,8 +359,17 @@ fn tapped(
     provider: &str,
 ) -> Reply {
     match reply {
-        Reply::Stream { status, content_type, reader } => {
-            let tap = log.tap(gateway.usage.clone(), super::usage_ledger::Dialect::Responses, provider, status);
+        Reply::Stream {
+            status,
+            content_type,
+            reader,
+        } => {
+            let tap = log.tap(
+                gateway.usage.clone(),
+                super::usage_ledger::Dialect::Responses,
+                provider,
+                status,
+            );
             Reply::Stream {
                 status,
                 content_type,
@@ -346,7 +378,13 @@ fn tapped(
         }
         Reply::Json { status, body } => {
             if status < 400 {
-                log.whole(&gateway.usage, super::usage_ledger::Dialect::Responses, provider, status, &body);
+                log.whole(
+                    &gateway.usage,
+                    super::usage_ledger::Dialect::Responses,
+                    provider,
+                    status,
+                    &body,
+                );
             }
             Reply::Json { status, body }
         }
@@ -385,13 +423,16 @@ fn prev_merge(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let store = parsed.get("store").and_then(|v| v.as_bool()).unwrap_or(false);
+    let store = parsed
+        .get("store")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     // Go prevInput：串 → 一条 user message item；数组 → items 原样；其它不读。
     let fresh_items = |v: &Value| -> Option<Vec<Value>> {
         match v.get("input") {
-            Some(Value::String(s)) => {
-                Some(vec![json!({ "type": "message", "role": "user", "content": s })])
-            }
+            Some(Value::String(s)) => Some(vec![
+                json!({ "type": "message", "role": "user", "content": s }),
+            ]),
             Some(Value::Array(items)) => Some(items.clone()),
             _ => None,
         }
@@ -408,21 +449,30 @@ fn prev_merge(
                         map.remove("previous_response_id");
                     }
                     if store {
-                        let save = PrevSave { store: gateway.prev.clone(), input: Value::Array(items) };
+                        let save = PrevSave {
+                            store: gateway.prev.clone(),
+                            input: Value::Array(items),
+                        };
                         return Ok((parsed, Some(save)));
                     }
                     return Ok((parsed, None));
                 }
                 None => {
                     let (status, body) = super::prev_response::prev_not_found(&prev_id);
-                    return Err(Reply::Json { status, body: serde_json::to_vec(&body).unwrap_or_default() });
+                    return Err(Reply::Json {
+                        status,
+                        body: serde_json::to_vec(&body).unwrap_or_default(),
+                    });
                 }
             }
         }
     }
     if store {
         if let Some(items) = fresh_items(&parsed) {
-            let save = PrevSave { store: gateway.prev.clone(), input: Value::Array(items) };
+            let save = PrevSave {
+                store: gateway.prev.clone(),
+                input: Value::Array(items),
+            };
             return Ok((parsed, Some(save)));
         }
     }
@@ -519,7 +569,16 @@ fn translate_via_chat(
     // 入站头尚未穿进 responses 翻译路径（差距清单）：体派生种子（同 messages.rs 注）。
     let oc = super::opencode_client::gateway_ctx(&[], &chat_body);
     match super::chat::attempt(gateway, cand, &chat_body, &oc) {
-        Attempt::Done(reply) => Attempt::Done(reshape(reply, &asked, &table, scout, prev, gateway, &cand.provider, log)),
+        Attempt::Done(reply) => Attempt::Done(reshape(
+            reply,
+            &asked,
+            &table,
+            scout,
+            prev,
+            gateway,
+            &cand.provider,
+            log,
+        )),
         Attempt::Retry(reply) => Attempt::Retry(reply),
     }
 }
@@ -554,7 +613,13 @@ pub(super) fn reshape(
                         let mut resp = chat_completion_to_response(&v, asked, table);
                         seal_prev(&mut resp, prev, asked);
                         let out = serde_json::to_vec(&resp).unwrap_or(body);
-                        log.whole(&gateway.usage, super::usage_ledger::Dialect::Responses, provider, status, &out);
+                        log.whole(
+                            &gateway.usage,
+                            super::usage_ledger::Dialect::Responses,
+                            provider,
+                            status,
+                            &out,
+                        );
                         Reply::Json { status, body: out }
                     }
                     // 2xx 但不是 JSON：翻译路径的客户端说的是 responses 话，
@@ -565,7 +630,11 @@ pub(super) fn reshape(
                 Reply::Json { status, body }
             }
         }
-        Reply::Stream { status, content_type, mut reader } => {
+        Reply::Stream {
+            status,
+            content_type,
+            mut reader,
+        } => {
             if status != 200 {
                 // 流式请求吃到错误：chat.rs 把 4xx 也包成 Stream 透传，但
                 // 这里的客户端期待 responses SSE——读全量按错误面透传，
@@ -588,8 +657,17 @@ pub(super) fn reshape(
                         let mut resp = chat_completion_to_response(&v, asked, table);
                         seal_prev(&mut resp, prev, asked);
                         let out = serde_json::to_vec(&resp).unwrap_or(buf);
-                        log.whole(&gateway.usage, super::usage_ledger::Dialect::Responses, provider, 200, &out);
-                        Reply::Json { status: 200, body: out }
+                        log.whole(
+                            &gateway.usage,
+                            super::usage_ledger::Dialect::Responses,
+                            provider,
+                            200,
+                            &out,
+                        );
+                        Reply::Json {
+                            status: 200,
+                            body: out,
+                        }
                     }
                     Err(_) => Reply::error(502, "chat vendor replied a non-JSON body"),
                 };
@@ -601,7 +679,12 @@ pub(super) fn reshape(
             if let Some(p) = prev {
                 sse = sse.with_prev(p);
             }
-            let tap = log.tap(gateway.usage.clone(), super::usage_ledger::Dialect::Responses, provider, 200);
+            let tap = log.tap(
+                gateway.usage.clone(),
+                super::usage_ledger::Dialect::Responses,
+                provider,
+                200,
+            );
             Reply::Stream {
                 status: 200,
                 content_type: "text/event-stream".into(),
@@ -619,7 +702,9 @@ pub(super) fn reshape(
 /// usage 捕获层（usage_ledger 的 responses 方言）同字段提桶。
 fn usage_to_responses(u: Option<&Value>) -> Value {
     let num = |v: Option<&Value>, k: &str| {
-        v.and_then(|x| x.get(k)).and_then(|x| x.as_u64()).unwrap_or(0)
+        v.and_then(|x| x.get(k))
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0)
     };
     let input = num(u, "prompt_tokens");
     let output = num(u, "completion_tokens");
@@ -672,7 +757,11 @@ fn content_text(content: Option<&Value>) -> String {
 /// function_call item（codex 工具回路的非流式形态）。finish_reason 的
 /// length / content_filter → status incomplete（OpenAI 的语义），其余
 /// completed。empty 回合的 output 是空数组——不是 null。
-fn chat_completion_to_response(v: &Value, asked: &str, table: &super::translate::ToolTable) -> Value {
+fn chat_completion_to_response(
+    v: &Value,
+    asked: &str,
+    table: &super::translate::ToolTable,
+) -> Value {
     let mut output: Vec<Value> = Vec::new();
     if let Some(msg) = v.pointer("/choices/0/message") {
         // 思考（DeepSeek 等的 reasoning_content）→ reasoning item，排在正文前。
@@ -701,7 +790,11 @@ fn chat_completion_to_response(v: &Value, asked: &str, table: &super::translate:
                 // flat 名按请求的还原表变回 Codex 认的 item（Go callTo）：
                 // custom -> custom_tool_call(input) / 命名空间 -> function_call + namespace /
                 // tool_search -> tool_search_call；普通工具原样。
-                let flat = tc.pointer("/function/name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                let flat = tc
+                    .pointer("/function/name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let mut item = json!({
                     "type": "function_call", "status": "completed",
                     "call_id": tc.get("id").cloned()
@@ -715,7 +808,11 @@ fn chat_completion_to_response(v: &Value, asked: &str, table: &super::translate:
                         .unwrap_or_else(|| json!("{}")),
                 });
                 super::translate::call_to(&mut item, &flat, table);
-                item["id"] = json!(format!("{}{}", super::translate::call_item_prefix(&item), fresh_suffix()));
+                item["id"] = json!(format!(
+                    "{}{}",
+                    super::translate::call_item_prefix(&item),
+                    fresh_suffix()
+                ));
                 output.push(item);
             }
         }
@@ -874,7 +971,13 @@ impl ResponsesSse {
     }
 
     /// response 对象（created 的占位 / completed 的完整形态）。
-    fn response_object(&self, status: &str, output: Value, usage: Value, incomplete: Value) -> Value {
+    fn response_object(
+        &self,
+        status: &str,
+        output: Value,
+        usage: Value,
+        incomplete: Value,
+    ) -> Value {
         json!({
             "id": self.resp_id,
             "object": "response",
@@ -947,7 +1050,10 @@ impl ResponsesSse {
             json!({"item_id": &id, "output_index": idx, "summary_index": 0, "part": part.clone()}),
         );
         let item = json!({"id": id, "type": "reasoning", "status": "completed", "summary": [part]});
-        self.frame("response.output_item.done", json!({"output_index": idx, "item": item.clone()}));
+        self.frame(
+            "response.output_item.done",
+            json!({"output_index": idx, "item": item.clone()}),
+        );
         self.items.push(item);
     }
 
@@ -994,7 +1100,10 @@ impl ResponsesSse {
             "type": "message", "role": "assistant", "status": "completed",
             "content": [{ "type": "output_text", "text": &self.text, "annotations": [] }],
         });
-        self.frame("response.output_item.done", json!({ "output_index": output_index, "item": item.clone() }));
+        self.frame(
+            "response.output_item.done",
+            json!({ "output_index": output_index, "item": item.clone() }),
+        );
         self.items.push(item);
     }
 
@@ -1023,7 +1132,9 @@ impl ResponsesSse {
     /// call_to 还原表白拿），剩余文本按正文发；截断（没有 finish）→ 只
     /// release：持有的按原文放出，不解析（Go readSSE 结束后 held() 同款）。
     fn finish_scout(&mut self) {
-        let Some(mut sc) = self.scout.take() else { return };
+        let Some(mut sc) = self.scout.take() else {
+            return;
+        };
         if self.finish.is_none() {
             let rest = sc.release_rest();
             if !rest.is_empty() {
@@ -1075,9 +1186,16 @@ impl ResponsesSse {
                 "call_id": &call_id, "arguments": "",
             });
             super::translate::call_to(&mut added, &call.name, &self.named);
-            let item_id = format!("{}{}", super::translate::call_item_prefix(&added), fresh_suffix());
+            let item_id = format!(
+                "{}{}",
+                super::translate::call_item_prefix(&added),
+                fresh_suffix()
+            );
             added["id"] = json!(&item_id);
-            self.frame("response.output_item.added", json!({ "output_index": output_index, "item": added }));
+            self.frame(
+                "response.output_item.added",
+                json!({ "output_index": output_index, "item": added }),
+            );
             let mut done_item = json!({
                 "id": &item_id,
                 "type": "function_call", "status": "completed",
@@ -1088,7 +1206,11 @@ impl ResponsesSse {
             if kind.custom {
                 // 自由文本工具：一整段 input（chat 分片已拼完，不欠厂商的切片粒度），
                 // 事件族是 custom_tool_call_input.delta/done（OpenAI 同款）
-                let input = done_item.get("input").and_then(|i| i.as_str()).unwrap_or("").to_string();
+                let input = done_item
+                    .get("input")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if !input.is_empty() {
                     self.frame(
                         "response.custom_tool_call_input.delta",
@@ -1119,7 +1241,10 @@ impl ResponsesSse {
                     self.frame("response.function_call_arguments.done", done);
                 }
             }
-            self.frame("response.output_item.done", json!({ "output_index": output_index, "item": done_item.clone() }));
+            self.frame(
+                "response.output_item.done",
+                json!({ "output_index": output_index, "item": done_item.clone() }),
+            );
             self.items.push(done_item);
         }
     }
@@ -1134,12 +1259,16 @@ impl ResponsesSse {
         self.ensure_started(); // 空流也要有 created——completed 不能凭空来
         self.finish_scout();
         let (status, event, incomplete): (&str, &str, Value) = match self.finish.as_deref() {
-            Some("length") => {
-                ("incomplete", "response.incomplete", json!({ "reason": "max_output_tokens" }))
-            }
-            Some("content_filter") => {
-                ("incomplete", "response.incomplete", json!({ "reason": "content_filter" }))
-            }
+            Some("length") => (
+                "incomplete",
+                "response.incomplete",
+                json!({ "reason": "max_output_tokens" }),
+            ),
+            Some("content_filter") => (
+                "incomplete",
+                "response.incomplete",
+                json!({ "reason": "content_filter" }),
+            ),
             _ => ("completed", "response.completed", Value::Null),
         };
         let usage = usage_to_responses(self.usage.as_ref());
@@ -1150,7 +1279,8 @@ impl ResponsesSse {
         let output = Value::Array(std::mem::take(&mut self.items));
         if self.finish.is_some() {
             if let Some(p) = self.prev.take() {
-                p.store.save(&self.resp_id, &self.model, p.input, output.clone());
+                p.store
+                    .save(&self.resp_id, &self.model, p.input, output.clone());
             }
         }
         let response = self.response_object(status, output, usage, incomplete);
@@ -1172,7 +1302,10 @@ impl ResponsesSse {
         }
         let choice = v.pointer("/choices/0");
         let think = choice
-            .and_then(|c| c.pointer("/delta/reasoning_content").or_else(|| c.pointer("/delta/reasoning")))
+            .and_then(|c| {
+                c.pointer("/delta/reasoning_content")
+                    .or_else(|| c.pointer("/delta/reasoning"))
+            })
             .and_then(|d| d.as_str())
             .unwrap_or("");
         if !think.is_empty() {
@@ -1295,7 +1428,9 @@ mod tests {
     /// 一次测试的世界：%TEMP% 下唯一配置目录 + env 恢复 + 串行锁。
     /// 绝不碰真实 `~/.config/magpie`。
     fn sandbox(providers_json: &str) -> (Gateway, Sandbox) {
-        let lock = super::super::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let lock = super::super::TEST_SANDBOX_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let dir = std::env::temp_dir().join(format!(
             "marionette-engine-responses-{}-{}",
             std::process::id(),
@@ -1307,7 +1442,14 @@ mod tests {
         let prior_xdg = std::env::var("XDG_CONFIG_HOME").ok();
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         let gateway = Gateway::open().expect("gateway");
-        (gateway, Sandbox { dir, prior_xdg, lock })
+        (
+            gateway,
+            Sandbox {
+                dir,
+                prior_xdg,
+                lock,
+            },
+        )
     }
 
     /// 假厂商收到的一次请求。
@@ -1330,7 +1472,11 @@ mod tests {
         format!("{} {}", status, if status == 200 { "OK" } else { "Err" })
     }
 
-    fn fake_vendor(status: u16, content_type: &'static str, reply_body: &'static str) -> FakeVendor {
+    fn fake_vendor(
+        status: u16,
+        content_type: &'static str,
+        reply_body: &'static str,
+    ) -> FakeVendor {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake vendor");
         let port = listener.local_addr().expect("port").port();
         let hits = Arc::new(AtomicUsize::new(0));
@@ -1349,7 +1495,11 @@ mod tests {
                 if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
                     continue;
                 }
-                let path = request_line.split_whitespace().nth(1).unwrap_or("").to_string();
+                let path = request_line
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .to_string();
                 let mut authorization = String::new();
                 let mut length = 0usize;
                 loop {
@@ -1375,7 +1525,11 @@ mod tests {
                 thread_seen
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
-                    .push(Seen { path, authorization, body });
+                    .push(Seen {
+                        path,
+                        authorization,
+                        body,
+                    });
                 let mut stream = stream;
                 let reply = format!(
                     "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -1447,8 +1601,14 @@ mod tests {
         assert_eq!(seen[0].authorization, "Bearer sk-test");
         let sent: Value = serde_json::from_slice(&seen[0].body).unwrap();
         assert_eq!(sent["model"], "m", "provider/ 前缀已剥");
-        assert_eq!(sent["messages"][0], json!({"role": "system", "content": "be nice"}));
-        assert_eq!(sent["messages"][1], json!({"role": "user", "content": "hi"}));
+        assert_eq!(
+            sent["messages"][0],
+            json!({"role": "system", "content": "be nice"})
+        );
+        assert_eq!(
+            sent["messages"][1],
+            json!({"role": "user", "content": "hi"})
+        );
         assert!(sent.get("store").is_none(), "codex 特有字段不进 chat 请求");
         assert!(
             sent.get("previous_response_id").is_none() && sent.get("include").is_none(),
@@ -1456,7 +1616,9 @@ mod tests {
         );
 
         // 应答折成 responses 形状。
-        let Reply::Json { status, body } = reply else { panic!("json reply") };
+        let Reply::Json { status, body } = reply else {
+            panic!("json reply")
+        };
         assert_eq!(status, 200);
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["object"], "response");
@@ -1475,9 +1637,12 @@ mod tests {
     fn translated_streaming_event_sequence() {
         // 两条 SSE：text delta → finish+usage → [DONE]（include_usage 语义）。
         let sse = concat!(
-            r#"data: {"id":"chatcmpl-9","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}"#, "\n\n",
-            r#"data: {"id":"chatcmpl-9","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"你好"},"finish_reason":null}]}"#, "\n\n",
-            r#"data: {"id":"chatcmpl-9","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}"#, "\n\n",
+            r#"data: {"id":"chatcmpl-9","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"chatcmpl-9","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"你好"},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"chatcmpl-9","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}"#,
+            "\n\n",
             "data: [DONE]\n\n"
         );
         let vendor = fake_vendor(200, "text/event-stream", sse);
@@ -1494,12 +1659,22 @@ mod tests {
         assert_eq!(sent["model"], "m");
 
         // 应答：responses 事件流，帧格式带 event: 行。
-        let Reply::Stream { status, content_type, mut reader } = reply else { panic!("stream reply") };
+        let Reply::Stream {
+            status,
+            content_type,
+            mut reader,
+        } = reply
+        else {
+            panic!("stream reply")
+        };
         assert_eq!(status, 200);
         assert_eq!(content_type, "text/event-stream");
         let mut out = String::new();
         reader.read_to_string(&mut out).expect("read sse");
-        assert!(out.starts_with("event: response.created\ndata: "), "帧格式：event 行在前");
+        assert!(
+            out.starts_with("event: response.created\ndata: "),
+            "帧格式：event 行在前"
+        );
         let events = parse_frames(&out);
         let names: Vec<&str> = events.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(
@@ -1535,12 +1710,18 @@ mod tests {
         // T15 的验收形状：text delta + tool_calls 三分片（arguments 跨帧）+
         // finish(tool_calls) + usage + [DONE]。
         let sse = concat!(
-            r#"data: {"id":"c2","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}"#, "\n\n",
-            r#"data: {"id":"c2","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"checking…"},"finish_reason":null}]}"#, "\n\n",
-            r#"data: {"id":"c2","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_77","type":"function","function":{"name":"get_weather","arguments":"{\"ci"}}]},"finish_reason":null}]}"#, "\n\n",
-            r#"data: {"id":"c2","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ty\":\"Berlin\""}}]},"finish_reason":null}]}"#, "\n\n",
-            r#"data: {"id":"c2","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"}"}}]},"finish_reason":null}]}"#, "\n\n",
-            r#"data: {"id":"c2","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":11,"completion_tokens":6,"total_tokens":17}}"#, "\n\n",
+            r#"data: {"id":"c2","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"c2","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"checking…"},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"c2","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_77","type":"function","function":{"name":"get_weather","arguments":"{\"ci"}}]},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"c2","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ty\":\"Berlin\""}}]},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"c2","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"}"}}]},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"c2","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":11,"completion_tokens":6,"total_tokens":17}}"#,
+            "\n\n",
             "data: [DONE]\n\n"
         );
         let vendor = fake_vendor(200, "text/event-stream", sse);
@@ -1561,7 +1742,14 @@ mod tests {
         assert_eq!(sent["tools"][0]["function"]["name"], "get_weather");
         drop(seen);
 
-        let Reply::Stream { status, content_type, mut reader } = reply else { panic!("stream reply") };
+        let Reply::Stream {
+            status,
+            content_type,
+            mut reader,
+        } = reply
+        else {
+            panic!("stream reply")
+        };
         assert_eq!(status, 200);
         assert_eq!(content_type, "text/event-stream");
         let mut out = String::new();
@@ -1572,11 +1760,11 @@ mod tests {
             names,
             vec![
                 "response.created",
-                "response.output_item.added",        // message item
+                "response.output_item.added", // message item
                 "response.output_text.delta",
-                "response.output_text.done",         // 工具分片到达，正文先封口
+                "response.output_text.done", // 工具分片到达，正文先封口
                 "response.output_item.done",
-                "response.output_item.added",        // function_call item
+                "response.output_item.added", // function_call item
                 "response.function_call_arguments.delta",
                 "response.function_call_arguments.done",
                 "response.output_item.done",
@@ -1620,8 +1808,8 @@ mod tests {
         // 按已知的收尾（Go readSSE 结束后 finish() 同款）：created + 已拼到
         // 的 arguments（可能不完整）+ completed，usage 0。
         let sse = concat!(
-            r#"data: {"id":"c3","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read","arguments":"{\"pa"}}]},"finish_reason":null}]}"#, "\n\n"
-            // 没有 finish、没有 [DONE]——EOF 即收尾
+            r#"data: {"id":"c3","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read","arguments":"{\"pa"}}]},"finish_reason":null}]}"#,
+            "\n\n" // 没有 finish、没有 [DONE]——EOF 即收尾
         );
         let vendor = fake_vendor(200, "text/event-stream", sse);
         let (gateway, _sandbox) = sandbox(&format!(
@@ -1629,7 +1817,9 @@ mod tests {
             vendor.base
         ));
         let reply = handle(&gateway, br#"{"model":"p/m","input":"go","stream":true}"#);
-        let Reply::Stream { mut reader, .. } = reply else { panic!("stream reply") };
+        let Reply::Stream { mut reader, .. } = reply else {
+            panic!("stream reply")
+        };
         let mut out = String::new();
         reader.read_to_string(&mut out).expect("read sse");
         let events = parse_frames(&out);
@@ -1649,7 +1839,10 @@ mod tests {
         assert_eq!(events[2].1["delta"], r#"{"pa"#);
         assert_eq!(events[3].1["arguments"], r#"{"pa"#);
         assert_eq!(events[5].1["response"]["usage"]["input_tokens"], 0);
-        assert_eq!(events[5].1["response"]["output"][0]["type"], "function_call");
+        assert_eq!(
+            events[5].1["response"]["output"][0]["type"],
+            "function_call"
+        );
     }
 
     #[test]
@@ -1673,15 +1866,24 @@ mod tests {
         let reply = handle(&gateway, br#"{"model":"o/m2","input":"hi"}"#);
 
         assert_eq!(responses_vendor.hits.load(Ordering::SeqCst), 1);
-        assert_eq!(chat_vendor.hits.load(Ordering::SeqCst), 0, "直通优先，chat 家不该被碰到");
-        let seen = responses_vendor.seen.lock().unwrap_or_else(|p| p.into_inner());
+        assert_eq!(
+            chat_vendor.hits.load(Ordering::SeqCst),
+            0,
+            "直通优先，chat 家不该被碰到"
+        );
+        let seen = responses_vendor
+            .seen
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         assert_eq!(seen[0].path, "/v1/responses");
         assert_eq!(seen[0].authorization, "Bearer sk-resp");
         let sent: Value = serde_json::from_slice(&seen[0].body).unwrap();
         assert_eq!(sent["model"], "m2", "直通也剥 provider/ 前缀");
 
         // 应答原样（不折形状、不翻译）。
-        let Reply::Json { status, body } = reply else { panic!("json reply") };
+        let Reply::Json { status, body } = reply else {
+            panic!("json reply")
+        };
         assert_eq!(status, 200);
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["id"], "resp_vendor");
@@ -1713,11 +1915,20 @@ mod tests {
         );
 
         assert_eq!(responses_vendor.hits.load(Ordering::SeqCst), 1);
-        assert_eq!(chat_vendor.hits.load(Ordering::SeqCst), 1, "native Responses 拒绝后退回 chat");
+        assert_eq!(
+            chat_vendor.hits.load(Ordering::SeqCst),
+            1,
+            "native Responses 拒绝后退回 chat"
+        );
         let seen_chat = chat_vendor.seen.lock().unwrap_or_else(|p| p.into_inner());
         let chat_body = String::from_utf8_lossy(&seen_chat[0].body);
-        assert!(!chat_body.contains("reasoning.context"), "翻译到 chat 不转发 reasoning.context: {chat_body}");
-        let Reply::Json { status, .. } = reply else { panic!("json reply") };
+        assert!(
+            !chat_body.contains("reasoning.context"),
+            "翻译到 chat 不转发 reasoning.context: {chat_body}"
+        );
+        let Reply::Json { status, .. } = reply else {
+            panic!("json reply")
+        };
         assert_eq!(status, 200);
     }
 
@@ -1730,7 +1941,14 @@ mod tests {
             vendor.base
         ));
         let reply = handle(&gateway, br#"{"model":"o/m","input":"hi","stream":true}"#);
-        let Reply::Stream { status, content_type, mut reader } = reply else { panic!("stream reply") };
+        let Reply::Stream {
+            status,
+            content_type,
+            mut reader,
+        } = reply
+        else {
+            panic!("stream reply")
+        };
         assert_eq!(status, 200);
         assert!(content_type.contains("text/event-stream"));
         let mut out = String::new();
@@ -1742,7 +1960,9 @@ mod tests {
     fn unknown_model_404() {
         let (gateway, _sandbox) = sandbox(r#"{"providers":[]}"#);
         let reply = handle(&gateway, br#"{"model":"nope/x","input":"hi"}"#);
-        let Reply::Json { status, body } = reply else { panic!("json reply") };
+        let Reply::Json { status, body } = reply else {
+            panic!("json reply")
+        };
         assert_eq!(status, 404);
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert!(v["error"]["message"].as_str().unwrap().contains("nope/x"));
@@ -1768,16 +1988,22 @@ mod tests {
             method: "POST".into(),
             path: "/v1/responses".into(),
             headers: vec![],
-            body: br#"{"model":"gpt-6.1-terra","input":"hi","reasoning":{"effort":"low"}}"#.to_vec(),
+            body: br#"{"model":"gpt-6.1-terra","input":"hi","reasoning":{"effort":"low"}}"#
+                .to_vec(),
         };
         let reply = super::super::routes::route(&request, &gateway);
-        let Reply::Json { status, .. } = reply else { panic!("json reply") };
+        let Reply::Json { status, .. } = reply else {
+            panic!("json reply")
+        };
         assert_eq!(status, 200);
         let seen = chat_vendor.seen.lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(seen.len(), 1);
         let sent: Value = serde_json::from_slice(&seen[0].body).unwrap();
         assert_eq!(sent["model"], "m:1017", "强度后缀不能进厂商模型名");
-        assert_eq!(sent["reasoning_effort"], "max", "成员固定强度要覆盖 agent 的 low");
+        assert_eq!(
+            sent["reasoning_effort"], "max",
+            "成员固定强度要覆盖 agent 的 low"
+        );
     }
 
     #[test]
@@ -1795,7 +2021,9 @@ mod tests {
             chat_vendor.base, dead_responses.base
         ));
         let reply = handle(&gateway, br#"{"model":"o/m","input":"hi"}"#);
-        let Reply::Json { status, body } = reply else { panic!("json reply") };
+        let Reply::Json { status, body } = reply else {
+            panic!("json reply")
+        };
         assert_eq!(status, 200);
         assert_eq!(dead_responses.hits.load(Ordering::SeqCst), 1);
         assert_eq!(chat_vendor.hits.load(Ordering::SeqCst), 1);
@@ -1827,16 +2055,24 @@ mod tests {
         let mut r = ResponsesSse::new(Box::new(std::io::Cursor::new(sse.as_bytes().to_vec())), "m");
         let mut out = String::new();
         r.read_to_string(&mut out).unwrap();
-        assert!(out.contains("response.reasoning_summary_text.delta"), "{out}");
+        assert!(
+            out.contains("response.reasoning_summary_text.delta"),
+            "{out}"
+        );
         assert!(out.contains("\"delta\":\"think A\""));
-        let done = out.find("response.reasoning_summary_text.done").expect("done");
+        let done = out
+            .find("response.reasoning_summary_text.done")
+            .expect("done");
         let text = out.find("response.output_text.delta").expect("text");
         assert!(done < text, "思考先封口再出正文");
         assert!(out.contains("\"text\":\"think A B\""));
         // completed 的 output：reasoning item 在 message item 前
         let completed = out.find("event: response.completed").unwrap();
         let tail = &out[completed..];
-        assert!(tail.find("\"type\":\"reasoning\"").unwrap() < tail.find("\"type\":\"message\"").unwrap());
+        assert!(
+            tail.find("\"type\":\"reasoning\"").unwrap()
+                < tail.find("\"type\":\"message\"").unwrap()
+        );
     }
 
     #[test]
@@ -1868,7 +2104,10 @@ mod tests {
     }
 
     fn one_chat_vendor(vendor: &FakeVendor) -> String {
-        format!(r#"{{"providers":[{{"id":"p","name":"P","key":"k","chat":"{}/v1"}}]}}"#, vendor.base)
+        format!(
+            r#"{{"providers":[{{"id":"p","name":"P","key":"k","chat":"{}/v1"}}]}}"#,
+            vendor.base
+        )
     }
 
     #[test]
@@ -1894,13 +2133,25 @@ mod tests {
         // 厂商看到的是压平后的函数集（custom 带 input 串 schema）
         let seen = vendor.seen.lock().unwrap_or_else(|p| p.into_inner());
         let sent: Value = serde_json::from_slice(&seen[0].body).unwrap();
-        let names: Vec<&str> =
-            sent["tools"].as_array().unwrap().iter().map(|t| t["function"]["name"].as_str().unwrap()).collect();
-        assert_eq!(names, vec!["shell", "apply_patch", "mcp__srv____do_it", "tool_search"]);
-        assert_eq!(sent["tools"][1]["function"]["parameters"]["required"], json!(["input"]));
+        let names: Vec<&str> = sent["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["shell", "apply_patch", "mcp__srv____do_it", "tool_search"]
+        );
+        assert_eq!(
+            sent["tools"][1]["function"]["parameters"]["required"],
+            json!(["input"])
+        );
         drop(seen);
 
-        let Reply::Json { status, body } = reply else { panic!("json reply") };
+        let Reply::Json { status, body } = reply else {
+            panic!("json reply")
+        };
         assert_eq!(status, 200);
         let v: Value = serde_json::from_slice(&body).unwrap();
         let out = v["output"].as_array().unwrap();
@@ -1933,10 +2184,14 @@ mod tests {
     fn streaming_tool_calls_are_restored_to_codex_item_kinds() {
         // custom 的 arguments 跨帧；随后一个命名空间调用
         let sse = concat!(
-            r#"data: {"id":"s1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"apply_patch","arguments":"{\"input\":\"*** Be"}}]},"finish_reason":null}]}"#, "\n\n",
-            r#"data: {"id":"s1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"gin\\n\"}"}}]},"finish_reason":null}]}"#, "\n\n",
-            r#"data: {"id":"s1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_b","type":"function","function":{"name":"mcp__srv____do_it","arguments":"{\"x\":1}"}}]},"finish_reason":null}]}"#, "\n\n",
-            r#"data: {"id":"s1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}"#, "\n\n",
+            r#"data: {"id":"s1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"apply_patch","arguments":"{\"input\":\"*** Be"}}]},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"s1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"gin\\n\"}"}}]},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"s1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_b","type":"function","function":{"name":"mcp__srv____do_it","arguments":"{\"x\":1}"}}]},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"s1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}"#,
+            "\n\n",
             "data: [DONE]\n\n"
         );
         let vendor = fake_vendor(200, "text/event-stream", sse);
@@ -1945,7 +2200,9 @@ mod tests {
             &gateway,
             format!(r#"{{"model":"p/m","input":"x","stream":true,"tools":{CODEX_TOOLS}}}"#),
         );
-        let Reply::Stream { mut reader, .. } = reply else { panic!("stream reply") };
+        let Reply::Stream { mut reader, .. } = reply else {
+            panic!("stream reply")
+        };
         let mut out = String::new();
         reader.read_to_string(&mut out).expect("read sse");
         let events = parse_frames(&out);
@@ -1989,7 +2246,13 @@ mod tests {
         assert_eq!(events[7].1["arguments"], "{\"x\":1}");
         assert_eq!(events[7].1["name"], "do_it");
         let ns_done = &events[8].1["item"];
-        assert_eq!((ns_done["name"].as_str().unwrap(), ns_done["namespace"].as_str().unwrap()), ("do_it", "mcp__srv__"));
+        assert_eq!(
+            (
+                ns_done["name"].as_str().unwrap(),
+                ns_done["namespace"].as_str().unwrap()
+            ),
+            ("do_it", "mcp__srv__")
+        );
         // completed 的 output 与逐项 done 一致
         let completed = &events[9].1["response"];
         assert_eq!(completed["output"][0]["type"], "custom_tool_call");
@@ -2017,7 +2280,9 @@ mod tests {
         assert_eq!(sent["tools"][0]["function"]["name"], "get_weather");
         assert!(sent.get("parallel_tool_calls").is_none());
         drop(seen);
-        let Reply::Json { body, .. } = reply else { panic!("json reply") };
+        let Reply::Json { body, .. } = reply else {
+            panic!("json reply")
+        };
         let v: Value = serde_json::from_slice(&body).unwrap();
         let item = &v["output"][0];
         assert_eq!(item["type"], "function_call");
@@ -2046,13 +2311,18 @@ mod tests {
                 {{"type":"custom_tool_call_output","call_id":"c2","output":"applied"}}]}}"#
         );
         let reply = route_responses(&gateway, body);
-        let Reply::Json { status, .. } = reply else { panic!("json reply") };
+        let Reply::Json { status, .. } = reply else {
+            panic!("json reply")
+        };
         assert_eq!(status, 200);
         let seen = vendor.seen.lock().unwrap_or_else(|p| p.into_inner());
         let sent: Value = serde_json::from_slice(&seen[0].body).unwrap();
         let s = sent["messages"].to_string();
         assert!(s.contains("mcp__srv____do_it"), "{s}");
-        assert!(s.contains(r#"\"input\":\"patch\""#) || s.contains("input"), "{s}");
+        assert!(
+            s.contains(r#"\"input\":\"patch\""#) || s.contains("input"),
+            "{s}"
+        );
         // 每个 tool_call 都有对应的 tool 消息
         let msgs = sent["messages"].as_array().unwrap();
         assert_eq!(msgs.iter().filter(|m| m["role"] == "tool").count(), 2);
@@ -2077,7 +2347,9 @@ mod tests {
         // 第一轮：store:true、无 previous_response_id——存（input=本轮、
         // output=应答 output），应答 id 是网关生成的存账 id。
         let reply = handle(&gateway, br#"{"model":"p/m","input":"first","store":true}"#);
-        let Reply::Json { status, body } = reply else { panic!("json reply") };
+        let Reply::Json { status, body } = reply else {
+            panic!("json reply")
+        };
         assert_eq!(status, 200);
         let v: Value = serde_json::from_slice(&body).unwrap();
         let id1 = v["id"].as_str().unwrap().to_string();
@@ -2085,9 +2357,13 @@ mod tests {
 
         // 第二轮：只发新 input + previous_response_id——厂商必须收到整段
         // 历史（存的 input 在前、存的 output 作 assistant 回合、新 input 在后）。
-        let body = format!(r#"{{"model":"p/m","input":"second","store":true,"previous_response_id":"{id1}"}}"#);
+        let body = format!(
+            r#"{{"model":"p/m","input":"second","store":true,"previous_response_id":"{id1}"}}"#
+        );
         let reply = handle(&gateway, body.as_bytes());
-        let Reply::Json { status, body } = reply else { panic!("json reply") };
+        let Reply::Json { status, body } = reply else {
+            panic!("json reply")
+        };
         assert_eq!(status, 200);
         let v: Value = serde_json::from_slice(&body).unwrap();
         let id2 = v["id"].as_str().unwrap().to_string();
@@ -2103,15 +2379,23 @@ mod tests {
         let msgs = sent["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 3, "合并出的整段历史：{msgs:?}");
         assert_eq!(msgs[0], json!({"role": "user", "content": "first"}));
-        assert_eq!(msgs[1], json!({"role": "assistant", "content": "hello there"}));
+        assert_eq!(
+            msgs[1],
+            json!({"role": "assistant", "content": "hello there"})
+        );
         assert_eq!(msgs[2], json!({"role": "user", "content": "second"}));
         drop(seen);
 
         // miss：网关不持有的 id → 显式 400（OpenAI 形状 code=
         // previous_response_not_found），绝不静默重放空历史——厂商收不到
         // 第三个请求。
-        let reply = handle(&gateway, br#"{"model":"p/m","input":"third","previous_response_id":"resp_never"}"#);
-        let Reply::Json { status, body } = reply else { panic!("json reply") };
+        let reply = handle(
+            &gateway,
+            br#"{"model":"p/m","input":"third","previous_response_id":"resp_never"}"#,
+        );
+        let Reply::Json { status, body } = reply else {
+            panic!("json reply")
+        };
         assert_eq!(status, 400, "Go prevLost 是 400，不是 404");
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["error"]["code"], "previous_response_not_found");
@@ -2120,12 +2404,22 @@ mod tests {
 
         // store:false 的回合不存（Go previousResponse 的 early return）：
         // 它照常应答，但不产生可点名的存账。
-        let reply = handle(&gateway, br#"{"model":"p/m","input":"no keep","store":false}"#);
-        let Reply::Json { status, .. } = reply else { panic!("json reply") };
+        let reply = handle(
+            &gateway,
+            br#"{"model":"p/m","input":"no keep","store":false}"#,
+        );
+        let Reply::Json { status, .. } = reply else {
+            panic!("json reply")
+        };
         assert_eq!(status, 200);
         // 点名一个网关从没存过的 id（包括 store:false 轮的占位 id）都 miss。
-        let reply = handle(&gateway, br#"{"model":"p/m","input":"again","previous_response_id":"resp_nokeep"}"#);
-        let Reply::Json { status, .. } = reply else { panic!("json reply") };
+        let reply = handle(
+            &gateway,
+            br#"{"model":"p/m","input":"again","previous_response_id":"resp_nokeep"}"#,
+        );
+        let Reply::Json { status, .. } = reply else {
+            panic!("json reply")
+        };
         assert_eq!(status, 400);
     }
 
@@ -2134,8 +2428,10 @@ mod tests {
         // 流式存回合：created/completed 帧里的 id 就是存账 id；下一轮点名它，
         // 厂商收到整段历史（流式轮的 output 已并进 assistant 回合）。
         let sse = concat!(
-            r#"data: {"id":"c1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"你好"},"finish_reason":null}]}"#, "\n\n",
-            r#"data: {"id":"c1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}"#, "\n\n",
+            r#"data: {"id":"c1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"你好"},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"c1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}"#,
+            "\n\n",
             "data: [DONE]\n\n"
         );
         let vendor = fake_vendor(200, "text/event-stream", sse);
@@ -2143,8 +2439,13 @@ mod tests {
             r#"{{"providers":[{{"id":"p","name":"P","key":"k","chat":"{}/v1"}}]}}"#,
             vendor.base
         ));
-        let reply = handle(&gateway, br#"{"model":"p/m","input":"first","store":true,"stream":true}"#);
-        let Reply::Stream { mut reader, .. } = reply else { panic!("stream reply") };
+        let reply = handle(
+            &gateway,
+            br#"{"model":"p/m","input":"first","store":true,"stream":true}"#,
+        );
+        let Reply::Stream { mut reader, .. } = reply else {
+            panic!("stream reply")
+        };
         let mut out = String::new();
         reader.read_to_string(&mut out).expect("read sse");
         let events = parse_frames(&out);
@@ -2158,7 +2459,10 @@ mod tests {
             .find(|(n, _)| n == "response.completed")
             .map(|(_, d)| d["response"]["id"].as_str().unwrap().to_string())
             .expect("completed frame");
-        assert_eq!(created_id, completed_id, "流式存账：帧里的 id 与存账 id 是同一个");
+        assert_eq!(
+            created_id, completed_id,
+            "流式存账：帧里的 id 与存账 id 是同一个"
+        );
         assert!(created_id.starts_with("resp_"));
 
         // 下一轮点名它——存账表在 Gateway 里，同一网关才命中；vendor 回的
@@ -2167,7 +2471,12 @@ mod tests {
             r#"{{"model":"p/m","input":"second","stream":true,"previous_response_id":"{created_id}"}}"#
         );
         let reply = handle(&gateway, body.as_bytes());
-        let Reply::Stream { status, mut reader, .. } = reply else { panic!("stream reply") };
+        let Reply::Stream {
+            status, mut reader, ..
+        } = reply
+        else {
+            panic!("stream reply")
+        };
         assert_eq!(status, 200);
         let mut out2 = String::new();
         reader.read_to_string(&mut out2).expect("read sse");
@@ -2199,13 +2508,18 @@ mod tests {
             &gateway,
             br#"{"model":"o/m","input":"hi","store":true,"previous_response_id":"resp_anything"}"#,
         );
-        let Reply::Json { status, body } = reply else { panic!("json reply") };
+        let Reply::Json { status, body } = reply else {
+            panic!("json reply")
+        };
         assert_eq!(status, 200);
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["id"], "resp_vendor", "厂商的 id 原样，不换存账 id");
         let seen = vendor.seen.lock().unwrap_or_else(|p| p.into_inner());
         let sent: Value = serde_json::from_slice(&seen[0].body).unwrap();
-        assert_eq!(sent["previous_response_id"], "resp_anything", "直通透传原样");
+        assert_eq!(
+            sent["previous_response_id"], "resp_anything",
+            "直通透传原样"
+        );
         assert_eq!(sent["store"], true);
         // 网关没存：点名厂商那个 id（网关表里没有）——翻译路径才查表，
         // 这里没有翻译路径可走，只验证存账表没吞直通应答。
@@ -2238,7 +2552,9 @@ mod tests {
             &gateway,
             format!(r#"{{"model":"p/m","input":"weather?","tools":{TEXTCALL_TOOLS}}}"#),
         );
-        let Reply::Json { status, body } = reply else { panic!("json reply") };
+        let Reply::Json { status, body } = reply else {
+            panic!("json reply")
+        };
         assert_eq!(status, 200);
         let v: Value = serde_json::from_slice(&body).unwrap();
         let out = v["output"].as_array().unwrap();
@@ -2251,7 +2567,10 @@ mod tests {
         assert_eq!(out[1]["name"], "get_weather");
         assert_eq!(out[1]["arguments"], r#"{"city":"Berlin"}"#);
         assert!(
-            out[1]["call_id"].as_str().unwrap().starts_with("call_text_"),
+            out[1]["call_id"]
+                .as_str()
+                .unwrap()
+                .starts_with("call_text_"),
             "Go textCallID 形状：{}",
             out[1]["call_id"]
         );
@@ -2262,19 +2581,27 @@ mod tests {
     fn textcalls_stream_written_call_becomes_function_call_family() {
         // 标记跨 chunk：正文分三片到（前半 / 标记开 / 标记闭），持有不发。
         let sse = concat!(
-            r#"data: {"id":"c9","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"查一下"},"finish_reason":null}]}"#, "\n\n",
-            r#"data: {"id":"c9","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"天气。<tool_call>{\"name\":\"get_weather\",\"argu"},"finish_reason":null}]}"#, "\n\n",
-            r#"data: {"id":"c9","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"ments\":{\"city\":\"Berlin\"}}</tool_call>"},"finish_reason":null}]}"#, "\n\n",
-            r#"data: {"id":"c9","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":4,"total_tokens":9}}"#, "\n\n",
+            r#"data: {"id":"c9","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"查一下"},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"c9","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"天气。<tool_call>{\"name\":\"get_weather\",\"argu"},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"c9","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"ments\":{\"city\":\"Berlin\"}}</tool_call>"},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"c9","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":4,"total_tokens":9}}"#,
+            "\n\n",
             "data: [DONE]\n\n"
         );
         let vendor = fake_vendor(200, "text/event-stream", sse);
         let (gateway, _sandbox) = sandbox(&one_chat_vendor(&vendor));
         let reply = route_responses(
             &gateway,
-            format!(r#"{{"model":"p/m","input":"weather?","stream":true,"tools":{TEXTCALL_TOOLS}}}"#),
+            format!(
+                r#"{{"model":"p/m","input":"weather?","stream":true,"tools":{TEXTCALL_TOOLS}}}"#
+            ),
         );
-        let Reply::Stream { mut reader, .. } = reply else { panic!("stream reply") };
+        let Reply::Stream { mut reader, .. } = reply else {
+            panic!("stream reply")
+        };
         let mut out = String::new();
         reader.read_to_string(&mut out).expect("read sse");
         let events = parse_frames(&out);
@@ -2283,12 +2610,12 @@ mod tests {
             names,
             vec![
                 "response.created",
-                "response.output_item.added",        // message item
-                "response.output_text.delta",        // "查一下"
-                "response.output_text.delta",        // "天气。"
-                "response.output_text.done",         // 全文（不含标记）
+                "response.output_item.added", // message item
+                "response.output_text.delta", // "查一下"
+                "response.output_text.delta", // "天气。"
+                "response.output_text.done",  // 全文（不含标记）
                 "response.output_item.done",
-                "response.output_item.added",        // function_call item
+                "response.output_item.added", // function_call item
                 "response.function_call_arguments.delta",
                 "response.function_call_arguments.done",
                 "response.output_item.done",
@@ -2305,7 +2632,10 @@ mod tests {
         assert_eq!(events[7].1["delta"], r#"{"city":"Berlin"}"#);
         let done_item = &events[9].1["item"];
         assert_eq!(done_item["arguments"], r#"{"city":"Berlin"}"#);
-        assert!(done_item["call_id"].as_str().unwrap().starts_with("call_text_"));
+        assert!(done_item["call_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("call_text_"));
         // held 的标记正文绝不当 delta 发出去。
         assert!(!out.contains("tool_call>"), "持有文本不进 delta：{out}");
         let completed = &events[10].1["response"];
@@ -2324,13 +2654,18 @@ mod tests {
         let vendor = fake_vendor(200, "application/json", reply_body);
         let (gateway, _sandbox) = sandbox(&one_chat_vendor(&vendor));
         let reply = route_responses(&gateway, r#"{"model":"p/m","input":"weather?"}"#.into());
-        let Reply::Json { status, body } = reply else { panic!("json reply") };
+        let Reply::Json { status, body } = reply else {
+            panic!("json reply")
+        };
         assert_eq!(status, 200);
         let v: Value = serde_json::from_slice(&body).unwrap();
         let out = v["output"].as_array().unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["type"], "message");
-        assert_eq!(out[0]["content"][0]["text"], TEXTCALL_BODY, "正文一个字不动");
+        assert_eq!(
+            out[0]["content"][0]["text"], TEXTCALL_BODY,
+            "正文一个字不动"
+        );
     }
 
     #[test]
@@ -2348,7 +2683,9 @@ mod tests {
             &gateway,
             format!(r#"{{"model":"p/m","input":"x","tools":{TEXTCALL_TOOLS}}}"#),
         );
-        let Reply::Json { status, body } = reply else { panic!("json reply") };
+        let Reply::Json { status, body } = reply else {
+            panic!("json reply")
+        };
         assert_eq!(status, 200);
         let v: Value = serde_json::from_slice(&body).unwrap();
         let out = v["output"].as_array().unwrap();
@@ -2365,8 +2702,10 @@ mod tests {
     #[test]
     fn translated_stream_turn_records_usage_buckets() {
         let sse = concat!(
-            r#"data: {"id":"c1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"你好"},"finish_reason":null}]}"#, "\n\n",
-            r#"data: {"id":"c1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000,"completion_tokens":40,"total_tokens":1040,"prompt_tokens_details":{"cached_tokens":300,"cache_write_tokens":100}}}"#, "\n\n",
+            r#"data: {"id":"c1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"你好"},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"c1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000,"completion_tokens":40,"total_tokens":1040,"prompt_tokens_details":{"cached_tokens":300,"cache_write_tokens":100}}}"#,
+            "\n\n",
             "data: [DONE]\n\n"
         );
         let vendor = fake_vendor(200, "text/event-stream", sse);
@@ -2378,7 +2717,9 @@ mod tests {
             &gateway,
             br#"{"model":"p/m","input":"hi","stream":true,"prompt_cache_key":"sess-r"}"#,
         );
-        let Reply::Stream { mut reader, .. } = reply else { panic!("stream reply") };
+        let Reply::Stream { mut reader, .. } = reply else {
+            panic!("stream reply")
+        };
         let mut out = String::new();
         reader.read_to_string(&mut out).expect("read sse");
         assert!(out.contains("event: response.completed"));
@@ -2388,8 +2729,16 @@ mod tests {
         assert_eq!(r.agent, "responses");
         assert_eq!(r.provider, "p");
         assert_eq!(r.model, "p/m");
-        assert_eq!(r.session.as_deref(), Some("sess-r"), "body 侧种子（prompt_cache_key）");
-        assert_eq!(r.in_tokens, Some(600), "completed 的 input_tokens 含缓存：1000 − 300 − 100");
+        assert_eq!(
+            r.session.as_deref(),
+            Some("sess-r"),
+            "body 侧种子（prompt_cache_key）"
+        );
+        assert_eq!(
+            r.in_tokens,
+            Some(600),
+            "completed 的 input_tokens 含缓存：1000 − 300 − 100"
+        );
         assert_eq!(r.out_tokens, Some(40));
         assert_eq!(r.cache_read, Some(300));
         assert_eq!(r.cache_write, Some(100));

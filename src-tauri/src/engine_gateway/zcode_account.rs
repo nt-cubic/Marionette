@@ -120,8 +120,12 @@ fn secret_seed() -> String {
             return s;
         }
     }
-    let home = user_home().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
-    let user = std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_default();
+    let home = user_home()
+        .map(|h| h.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let user = std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_default();
     // DOMAIN\user：node 的 userInfo() 只有用户名
     let user = user.rsplit('\\').next().unwrap_or("").to_string();
     let platform = if cfg!(windows) {
@@ -187,7 +191,12 @@ impl Aes256 {
         for i in 8..60 {
             let mut t = w[i - 1];
             if i % 8 == 0 {
-                t = [sb[t[1] as usize] ^ rcon, sb[t[2] as usize], sb[t[3] as usize], sb[t[0] as usize]];
+                t = [
+                    sb[t[1] as usize] ^ rcon,
+                    sb[t[2] as usize],
+                    sb[t[3] as usize],
+                    sb[t[0] as usize],
+                ];
                 rcon = xtime(rcon);
             } else if i % 8 == 4 {
                 for b in t.iter_mut() {
@@ -251,7 +260,11 @@ fn gf_mul(x: u128, y: u128) -> u128 {
         if (x >> (127 - i)) & 1 == 1 {
             z ^= v;
         }
-        v = if v & 1 == 1 { (v >> 1) ^ (0xe1u128 << 120) } else { v >> 1 };
+        v = if v & 1 == 1 {
+            (v >> 1) ^ (0xe1u128 << 120)
+        } else {
+            v >> 1
+        };
     }
     z
 }
@@ -315,7 +328,11 @@ fn zcode_decrypt(secret: &[u8; 32], value: &str) -> Option<String> {
     }
     let mut raw: Vec<Vec<u8>> = Vec::new();
     for p in parts {
-        raw.push(base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(p.trim_end_matches('=')).ok()?);
+        raw.push(
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(p.trim_end_matches('='))
+                .ok()?,
+        );
     }
     let mut combined = raw[2].clone();
     combined.extend_from_slice(&raw[1]);
@@ -361,7 +378,11 @@ fn trimmed(v: Option<&Value>) -> String {
 /// 优先，否则家目录。
 fn zcode_v2_dir(setting_dir: &std::path::Path) -> PathBuf {
     let moved = read_json(&setting_dir.join("setting.json"))
-        .and_then(|s| s.get("dataBaseDir").and_then(Value::as_str).map(|d| d.trim().to_string()))
+        .and_then(|s| {
+            s.get("dataBaseDir")
+                .and_then(Value::as_str)
+                .map(|d| d.trim().to_string())
+        })
         .filter(|d| !d.is_empty() && std::path::Path::new(d).is_absolute());
     match (moved, zcode_home()) {
         (Some(dir), _) => PathBuf::from(dir).join(".zcode").join("v2"),
@@ -376,13 +397,28 @@ fn config_key(dir: &std::path::Path, secret: &[u8; 32]) -> Option<(String, &'sta
     let cfg = read_json(&dir.join("config.json"))?;
     let providers = cfg.get("provider")?;
     for (ids, base) in [
-        (["builtin:zai-coding-plan", "account:zai-individual-coding-plan"], ZAI_BASE),
-        (["builtin:bigmodel-coding-plan", "account:bigmodel-individual-coding-plan"], BIGMODEL_BASE),
+        (
+            [
+                "builtin:zai-coding-plan",
+                "account:zai-individual-coding-plan",
+            ],
+            ZAI_BASE,
+        ),
+        (
+            [
+                "builtin:bigmodel-coding-plan",
+                "account:bigmodel-individual-coding-plan",
+            ],
+            BIGMODEL_BASE,
+        ),
     ] {
         for id in ids {
             let mut key = trimmed(providers.get(id).and_then(|p| p.pointer("/options/apiKey")));
             if key.starts_with("enc:") {
-                key = zcode_decrypt(secret, &key).unwrap_or_default().trim().to_string();
+                key = zcode_decrypt(secret, &key)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
             }
             if key.contains('.') && !key.contains([' ', '{', '$']) {
                 return Some((key, base));
@@ -399,7 +435,8 @@ fn own_sign_in() -> Option<Sign> {
     let store: Value = read_json(&dir.join("credentials.json"))?;
     let store = store.as_object()?;
     let secret = secret_key();
-    let decrypt = |name: &str| -> Option<String> { zcode_decrypt(&secret, store.get(name)?.as_str()?) };
+    let decrypt =
+        |name: &str| -> Option<String> { zcode_decrypt(&secret, store.get(name)?.as_str()?) };
     let mut key = String::new();
     let mut base = String::new();
     for (name, v) in store {
@@ -407,11 +444,17 @@ fn own_sign_in() -> Option<Sign> {
         if !name.contains(":coding-plan:") || !name.ends_with(":api-key") {
             continue;
         }
-        let Some(k) = v.as_str().and_then(|v| zcode_decrypt(&secret, v)) else { continue };
+        let Some(k) = v.as_str().and_then(|v| zcode_decrypt(&secret, v)) else {
+            continue;
+        };
         if !k.contains('.') {
             continue;
         }
-        let b = if name.contains(":bigmodel-") { BIGMODEL_BASE } else { ZAI_BASE };
+        let b = if name.contains(":bigmodel-") {
+            BIGMODEL_BASE
+        } else {
+            ZAI_BASE
+        };
         // Z.ai 的先，ZCode 列表同款
         if key.is_empty() || (b == ZAI_BASE && base != ZAI_BASE) {
             key = k;
@@ -431,23 +474,39 @@ fn own_sign_in() -> Option<Sign> {
         return None;
     }
     let mut info = Value::Null;
-    for name in ["oauth:zai:user_info", "oauth:zai_cn:user_info", "oauth:bigmodel:user_info"] {
+    for name in [
+        "oauth:zai:user_info",
+        "oauth:zai_cn:user_info",
+        "oauth:bigmodel:user_info",
+    ] {
         if info.is_null() {
-            if let Some(parsed) = decrypt(name).and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
+            if let Some(parsed) = decrypt(name).and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            {
                 info = parsed;
             }
         }
     }
     let email = trimmed(info.get("email"));
-    let email = email.strip_suffix("@phone.local").unwrap_or(&email).to_string();
-    let user = [email, trimmed(info.get("name")), trimmed(info.get("user_id"))]
-        .into_iter()
-        .find(|s| !s.is_empty())
-        .unwrap_or_else(|| "ZCode".to_string());
+    let email = email
+        .strip_suffix("@phone.local")
+        .unwrap_or(&email)
+        .to_string();
+    let user = [
+        email,
+        trimmed(info.get("name")),
+        trimmed(info.get("user_id")),
+    ]
+    .into_iter()
+    .find(|s| !s.is_empty())
+    .unwrap_or_else(|| "ZCode".to_string());
     Some(Sign {
         key,
         jwt,
-        base: if base.is_empty() { ZAI_BASE.to_string() } else { base },
+        base: if base.is_empty() {
+            ZAI_BASE.to_string()
+        } else {
+            base
+        },
         user,
         ..Default::default()
     })
@@ -458,11 +517,22 @@ fn plugin_sign_in() -> Option<Sign> {
     let path = plugin_config_dir()?.join("plugin-auth.json");
     let all = read_json(&path)?;
     let auth = all.get("zcode")?;
-    let site_base = |site: &str| if site == "bigmodel" { BIGMODEL_BASE } else { ZAI_BASE };
+    let site_base = |site: &str| {
+        if site == "bigmodel" {
+            BIGMODEL_BASE
+        } else {
+            ZAI_BASE
+        }
+    };
     match text(auth.get("type")) {
         "oauth" => {
-            let state: Value = serde_json::from_str(text(auth.get("refresh"))).unwrap_or(Value::Null);
-            let site = if text(state.get("site")) == "bigmodel" { "bigmodel" } else { "zai" };
+            let state: Value =
+                serde_json::from_str(text(auth.get("refresh"))).unwrap_or(Value::Null);
+            let site = if text(state.get("site")) == "bigmodel" {
+                "bigmodel"
+            } else {
+                "zai"
+            };
             let jwt = trimmed(state.get("jwt"));
             let key = match state.get("key").and_then(Value::as_str) {
                 Some(k) => k.trim().to_string(),
@@ -474,7 +544,11 @@ fn plugin_sign_in() -> Option<Sign> {
                 jwt,
                 base: {
                     let b = trimmed(state.get("base"));
-                    if b.is_empty() { site_base(site).to_string() } else { b }
+                    if b.is_empty() {
+                        site_base(site).to_string()
+                    } else {
+                        b
+                    }
                 },
                 device: trimmed(state.get("device")),
                 org: trimmed(state.get("org")),
@@ -499,9 +573,18 @@ fn plugin_sign_in() -> Option<Sign> {
             Some(s)
         }
         "api" => {
-            let site = if text(auth.pointer("/metadata/site")) == "bigmodel" { "bigmodel" } else { "zai" };
+            let site = if text(auth.pointer("/metadata/site")) == "bigmodel" {
+                "bigmodel"
+            } else {
+                "zai"
+            };
             let key = trimmed(auth.get("key"));
-            (!key.is_empty()).then(|| Sign { key, base: site_base(site).to_string(), user: "ZCode".into(), ..Default::default() })
+            (!key.is_empty()).then(|| Sign {
+                key,
+                base: site_base(site).to_string(),
+                user: "ZCode".into(),
+                ..Default::default()
+            })
         }
         _ => None,
     }
@@ -516,10 +599,19 @@ fn discover() -> Option<Sign> {
 // =====================================================================
 
 fn jwt_expiry_secs(jwt: &str) -> Option<i64> {
-    let payload = jwt.split('.').nth(1).filter(|_| jwt.split('.').count() == 3)?;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok()?;
+    let payload = jwt
+        .split('.')
+        .nth(1)
+        .filter(|_| jwt.split('.').count() == 3)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.trim_end_matches('='))
+        .ok()?;
     let claims: Value = serde_json::from_slice(&bytes).ok()?;
-    claims.get("exp").and_then(Value::as_f64).filter(|e| *e > 0.0).map(|e| e as i64)
+    claims
+        .get("exp")
+        .and_then(Value::as_f64)
+        .filter(|e| *e > 0.0)
+        .map(|e| e as i64)
 }
 
 fn jwt_expired(jwt: &str) -> bool {
@@ -529,7 +621,10 @@ fn jwt_expired(jwt: &str) -> bool {
 fn root_of(base: &str) -> String {
     let rest = base.split_once("://");
     match rest {
-        Some((scheme, r)) => format!("{scheme}://{}", r.split(['/', '?', '#']).next().unwrap_or("")),
+        Some((scheme, r)) => format!(
+            "{scheme}://{}",
+            r.split(['/', '?', '#']).next().unwrap_or("")
+        ),
         None => ZAI_API.to_string(),
     }
 }
@@ -547,7 +642,14 @@ fn team_headers(base: &str, org: &str, project: &str) -> Vec<(String, String)> {
     vec![
         h("Bigmodel-Organization", org),
         h("Bigmodel-Project", project),
-        h("Set-Language", if biz_root(base) == BIGMODEL_API { "zh" } else { "en" }),
+        h(
+            "Set-Language",
+            if biz_root(base) == BIGMODEL_API {
+                "zh"
+            } else {
+                "en"
+            },
+        ),
         h("Accept-Language", "en-US,en"),
     ]
 }
@@ -569,7 +671,15 @@ fn uuid_of(seed: &str) -> String {
     let digest = Sha256::digest(seed.as_bytes());
     let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
     let variant = (u8::from_str_radix(&hex[16..17], 16).unwrap_or(0) & 3) | 8;
-    format!("{}-{}-4{}-{:x}{}-{}", &hex[0..8], &hex[8..12], &hex[13..16], variant, &hex[17..20], &hex[20..32])
+    format!(
+        "{}-{}-4{}-{:x}{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[13..16],
+        variant,
+        &hex[17..20],
+        &hex[20..32]
+    )
 }
 
 /// 紧凑计数：整数原样，否则两位小数去尾零（插件 compact）。
@@ -617,7 +727,12 @@ fn window_name(span: i64) -> String {
 /// 插件 limitWindows：`/api/monitor/usage/quota/limit` 的 limits → 窗口。
 fn limit_windows(data: &Value) -> Vec<Win> {
     let mut out = Vec::new();
-    for l in data.get("limits").and_then(Value::as_array).into_iter().flatten() {
+    for l in data
+        .get("limits")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let unit = num(l.get("unit")).unwrap_or(0.0) as i64;
         let span = span_of(unit, num(l.get("number")).unwrap_or(0.0) as i64);
         let mut w = Win::new(&window_name(span), 0.0);
@@ -679,21 +794,35 @@ fn plan_name(level: &str) -> String {
 /// （订阅表读到了、没有有效订阅、无 level、无计数窗口）或读不到。
 fn coding_card(s: &Sign, subs: Option<&Value>) -> Option<Card> {
     let root = root_of(&s.base);
-    let data = call_env(&format!("{root}/api/monitor/usage/quota/limit"), &base_headers(&s.key))?;
+    let data = call_env(
+        &format!("{root}/api/monitor/usage/quota/limit"),
+        &base_headers(&s.key),
+    )?;
     let level = text(data.get("level")).to_string();
     let windows = limit_windows(&data);
-    let mut card = Card { plan: plan_name(&level), windows, until: None, renew: String::new() };
+    let mut card = Card {
+        plan: plan_name(&level),
+        windows,
+        until: None,
+        renew: String::new(),
+    };
     if let Some(subs) = subs {
         if let Some((until, renew)) = super::plan_quotas::zhipu_term_of(subs) {
             card.until = Some(until);
             card.renew = renew.to_string();
         }
     }
-    let valid = subs
-        .and_then(Value::as_array)
-        .is_some_and(|l| l.iter().any(|x| text(x.get("status")).eq_ignore_ascii_case("VALID")));
+    let valid = subs.and_then(Value::as_array).is_some_and(|l| {
+        l.iter()
+            .any(|x| text(x.get("status")).eq_ignore_ascii_case("VALID"))
+    });
     let subs_read = subs.is_some_and(|v| v.is_array());
-    if subs_read && !valid && level.is_empty() && s.plan.is_empty() && !card.windows.iter().any(|w| !w.aside) {
+    if subs_read
+        && !valid
+        && level.is_empty()
+        && s.plan.is_empty()
+        && !card.windows.iter().any(|w| !w.aside)
+    {
         return None;
     }
     Some(card)
@@ -705,7 +834,11 @@ fn when(v: Option<&Value>) -> Option<chrono::DateTime<chrono::Utc>> {
         return Some(t);
     }
     let n = num(v).filter(|n| *n > 0.0)?;
-    if n > 1e12 { from_millis(n as i64) } else { from_secs(n as i64) }
+    if n > 1e12 {
+        from_millis(n as i64)
+    } else {
+        from_secs(n as i64)
+    }
 }
 
 /// 团队席位：type=2 额度 + 套餐名/结束（需要登录 token；没有就只有窗口）。
@@ -717,13 +850,27 @@ fn team_card(s: &Sign) -> Option<Card> {
     let headers_extra = team_headers(&s.base, &s.org, &s.project);
     let mut headers = base_headers(&s.key);
     headers.extend(headers_extra.clone());
-    let data = call_env(&format!("{root}/api/monitor/usage/quota/limit?type=2"), &headers)?;
-    let mut card = Card { plan: String::new(), windows: limit_windows(&data), until: None, renew: String::new() };
+    let data = call_env(
+        &format!("{root}/api/monitor/usage/quota/limit?type=2"),
+        &headers,
+    )?;
+    let mut card = Card {
+        plan: String::new(),
+        windows: limit_windows(&data),
+        until: None,
+        renew: String::new(),
+    };
     if !s.token.is_empty() {
         let mut headers = base_headers(&s.token);
         headers.extend(headers_extra);
-        if let Some(t) = call_env(&format!("{root}/api/biz/team/subscribe/product/querySubscribeDetail"), &headers) {
-            let has = t.get("hasSubscription").map(|v| v.as_bool() == Some(true)).unwrap_or(true);
+        if let Some(t) = call_env(
+            &format!("{root}/api/biz/team/subscribe/product/querySubscribeDetail"),
+            &headers,
+        ) {
+            let has = t
+                .get("hasSubscription")
+                .map(|v| v.as_bool() == Some(true))
+                .unwrap_or(true);
             let usable = has
                 && text(t.get("status")).eq_ignore_ascii_case("EFFECTIVE")
                 && text(t.get("memberGrantStatus")).eq_ignore_ascii_case("VALID");
@@ -773,20 +920,31 @@ fn period_secs(period: &str) -> i64 {
 
 /// 插件 giftOf：ZCode 会话读到的赠送套餐。每个活跃套餐的每个余额桶一格；
 /// 没有活跃套餐 = None。返回 (套餐名, 结束, 窗口 [(窗口, 所属套餐名)])。
-fn gift_windows(s: &Sign) -> Option<(String, Option<chrono::DateTime<chrono::Utc>>, Vec<(Win, String)>)> {
+fn gift_windows(
+    s: &Sign,
+) -> Option<(
+    String,
+    Option<chrono::DateTime<chrono::Utc>>,
+    Vec<(Win, String)>,
+)> {
     if s.jwt.is_empty() || jwt_expired(&s.jwt) {
         return None;
     }
     let device = if !s.device.is_empty() {
         s.device.clone()
     } else {
-        uuid_of(&format!("zcode-device\0{}", if s.key.is_empty() { &s.jwt } else { &s.key }))
+        uuid_of(&format!(
+            "zcode-device\0{}",
+            if s.key.is_empty() { &s.jwt } else { &s.key }
+        ))
     };
     let mut headers = base_headers(&format!("Bearer {}", s.jwt));
     headers.push(h("X-Device-Mid", &device));
     let url = format!("{ZCODE_API}/api/v1/zcode-plan/billing/balance?app_version={APP_VERSION}");
     let b = call_env(&url, &headers)?;
-    let server_now = num(b.get("server_time")).filter(|t| *t > 0.0).unwrap_or_else(|| chrono::Utc::now().timestamp() as f64);
+    let server_now = num(b.get("server_time"))
+        .filter(|t| *t > 0.0)
+        .unwrap_or_else(|| chrono::Utc::now().timestamp() as f64);
     let status_of = |p: &Value| text(p.get("status")).trim().to_ascii_lowercase();
     let same = |x: &Value, p: &Value| {
         let (xu, pu) = (text(x.get("user_plan_id")), text(p.get("user_plan_id")));
@@ -796,7 +954,11 @@ fn gift_windows(s: &Sign) -> Option<(String, Option<chrono::DateTime<chrono::Utc
             plan_id_str(x) == plan_id_str(p)
         }
     };
-    let plans: Vec<&Value> = b.get("plans").and_then(Value::as_array).map(|a| a.iter().collect()).unwrap_or_default();
+    let plans: Vec<&Value> = b
+        .get("plans")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().collect())
+        .unwrap_or_default();
     let ended = |p: &Value| num(p.get("ends_at")).is_some_and(|e| e > 0.0 && e <= server_now);
     let not_started = |p: &Value| {
         num(p.get("starts_at")).is_some_and(|at| at > server_now) && status_of(p) != "expired"
@@ -812,7 +974,11 @@ fn gift_windows(s: &Sign) -> Option<(String, Option<chrono::DateTime<chrono::Utc
         let end = num(p.get("ends_at")).unwrap_or(0.0);
         let name = {
             let n = text(p.get("name")).trim();
-            if n.is_empty() { "Start Plan".to_string() } else { n.to_string() }
+            if n.is_empty() {
+                "Start Plan".to_string()
+            } else {
+                n.to_string()
+            }
         };
         let better = match &active {
             None => true,
@@ -824,15 +990,25 @@ fn gift_windows(s: &Sign) -> Option<(String, Option<chrono::DateTime<chrono::Utc
     }
     let (plan, end) = active?;
     let until = (end > 0.0).then(|| from_secs(end as i64)).flatten();
-    let expired_plans: Vec<&Value> =
-        plans.iter().copied().filter(|p| status_of(p) == "expired" || ended(p)).collect();
+    let expired_plans: Vec<&Value> = plans
+        .iter()
+        .copied()
+        .filter(|p| status_of(p) == "expired" || ended(p))
+        .collect();
     let mut out = Vec::new();
-    for x in b.get("balances").and_then(Value::as_array).into_iter().flatten() {
+    for x in b
+        .get("balances")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         // 属于已过期套餐的桶不要（插件 over 集合）
         if expired_plans.iter().any(|p| same(x, p)) && !live.iter().any(|p| same(x, p)) {
             continue;
         }
-        let Some(owner) = live.iter().find(|p| same(x, p)) else { continue };
+        let Some(owner) = live.iter().find(|p| same(x, p)) else {
+            continue;
+        };
         let exp = num(x.get("expires_at")).unwrap_or(0.0);
         if exp > 0.0 && exp <= server_now {
             continue; // 过了自己期限的桶
@@ -873,7 +1049,12 @@ fn gift_windows(s: &Sign) -> Option<(String, Option<chrono::DateTime<chrono::Utc
             w.resets_at = from_secs(exp as i64);
         }
         let mut span = 0;
-        for e in owner.get("entitlements").and_then(Value::as_array).into_iter().flatten() {
+        for e in owner
+            .get("entitlements")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             if text(e.get("entitlement_id")) == text(x.get("entitlement_id")) {
                 span = period_secs(text(e.get("period")));
             }
@@ -909,7 +1090,11 @@ fn gift_label(items: Vec<(Win, String)>, always: bool) -> Vec<Win> {
         .into_iter()
         .map(|(mut w, plan)| {
             if always {
-                let tag = if plan.is_empty() { "Start Plan" } else { plan.as_str() };
+                let tag = if plan.is_empty() {
+                    "Start Plan"
+                } else {
+                    plan.as_str()
+                };
                 w.name = format!("{} · {}", w.name, tag);
             } else if several && !plan.is_empty() {
                 w.name = format!("{} · {}", w.name, plan);
@@ -937,11 +1122,14 @@ pub fn quota_row() -> Option<Value> {
             (None, None) => return None,
         }
     } else if !s.key.is_empty() {
-        let subs = call_env(&format!("{}/api/biz/subscription/list", root_of(&s.base)), &base_headers(&s.key));
-        let valid = subs
-            .as_ref()
-            .and_then(Value::as_array)
-            .map(|l| l.iter().any(|x| text(x.get("status")).eq_ignore_ascii_case("VALID")));
+        let subs = call_env(
+            &format!("{}/api/biz/subscription/list", root_of(&s.base)),
+            &base_headers(&s.key),
+        );
+        let valid = subs.as_ref().and_then(Value::as_array).map(|l| {
+            l.iter()
+                .any(|x| text(x.get("status")).eq_ignore_ascii_case("VALID"))
+        });
         let gift = if jwt_ok { gift_windows(&s) } else { None };
         // 没有有效订阅、有 ZCode 会话：账号只有赠送套餐（插件 plansOf 的 start）
         if valid == Some(false) && jwt_ok {
@@ -971,7 +1159,11 @@ pub fn quota_row() -> Option<Value> {
     if !s.user.is_empty() {
         row["user"] = json!(s.user);
     }
-    let plan = if card.plan.is_empty() { s.plan.clone() } else { card.plan.clone() };
+    let plan = if card.plan.is_empty() {
+        s.plan.clone()
+    } else {
+        card.plan.clone()
+    };
     if !plan.is_empty() {
         row["plan"] = json!(plan);
     }
@@ -984,11 +1176,19 @@ pub fn quota_row() -> Option<Value> {
     Some(row)
 }
 
-fn gift_card(plan: String, until: Option<chrono::DateTime<chrono::Utc>>, items: Vec<(Win, String)>) -> Card {
+fn gift_card(
+    plan: String,
+    until: Option<chrono::DateTime<chrono::Utc>>,
+    items: Vec<(Win, String)>,
+) -> Card {
     Card {
         plan,
         windows: gift_label(items, false),
-        renew: if until.is_some() { "off".into() } else { String::new() },
+        renew: if until.is_some() {
+            "off".into()
+        } else {
+            String::new()
+        },
         until,
     }
 }
@@ -1033,7 +1233,9 @@ fn gift_card(plan: String, until: Option<chrono::DateTime<chrono::Utc>>, items: 
 /// `error.message` / `error` 字符串。网页标题分支（provider.WebPage）不搬——
 /// trial 拒答都是 JSON 体。都读不到时整串兜底（Go 同款）。
 fn vendor_message(body: &str) -> String {
-    let Ok(v) = serde_json::from_str::<Value>(body) else { return body.to_string() };
+    let Ok(v) = serde_json::from_str::<Value>(body) else {
+        return body.to_string();
+    };
     if let Some(m) = v
         .get("errors")
         .and_then(|e| e.get("message"))
@@ -1044,7 +1246,11 @@ fn vendor_message(body: &str) -> String {
     }
     // Go：len(e.Error)==0 才看 msg（"error" 字段在就不走这里，null 也算在）
     if v.get("error").is_none() {
-        if let Some(msg) = v.get("msg").and_then(Value::as_str).filter(|m| !m.is_empty()) {
+        if let Some(msg) = v
+            .get("msg")
+            .and_then(Value::as_str)
+            .filter(|m| !m.is_empty())
+        {
             let code = match v.get("code") {
                 Some(Value::String(s)) => Some(s.trim_matches('"').to_string()),
                 Some(Value::Number(n)) => Some(n.to_string()),
@@ -1057,7 +1263,11 @@ fn vendor_message(body: &str) -> String {
         }
     }
     if let Some(err) = v.get("error") {
-        if let Some(m) = err.get("message").and_then(Value::as_str).filter(|m| !m.is_empty()) {
+        if let Some(m) = err
+            .get("message")
+            .and_then(Value::as_str)
+            .filter(|m| !m.is_empty())
+        {
             return m.to_string();
         }
         if let Some(s) = err.as_str() {
@@ -1084,7 +1294,12 @@ fn trial_words(said: &str) -> Option<(TrialForm, String)> {
     const ENDED: &str = "ZCode has no active limited quota for ";
     const SPENT_HEAD: &str = "ZCode's limited quota for ";
     const SPENT_TAIL: &str = " is exhausted or temporarily unavailable";
-    let solid = |w: &str| !w.is_empty() && !w.bytes().any(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\x0c' | b'\r'));
+    let solid = |w: &str| {
+        !w.is_empty()
+            && !w
+                .bytes()
+                .any(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\x0c' | b'\r'))
+    };
     let mut starts = vec![0usize];
     let mut from = 0usize;
     while let Some(i) = said[from..].find(": ") {
@@ -1139,7 +1354,12 @@ pub fn trial_refused(body: &str) -> bool {
 /// `eq_ignore_ascii_case`（ASCII 折叠，非 ASCII 逐字符精确比对）。trial
 /// 条目名与厂商模型 id 实际都是 ASCII（`GLM-5.3-Trial`），差异只在理论面；
 /// 如实记下，不搬 Unicode 折叠表。
-pub(crate) fn trial_refused_for(provider_id: &str, cand_model: &str, status: u16, body: &[u8]) -> Option<TrialForm> {
+pub(crate) fn trial_refused_for(
+    provider_id: &str,
+    cand_model: &str,
+    status: u16,
+    body: &[u8],
+) -> Option<TrialForm> {
     const ZCODE_IDS: [&str; 2] = ["zcode", "zcode-plugin"];
     if !ZCODE_IDS.contains(&provider_id) {
         return None;
@@ -1151,11 +1371,15 @@ pub(crate) fn trial_refused_for(provider_id: &str, cand_model: &str, status: u16
     let said = said.trim();
     match status {
         400 => match trial_words(said) {
-            Some((TrialForm::Ended, named)) if named.eq_ignore_ascii_case(cand_model) => Some(TrialForm::Ended),
+            Some((TrialForm::Ended, named)) if named.eq_ignore_ascii_case(cand_model) => {
+                Some(TrialForm::Ended)
+            }
             _ => None,
         },
         429 => match trial_words(said) {
-            Some((TrialForm::Spent, named)) if format!("{named}-Trial").eq_ignore_ascii_case(cand_model) => {
+            Some((TrialForm::Spent, named))
+                if format!("{named}-Trial").eq_ignore_ascii_case(cand_model) =>
+            {
                 Some(TrialForm::Spent)
             }
             _ => None,
@@ -1170,7 +1394,9 @@ mod tests {
     use super::*;
 
     fn hex(s: &str) -> Vec<u8> {
-        (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap()).collect()
+        (0..s.len() / 2)
+            .map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap())
+            .collect()
     }
 
     #[test]
@@ -1233,7 +1459,9 @@ mod tests {
     static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
     fn world() -> World {
-        let lock = super::super::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let lock = super::super::TEST_SANDBOX_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let dir = std::env::temp_dir().join(format!(
             "marionette-engine-zcode-{}-{}",
             std::process::id(),
@@ -1250,13 +1478,22 @@ mod tests {
     }
 
     fn write_plugin_auth(w: &World, entry: Value) {
-        std::fs::write(w.dir.join("cfg").join("plugin-auth.json"), serde_json::to_vec(&json!({ "zcode": entry })).unwrap())
-            .unwrap();
+        std::fs::write(
+            w.dir.join("cfg").join("plugin-auth.json"),
+            serde_json::to_vec(&json!({ "zcode": entry })).unwrap(),
+        )
+        .unwrap();
     }
 
     fn fake_jwt(exp: i64) -> String {
-        let b = |v: &Value| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(v).unwrap());
-        format!("{}.{}.sig", b(&json!({"alg":"none"})), b(&json!({"exp": exp})))
+        let b = |v: &Value| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(v).unwrap())
+        };
+        format!(
+            "{}.{}.sig",
+            b(&json!({"alg":"none"})),
+            b(&json!({"exp": exp}))
+        )
     }
 
     #[test]
@@ -1301,12 +1538,22 @@ mod tests {
         assert_eq!(ws[0]["name"], "5 hours");
         assert_eq!(ws[0]["used"], 12.0);
         assert_eq!(ws[1]["name"], "Weekly");
-        assert_eq!(ws[1]["used"], 40.0, "usage/remaining 同时给时按计数算：(1000-600)/1000");
+        assert_eq!(
+            ws[1]["used"], 40.0,
+            "usage/remaining 同时给时按计数算：(1000-600)/1000"
+        );
         assert_eq!(ws[1]["display"], "400 / 1000");
         assert_eq!(ws[2]["name"], "MCP · Month");
         let requests = mock.requests();
-        let quota = requests.iter().find(|r| r.path.starts_with("/api/monitor")).unwrap();
-        assert_eq!(quota.header("authorization"), "id.secret", "钥匙裸放 Authorization");
+        let quota = requests
+            .iter()
+            .find(|r| r.path.starts_with("/api/monitor"))
+            .unwrap();
+        assert_eq!(
+            quota.header("authorization"),
+            "id.secret",
+            "钥匙裸放 Authorization"
+        );
         assert_eq!(quota.header("user-agent"), format!("ZCode/{APP_VERSION}"));
     }
 
@@ -1318,8 +1565,16 @@ mod tests {
             json!({"type":"api","key":"id.secret","metadata":{"site":"zai"}}),
         );
         let mock = Mock::start();
-        mock.route("/api/monitor/usage/quota/limit", 200, r#"{"code":200,"data":{"limits":[]}}"#);
-        mock.route("/api/biz/subscription/list", 200, r#"{"code":200,"data":[{"status":"EXPIRED"}]}"#);
+        mock.route(
+            "/api/monitor/usage/quota/limit",
+            200,
+            r#"{"code":200,"data":{"limits":[]}}"#,
+        );
+        mock.route(
+            "/api/biz/subscription/list",
+            200,
+            r#"{"code":200,"data":[{"status":"EXPIRED"}]}"#,
+        );
         let _r = Redirects::new(&[redirect("https://api.z.ai", &mock.base)]);
         assert!(quota_row().is_none());
     }
@@ -1388,20 +1643,42 @@ mod tests {
         // 用与测试向量同一套参数造 v1 值：这里直接用 node 生成的向量里没有的
         // 内容，所以走「明文 config.json 钥匙」这条只读路径验证发现链。
         std::fs::write(
-            w.dir.join("home").join(".zcode").join("v2").join("config.json"),
-            serde_json::to_vec(&json!({"provider":{"builtin:zai-coding-plan":{"options":{"apiKey":"abc.def"}}}})).unwrap(),
+            w.dir
+                .join("home")
+                .join(".zcode")
+                .join("v2")
+                .join("config.json"),
+            serde_json::to_vec(
+                &json!({"provider":{"builtin:zai-coding-plan":{"options":{"apiKey":"abc.def"}}}}),
+            )
+            .unwrap(),
         )
         .unwrap();
         // credentials.json 必须存在才算登录过（Go：读不到 store 就没有账号）
-        std::fs::write(w.dir.join("home").join(".zcode").join("v2").join("credentials.json"), b"{}").unwrap();
+        std::fs::write(
+            w.dir
+                .join("home")
+                .join(".zcode")
+                .join("v2")
+                .join("credentials.json"),
+            b"{}",
+        )
+        .unwrap();
         let own = own_sign_in().expect("own");
         assert_eq!(own.key, "abc.def");
         assert_eq!(own.base, ZAI_BASE);
         assert_eq!(own.user, "ZCode");
         // 含空格 / 占位符的不是钥匙
         std::fs::write(
-            w.dir.join("home").join(".zcode").join("v2").join("config.json"),
-            serde_json::to_vec(&json!({"provider":{"builtin:zai-coding-plan":{"options":{"apiKey":"${ENV}.x"}}}})).unwrap(),
+            w.dir
+                .join("home")
+                .join(".zcode")
+                .join("v2")
+                .join("config.json"),
+            serde_json::to_vec(
+                &json!({"provider":{"builtin:zai-coding-plan":{"options":{"apiKey":"${ENV}.x"}}}}),
+            )
+            .unwrap(),
         )
         .unwrap();
         assert!(own_sign_in().is_none());
@@ -1457,7 +1734,10 @@ mod tests {
         assert!(trial_refused(ZCODE_FLASH_TRIAL_ENDED));
         assert!(trial_refused(ZCODE_TRIAL_ENDED));
         assert!(trial_refused(ZCODE_TRIAL_SPENT));
-        assert!(trial_refused(ZCODE_TRIAL_RESTED), "0.1.49 的话：': ' 前缀分支");
+        assert!(
+            trial_refused(ZCODE_TRIAL_RESTED),
+            "0.1.49 的话：': ' 前缀分支"
+        );
         // 0.1.48 的话跟在词后：词表到串尾为止，判不中（Go 同侧 rest 整账号）
         assert!(!trial_refused(ZCODE_TRIAL_RESTED_048));
     }
@@ -1465,7 +1745,9 @@ mod tests {
     #[test]
     fn trial_refused_ignores_account_level_refusals() {
         // 账号级的额度/钥匙拒答不是 trial 词：Go 里它们 rest 整个账号
-        assert!(!trial_refused(r#"{"error":{"type":"rate_limit_error","message":"quota exhausted"}}"#));
+        assert!(!trial_refused(
+            r#"{"error":{"type":"rate_limit_error","message":"quota exhausted"}}"#
+        ));
         assert!(!trial_refused(
             r#"{"error":{"type":"invalid_request_error","message":"quota exhausted for this account"}}"#
         ));
@@ -1486,14 +1768,24 @@ mod tests {
             r#"{"error":{"message":"zcode: ZCode has no active limited quota for GLM-5.3-Trial"}}"#
         ));
         // 非 JSON 体：vendorMessage 整串兜底（Go 同款）
-        assert!(trial_refused("ZCode has no active limited quota for GLM-5.3-Trial"));
-        assert!(trial_refused("ZCode's limited quota for glm-5.3 is exhausted or temporarily unavailable"));
+        assert!(trial_refused(
+            "ZCode has no active limited quota for GLM-5.3-Trial"
+        ));
+        assert!(trial_refused(
+            "ZCode's limited quota for glm-5.3 is exhausted or temporarily unavailable"
+        ));
         // 大小写敏感（Go lazyre 无 (?i)）
-        assert!(!trial_refused("zcode has no active limited quota for GLM-5.3-Trial"));
+        assert!(!trial_refused(
+            "zcode has no active limited quota for GLM-5.3-Trial"
+        ));
         // (\S+) 要非空且无空白：空词、带空格的词都不是
         assert!(!trial_refused("ZCode has no active limited quota for "));
-        assert!(!trial_refused("ZCode has no active limited quota for GLM 5.3"));
-        assert!(!trial_refused("ZCode's limited quota for glm 5.3 is exhausted or temporarily unavailable"));
+        assert!(!trial_refused(
+            "ZCode has no active limited quota for GLM 5.3"
+        ));
+        assert!(!trial_refused(
+            "ZCode's limited quota for glm 5.3 is exhausted or temporarily unavailable"
+        ));
     }
 
     #[test]
@@ -1505,7 +1797,9 @@ mod tests {
             Some((TrialForm::Ended, "GLM-5.3-Flash-Trial".to_string()))
         );
         assert_eq!(
-            trial_words("ZCode's limited quota for glm-5.3 is exhausted or temporarily unavailable"),
+            trial_words(
+                "ZCode's limited quota for glm-5.3 is exhausted or temporarily unavailable"
+            ),
             Some((TrialForm::Spent, "glm-5.3".to_string()))
         );
         assert_eq!(trial_words("quota exhausted"), None);
@@ -1518,21 +1812,48 @@ mod tests {
     fn trial_refused_for_gates_on_provider_model_status_and_naming() {
         let f = |p: &str, m: &str, s: u16, b: &str| trial_refused_for(p, m, s, b.as_bytes());
         // 全过：ended（400）点名 -Trial 全名 + 候选同名
-        assert_eq!(f("zcode", "GLM-5.3-Flash-Trial", 400, ZCODE_FLASH_TRIAL_ENDED), Some(TrialForm::Ended));
-        assert_eq!(f("zcode", "GLM-5.3-Trial", 400, ZCODE_TRIAL_ENDED), Some(TrialForm::Ended));
+        assert_eq!(
+            f("zcode", "GLM-5.3-Flash-Trial", 400, ZCODE_FLASH_TRIAL_ENDED),
+            Some(TrialForm::Ended)
+        );
+        assert_eq!(
+            f("zcode", "GLM-5.3-Trial", 400, ZCODE_TRIAL_ENDED),
+            Some(TrialForm::Ended)
+        );
         // EqualFold：候选与点名两侧的大小写都不敏感
-        assert_eq!(f("zcode", "glm-5.3-trial", 400, ZCODE_TRIAL_ENDED), Some(TrialForm::Ended));
+        assert_eq!(
+            f("zcode", "glm-5.3-trial", 400, ZCODE_TRIAL_ENDED),
+            Some(TrialForm::Ended)
+        );
         // Go PluginID 的撞名变体（plugins.go:102-110）也是 zcode 插件的账号
-        assert_eq!(f("zcode-plugin", "GLM-5.3-Trial", 400, ZCODE_TRIAL_ENDED), Some(TrialForm::Ended));
+        assert_eq!(
+            f("zcode-plugin", "GLM-5.3-Trial", 400, ZCODE_TRIAL_ENDED),
+            Some(TrialForm::Ended)
+        );
         // 全过：spent（429）点名去 -Trial 的桶模型，核对 m[1]+"-Trial"
-        assert_eq!(f("zcode", "GLM-5.3-Trial", 429, ZCODE_TRIAL_SPENT), Some(TrialForm::Spent));
-        assert_eq!(f("zcode", "GLM-5.3-Trial", 429, ZCODE_TRIAL_RESTED), Some(TrialForm::Spent));
+        assert_eq!(
+            f("zcode", "GLM-5.3-Trial", 429, ZCODE_TRIAL_SPENT),
+            Some(TrialForm::Spent)
+        );
+        assert_eq!(
+            f("zcode", "GLM-5.3-Trial", 429, ZCODE_TRIAL_RESTED),
+            Some(TrialForm::Spent)
+        );
         // 词表门：0.1.48 注记跟词后判不中 → None（Go 同侧 rest 整账号）
-        assert_eq!(f("zcode", "GLM-5.3-Trial", 429, ZCODE_TRIAL_RESTED_048), None);
+        assert_eq!(
+            f("zcode", "GLM-5.3-Trial", 429, ZCODE_TRIAL_RESTED_048),
+            None
+        );
         // 点名核对：ended 词名 GLM-5.3-Trial，候选是 Flash-Trial → 不认
-        assert_eq!(f("zcode", "GLM-5.3-Flash-Trial", 400, ZCODE_TRIAL_ENDED), None);
+        assert_eq!(
+            f("zcode", "GLM-5.3-Flash-Trial", 400, ZCODE_TRIAL_ENDED),
+            None
+        );
         // 点名核对：spent 词名 glm-5.3（glm-5.3-Trial ≠ Flash-Trial）→ 不认
-        assert_eq!(f("zcode", "GLM-5.3-Flash-Trial", 429, ZCODE_TRIAL_SPENT), None);
+        assert_eq!(
+            f("zcode", "GLM-5.3-Flash-Trial", 429, ZCODE_TRIAL_SPENT),
+            None
+        );
         // status 门：ended 词配 429 / spent 词配 400 / 405 拦截页都不认
         assert_eq!(f("zcode", "GLM-5.3-Trial", 429, ZCODE_TRIAL_ENDED), None);
         assert_eq!(f("zcode", "GLM-5.3-Trial", 400, ZCODE_TRIAL_SPENT), None);
@@ -1541,7 +1862,12 @@ mod tests {
         assert_eq!(f("factory", "GLM-5.3-Trial", 400, ZCODE_TRIAL_ENDED), None);
         // 候选门：plain 模型（不带 -Trial）不进判定——账号级拒答照旧整账号
         assert_eq!(
-            f("zcode", "GLM-5.3", 429, r#"{"error":{"type":"rate_limit_error","message":"quota exhausted"}}"#),
+            f(
+                "zcode",
+                "GLM-5.3",
+                429,
+                r#"{"error":{"type":"rate_limit_error","message":"quota exhausted"}}"#
+            ),
             None
         );
     }
@@ -1554,13 +1880,19 @@ mod tests {
             "ModelScope says no"
         );
         // msg + code（WorkBuddy）；code 为 "0"/"null"/缺省时不带后缀
-        assert_eq!(vendor_message(r#"{"code":1113,"msg":"被限流"}"#), "被限流 (1113)");
+        assert_eq!(
+            vendor_message(r#"{"code":1113,"msg":"被限流"}"#),
+            "被限流 (1113)"
+        );
         assert_eq!(vendor_message(r#"{"code":"0","msg":"正常"}"#), "正常");
         assert_eq!(vendor_message(r#"{"msg":"plain"}"#), "plain");
         // error 是字符串
         assert_eq!(vendor_message(r#"{"error":"nope"}"#), "nope");
         // error 字段在时 msg 不看（Go：len(e.Error)==0 才看 msg）
-        assert_eq!(vendor_message(r#"{"error":{"message":"e"},"msg":"m"}"#), "e");
+        assert_eq!(
+            vendor_message(r#"{"error":{"message":"e"},"msg":"m"}"#),
+            "e"
+        );
         // 都读不到：整串兜底
         assert_eq!(vendor_message(r#"{"code":200}"#), r#"{"code":200}"#);
     }
@@ -1582,7 +1914,13 @@ mod tests {
         assert_eq!(uuid_of("a").len(), 36);
         assert_eq!(plan_name("pro"), "GLM Coding Pro");
         assert_eq!(plan_name(""), "");
-        assert_eq!(biz_root("https://open.bigmodel.cn/api/anthropic"), BIGMODEL_API);
-        assert_eq!(biz_root("https://api.z.ai/api/anthropic"), "https://api.z.ai");
+        assert_eq!(
+            biz_root("https://open.bigmodel.cn/api/anthropic"),
+            BIGMODEL_API
+        );
+        assert_eq!(
+            biz_root("https://api.z.ai/api/anthropic"),
+            "https://api.z.ai"
+        );
     }
 }

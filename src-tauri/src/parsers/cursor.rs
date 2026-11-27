@@ -2,9 +2,7 @@
 //! Interactive `chats/<md5>/` protobuf stores are skipped (no protobuf decoder).
 
 use super::path_norm::cwd_matches_project;
-use super::util::{
-    env_dir, home_join, json_str, read_json_file, read_subdirs, user_event,
-};
+use super::util::{env_dir, home_join, json_str, read_json_file, read_subdirs, user_event};
 use super::{AgentParser, ExternalConversation};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -13,9 +11,7 @@ pub struct CursorParser;
 
 fn cursor_home() -> Option<PathBuf> {
     env_dir("CURSOR_CONFIG_DIR")
-        .or_else(|| {
-            env_dir("XDG_CONFIG_HOME").map(|p| p.join("cursor"))
-        })
+        .or_else(|| env_dir("XDG_CONFIG_HOME").map(|p| p.join("cursor")))
         .or_else(|| home_join(".cursor"))
 }
 
@@ -46,7 +42,9 @@ impl AgentParser for CursorParser {
                 .and_then(|s| s.to_str())
                 .unwrap_or("cursor")
                 .to_string();
-            let title = json_str(&v, "title").unwrap_or("Cursor session").to_string();
+            let title = json_str(&v, "title")
+                .unwrap_or("Cursor session")
+                .to_string();
             out.push(ExternalConversation {
                 id: format!("cursor:{native_id}"),
                 source: "cursor".into(),
@@ -65,10 +63,7 @@ impl AgentParser for CursorParser {
     fn load(&self, locator: &str) -> Result<Vec<Value>, String> {
         let dir = Path::new(locator);
         let v = read_json_file(&dir.join("meta.json")).unwrap_or(Value::Null);
-        let session_id = dir
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("cursor");
+        let session_id = dir.file_name().and_then(|s| s.to_str()).unwrap_or("cursor");
         let title = json_str(&v, "title").unwrap_or("Cursor session");
         // Protobuf blob store is not decoded here. Surface a single note so the
         // user sees *something* rather than a blank pane.

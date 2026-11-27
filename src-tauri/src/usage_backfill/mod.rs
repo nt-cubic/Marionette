@@ -23,11 +23,11 @@
 //! thread. The only file this module ever writes is
 //! `~/.marionette/usage/backfill-cache.json` (via `storage::write_atomic`).
 
+mod antigravity;
 mod cache;
 mod claude;
 mod codex;
 mod composition;
-mod antigravity;
 mod dsh;
 mod facts;
 mod grok;
@@ -456,7 +456,8 @@ pub async fn usage_grok_composition(
     native_id: String,
 ) -> Result<Option<BackfillComposition>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let root = grok::discover_root().ok_or_else(|| "grok sessions root not found".to_string())?;
+        let root =
+            grok::discover_root().ok_or_else(|| "grok sessions root not found".to_string())?;
         let dir = grok::find_session_dir(&root, &native_id)
             .ok_or_else(|| "session directory not found".to_string())?;
         let measured = composition::signals_context_used(&dir);
@@ -542,8 +543,13 @@ mod tests {
         for source in &cold.sources {
             println!(
                 "  {:<12} found={} files={} sessions={} turns={} elapsed={}ms error={:?}",
-                source.agent, source.found, source.files, source.sessions, source.turns,
-                source.elapsed_ms, source.error
+                source.agent,
+                source.found,
+                source.files,
+                source.sessions,
+                source.turns,
+                source.elapsed_ms,
+                source.error
             );
         }
         let mut totals: std::collections::BTreeMap<String, [u64; 8]> = Default::default();

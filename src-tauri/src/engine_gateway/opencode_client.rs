@@ -164,7 +164,10 @@ fn hex_of(n: usize) -> String {
 /// sha1 摘要的十六进制——复用 ws.rs 的手写 SHA-1（FIPS 180-1，RFC 3174
 /// 公开向量守着）。project id 的哈希是 Go sha1.Sum 的同义（非安全用途）。
 fn sha1_hex(data: &[u8]) -> String {
-    super::ws::sha1(data).iter().map(|b| format!("{b:02x}")).collect()
+    super::ws::sha1(data)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn path_string(p: &Path) -> String {
@@ -466,7 +469,11 @@ fn open_code_local_dir(dir: &str) -> String {
 /// os.UserHomeDir 同义：Windows 用 %USERPROFILE%，其余 $HOME；空值视作没有
 /// （调用方 unwrap_or_default 得 ""，与 Go 的 `home, _ :=` 出 "" 同义）。
 fn user_home() -> Option<String> {
-    let key = if cfg!(target_os = "windows") { "USERPROFILE" } else { "HOME" };
+    let key = if cfg!(target_os = "windows") {
+        "USERPROFILE"
+    } else {
+        "HOME"
+    };
     std::env::var(key).ok().filter(|h| !h.is_empty())
 }
 
@@ -491,10 +498,7 @@ fn eval_symlinks(p: &Path) -> Option<String> {
 fn go_is_abs(p: &str) -> bool {
     let bytes = p.as_bytes();
     if cfg!(target_os = "windows") {
-        let vol = if bytes.len() >= 2
-            && bytes[1] == b':'
-            && bytes[0].is_ascii_alphabetic()
-        {
+        let vol = if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
             2
         } else {
             0
@@ -658,7 +662,10 @@ fn next_remote_section(config: &str, from: usize) -> Option<(String, usize, usiz
         }
         p += 1;
         let body_start = p;
-        let body_end = config[p..].find('[').map(|off| p + off).unwrap_or(config.len());
+        let body_end = config[p..]
+            .find('[')
+            .map(|off| p + off)
+            .unwrap_or(config.len());
         return Some((name, body_start, body_end));
     }
 }
@@ -721,7 +728,9 @@ fn open_code_remote_path(value: &str) -> String {
 
 /// `(?i)^[a-z][a-z0-9+.-]*://`（Go openCodeSchemeRe :413）。
 fn is_scheme_url(s: &str) -> bool {
-    let Some(idx) = s.find("://") else { return false };
+    let Some(idx) = s.find("://") else {
+        return false;
+    };
     let scheme = &s[..idx];
     scheme_ok(scheme) && !scheme.is_empty()
 }
@@ -1131,7 +1140,12 @@ mod tests {
     #[cfg(test)]
     fn reset_version_state_for_tests() {
         let mut st = lock(version_state());
-        *st = VersionState { v: None, at: None, asking: false, url: UPDATER.to_string() };
+        *st = VersionState {
+            v: None,
+            at: None,
+            asking: false,
+            url: UPDATER.to_string(),
+        };
     }
 
     /// 测试缝：把更新器指到本地假服务（对齐 Go 换 openCodeVersionURL 包变量）。
@@ -1151,11 +1165,8 @@ mod tests {
     }
 
     fn temp_root(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!(
-            "marionette-ocproj-{}-{}",
-            tag,
-            std::process::id()
-        ));
+        let d =
+            std::env::temp_dir().join(format!("marionette-ocproj-{}-{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).expect("dir");
         d
@@ -1172,10 +1183,13 @@ mod tests {
         assert!(opencode_url("  https://opencode.ai/x  ")); // TrimSpace
         assert!(opencode_url("https://user:pw@opencode.ai/v1")); // userinfo
         assert!(opencode_url("https://zen.opencode.ai/x")); // 名下的子域
-        // 协议相对（Go url.Parse 对 "//host/x" 也认 host）
+                                                            // 协议相对（Go url.Parse 对 "//host/x" 也认 host）
         assert!(opencode_url("//opencode.ai/x"));
         // 不该算的
-        assert!(!opencode_url("https://x.opencode.ai.deep/"), "不以 .opencode.ai 结尾");
+        assert!(
+            !opencode_url("https://x.opencode.ai.deep/"),
+            "不以 .opencode.ai 结尾"
+        );
         assert!(!opencode_url("https://notopencode.ai/"));
         assert!(!opencode_url("https://xopencode.ai/"));
         assert!(!opencode_url("https://opencode.ai.example.com/"));
@@ -1201,11 +1215,20 @@ mod tests {
         assert!(!opencode_real_session("SES_ecc5d8f28ffe9Cy14V8Em7lI2u")); // 大写前缀
         assert!(!opencode_real_session("ses_ECC5D8F28FFE9Cy14V8Em7lI2u")); // hex 段大写
         assert!(!opencode_real_session("ses_ecc5d8f28ffe9Cy14V8Em7lI2ux")); // 长 1
-        // 计数段的边界：id[13:16]（十二位十六进制的最后三位）反转 ≥ 0xff0 才算
-        // （0xfff-low < 16）；tail 恒 14 位
-        assert!(opencode_real_session("ses_ecc5d8f28fff9Cy14V8Em7lI2u"), "low=fff");
-        assert!(opencode_real_session("ses_ecc5d8f28ff09Cy14V8Em7lI2u"), "low=ff0");
-        assert!(!opencode_real_session("ses_ecc5d8f28fef9Cy14V8Em7lI2u"), "low=fef");
+                                                                            // 计数段的边界：id[13:16]（十二位十六进制的最后三位）反转 ≥ 0xff0 才算
+                                                                            // （0xfff-low < 16）；tail 恒 14 位
+        assert!(
+            opencode_real_session("ses_ecc5d8f28fff9Cy14V8Em7lI2u"),
+            "low=fff"
+        );
+        assert!(
+            opencode_real_session("ses_ecc5d8f28ff09Cy14V8Em7lI2u"),
+            "low=ff0"
+        );
+        assert!(
+            !opencode_real_session("ses_ecc5d8f28fef9Cy14V8Em7lI2u"),
+            "low=fef"
+        );
     }
 
     // Go TestOpenCodeIDsCountUp（:74-83）
@@ -1308,8 +1331,11 @@ mod tests {
         assert_eq!(t[1], b[0], "traceparent 与 b3 同 trace");
         assert_eq!(t[2], b[1], "traceparent 与 b3 同 span");
         assert!(
-            b[0].bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-                && b[1].bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)),
+            b[0].bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+                && b[1]
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)),
             "十六进制小写"
         );
         // 另一会话另一 trace
@@ -1337,15 +1363,39 @@ mod tests {
     #[test]
     fn remote_path_forms() {
         // SCP 形
-        assert_eq!(open_code_remote_path("git@github.com:foo/bar.git"), "github.com/foo/bar");
-        assert_eq!(open_code_remote_path("github.com:foo/bar.git"), "github.com/foo/bar");
-        assert_eq!(open_code_remote_path("git@github.com:foo/bar.git/"), "github.com/foo/bar");
-        assert_eq!(open_code_remote_path("user@gitlab.com:x/y.git"), "gitlab.com/x/y");
+        assert_eq!(
+            open_code_remote_path("git@github.com:foo/bar.git"),
+            "github.com/foo/bar"
+        );
+        assert_eq!(
+            open_code_remote_path("github.com:foo/bar.git"),
+            "github.com/foo/bar"
+        );
+        assert_eq!(
+            open_code_remote_path("git@github.com:foo/bar.git/"),
+            "github.com/foo/bar"
+        );
+        assert_eq!(
+            open_code_remote_path("user@gitlab.com:x/y.git"),
+            "gitlab.com/x/y"
+        );
         // scheme 形：host 小写、路径原样、.git 大小写敏感不剥（Go `\.git/?$` 无 (?i)）
-        assert_eq!(open_code_remote_path("https://GitHub.com/Foo/Bar.GIT"), "github.com/Foo/Bar.GIT");
-        assert_eq!(open_code_remote_path("ssh://git@github.com:22/foo/bar.git"), "github.com/foo/bar");
-        assert_eq!(open_code_remote_path("https://gitlab.com/x/y.git/"), "gitlab.com/x/y");
-        assert_eq!(open_code_remote_path("HTTPS://github.com/a/b.git"), "github.com/a/b");
+        assert_eq!(
+            open_code_remote_path("https://GitHub.com/Foo/Bar.GIT"),
+            "github.com/Foo/Bar.GIT"
+        );
+        assert_eq!(
+            open_code_remote_path("ssh://git@github.com:22/foo/bar.git"),
+            "github.com/foo/bar"
+        );
+        assert_eq!(
+            open_code_remote_path("https://gitlab.com/x/y.git/"),
+            "gitlab.com/x/y"
+        );
+        assert_eq!(
+            open_code_remote_path("HTTPS://github.com/a/b.git"),
+            "github.com/a/b"
+        );
         // file: 与读不了的
         assert_eq!(open_code_remote_path("file:///tmp/x.git"), "");
         assert_eq!(open_code_remote_path("FILE://host/x.git"), "");
@@ -1356,7 +1406,10 @@ mod tests {
         assert_eq!(open_code_remote_path(""), "");
         assert_eq!(open_code_remote_path("   "), "");
         // 前后空白（Go TrimSpace）
-        assert_eq!(open_code_remote_path("  https://github.com/a/b.git  "), "github.com/a/b");
+        assert_eq!(
+            open_code_remote_path("  https://github.com/a/b.git  "),
+            "github.com/a/b"
+        );
     }
 
     // —— 远端选择（纯函数，Go :453-471）——
@@ -1379,12 +1432,17 @@ mod tests {
         assert_eq!(pick_remote_url("[core]\n\tbare = false\n"), "");
         // 值里带 `[` 的段体在 Go `[^\[]*` 处截断——url 行被切断成半个值
         let cfg = "[remote \"origin\"]\n\turl = https://github.com/a[weird/b.git\n";
-        assert_eq!(pick_remote_url(cfg), "https://github.com/a", "段体止于下一个 [ 字符");
+        assert_eq!(
+            pick_remote_url(cfg),
+            "https://github.com/a",
+            "段体止于下一个 [ 字符"
+        );
         // 空格连着的段头（`[remote   "x"]`）与空白行隔开的段头都认
         let cfg = "\n\n[remote   \"origin\"]\n\turl = https://github.com/sp/sp.git\n";
         assert_eq!(pick_remote_url(cfg), "https://github.com/sp/sp.git");
         // urlx / url2 不是 url 行
-        let cfg = "[remote \"origin\"]\n\turls = x\n\turlx = y\n\turl = https://github.com/ok/ok.git\n";
+        let cfg =
+            "[remote \"origin\"]\n\turls = x\n\turlx = y\n\turl = https://github.com/ok/ok.git\n";
         assert_eq!(pick_remote_url(cfg), "https://github.com/ok/ok.git");
     }
 
@@ -1411,7 +1469,10 @@ mod tests {
         std::fs::write(main.join(".git/worktrees/wt/commondir"), "../..\n").expect("commondir");
         let (rootp, remote, ok) = open_code_repository(wt.to_str().unwrap());
         assert!(ok);
-        assert_eq!(remote, "github.com/foo/bar", "worktree 经 commondir 找到主仓的 origin");
+        assert_eq!(
+            remote, "github.com/foo/bar",
+            "worktree 经 commondir 找到主仓的 origin"
+        );
         assert_eq!(Path::new(&rootp), wt.as_path(), "root = 发现 .git 的那层");
         // 相对 gitdir（不绝对 → Join(d, own)）
         let wt2 = root.join("wt2");
@@ -1445,7 +1506,10 @@ mod tests {
         std::fs::create_dir_all(&inner).expect("inner");
         std::fs::write(inner.join(".git"), "not a gitdir file\n").expect("git file");
         let (_r, rem, ok5) = open_code_repository(inner.to_str().unwrap());
-        assert!(!ok5, "坏 .git 文件不是「回到 outer 的 remote」，是直接不是 repo");
+        assert!(
+            !ok5,
+            "坏 .git 文件不是「回到 outer 的 remote」，是直接不是 repo"
+        );
         assert!(rem.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1471,7 +1535,10 @@ mod tests {
         // 嵌套子目录同 id（向上找仓库）
         let sub = repo.join("a/b");
         std::fs::create_dir_all(&sub).expect("sub");
-        assert_eq!(opencode_project(sub.to_str().unwrap()), sha1_hex(b"git-remote:github.com/Foo/Bar"));
+        assert_eq!(
+            opencode_project(sub.to_str().unwrap()),
+            sha1_hex(b"git-remote:github.com/Foo/Bar")
+        );
         // file: remote → 无 remote → directory:root
         let repo2 = root.join("r2");
         std::fs::create_dir_all(repo2.join(".git")).expect("git");
@@ -1585,7 +1652,8 @@ mod tests {
                 let ok = req.url().contains("current=2.2.5");
                 let body = if ok { r#"{"version":"2.3.0"}"# } else { "no" };
                 let status = if ok { 200 } else { 400 };
-                let _ = req.respond(tiny_http::Response::from_string(body).with_status_code(status));
+                let _ =
+                    req.respond(tiny_http::Response::from_string(body).with_status_code(status));
             }
         });
         let u = format!("http://127.0.0.1:{port}/update/api/latest/cli/npm");
@@ -1621,7 +1689,10 @@ mod tests {
         assert_eq!(open_code_latest(), OPENCODE_VERSION);
         {
             let st = lock(version_state());
-            assert!(!st.asking && st.at.is_none() && st.v.is_none(), "没起后台线程");
+            assert!(
+                !st.asking && st.at.is_none() && st.v.is_none(),
+                "没起后台线程"
+            );
         }
         // 白盒注入已读版本 → UA 用它
         lock(version_state()).v = Some("9.9.9".to_string());
@@ -1642,11 +1713,14 @@ mod tests {
                     let ok = req.url().contains("current=2.2.5");
                     let body = if ok { r#"{"version":"2.3.0"}"# } else { "no" };
                     let status = if ok { 200 } else { 400 };
-                    let _ =
-                        req.respond(tiny_http::Response::from_string(body).with_status_code(status));
+                    let _ = req
+                        .respond(tiny_http::Response::from_string(body).with_status_code(status));
                 }
             });
-            (format!("http://127.0.0.1:{port}/update/api/latest/cli/npm"), handle)
+            (
+                format!("http://127.0.0.1:{port}/update/api/latest/cli/npm"),
+                handle,
+            )
         };
         set_version_url_for_tests(&url);
         assert_eq!(open_code_latest(), OPENCODE_VERSION, "第一发先回兜底值");
@@ -1675,7 +1749,10 @@ mod tests {
         let mut h: Vec<(String, String)> = vec![
             ("x-opencode-request".to_string(), "old".to_string()),
             ("Content-Type".to_string(), "application/json".to_string()),
-            ("X-Session-Affinity".to_string(), "from-the-agent".to_string()),
+            (
+                "X-Session-Affinity".to_string(),
+                "from-the-agent".to_string(),
+            ),
         ];
         opencode_client(&mut h, "conversation-a", "");
         fn get(h: &[(String, String)], n: &str) -> String {
@@ -1683,7 +1760,11 @@ mod tests {
         }
         assert_eq!(get(&h, "x-opencode-session"), id);
         assert_eq!(get(&h, "x-opencode-session-id"), id);
-        assert_eq!(get(&h, "x-session-affinity"), id, "2.2.5 也把会话放 affinity（原值被顶掉）");
+        assert_eq!(
+            get(&h, "x-session-affinity"),
+            id,
+            "2.2.5 也把会话放 affinity（原值被顶掉）"
+        );
         assert_eq!(get(&h, "x-session-id"), id);
         assert_eq!(get(&h, "User-Agent"), opencode_user_agent());
         assert_eq!(get(&h, "x-opencode-client"), "cli");
@@ -1710,7 +1791,9 @@ mod tests {
         opencode_client(&mut h, "conversation-a", "");
         assert_eq!(get(&h, "x-opencode-session"), id, "同对话同 id");
         assert_eq!(
-            h.iter().filter(|(k, _)| k.eq_ignore_ascii_case("b3")).count(),
+            h.iter()
+                .filter(|(k, _)| k.eq_ignore_ascii_case("b3"))
+                .count(),
             1,
             "Set 不叠"
         );
@@ -1745,7 +1828,11 @@ mod tests {
         // 全空白也是「用户钉的」→ 原样保留
         let mut h = vec![("X-OpenCode-Session".to_string(), "  ".to_string())];
         opencode_session_or_new(&mut h, "https://opencode.ai/zen/v1/chat");
-        assert_eq!(header_get(&h, "x-opencode-session"), Some("  "), "空白值也是用户钉的，保留");
+        assert_eq!(
+            header_get(&h, "x-opencode-session"),
+            Some("  "),
+            "空白值也是用户钉的，保留"
+        );
         let mut h = vec![("x-opencode-session".to_string(), String::new())];
         opencode_session_or_new(&mut h, "https://opencode.ai/zen/v1/chat");
         assert!(

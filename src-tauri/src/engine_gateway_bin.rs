@@ -3,9 +3,9 @@
 //! 拿它当 magpie 替身驱动；正式产品里网关由 engine.rs 在主进程内拉起，
 //! **这个 bin 不进发布产物**。
 #![recursion_limit = "256"] // groups.rs 的大 json! 测试字面量（与 main.rs 同款）
-// Shared gateway modules compile in this standalone crate too. The GUI owns
-// the real locale state; contract-bin diagnostics intentionally stay English
-// even when `cargo check --features engine-rust` builds every target.
+                            // Shared gateway modules compile in this standalone crate too. The GUI owns
+                            // the real locale state; contract-bin diagnostics intentionally stay English
+                            // even when `cargo check --features engine-rust` builds every target.
 #[cfg(engine_rust_active)]
 mod loc {
     pub fn is_en() -> bool {

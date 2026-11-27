@@ -142,11 +142,9 @@ pub(crate) fn proxy_handle(
         }
         Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
         Err(RelayError::Rpc(error)) => json!({"jsonrpc": "2.0", "id": id, "error": error}),
-        Err(RelayError::Host(text)) => jsonrpc_error_envelope(
-            id,
-            -32000,
-            &format!("plugin `{plugin_id}`: {text}"),
-        ),
+        Err(RelayError::Host(text)) => {
+            jsonrpc_error_envelope(id, -32000, &format!("plugin `{plugin_id}`: {text}"))
+        }
     };
     respond_json(request, envelope);
 }
@@ -156,11 +154,10 @@ fn jsonrpc_error_envelope(id: Value, code: i64, message: &str) -> Value {
 }
 
 fn respond_json(request: tiny_http::Request, body: Value) {
-    let response = tiny_http::Response::from_string(body.to_string())
-        .with_header(
-            tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
-                .expect("static header"),
-        );
+    let response = tiny_http::Response::from_string(body.to_string()).with_header(
+        tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+            .expect("static header"),
+    );
     let _ = request.respond(response);
 }
 
@@ -204,7 +201,9 @@ fn timeout_for(method: &str) -> Duration {
 
 fn ensure_child(session_id: &str, plugin: &PluginRecord) -> Result<Arc<HostedChild>, RelayError> {
     {
-        let guard = CHILDREN.lock().map_err(|_| RelayError::Host(lock_poisoned()))?;
+        let guard = CHILDREN
+            .lock()
+            .map_err(|_| RelayError::Host(lock_poisoned()))?;
         if let Some(child) = guard
             .as_ref()
             .and_then(|map| map.get(&(session_id.to_string(), plugin.id.clone())))
@@ -219,7 +218,9 @@ fn ensure_child(session_id: &str, plugin: &PluginRecord) -> Result<Arc<HostedChi
     }
     // Spawn outside the lock: command resolution can hit where.exe (seconds).
     let spawned = spawn_plugin_child(session_id, plugin).map_err(RelayError::Host)?;
-    let mut guard = CHILDREN.lock().map_err(|_| RelayError::Host(lock_poisoned()))?;
+    let mut guard = CHILDREN
+        .lock()
+        .map_err(|_| RelayError::Host(lock_poisoned()))?;
     let map = guard.get_or_insert_with(HashMap::new);
     match map.entry((session_id.to_string(), plugin.id.clone())) {
         std::collections::hash_map::Entry::Occupied(won) => {
@@ -268,7 +269,13 @@ fn spawn_plugin_child(session_id: &str, plugin: &PluginRecord) -> Result<Arc<Hos
         .take()
         .ok_or_else(|| "plugin stdout unavailable".to_string())?;
     let stderr = child.stderr.take();
-    let hosted = attach(session_id.to_string(), plugin.id.clone(), Some(child), stdin, stdout);
+    let hosted = attach(
+        session_id.to_string(),
+        plugin.id.clone(),
+        Some(child),
+        stdin,
+        stdout,
+    );
     if let Some(stderr) = stderr {
         spawn_stderr_log_thread(session_id.to_string(), plugin.id.clone(), stderr);
     }
@@ -293,17 +300,18 @@ fn attach(
 ) -> Arc<HostedChild> {
     let writer_label = format!("{session_id}/plugin/{plugin_id}");
     let log_plugin_id = plugin_id.clone();
-    let stdin_tx = crate::acp::acp_transport::spawn_stdin_writer(stdin, writer_label, move |error| {
-        // The stdout reader observing EOF is the authoritative death signal;
-        // this only explains why queued writes stopped landing.
-        crate::debug_log::append(
-            "plugins",
-            "warn",
-            &log_plugin_id,
-            "plugin stdin writer stopped",
-            Some(&error),
-        );
-    });
+    let stdin_tx =
+        crate::acp::acp_transport::spawn_stdin_writer(stdin, writer_label, move |error| {
+            // The stdout reader observing EOF is the authoritative death signal;
+            // this only explains why queued writes stopped landing.
+            crate::debug_log::append(
+                "plugins",
+                "warn",
+                &log_plugin_id,
+                "plugin stdin writer stopped",
+                Some(&error),
+            );
+        });
     let hosted = Arc::new(HostedChild {
         child: Mutex::new(child),
         stdin_tx: Mutex::new(stdin_tx),
@@ -333,9 +341,7 @@ fn spawn_stdout_reader(
                     continue;
                 }
                 match serde_json::from_str::<Value>(trimmed) {
-                    Ok(message) => {
-                        handle_child_message(&child, &session_id, &plugin_id, message)
-                    }
+                    Ok(message) => handle_child_message(&child, &session_id, &plugin_id, message),
                     Err(_) => crate::debug_log::append(
                         "plugins",
                         "warn",
@@ -376,14 +382,16 @@ fn handle_child_message(
             .get("id")
             .and_then(crate::acp::acp_transport::json_rpc_id_as_u64)
         {
-            let sender = child.pending.lock().ok().and_then(|mut map| map.remove(&id));
+            let sender = child
+                .pending
+                .lock()
+                .ok()
+                .and_then(|mut map| map.remove(&id));
             if let Some(sender) = sender {
                 if let Some(error) = message.get("error") {
                     let _ = sender.send(Err(error.clone()));
                 } else {
-                    let _ = sender.send(Ok(
-                        message.get("result").cloned().unwrap_or(Value::Null)
-                    ));
+                    let _ = sender.send(Ok(message.get("result").cloned().unwrap_or(Value::Null)));
                 }
             }
         }
@@ -416,7 +424,11 @@ fn handle_child_message(
     }
 }
 
-fn spawn_stderr_log_thread(session_id: String, plugin_id: String, stderr: impl Read + Send + 'static) {
+fn spawn_stderr_log_thread(
+    session_id: String,
+    plugin_id: String,
+    stderr: impl Read + Send + 'static,
+) {
     let _ = std::thread::Builder::new()
         .name("plugin-mcp-stderr".to_string())
         .spawn(move || {
@@ -500,7 +512,10 @@ fn request_child(
 /// protocolVersion/clientInfo are what the child should see); a first request
 /// that is not `initialize` (stateless-style clients) synthesizes one.
 fn handshake(child: &Arc<HostedChild>, agent_params: Option<&Value>) -> Result<Value, RelayError> {
-    let _guard = child.init_lock.lock().map_err(|_| RelayError::Host(lock_poisoned()))?;
+    let _guard = child
+        .init_lock
+        .lock()
+        .map_err(|_| RelayError::Host(lock_poisoned()))?;
     if child.initialized.load(Ordering::Relaxed) {
         return Err(RelayError::Host(
             "plugin session already initialized".to_string(),
@@ -606,17 +621,14 @@ fn relay_http(
         }));
     }
     let text = read_capped(response.into_reader());
-    let envelope: Value = serde_json::from_str(&text).map_err(|_| {
-        RelayError::Host(format!("non-JSON response: {}", truncate_for_log(&text)))
-    })?;
+    let envelope: Value = serde_json::from_str(&text)
+        .map_err(|_| RelayError::Host(format!("non-JSON response: {}", truncate_for_log(&text))))?;
     Ok(envelope)
 }
 
 fn read_capped(reader: impl Read) -> String {
     let mut text = String::new();
-    let _ = reader
-        .take(MAX_RELAY_BODY)
-        .read_to_string(&mut text);
+    let _ = reader.take(MAX_RELAY_BODY).read_to_string(&mut text);
     text
 }
 
@@ -645,9 +657,10 @@ fn remote_session_of(session_id: &str, plugin_id: &str) -> Option<String> {
 
 fn remember_remote_session(session_id: &str, plugin_id: &str, value: &str) {
     if let Ok(mut guard) = REMOTE_SESSIONS.lock() {
-        guard
-            .get_or_insert_with(HashMap::new)
-            .insert((session_id.to_string(), plugin_id.to_string()), value.to_string());
+        guard.get_or_insert_with(HashMap::new).insert(
+            (session_id.to_string(), plugin_id.to_string()),
+            value.to_string(),
+        );
     }
 }
 
@@ -666,7 +679,9 @@ fn forget_remote_sessions_where(matcher: impl Fn(&(String, String)) -> bool) {
 /// children until process exit.
 pub fn release_session(session_id: &str) {
     let victims: Vec<Arc<HostedChild>> = {
-        let Ok(mut guard) = CHILDREN.lock() else { return };
+        let Ok(mut guard) = CHILDREN.lock() else {
+            return;
+        };
         let Some(map) = guard.as_mut() else { return };
         let keys: Vec<(String, String)> = map
             .keys()
@@ -693,7 +708,9 @@ pub fn release_session(session_id: &str) {
 /// Kill every child of one plugin across all sessions (disable/uninstall).
 pub fn kill_plugin(plugin_id: &str) {
     let victims: Vec<Arc<HostedChild>> = {
-        let Ok(mut guard) = CHILDREN.lock() else { return };
+        let Ok(mut guard) = CHILDREN.lock() else {
+            return;
+        };
         let Some(map) = guard.as_mut() else { return };
         let keys: Vec<(String, String)> = map
             .keys()
@@ -728,8 +745,7 @@ pub fn probe(plugin: &PluginRecord) -> ProbeRecord {
                 Ok(child) => {
                     let outcome = (|| -> Result<usize, RelayError> {
                         handshake(&child, None)?;
-                        let result =
-                            request_child(&child, "tools/list", json!({}), PROBE_TIMEOUT)?;
+                        let result = request_child(&child, "tools/list", json!({}), PROBE_TIMEOUT)?;
                         Ok(result
                             .get("tools")
                             .and_then(Value::as_array)
@@ -866,9 +882,9 @@ mod tests {
     impl Write for ChannelWriter {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
             for byte in buf {
-                self.tx.send(*byte).map_err(|_| {
-                    io::Error::new(io::ErrorKind::BrokenPipe, "channel closed")
-                })?;
+                self.tx
+                    .send(*byte)
+                    .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "channel closed"))?;
             }
             Ok(buf.len())
         }
@@ -887,9 +903,10 @@ mod tests {
                 return Ok(0);
             }
             // Block for the first byte (pipe semantics), then drain the rest.
-            let first = self.rx.recv().map_err(|_| {
-                io::Error::new(io::ErrorKind::UnexpectedEof, "channel closed")
-            })?;
+            let first = self
+                .rx
+                .recv()
+                .map_err(|_| io::Error::new(io::ErrorKind::UnexpectedEof, "channel closed"))?;
             buf[0] = first;
             let mut n = 1;
             while n < buf.len() {
@@ -942,7 +959,10 @@ mod tests {
                     let mut reply = String::new();
                     if reader.read_line(&mut reply).unwrap_or(0) > 0 {
                         let reply: Value = serde_json::from_str(reply.trim()).unwrap();
-                        assert!(reply.get("error").is_some(), "server request must be declined");
+                        assert!(
+                            reply.get("error").is_some(),
+                            "server request must be declined"
+                        );
                         assert_eq!(
                             reply["error"]["code"].as_i64(),
                             Some(-32601),
@@ -965,7 +985,9 @@ mod tests {
                         "tools/call" => json!({"jsonrpc": "2.0", "id": id, "result": {
                             "content": [{"type": "text", "text": "pong"}], "isError": false
                         }}),
-                        _ => json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "unknown"}}),
+                        _ => {
+                            json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "unknown"}})
+                        }
                     }
                 };
                 let _ = writeln!(writer, "{response}");
@@ -987,8 +1009,8 @@ mod tests {
         let init = handshake(&child, None).expect("handshake");
         assert_eq!(init["serverInfo"]["name"], "fake");
         assert!(child.initialized.load(Ordering::Relaxed));
-        let list = request_child(&child, "tools/list", json!({}), HANDSHAKE_TIMEOUT)
-            .expect("tools/list");
+        let list =
+            request_child(&child, "tools/list", json!({}), HANDSHAKE_TIMEOUT).expect("tools/list");
         assert_eq!(list["tools"].as_array().map(Vec::len), Some(2));
         let call = request_child(
             &child,
@@ -1026,8 +1048,8 @@ mod tests {
     fn server_initiated_requests_are_declined() {
         let child = spawn_with_pipes(None, true);
         handshake(&child, None).expect("handshake");
-        let list = request_child(&child, "tools/list", json!({}), HANDSHAKE_TIMEOUT)
-            .expect("tools/list");
+        let list =
+            request_child(&child, "tools/list", json!({}), HANDSHAKE_TIMEOUT).expect("tools/list");
         assert_eq!(list["tools"].as_array().map(Vec::len), Some(2));
         child.kill_and_reap();
     }
@@ -1040,13 +1062,11 @@ mod tests {
         // scripted child answers everything, so simulate a hung waiter by
         // registering one directly.
         let (sender, receiver) = channel();
-        child
-            .pending
-            .lock()
-            .unwrap()
-            .insert(999, sender);
+        child.pending.lock().unwrap().insert(999, sender);
         child.kill_and_reap();
-        let outcome = receiver.recv_timeout(Duration::from_secs(1)).expect("waiter failed");
+        let outcome = receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("waiter failed");
         assert!(outcome.is_err());
     }
 

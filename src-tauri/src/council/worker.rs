@@ -77,7 +77,10 @@ impl ModelClient for EngineClient {
         // (HTTP 状态,按码分类)区分,改动前缀前先看那边。
         let resp = agent
             .post(&format!("http://127.0.0.1:{port}/v1/chat/completions"))
-            .set("Authorization", &format!("Bearer {}", crate::engine::gateway_token()))
+            .set(
+                "Authorization",
+                &format!("Bearer {}", crate::engine::gateway_token()),
+            )
             .set("Content-Type", "application/json")
             .timeout(Duration::from_secs(self.timeout_secs))
             .send_string(&body)
@@ -85,15 +88,28 @@ impl ModelClient for EngineClient {
                 // ureq 2.x:非 2xx 是 Err(Status)——规整成「引擎返回 <code>」
                 // 前缀,别让它混进传输层错误。
                 ureq::Error::Status(code, r) => {
-                    let detail = r.into_string().map(|s| shorten(&s, 300)).unwrap_or_default();
+                    let detail = r
+                        .into_string()
+                        .map(|s| shorten(&s, 300))
+                        .unwrap_or_default();
                     format!("引擎返回 {code}({}):{detail}", req.model)
                 }
-                _ => format!("引擎请求失败({}):{}", req.model, shorten(&e.to_string(), 300)),
+                _ => format!(
+                    "引擎请求失败({}):{}",
+                    req.model,
+                    shorten(&e.to_string(), 300)
+                ),
             })?;
         let status = resp.status();
-        let text = resp.into_string().map_err(|e| format!("读取引擎应答失败:{e}"))?;
+        let text = resp
+            .into_string()
+            .map_err(|e| format!("读取引擎应答失败:{e}"))?;
         if !(200..300).contains(&status) {
-            return Err(format!("引擎返回 {status}({}):{}", req.model, shorten(&text, 300)));
+            return Err(format!(
+                "引擎返回 {status}({}):{}",
+                req.model,
+                shorten(&text, 300)
+            ));
         }
         let parsed: serde_json::Value =
             serde_json::from_str(&text).map_err(|e| format!("解析引擎应答失败:{e}"))?;
@@ -107,7 +123,11 @@ impl ModelClient for EngineClient {
             return Err(format!("引擎返回空内容({})", req.model));
         }
         let output_chars = content.chars().count();
-        Ok(WorkerOutput { content, prompt_chars, output_chars })
+        Ok(WorkerOutput {
+            content,
+            prompt_chars,
+            output_chars,
+        })
     }
 }
 
@@ -142,14 +162,20 @@ impl MockClient {
 
     /// 给某模型入队一组响应(循环使用,永不耗尽)。
     pub fn enqueue(&self, model: &str, responses: Vec<String>) {
-        self.scripts.lock().unwrap().insert(model.to_string(), responses.into());
+        self.scripts
+            .lock()
+            .unwrap()
+            .insert(model.to_string(), responses.into());
     }
 
     /// 给某模型入队一次性错误(先进先出;耗尽后回落响应脚本)。
     /// 错误文本建议按 EngineClient 的前缀约定书写,配合
     /// `is_transient_error` 测退避重试。
     pub fn enqueue_failures(&self, model: &str, errors: Vec<String>) {
-        self.failures.lock().unwrap().insert(model.to_string(), errors.into());
+        self.failures
+            .lock()
+            .unwrap()
+            .insert(model.to_string(), errors.into());
     }
 
     pub fn call_count(&self) -> usize {
@@ -157,7 +183,12 @@ impl MockClient {
     }
 
     pub fn models_called(&self) -> Vec<String> {
-        self.calls.lock().unwrap().iter().map(|c| c.model.clone()).collect()
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|c| c.model.clone())
+            .collect()
     }
 }
 
@@ -171,10 +202,10 @@ impl Default for MockClient {
 #[cfg(test)]
 impl ModelClient for MockClient {
     fn complete(&self, req: &WorkerRequest) -> Result<WorkerOutput, String> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(MockCall { model: req.model.clone(), prompt: format!("{}||{}", req.system, req.user) });
+        self.calls.lock().unwrap().push(MockCall {
+            model: req.model.clone(),
+            prompt: format!("{}||{}", req.system, req.user),
+        });
         if let Some(queue) = self.failures.lock().unwrap().get_mut(&req.model) {
             if !queue.is_empty() {
                 return Err(queue.pop_front().unwrap());
@@ -188,7 +219,11 @@ impl ModelClient for MockClient {
                 queue.push_back(content.clone());
                 let prompt_chars = req.system.chars().count() + req.user.chars().count();
                 let output_chars = content.chars().count();
-                Ok(WorkerOutput { content, prompt_chars, output_chars })
+                Ok(WorkerOutput {
+                    content,
+                    prompt_chars,
+                    output_chars,
+                })
             }
             _ => Err(format!("mock 队列无响应({})", req.model)),
         }
@@ -232,11 +267,32 @@ mod tests {
         let mock = MockClient::new();
         mock.enqueue("glm/x", vec!["GLM 提案".into()]);
         mock.enqueue("gpt/y", vec!["GPT 提案".into()]);
-        let a = mock.complete(&WorkerRequest { model: "glm/x".into(), system: "s".into(), user: "u".into(), max_tokens: None }).unwrap();
-        let b = mock.complete(&WorkerRequest { model: "gpt/y".into(), system: "s".into(), user: "u".into(), max_tokens: None }).unwrap();
+        let a = mock
+            .complete(&WorkerRequest {
+                model: "glm/x".into(),
+                system: "s".into(),
+                user: "u".into(),
+                max_tokens: None,
+            })
+            .unwrap();
+        let b = mock
+            .complete(&WorkerRequest {
+                model: "gpt/y".into(),
+                system: "s".into(),
+                user: "u".into(),
+                max_tokens: None,
+            })
+            .unwrap();
         assert_ne!(a.content, b.content);
         // 未编排的模型 → 失败注入。
-        assert!(mock.complete(&WorkerRequest { model: "other/z".into(), system: "s".into(), user: "u".into(), max_tokens: None }).is_err());
+        assert!(mock
+            .complete(&WorkerRequest {
+                model: "other/z".into(),
+                system: "s".into(),
+                user: "u".into(),
+                max_tokens: None
+            })
+            .is_err());
         assert_eq!(mock.call_count(), 3);
     }
 
@@ -249,7 +305,12 @@ mod tests {
         }
         let client = EngineClient { timeout_secs: 1 };
         let err = client
-            .complete(&WorkerRequest { model: "m".into(), system: "s".into(), user: "u".into(), max_tokens: None })
+            .complete(&WorkerRequest {
+                model: "m".into(),
+                system: "s".into(),
+                user: "u".into(),
+                max_tokens: None,
+            })
             .err()
             .expect("应当失败");
         assert!(err.contains("引擎"), "错误信息应指向引擎:{err}");
@@ -258,7 +319,9 @@ mod tests {
     #[test]
     fn transient_error_classification() {
         // 传输层 → 瞬时(超时/连接问题都走「引擎请求失败」前缀)。
-        assert!(is_transient_error("引擎请求失败(glm/x): connection refused"));
+        assert!(is_transient_error(
+            "引擎请求失败(glm/x): connection refused"
+        ));
         assert!(is_transient_error("引擎请求失败(glm/x): network timed out"));
         // HTTP 状态:408/429/5xx 瞬时。
         assert!(is_transient_error("引擎返回 429(glm/x):rate limited"));
@@ -269,7 +332,9 @@ mod tests {
         assert!(!is_transient_error("引擎返回 401(glm/x):unauthorized"));
         assert!(!is_transient_error("引擎返回空内容(glm/x)"));
         assert!(!is_transient_error("解析引擎应答失败:expected value"));
-        assert!(!is_transient_error("模型共享引擎未运行(无法发起 Council 模型调用)"));
+        assert!(!is_transient_error(
+            "模型共享引擎未运行(无法发起 Council 模型调用)"
+        ));
         assert!(!is_transient_error("mock 队列无响应(glm/x)"));
         assert!(!is_transient_error(""));
     }
@@ -278,11 +343,19 @@ mod tests {
     fn mock_failure_injection_then_fallback() {
         let mock = MockClient::new();
         mock.enqueue("glm/x", vec!["恢复".into()]);
-        mock.enqueue_failures("glm/x", vec![
-            "引擎返回 503(glm/x):overloaded".into(),
-            "引擎返回 429(glm/x):rate limited".into(),
-        ]);
-        let req = WorkerRequest { model: "glm/x".into(), system: "s".into(), user: "u".into(), max_tokens: None };
+        mock.enqueue_failures(
+            "glm/x",
+            vec![
+                "引擎返回 503(glm/x):overloaded".into(),
+                "引擎返回 429(glm/x):rate limited".into(),
+            ],
+        );
+        let req = WorkerRequest {
+            model: "glm/x".into(),
+            system: "s".into(),
+            user: "u".into(),
+            max_tokens: None,
+        };
         assert!(mock.complete(&req).is_err());
         assert!(mock.complete(&req).is_err());
         let ok = mock.complete(&req).unwrap();

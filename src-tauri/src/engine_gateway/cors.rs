@@ -35,7 +35,10 @@ pub enum Verdict {
 const APP_ORIGINS: &[&str] = &["app://obsidian.md"];
 
 fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
-    headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+    headers
+        .iter()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v.as_str())
 }
 
 /// 入口：method + 小写头名的头表。
@@ -50,7 +53,10 @@ pub fn judge(method: &str, headers: &[(String, String)]) -> Verdict {
             ("Vary".to_string(), "Origin".to_string()),
         ];
         if is_preflight(method, headers) {
-            h.push(("Access-Control-Allow-Methods".into(), "GET, POST, OPTIONS".into()));
+            h.push((
+                "Access-Control-Allow-Methods".into(),
+                "GET, POST, OPTIONS".into(),
+            ));
             if let Some(asked) = header(headers, "access-control-request-headers") {
                 let allowed = cors_headers(asked);
                 if !allowed.is_empty() {
@@ -106,7 +112,8 @@ fn cors_headers(asked: &str) -> String {
         .map(str::trim)
         .filter(|f| {
             !f.is_empty()
-                && f.chars().all(|c| c == '-' || c == '_' || c.is_ascii_alphanumeric())
+                && f.chars()
+                    .all(|c| c == '-' || c == '_' || c.is_ascii_alphanumeric())
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -128,7 +135,10 @@ fn split_origin(origin: &str) -> (String, String) {
 fn split_host_port(hp: &str) -> (String, Option<String>) {
     if let Some(rest) = hp.strip_prefix('[') {
         if let Some((host, tail)) = rest.split_once(']') {
-            let port = tail.strip_prefix(':').filter(|p| !p.is_empty()).map(String::from);
+            let port = tail
+                .strip_prefix(':')
+                .filter(|p| !p.is_empty())
+                .map(String::from);
             return (host.to_string(), port);
         }
         return (rest.to_string(), None);
@@ -151,7 +161,13 @@ fn host_port(hp: &str, scheme: &str) -> String {
         return String::new();
     }
     let (host, port) = split_host_port(&hp);
-    let port = port.unwrap_or_else(|| if scheme == "https" { "443".into() } else { "80".into() });
+    let port = port.unwrap_or_else(|| {
+        if scheme == "https" {
+            "443".into()
+        } else {
+            "80".into()
+        }
+    });
     format!("{host}:{port}")
 }
 
@@ -207,18 +223,30 @@ mod tests {
     use super::*;
 
     fn hs(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
     fn no_origin_passes() {
-        assert_eq!(judge("POST", &hs(&[("host", "127.0.0.1:9999")])), Verdict::Pass);
+        assert_eq!(
+            judge("POST", &hs(&[("host", "127.0.0.1:9999")])),
+            Verdict::Pass
+        );
     }
 
     #[test]
     fn foreign_web_page_is_refused_on_every_method() {
         for method in ["GET", "POST", "OPTIONS"] {
-            let v = judge(method, &hs(&[("host", "127.0.0.1:9999"), ("origin", "https://evil.example")]));
+            let v = judge(
+                method,
+                &hs(&[
+                    ("host", "127.0.0.1:9999"),
+                    ("origin", "https://evil.example"),
+                ]),
+            );
             assert!(matches!(v, Verdict::Refuse(_)), "{method}: {v:?}");
         }
         // 预检也一样（带 ACRM 的 OPTIONS）
@@ -254,13 +282,28 @@ mod tests {
 
     #[test]
     fn same_origin_as_the_request_host_passes() {
-        let v = judge("POST", &hs(&[("host", "192.168.1.5:9999"), ("origin", "http://192.168.1.5:9999")]));
+        let v = judge(
+            "POST",
+            &hs(&[
+                ("host", "192.168.1.5:9999"),
+                ("origin", "http://192.168.1.5:9999"),
+            ]),
+        );
         assert_eq!(v, Verdict::Pass);
         // 端口不同 = 另一个站
-        let v = judge("POST", &hs(&[("host", "192.168.1.5:9999"), ("origin", "http://192.168.1.5:8000")]));
+        let v = judge(
+            "POST",
+            &hs(&[
+                ("host", "192.168.1.5:9999"),
+                ("origin", "http://192.168.1.5:8000"),
+            ]),
+        );
         assert!(matches!(v, Verdict::Refuse(_)));
         // 默认端口补齐
-        let v = judge("POST", &hs(&[("host", "gw.lan:443"), ("origin", "https://gw.lan")]));
+        let v = judge(
+            "POST",
+            &hs(&[("host", "gw.lan:443"), ("origin", "https://gw.lan")]),
+        );
         assert_eq!(v, Verdict::Pass);
     }
 
@@ -272,7 +315,12 @@ mod tests {
 
     #[test]
     fn app_schemes_pass_untouched() {
-        for o in ["tauri://localhost", "file://", "vscode-webview://abc", "chrome-extension://abc"] {
+        for o in [
+            "tauri://localhost",
+            "file://",
+            "vscode-webview://abc",
+            "chrome-extension://abc",
+        ] {
             let v = judge("POST", &hs(&[("host", "127.0.0.1:1"), ("origin", o)]));
             assert_eq!(v, Verdict::Pass, "{o}");
         }
@@ -281,16 +329,27 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn tauri_localhost_is_exempt_on_windows() {
-        let v = judge("POST", &hs(&[("host", "127.0.0.1:1"), ("origin", "http://tauri.localhost")]));
+        let v = judge(
+            "POST",
+            &hs(&[
+                ("host", "127.0.0.1:1"),
+                ("origin", "http://tauri.localhost"),
+            ]),
+        );
         assert_eq!(v, Verdict::Pass);
     }
 
     #[test]
     fn obsidian_gets_cors_headers_and_204_preflight() {
-        let v = judge("POST", &hs(&[("host", "127.0.0.1:1"), ("origin", "app://obsidian.md")]));
+        let v = judge(
+            "POST",
+            &hs(&[("host", "127.0.0.1:1"), ("origin", "app://obsidian.md")]),
+        );
         match v {
             Verdict::PassWith(h) => {
-                assert!(h.iter().any(|(k, v)| k == "Access-Control-Allow-Origin" && v == "app://obsidian.md"));
+                assert!(h
+                    .iter()
+                    .any(|(k, v)| k == "Access-Control-Allow-Origin" && v == "app://obsidian.md"));
             }
             other => panic!("{other:?}"),
         }
@@ -300,16 +359,25 @@ mod tests {
                 ("host", "127.0.0.1:1"),
                 ("origin", "app://obsidian.md"),
                 ("access-control-request-method", "POST"),
-                ("access-control-request-headers", "content-type, x-bad header, authorization"),
+                (
+                    "access-control-request-headers",
+                    "content-type, x-bad header, authorization",
+                ),
                 ("access-control-request-private-network", "true"),
             ]),
         );
         match v {
             Verdict::Preflight(h) => {
                 let get = |name: &str| h.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
-                assert_eq!(get("Access-Control-Allow-Methods"), Some("GET, POST, OPTIONS"));
+                assert_eq!(
+                    get("Access-Control-Allow-Methods"),
+                    Some("GET, POST, OPTIONS")
+                );
                 // 名字里带空格的整条丢弃，其余保留
-                assert_eq!(get("Access-Control-Allow-Headers"), Some("content-type, authorization"));
+                assert_eq!(
+                    get("Access-Control-Allow-Headers"),
+                    Some("content-type, authorization")
+                );
                 assert_eq!(get("Access-Control-Allow-Private-Network"), Some("true"));
                 assert_eq!(get("Access-Control-Max-Age"), Some("600"));
             }

@@ -109,7 +109,11 @@ fn extra_strs(g: &Group, key: &str) -> Vec<String> {
     g.extra
         .get(key)
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.trim().to_string())).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(|s| s.trim().to_string()))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -161,13 +165,19 @@ pub fn route(groups: &[Group], asked: &str) -> Option<Route> {
             return None;
         }
         let g = find_group(groups, gid)?;
-        return Some(Route::Group { group: g.id.clone(), member: head_member(g)?.to_string() });
+        return Some(Route::Group {
+            group: g.id.clone(),
+            member: head_member(g)?.to_string(),
+        });
     }
     if !id.contains('/') {
         // 裸 id：是组 id/name 就走组；带斜杠的永远不可能是裸名形态。
         // （Go GroupFor 对含 '/' 的 id 同样直接拒绝组匹配。）
         let g = find_group(groups, id)?;
-        return Some(Route::Group { group: g.id.clone(), member: head_member(g)?.to_string() });
+        return Some(Route::Group {
+            group: g.id.clone(),
+            member: head_member(g)?.to_string(),
+        });
     }
     // `provider/model` 直通：首段是来源 id，其余整体是模型名——
     // openrouter 的 "openrouter/openai/gpt-…" 也是首段切开后剩下的全归
@@ -176,7 +186,10 @@ pub fn route(groups: &[Group], asked: &str) -> Option<Route> {
     if provider.is_empty() || model.is_empty() {
         return None;
     }
-    Some(Route::Provider { provider: provider.to_string(), model: model.to_string() })
+    Some(Route::Provider {
+        provider: provider.to_string(),
+        model: model.to_string(),
+    })
 }
 
 /// 静态首发成员（不推进轮转状态）：manual → pick；其余 → 首个未 off 成员。
@@ -185,7 +198,10 @@ fn head_member(g: &Group) -> Option<&str> {
         return picked_member(g);
     }
     let off = extra_strs(g, "off");
-    g.members.iter().map(String::as_str).find(|m| !off.iter().any(|o| o == m))
+    g.members
+        .iter()
+        .map(String::as_str)
+        .find(|m| !off.iter().any(|o| o == m))
 }
 
 // ---------------------------------------------------------------------------
@@ -238,7 +254,9 @@ fn route_state() -> &'static Mutex<HashMap<String, RouteState>> {
 /// `advance=false` 只看不推进（旧入口 resolve_with 用，别让一次请求里
 /// 多处解析把轮转点推歪）。
 fn wrr_pick(group_id: &str, members: &[String], weights: &[i64], advance: bool) -> usize {
-    let Ok(mut all) = route_state().lock() else { return 0 };
+    let Ok(mut all) = route_state().lock() else {
+        return 0;
+    };
     let state = all.entry(group_id.to_string()).or_default();
     let mut cur: HashMap<String, i64> = members
         .iter()
@@ -265,7 +283,9 @@ fn wrr_pick(group_id: &str, members: &[String], weights: &[i64], advance: bool) 
 }
 
 fn rotate_pick(group_id: &str, len: usize, advance: bool) -> usize {
-    let Ok(mut all) = route_state().lock() else { return 0 };
+    let Ok(mut all) = route_state().lock() else {
+        return 0;
+    };
     let state = all.entry(group_id.to_string()).or_default();
     let at = (state.turn % len as u64) as usize;
     if advance {
@@ -290,10 +310,16 @@ pub struct PlanCtx<'a> {
 /// 排好首发顺序。manual = 只有 pick。
 fn ordered_members(ctx: &PlanCtx, g: &Group, advance: bool) -> Vec<String> {
     let mut list: Vec<String> = if g.routing == "manual" {
-        picked_member(g).map(|p| vec![p.to_string()]).unwrap_or_default()
+        picked_member(g)
+            .map(|p| vec![p.to_string()])
+            .unwrap_or_default()
     } else {
         let off = extra_strs(g, "off");
-        g.members.iter().filter(|m| !off.iter().any(|o| o == *m)).cloned().collect()
+        g.members
+            .iter()
+            .filter(|m| !off.iter().any(|o| o == *m))
+            .cloned()
+            .collect()
     };
     // match：已命名成员之后，按目录序补上命中的模型（Go withMatches）。
     let patterns = extra_strs(g, "match");
@@ -305,7 +331,10 @@ fn ordered_members(ctx: &PlanCtx, g: &Group, advance: bool) -> Vec<String> {
             .collect();
         let off = extra_strs(g, "off");
         for id in (ctx.catalog_ids)() {
-            if named.iter().any(|n| n == &id) || list.iter().any(|m| m == &id) || off.iter().any(|o| o == &id) {
+            if named.iter().any(|n| n == &id)
+                || list.iter().any(|m| m == &id)
+                || off.iter().any(|o| o == &id)
+            {
                 continue;
             }
             if patterns.iter().any(|p| glob_match(p, &id)) {
@@ -347,7 +376,9 @@ fn expand_group(
             if depth + 1 > MAX_NEST || gid.is_empty() {
                 continue;
             }
-            let Some(inner) = find_group(groups, gid) else { continue };
+            let Some(inner) = find_group(groups, gid) else {
+                continue;
+            };
             if extra_bool(inner, "disabled") || visited.iter().any(|v| v == &inner.id) {
                 continue;
             }
@@ -357,7 +388,9 @@ fn expand_group(
             continue;
         }
         let parsed = super::effort::parse_member(&member, ctx.has_model);
-        let Some((p, m)) = parsed.model.split_once('/') else { continue };
+        let Some((p, m)) = parsed.model.split_once('/') else {
+            continue;
+        };
         if p.is_empty() || m.is_empty() {
             continue;
         }
@@ -370,7 +403,10 @@ fn expand_group(
             account: parsed.account,
         };
         let dup = out.iter().any(|c| {
-            c.provider == cand.provider && c.model == cand.model && c.levels == cand.levels && c.account == cand.account
+            c.provider == cand.provider
+                && c.model == cand.model
+                && c.levels == cand.levels
+                && c.account == cand.account
         });
         if !dup {
             out.push(cand);
@@ -391,7 +427,9 @@ fn plan_raw(groups: &[Group], asked: &str, ctx: &PlanCtx, advance: bool) -> Vec<
     } else if !id.contains('/') {
         find_group(groups, id)
     } else {
-        let Some((p, m)) = id.split_once('/') else { return Vec::new() };
+        let Some((p, m)) = id.split_once('/') else {
+            return Vec::new();
+        };
         if p.is_empty() || m.is_empty() {
             return Vec::new();
         }
@@ -415,7 +453,12 @@ fn plan_raw(groups: &[Group], asked: &str, ctx: &PlanCtx, advance: bool) -> Vec<
 
 /// 出站用候选表：provider 不存在的成员跳过（Go 的成员解析失败同款），推进
 /// 轮转状态。空 = 无处可发（调用方 404）。
-pub fn plan_with(groups: &[Group], providers: &[Provider], asked: &str, ctx: &PlanCtx) -> Vec<Candidate> {
+pub fn plan_with(
+    groups: &[Group],
+    providers: &[Provider],
+    asked: &str,
+    ctx: &PlanCtx,
+) -> Vec<Candidate> {
     plan_raw(groups, asked, ctx, true)
         .into_iter()
         .filter(|c| providers.iter().any(|p| p.id == c.provider))
@@ -443,7 +486,10 @@ pub fn resolve_with(
     has_model: &dyn Fn(&str) -> bool,
 ) -> Option<(String, String, Vec<String>)> {
     let no_ids = || Vec::new();
-    let ctx = PlanCtx { has_model, catalog_ids: &no_ids };
+    let ctx = PlanCtx {
+        has_model,
+        catalog_ids: &no_ids,
+    };
     let head = plan_raw(groups, asked, &ctx, false).into_iter().next()?;
     if !providers.iter().any(|p| p.id == head.provider) {
         return None;
@@ -523,7 +569,9 @@ pub fn retryable(status: u16, body: &[u8]) -> bool {
 /// 联网也在锁外），算出出站候选表。
 pub fn plan_for(gw: &super::Gateway, asked: &str) -> Vec<Candidate> {
     let (groups, providers) = {
-        let Ok(store) = gw.store.lock() else { return Vec::new() };
+        let Ok(store) = gw.store.lock() else {
+            return Vec::new();
+        };
         (store.groups().to_vec(), store.providers().to_vec())
     };
     let known = |id: &str| gw.catalog.knows(&providers, id);
@@ -531,11 +579,22 @@ pub fn plan_for(gw: &super::Gateway, asked: &str) -> Vec<Candidate> {
         providers
             .iter()
             .flat_map(|p| {
-                gw.catalog.listed(p).into_iter().map(move |row| format!("{}/{}", p.id, row.id))
+                gw.catalog
+                    .listed(p)
+                    .into_iter()
+                    .map(move |row| format!("{}/{}", p.id, row.id))
             })
             .collect()
     };
-    plan_with(&groups, &providers, asked, &PlanCtx { has_model: &known, catalog_ids: &ids })
+    plan_with(
+        &groups,
+        &providers,
+        asked,
+        &PlanCtx {
+            has_model: &known,
+            catalog_ids: &ids,
+        },
+    )
 }
 
 /// 按候选的成员强度改写请求体（Go `withEffort`）：每个候选各算各的——
@@ -569,7 +628,10 @@ mod tests {
     }
 
     fn grp_named(id: &str, name: &str, members: &[&str]) -> Group {
-        Group { name: name.to_string(), ..grp(id, members) }
+        Group {
+            name: name.to_string(),
+            ..grp(id, members)
+        }
     }
 
     fn with_extra(mut g: Group, key: &str, value: serde_json::Value) -> Group {
@@ -578,7 +640,11 @@ mod tests {
     }
 
     fn prv(id: &str) -> Provider {
-        Provider { id: id.to_string(), name: id.to_string(), ..Default::default() }
+        Provider {
+            id: id.to_string(),
+            name: id.to_string(),
+            ..Default::default()
+        }
     }
 
     fn no_model(_: &str) -> bool {
@@ -586,10 +652,18 @@ mod tests {
     }
 
     /// 测试用 ctx：目录里有给定的 id 列表。
-    fn plan(groups: &[Group], providers: &[Provider], asked: &str, ids: &[&str]) -> Vec<(String, String)> {
+    fn plan(
+        groups: &[Group],
+        providers: &[Provider],
+        asked: &str,
+        ids: &[&str],
+    ) -> Vec<(String, String)> {
         let owned: Vec<String> = ids.iter().map(|s| s.to_string()).collect();
         let listing = || owned.clone();
-        let ctx = PlanCtx { has_model: &no_model, catalog_ids: &listing };
+        let ctx = PlanCtx {
+            has_model: &no_model,
+            catalog_ids: &listing,
+        };
         plan_with(groups, providers, asked, &ctx)
             .into_iter()
             .map(|c| (c.provider, c.model))
@@ -603,7 +677,10 @@ mod tests {
     #[test]
     fn passthrough() {
         let ps = [prv("openai")];
-        assert_eq!(resolve(&[], &ps, "openai/gpt-6"), Some(("openai".into(), "gpt-6".into())));
+        assert_eq!(
+            resolve(&[], &ps, "openai/gpt-6"),
+            Some(("openai".into(), "gpt-6".into()))
+        );
         // 多段斜杠：首段是来源，其余整体是模型名（openrouter 形态）。
         assert_eq!(
             resolve(&[], &ps, "openai/org/gpt-x"),
@@ -619,7 +696,10 @@ mod tests {
         let gs = [grp("fast", &["p1/m1", "p2/m2"])];
         let ps = [prv("p1"), prv("p2")];
         // 前缀形态与裸 id 形态都命中；无 pick 取首成员。
-        assert_eq!(resolve(&gs, &ps, "group/fast"), Some(("p1".into(), "m1".into())));
+        assert_eq!(
+            resolve(&gs, &ps, "group/fast"),
+            Some(("p1".into(), "m1".into()))
+        );
         assert_eq!(resolve(&gs, &ps, "fast"), Some(("p1".into(), "m1".into())));
         // 未知组 → None。
         assert_eq!(resolve(&gs, &ps, "group/other"), None);
@@ -630,9 +710,15 @@ mod tests {
         let gs = [grp_named("ds", "DS Flash", &["p1/m1", "p2/m2"])];
         let ps = [prv("p1"), prv("p2")];
         // agent 把组名直接填进模型字段（ZCode 模型栏）的形态。
-        assert_eq!(resolve(&gs, &ps, "DS Flash"), Some(("p1".into(), "m1".into())));
+        assert_eq!(
+            resolve(&gs, &ps, "DS Flash"),
+            Some(("p1".into(), "m1".into()))
+        );
         // group/<name> 也认（store.group() 同款 id-or-name 谓词）。
-        assert_eq!(resolve(&gs, &ps, "group/DS Flash"), Some(("p1".into(), "m1".into())));
+        assert_eq!(
+            resolve(&gs, &ps, "group/DS Flash"),
+            Some(("p1".into(), "m1".into()))
+        );
     }
 
     #[test]
@@ -642,17 +728,29 @@ mod tests {
         g.pick = "p2/m2".into();
         // 没写 routing = Smart：pick 只是留着给以后切 manual（Go 语义），
         // 列表序 + 失败转移。
-        assert_eq!(plan(&[g.clone()], &ps, "group/g", &[]), vec![pm("p1", "m1"), pm("p2", "m2")]);
+        assert_eq!(
+            plan(&[g.clone()], &ps, "group/g", &[]),
+            vec![pm("p1", "m1"), pm("p2", "m2")]
+        );
         // manual：只发 pick，没有后备。
         g.routing = "manual".into();
-        assert_eq!(plan(&[g.clone()], &ps, "group/g", &[]), vec![pm("p2", "m2")]);
-        assert_eq!(resolve(&[g], &ps, "group/g"), Some(("p2".into(), "m2".into())));
+        assert_eq!(
+            plan(&[g.clone()], &ps, "group/g", &[]),
+            vec![pm("p2", "m2")]
+        );
+        assert_eq!(
+            resolve(&[g], &ps, "group/g"),
+            Some(("p2".into(), "m2".into()))
+        );
         // pick 漂移（不在 members，手改文件才会出现）→ 回落首成员，
         // Go Picked() 同款。
         let mut bad = grp("b", &["p1/m1"]);
         bad.routing = "manual".into();
         bad.pick = "gone/m".into();
-        assert_eq!(resolve(&[bad], &ps, "group/b"), Some(("p1".into(), "m1".into())));
+        assert_eq!(
+            resolve(&[bad], &ps, "group/b"),
+            Some(("p1".into(), "m1".into()))
+        );
     }
 
     #[test]
@@ -714,20 +812,34 @@ mod tests {
     fn nested_groups_expand_in_order_up_to_max_nest() {
         let ps = [prv("p1"), prv("p2")];
         // 外组：先内组（自己的两个成员），再 p1/z。
-        let gs = [grp("outer", &["group/inner", "p1/z"]), grp("inner", &["p2/m2", "p2/m3"])];
+        let gs = [
+            grp("outer", &["group/inner", "p1/z"]),
+            grp("inner", &["p2/m2", "p2/m3"]),
+        ];
         assert_eq!(
             plan(&gs, &ps, "group/outer", &[]),
             vec![pm("p2", "m2"), pm("p2", "m3"), pm("p1", "z")]
         );
         // 多层（Go maxNest=8，旧版只展一层）。
-        let deep = [grp("a", &["group/b"]), grp("b", &["group/c"]), grp("c", &["p2/m2"])];
-        assert_eq!(resolve(&deep, &ps, "group/a"), Some(("p2".into(), "m2".into())));
+        let deep = [
+            grp("a", &["group/b"]),
+            grp("b", &["group/c"]),
+            grp("c", &["p2/m2"]),
+        ];
+        assert_eq!(
+            resolve(&deep, &ps, "group/a"),
+            Some(("p2".into(), "m2".into()))
+        );
         // 超过 8 层：被截断，不死循环。
-        let mut chain: Vec<Group> = (0..12).map(|i| grp(&format!("n{i}"), &[&format!("group/n{}", i + 1)])).collect();
+        let mut chain: Vec<Group> = (0..12)
+            .map(|i| grp(&format!("n{i}"), &[&format!("group/n{}", i + 1)]))
+            .collect();
         chain.push(grp("n12", &["p2/deep"]));
         assert!(plan(&chain, &ps, "group/n0", &[]).is_empty());
         // 8 层以内可达。
-        let mut ok: Vec<Group> = (0..8).map(|i| grp(&format!("k{i}"), &[&format!("group/k{}", i + 1)])).collect();
+        let mut ok: Vec<Group> = (0..8)
+            .map(|i| grp(&format!("k{i}"), &[&format!("group/k{}", i + 1)]))
+            .collect();
         ok.push(grp("k8", &["p2/deep"]));
         assert_eq!(plan(&ok, &ps, "group/k0", &[]), vec![pm("p2", "deep")]);
     }
@@ -741,10 +853,19 @@ mod tests {
         assert_eq!(resolve(&gs, &ps, "group/b"), None);
         // 自引：只剪掉自引那一条，其余成员照常。
         let self_ref = [grp("s", &["group/s", "p1/m1"])];
-        assert_eq!(resolve(&self_ref, &ps, "group/s"), Some(("p1".into(), "m1".into())));
+        assert_eq!(
+            resolve(&self_ref, &ps, "group/s"),
+            Some(("p1".into(), "m1".into()))
+        );
         // 环里夹着真成员：环不挡路。
-        let mixed = [grp("x", &["group/y", "p1/m1"]), grp("y", &["group/x", "p2/m2"])];
-        assert_eq!(plan(&mixed, &ps, "group/x", &[]), vec![pm("p2", "m2"), pm("p1", "m1")]);
+        let mixed = [
+            grp("x", &["group/y", "p1/m1"]),
+            grp("y", &["group/x", "p2/m2"]),
+        ];
+        assert_eq!(
+            plan(&mixed, &ps, "group/x", &[]),
+            vec![pm("p2", "m2"), pm("p1", "m1")]
+        );
     }
 
     #[test]
@@ -760,25 +881,48 @@ mod tests {
     #[test]
     fn match_glob_adds_catalog_models_after_named() {
         let ps = [prv("openrouter"), prv("p1")];
-        let g = with_extra(grp("free", &["p1/own"]), "match", json!(["openrouter/*:free"]));
-        let ids = ["openrouter/a:free", "openrouter/b:paid", "openrouter/c:FREE", "p1/own"];
+        let g = with_extra(
+            grp("free", &["p1/own"]),
+            "match",
+            json!(["openrouter/*:free"]),
+        );
+        let ids = [
+            "openrouter/a:free",
+            "openrouter/b:paid",
+            "openrouter/c:FREE",
+            "p1/own",
+        ];
         assert_eq!(
             plan(&[g], &ps, "group/free", &ids),
-            vec![pm("p1", "own"), pm("openrouter", "a:free"), pm("openrouter", "c:FREE")]
+            vec![
+                pm("p1", "own"),
+                pm("openrouter", "a:free"),
+                pm("openrouter", "c:FREE")
+            ]
         );
         // 已命名成员不被 match 再加一次；re: 正则暂不支持（不命中）。
-        let g = with_extra(grp("g", &["openrouter/a:free"]), "match", json!(["openrouter/*", "re:.*"]));
+        let g = with_extra(
+            grp("g", &["openrouter/a:free"]),
+            "match",
+            json!(["openrouter/*", "re:.*"]),
+        );
         let got = plan(&[g], &ps, "group/g", &["openrouter/a:free", "openrouter/z"]);
         assert_eq!(got, vec![pm("openrouter", "a:free"), pm("openrouter", "z")]);
         // 没写 match 的组不会去碰目录。
         let boom = || -> Vec<String> { panic!("catalog must not be asked") };
-        let ctx = PlanCtx { has_model: &no_model, catalog_ids: &boom };
+        let ctx = PlanCtx {
+            has_model: &no_model,
+            catalog_ids: &boom,
+        };
         let _ = plan_with(&[grp("plain", &["p1/x"])], &ps, "plain", &ctx);
     }
 
     #[test]
     fn glob_semantics() {
-        assert!(glob_match("openrouter/*:free", "openrouter/meta/llama:free"));
+        assert!(glob_match(
+            "openrouter/*:free",
+            "openrouter/meta/llama:free"
+        ));
         assert!(glob_match("*-free", "x/y-FREE"));
         assert!(glob_match("a*b*c", "aXXbYYc"));
         assert!(!glob_match("a*b*c", "aXXcYYb"));
@@ -792,11 +936,17 @@ mod tests {
         let mut renamed = grp("new-id", &["p1/m"]);
         renamed.former = vec!["old-id".into()];
         let gs = [renamed];
-        assert_eq!(resolve(&gs, &ps, "group/old-id"), Some(("p1".into(), "m".into())));
+        assert_eq!(
+            resolve(&gs, &ps, "group/old-id"),
+            Some(("p1".into(), "m".into()))
+        );
         assert_eq!(resolve(&gs, &ps, "old-id"), Some(("p1".into(), "m".into())));
         // 别的组占了这个 id 之后，旧名归新主人（精确命中先于谱系）。
         let gs = [gs[0].clone(), grp("old-id", &["p1/other"])];
-        assert_eq!(resolve(&gs, &ps, "old-id"), Some(("p1".into(), "other".into())));
+        assert_eq!(
+            resolve(&gs, &ps, "old-id"),
+            Some(("p1".into(), "other".into()))
+        );
     }
 
     #[test]
@@ -829,10 +979,19 @@ mod tests {
     fn peel_then_group() {
         let gs = [grp_named("ds-flash", "DS Flash", &["p1/m1"])];
         let ps = [prv("p1")];
-        assert_eq!(resolve(&gs, &ps, "group/ds-flash[xhigh]"), Some(("p1".into(), "m1".into())));
-        assert_eq!(resolve(&gs, &ps, " DS Flash[1m] "), Some(("p1".into(), "m1".into())));
+        assert_eq!(
+            resolve(&gs, &ps, "group/ds-flash[xhigh]"),
+            Some(("p1".into(), "m1".into()))
+        );
+        assert_eq!(
+            resolve(&gs, &ps, " DS Flash[1m] "),
+            Some(("p1".into(), "m1".into()))
+        );
         // 直通形态同样先剥。
-        assert_eq!(resolve(&gs, &ps, "p1/m1[1m]"), Some(("p1".into(), "m1".into())));
+        assert_eq!(
+            resolve(&gs, &ps, "p1/m1[1m]"),
+            Some(("p1".into(), "m1".into()))
+        );
     }
 
     #[test]
@@ -841,11 +1000,21 @@ mod tests {
         // 是固定强度，厂商只该看到裸模型（ollama 的 `:1017` tag 保留）。
         let ps = [prv("source-73800e7663517058"), prv("codex")];
         let gs = [
-            grp("gpt-6.1-terra", &["source-73800e7663517058/deepseek-v4.1-flash:1017:max"]),
+            grp(
+                "gpt-6.1-terra",
+                &["source-73800e7663517058/deepseek-v4.1-flash:1017:max"],
+            ),
             grp("gpt-6.1-sol", &["codex/gpt-6-luna:xhigh"]),
         ];
         let got = resolve_with(&gs, &ps, "gpt-6.1-terra", &|_| false).unwrap();
-        assert_eq!(got, ("source-73800e7663517058".into(), "deepseek-v4.1-flash:1017".into(), vec!["max".to_string()]));
+        assert_eq!(
+            got,
+            (
+                "source-73800e7663517058".into(),
+                "deepseek-v4.1-flash:1017".into(),
+                vec!["max".to_string()]
+            )
+        );
         // 旧入口同样不再把强度发给厂商
         assert_eq!(
             resolve(&gs, &ps, "gpt-6.1-sol"),
@@ -863,7 +1032,10 @@ mod tests {
     fn candidate_keeps_fast_and_account_for_codex() {
         let ps = [prv("codex")];
         let gs = [grp("g", &["codex/gpt-6:high:fast#work"])];
-        let ctx = PlanCtx { has_model: &no_model, catalog_ids: &|| Vec::new() };
+        let ctx = PlanCtx {
+            has_model: &no_model,
+            catalog_ids: &|| Vec::new(),
+        };
         let c = &plan_with(&gs, &ps, "g", &ctx)[0];
         assert_eq!(c.model, "gpt-6");
         assert_eq!(c.levels, vec!["high"]);
@@ -885,7 +1057,11 @@ mod tests {
     }
 
     fn cand(p: &str) -> Candidate {
-        Candidate { provider: p.into(), model: "m".into(), ..Default::default() }
+        Candidate {
+            provider: p.into(),
+            model: "m".into(),
+            ..Default::default()
+        }
     }
 
     fn reply_status(r: &Reply) -> u16 {
@@ -910,7 +1086,10 @@ mod tests {
         assert_eq!(reply_status(&r), 200);
         // 全挂：最后一个成员的错误交给 agent。
         let r = drive(&cands, |c| {
-            Attempt::Retry(Reply::error(if c.provider == "c" { 502 } else { 503 }, "down"))
+            Attempt::Retry(Reply::error(
+                if c.provider == "c" { 502 } else { 503 },
+                "down",
+            ))
         });
         assert_eq!(reply_status(&r), 502);
         // 终局即停：不再问后面的成员。
@@ -929,14 +1108,26 @@ mod tests {
             assert!(retryable(s, br#"{"error":"x"}"#), "{s} should fail over");
         }
         for s in [200u16, 201, 400, 405, 409, 413, 422] {
-            assert!(!retryable(s, br#"{"error":"bad parameter"}"#), "{s} should not fail over");
+            assert!(
+                !retryable(s, br#"{"error":"bad parameter"}"#),
+                "{s} should not fail over"
+            );
         }
         // 400/422 只有措辞说明「这个成员不行」才换。
-        assert!(retryable(400, br#"{"error":{"message":"You exceeded your current quota"}}"#));
-        assert!(retryable(400, br#"{"error":{"message":"The model `x` does not exist"}}"#));
+        assert!(retryable(
+            400,
+            br#"{"error":{"message":"You exceeded your current quota"}}"#
+        ));
+        assert!(retryable(
+            400,
+            br#"{"error":{"message":"The model `x` does not exist"}}"#
+        ));
         assert!(retryable(422, br#"{"detail":"model_not_found"}"#));
         // 会话超窗在每个成员上一样长：不换。
-        assert!(!retryable(400, b"This model's maximum context length is 8192 tokens"));
+        assert!(!retryable(
+            400,
+            b"This model's maximum context length is 8192 tokens"
+        ));
         assert!(!retryable(400, b"prompt is too long"));
     }
 
@@ -1000,14 +1191,23 @@ mod tests {
         for k in ["order", "groupOrder", "noAutoGroups"] {
             assert_eq!(back.get(k), raw.get(k), "top-level {k} lost");
         }
-        assert_eq!(back["providers"][0]["someGoField"], raw["providers"][0]["someGoField"]);
+        assert_eq!(
+            back["providers"][0]["someGoField"],
+            raw["providers"][0]["someGoField"]
+        );
         // 同一份组也能被路由层读懂：权重/off 来自 extra。
         let ps = [prv("p1")];
-        let ctx = PlanCtx { has_model: &no_model, catalog_ids: &|| Vec::new() };
+        let ctx = PlanCtx {
+            has_model: &no_model,
+            catalog_ids: &|| Vec::new(),
+        };
         let cands = plan_with(&file.groups, &ps, "rich", &ctx);
         // b 被 off；group/other 不存在被跳过；只剩 a（强度 high）。
         assert_eq!(cands.len(), 1);
-        assert_eq!((cands[0].model.as_str(), cands[0].levels.clone()), ("a", vec!["high".to_string()]));
+        assert_eq!(
+            (cands[0].model.as_str(), cands[0].levels.clone()),
+            ("a", vec!["high".to_string()])
+        );
     }
 
     #[test]

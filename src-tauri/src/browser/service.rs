@@ -17,22 +17,29 @@ pub fn probe_loopback_url(raw: &str) -> Result<bool, String> {
         .unwrap_or(host)
         .to_ascii_lowercase();
     let loopback_name = literal == "localhost" || literal.ends_with(".localhost");
-    let loopback_ip = literal.parse::<std::net::IpAddr>().ok().is_some_and(|ip| ip.is_loopback());
-    let unspecified = literal.parse::<std::net::IpAddr>().ok().is_some_and(|ip| ip.is_unspecified());
+    let loopback_ip = literal
+        .parse::<std::net::IpAddr>()
+        .ok()
+        .is_some_and(|ip| ip.is_loopback());
+    let unspecified = literal
+        .parse::<std::net::IpAddr>()
+        .ok()
+        .is_some_and(|ip| ip.is_unspecified());
     if !loopback_name && !loopback_ip && !unspecified {
         return Err("dev-server probe only accepts loopback addresses".to_string());
     }
     if unspecified {
-        url.set_host(Some("localhost")).map_err(|_| "could not rewrite wildcard host")?;
+        url.set_host(Some("localhost"))
+            .map_err(|_| "could not rewrite wildcard host")?;
     }
     let port = url.port_or_known_default().ok_or("URL has no port")?;
     let authority = format!("{}:{port}", url.host_str().ok_or("URL has no host")?);
     let addresses = authority
         .to_socket_addrs()
         .map_err(|error| format!("resolve {authority}: {error}"))?;
-    Ok(addresses.into_iter().any(|address| {
-        TcpStream::connect_timeout(&address, Duration::from_millis(350)).is_ok()
-    }))
+    Ok(addresses
+        .into_iter()
+        .any(|address| TcpStream::connect_timeout(&address, Duration::from_millis(350)).is_ok()))
 }
 
 #[cfg(test)]

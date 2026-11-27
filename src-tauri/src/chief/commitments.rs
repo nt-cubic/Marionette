@@ -360,9 +360,7 @@ impl CommitmentLedger {
         let ids: Vec<String> = self
             .commitments
             .iter()
-            .filter(|commitment| {
-                commitment.staff_id == staff_id && commitment.status.is_open()
-            })
+            .filter(|commitment| commitment.staff_id == staff_id && commitment.status.is_open())
             .map(|commitment| commitment.commitment_id.clone())
             .collect();
         ids.into_iter()

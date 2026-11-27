@@ -71,7 +71,9 @@ pub(super) fn send(
     }
     request = request.timeout(FETCH_TIMEOUT);
     let result = match body {
-        Some(b) => request.set("Content-Type", "application/json").send_string(b),
+        Some(b) => request
+            .set("Content-Type", "application/json")
+            .send_string(b),
         None => request.call(),
     };
     let response = match result {
@@ -82,7 +84,10 @@ pub(super) fn send(
     let status = response.status();
     let mut buf = String::new();
     // 读体失败（非 UTF-8 / 断流）当作体为空：状态码仍可判。
-    let _ = response.into_reader().take(1 << 20).read_to_string(&mut buf);
+    let _ = response
+        .into_reader()
+        .take(1 << 20)
+        .read_to_string(&mut buf);
     Some(Reply { status, body: buf })
 }
 
@@ -139,7 +144,11 @@ pub(super) struct Win {
 
 impl Win {
     pub fn new(name: &str, used: f64) -> Win {
-        Win { name: name.to_string(), used, ..Default::default() }
+        Win {
+            name: name.to_string(),
+            used,
+            ..Default::default()
+        }
     }
 
     pub fn to_json(&self) -> Value {
@@ -183,7 +192,9 @@ pub(super) fn rfc3339(t: DateTime<Utc>) -> String {
 }
 
 pub(super) fn parse_rfc3339(s: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s.trim()).ok().map(|t| t.with_timezone(&Utc))
+    DateTime::parse_from_rfc3339(s.trim())
+        .ok()
+        .map(|t| t.with_timezone(&Utc))
 }
 
 pub(super) fn from_millis(ms: i64) -> Option<DateTime<Utc>> {
@@ -213,7 +224,9 @@ pub(super) fn beijing_time(s: &str) -> Option<DateTime<Utc>> {
     let cst = FixedOffset::east_opt(8 * 3600)?;
     for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"] {
         let parsed = if fmt.len() == 8 {
-            chrono::NaiveDate::parse_from_str(&s, fmt).ok().and_then(|d| d.and_hms_opt(0, 0, 0))
+            chrono::NaiveDate::parse_from_str(&s, fmt)
+                .ok()
+                .and_then(|d| d.and_hms_opt(0, 0, 0))
         } else {
             chrono::NaiveDateTime::parse_from_str(&s, fmt).ok()
         };
@@ -246,14 +259,23 @@ pub(super) fn mask(key: &str) -> String {
 pub(super) fn host_of(url: &str) -> String {
     let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    authority.rsplit('@').next().unwrap_or(authority).to_ascii_lowercase()
+    authority
+        .rsplit('@')
+        .next()
+        .unwrap_or(authority)
+        .to_ascii_lowercase()
 }
 
 /// 不含端口的主机名（小写）。
 pub(super) fn hostname_of(url: &str) -> String {
     let host = host_of(url);
     if host.starts_with('[') {
-        return host.split(']').next().unwrap_or(&host).trim_start_matches('[').to_string();
+        return host
+            .split(']')
+            .next()
+            .unwrap_or(&host)
+            .trim_start_matches('[')
+            .to_string();
     }
     host.split(':').next().unwrap_or(&host).to_string()
 }
@@ -275,7 +297,10 @@ pub(super) fn keys_of(p: &super::store::Provider) -> Vec<(String, String)> {
     if let Some(list) = p.extra.get("keys").and_then(Value::as_array) {
         for k in list {
             let key = text(k.get("key")).to_string();
-            if key.is_empty() || key == p.key || k.get("off").and_then(Value::as_bool).unwrap_or(false) {
+            if key.is_empty()
+                || key == p.key
+                || k.get("off").and_then(Value::as_bool).unwrap_or(false)
+            {
                 continue;
             }
             if keys.iter().any(|(existing, _)| *existing == key) {
@@ -294,7 +319,9 @@ pub(super) fn keys_of(p: &super::store::Provider) -> Vec<(String, String)> {
 
 /// provider 本身该不该被额度面跳过（Go：Hidden / Off / 账号登录型）。
 pub(super) fn skipped(p: &super::store::Provider) -> bool {
-    extra_bool(p, "hidden") || extra_bool(p, "off") || p.extra.get("account").is_some_and(|a| !a.is_null())
+    extra_bool(p, "hidden")
+        || extra_bool(p, "off")
+        || p.extra.get("account").is_some_and(|a| !a.is_null())
 }
 
 /// 测试脚手架：本地假厂商（std TcpListener，零新依赖；按路径**最长前缀**
@@ -314,7 +341,10 @@ pub(super) mod testkit {
 
     impl Recorded {
         pub fn header(&self, name: &str) -> String {
-            self.headers.get(&name.to_ascii_lowercase()).cloned().unwrap_or_default()
+            self.headers
+                .get(&name.to_ascii_lowercase())
+                .cloned()
+                .unwrap_or_default()
         }
     }
 
@@ -337,11 +367,17 @@ pub(super) mod testkit {
                     let Ok(stream) = stream else { continue };
                     let (r, s) = (r.clone(), s.clone());
                     std::thread::spawn(move || {
-                        let Ok(clone) = stream.try_clone() else { return };
+                        let Ok(clone) = stream.try_clone() else {
+                            return;
+                        };
                         let mut reader = BufReader::new(clone);
                         let mut request_line = String::new();
                         reader.read_line(&mut request_line).ok();
-                        let path = request_line.split_whitespace().nth(1).unwrap_or("").to_string();
+                        let path = request_line
+                            .split_whitespace()
+                            .nth(1)
+                            .unwrap_or("")
+                            .to_string();
                         let mut headers = HashMap::new();
                         loop {
                             let mut line = String::new();
@@ -356,7 +392,10 @@ pub(super) mod testkit {
                                 headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
                             }
                         }
-                        let len: usize = headers.get("content-length").and_then(|l| l.parse().ok()).unwrap_or(0);
+                        let len: usize = headers
+                            .get("content-length")
+                            .and_then(|l| l.parse().ok())
+                            .unwrap_or(0);
                         let mut body = vec![0u8; len];
                         reader.read_exact(&mut body).ok();
                         let (status, reply) = {
@@ -383,7 +422,11 @@ pub(super) mod testkit {
                     });
                 }
             });
-            Mock { base: format!("http://127.0.0.1:{port}"), routes, seen }
+            Mock {
+                base: format!("http://127.0.0.1:{port}"),
+                routes,
+                seen,
+            }
         }
 
         pub fn route(&self, prefix: &str, status: u16, body: &str) {
@@ -395,7 +438,11 @@ pub(super) mod testkit {
         pub fn requests(&self) -> Vec<Recorded> {
             let seen = self.seen.lock().unwrap_or_else(|p| p.into_inner());
             seen.iter()
-                .map(|r| Recorded { path: r.path.clone(), headers: r.headers.clone(), body: r.body.clone() })
+                .map(|r| Recorded {
+                    path: r.path.clone(),
+                    headers: r.headers.clone(),
+                    body: r.body.clone(),
+                })
                 .collect()
         }
     }
@@ -416,7 +463,10 @@ pub(super) mod testkit {
 
     impl Drop for Redirects {
         fn drop(&mut self) {
-            super::REDIRECTS.lock().unwrap_or_else(|p| p.into_inner()).clear();
+            super::REDIRECTS
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
         }
     }
 }

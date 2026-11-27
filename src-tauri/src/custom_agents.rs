@@ -35,8 +35,8 @@ pub fn load_all() -> Result<Vec<CustomAgentDef>, String> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let text = fs::read_to_string(&path)
-        .map_err(|e| format!("Read custom_agents.json failed: {e}"))?;
+    let text =
+        fs::read_to_string(&path).map_err(|e| format!("Read custom_agents.json failed: {e}"))?;
     if text.trim().is_empty() {
         return Ok(Vec::new());
     }
@@ -64,10 +64,7 @@ fn is_valid_id(id: &str) -> bool {
 
 /// Built-in agent ids — custom must not shadow these.
 fn builtin_ids() -> Vec<String> {
-    AgentConfig::defaults()
-        .into_iter()
-        .map(|a| a.id)
-        .collect()
+    AgentConfig::defaults().into_iter().map(|a| a.id).collect()
 }
 
 pub fn add(def: CustomAgentDef) -> Result<CustomAgentDef, String> {
@@ -119,16 +116,12 @@ pub fn to_agent_config(def: &CustomAgentDef) -> AgentConfig {
             manager: "manual".into(),
             package: None,
             requires: Vec::new(),
-            note: Some(
-                def.note
-                    .clone()
-                    .unwrap_or_else(|| {
-                        format!(
-                            "Custom agent: put `{}` on PATH (or set npmPackage for in-app install).",
-                            def.command
-                        )
-                    }),
-            ),
+            note: Some(def.note.clone().unwrap_or_else(|| {
+                format!(
+                    "Custom agent: put `{}` on PATH (or set npmPackage for in-app install).",
+                    def.command
+                )
+            })),
         }
     };
     AgentConfig {

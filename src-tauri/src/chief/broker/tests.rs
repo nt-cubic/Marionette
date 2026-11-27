@@ -22,6 +22,33 @@ fn sandbox_root(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn task_provider_label_uses_registered_catalog_not_model_family() {
+    let opencode_go = serde_json::json!({
+        "id": "source-c3f358329cebd120",
+        "name": "opencode.ai",
+        "catalog": "opencode-go"
+    });
+    assert_eq!(
+        provider_label_from_record("source-c3f358329cebd120", Some(&opencode_go)),
+        Some("OpenCode Go".to_string())
+    );
+    let official = serde_json::json!({
+        "id": "deepseek",
+        "name": "DeepSeek",
+        "preset": "deepseek",
+        "catalog": "deepseek"
+    });
+    assert_eq!(
+        provider_label_from_record("deepseek", Some(&official)),
+        Some("DeepSeek".to_string())
+    );
+    assert_eq!(
+        provider_label_from_record("source-unknown123456", None),
+        None
+    );
+}
+
+#[test]
 fn settings_verdicts_name_the_cause_and_bring_back_the_models() {
     // 点名的模型不被接受：说清「没有改用默认模型」，并带回 agent 的真实
     // 清单——派活的 AI 照着清单重派一次就行。
@@ -52,13 +79,17 @@ fn settings_verdicts_name_the_cause_and_bring_back_the_models() {
     let long = SettingsError::Model {
         model: "x".into(),
         reason: "unknown model".into(),
-        available: (0..45).map(|index| format!("provider/model-{index}")).collect(),
+        available: (0..45)
+            .map(|index| format!("provider/model-{index}"))
+            .collect(),
     };
     let text = long.verdict("opencode");
     assert!(text.contains("共 45 个"));
     assert!(text.contains("provider/model-39"));
     assert!(!text.contains("provider/model-40"));
-    assert!(SettingsError::ReadOnly("no such option".into()).verdict("x").contains("只读"));
+    assert!(SettingsError::ReadOnly("no such option".into())
+        .verdict("x")
+        .contains("只读"));
 }
 
 #[test]
@@ -66,7 +97,10 @@ fn model_echo_tolerates_an_effort_suffix() {
     // Codex 把档位编进模型名（`gpt-5.6-luna[xhigh]`）——同一个模型，不算不符。
     assert!(model_echo_matches("gpt-5.6-luna", "gpt-5.6-luna[xhigh]"));
     assert!(model_echo_matches("gpt-5.6-luna[xhigh]", "gpt-5.6-luna"));
-    assert!(model_echo_matches("opencode/grok-code", " opencode/grok-code "));
+    assert!(model_echo_matches(
+        "opencode/grok-code",
+        " opencode/grok-code "
+    ));
     assert!(model_echo_matches(
         "opencode-go/deepseek-v4.1-flash",
         "models/opencode-go/deepseek-v4.1-flash"
@@ -125,7 +159,11 @@ fn wake_inbox_rebuilds_from_undelivered_ledger_events() {
     };
     store::append_events(&[undelivered, delivered]).unwrap();
     rebuild_wake_inbox_from_ledger();
-    assert_eq!(pending_wake_count("session_parent_a"), 1, "未送达的事件要重建进收件箱");
+    assert_eq!(
+        pending_wake_count("session_parent_a"),
+        1,
+        "未送达的事件要重建进收件箱"
+    );
     assert_eq!(pending_wake_count("session_parent_b"), 0, "已送达的不重建");
     store::set_root_override_for_tests(None);
     reset_for_tests();
@@ -371,15 +409,42 @@ fn desktop_peek_and_task_acks_do_not_consume_report_budget() {
             "completed"
         ));
     }
-    assert_eq!(staff::load().get("staff_peek").unwrap().notifications_in_window, 0);
+    assert_eq!(
+        staff::load()
+            .get("staff_peek")
+            .unwrap()
+            .notifications_in_window,
+        0
+    );
     // 确认回执既不占额度……
-    assert!(staff_commands::notification_allowed("session_staff_peek", "task.created"));
-    assert!(staff_commands::notification_allowed("session_staff_peek", "task.started"));
-    assert_eq!(staff::load().get("staff_peek").unwrap().notifications_in_window, 0);
+    assert!(staff_commands::notification_allowed(
+        "session_staff_peek",
+        "task.created"
+    ));
+    assert!(staff_commands::notification_allowed(
+        "session_staff_peek",
+        "task.started"
+    ));
+    assert_eq!(
+        staff::load()
+            .get("staff_peek")
+            .unwrap()
+            .notifications_in_window,
+        0
+    );
     // ……完成汇报照常拿到第一个名额，之后进入冷却，peek 同步反映。
-    assert!(staff_commands::notification_allowed("session_staff_peek", "completed"));
-    assert!(!staff_commands::notification_would_allow("session_staff_peek", "completed"));
-    assert!(staff_commands::notification_would_allow("session_staff_peek", "task.created"));
+    assert!(staff_commands::notification_allowed(
+        "session_staff_peek",
+        "completed"
+    ));
+    assert!(!staff_commands::notification_would_allow(
+        "session_staff_peek",
+        "completed"
+    ));
+    assert!(staff_commands::notification_would_allow(
+        "session_staff_peek",
+        "task.created"
+    ));
     reset_for_tests();
     staff::set_root_override_for_tests(None);
     drop(guard);
@@ -405,16 +470,19 @@ fn wake_inbox_and_user_queue_are_fifo() {
     queue_wake(chief, event.clone());
     event.event_id = "evt2".into();
     queue_wake(chief, event);
-    queue_wake("session_other", TaskEvent {
-        event_id: "evt3".into(),
-        seq: 1,
-        task_id: "task_2".into(),
-        kind: "task.failed".into(),
-        status: Some(TaskStatus::Failed),
-        summary: None,
-        delivered_at: None,
-        ts: now_ms(),
-    });
+    queue_wake(
+        "session_other",
+        TaskEvent {
+            event_id: "evt3".into(),
+            seq: 1,
+            task_id: "task_2".into(),
+            kind: "task.failed".into(),
+            status: Some(TaskStatus::Failed),
+            summary: None,
+            delivered_at: None,
+            ts: now_ms(),
+        },
+    );
     assert_eq!(pending_wake_count(chief), 2);
     assert_eq!(pending_wake_count("session_other"), 1);
 
@@ -543,7 +611,11 @@ fn active_task_counting_matches_concurrency_rules() {
         mk("project_a", Completed),
         mk("project_b", Starting),
         // 别的 chief 的任务不算
-        Task { chief_session_id: "session_other".into(), status: Running, ..Default::default() },
+        Task {
+            chief_session_id: "session_other".into(),
+            status: Running,
+            ..Default::default()
+        },
     ];
     assert_eq!(count_active(&tasks, chief, None), 4);
     assert_eq!(count_active(&tasks, chief, Some("project_a")), 2);
@@ -582,7 +654,12 @@ fn tasks_list_filters_by_chief_and_status() {
     assert_eq!(value.pointer("/ok"), Some(&serde_json::json!(true)));
     let listed = value.pointer("/tasks").unwrap().as_array().unwrap();
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].pointer("/title").and_then(serde_json::Value::as_str), Some("我的任务"));
+    assert_eq!(
+        listed[0]
+            .pointer("/title")
+            .and_then(serde_json::Value::as_str),
+        Some("我的任务")
+    );
     // status 过滤：running 命中，completed 空
     let hit = chief_tasks_list("session_chief_list", Some("running"), 20);
     assert_eq!(hit.pointer("/tasks").unwrap().as_array().unwrap().len(), 1);

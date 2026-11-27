@@ -33,9 +33,7 @@
 //!   Old sessions (pre-usage versions) emit turns only.
 
 use super::cache::{stamp_files, Cache};
-use super::facts::{
-    iso_ms, json_i64, json_str, json_u64, SessionCollector, SessionFacts,
-};
+use super::facts::{iso_ms, json_i64, json_str, json_u64, SessionCollector, SessionFacts};
 use super::SourceOutcome;
 use serde_json::Value;
 use std::fs;
@@ -105,8 +103,7 @@ fn usage_record(
     } else {
         input_billed
     };
-    let usd = json_u64(v, "costUsdTicks")
-        .map(|ticks| ticks as f64 * 1e-10);
+    let usd = json_u64(v, "costUsdTicks").map(|ticks| ticks as f64 * 1e-10);
     Some(super::facts::RequestRecord {
         t_ms,
         model: model.map(|s| s.to_string()),
@@ -235,8 +232,7 @@ pub(crate) fn parse_session_dir(dir: &Path, keep_from_ms: i64) -> Option<Session
     // Composition comes from the same directory's request material; the
     // measured anchor is the final context reading (signals.json), NOT the
     // last turn's inputTokens (a session-lifetime sum).
-    facts.composition =
-        super::composition::grok_session_composition(dir, signals_used);
+    facts.composition = super::composition::grok_session_composition(dir, signals_used);
     Some(facts)
 }
 
@@ -263,7 +259,12 @@ pub(crate) fn find_session_dir(root: &Path, native_id: &str) -> Option<PathBuf> 
     None
 }
 
-pub(crate) fn scan(root: &Path, cache: &mut Cache, force: bool, keep_from_ms: i64) -> SourceOutcome {
+pub(crate) fn scan(
+    root: &Path,
+    cache: &mut Cache,
+    force: bool,
+    keep_from_ms: i64,
+) -> SourceOutcome {
     let mut outcome = SourceOutcome::new(AGENT, Some(root.to_string_lossy().into_owned()));
     let mut live_keys: Vec<String> = Vec::new();
     let mut sessions: Vec<SessionFacts> = Vec::new();
@@ -395,34 +396,43 @@ mod tests {
         let mut updates = String::new();
         // Turn 1 (hour H) with usage; elapsed 585988ms puts the start in the
         // previous minute (same hour).
-        updates.push_str(&json!({
-            "timestamp": t0, "method": "_x.ai/session/update",
-            "params": {"sessionId": "01a1afe6-2836-74a1-b5a9-cb2cd2a51169",
-                "update": {"sessionUpdate": "turn_completed",
-                    "prompt_id": "p1", "stop_reason": "end_turn",
-                    "elapsed_ms": 585_988,
-                    "usage": {"inputTokens": 1000, "outputTokens": 100,
-                              "cachedReadTokens": 600, "cacheCreationTokens": 100,
-                              "reasoningTokens": 50, "modelCalls": 2,
-                              "costUsdTicks": 1_000_000_000}},
-                "_meta": {"agentTimestampMs": t0 * 1000 + 31}}
-        }).to_string());
+        updates.push_str(
+            &json!({
+                "timestamp": t0, "method": "_x.ai/session/update",
+                "params": {"sessionId": "01a1afe6-2836-74a1-b5a9-cb2cd2a51169",
+                    "update": {"sessionUpdate": "turn_completed",
+                        "prompt_id": "p1", "stop_reason": "end_turn",
+                        "elapsed_ms": 585_988,
+                        "usage": {"inputTokens": 1000, "outputTokens": 100,
+                                  "cachedReadTokens": 600, "cacheCreationTokens": 100,
+                                  "reasoningTokens": 50, "modelCalls": 2,
+                                  "costUsdTicks": 1_000_000_000}},
+                    "_meta": {"agentTimestampMs": t0 * 1000 + 31}}
+            })
+            .to_string(),
+        );
         updates.push('\n');
         // Turn 2 in the next hour, no usage (tiny turn).
-        updates.push_str(&json!({
-            "timestamp": t0 + 7300, "method": "session/update",
-            "params": {"sessionId": "01a1afe6-2836-74a1-b5a9-cb2cd2a51169",
-                "update": {"sessionUpdate": "turn_completed",
-                    "prompt_id": "p2", "stop_reason": "end_turn",
-                    "elapsed_ms": 25},
-                "_meta": {"agentTimestampMs": (t0 + 7300) * 1000}}
-        }).to_string());
+        updates.push_str(
+            &json!({
+                "timestamp": t0 + 7300, "method": "session/update",
+                "params": {"sessionId": "01a1afe6-2836-74a1-b5a9-cb2cd2a51169",
+                    "update": {"sessionUpdate": "turn_completed",
+                        "prompt_id": "p2", "stop_reason": "end_turn",
+                        "elapsed_ms": 25},
+                    "_meta": {"agentTimestampMs": (t0 + 7300) * 1000}}
+            })
+            .to_string(),
+        );
         updates.push('\n');
-        updates.push_str(&json!({
-            "timestamp": t0 + 100, "method": "session/update",
-            "params": {"update": {"sessionUpdate": "compaction_checkpoint"}},
-            "_meta": {"agentTimestampMs": (t0 + 100) * 1000}
-        }).to_string());
+        updates.push_str(
+            &json!({
+                "timestamp": t0 + 100, "method": "session/update",
+                "params": {"update": {"sessionUpdate": "compaction_checkpoint"}},
+                "_meta": {"agentTimestampMs": (t0 + 100) * 1000}
+            })
+            .to_string(),
+        );
         updates.push('\n');
         fs::write(dir.join("updates.jsonl"), updates).unwrap();
         fs::write(
@@ -432,7 +442,8 @@ mod tests {
                    "session_summary": "Backfill test",
                    "created_at": "2026-11-06T08:10:00Z",
                    "updated_at": "2026-11-06T08:18:49Z",
-                   "current_model_id": "grok-4.6"}).to_string(),
+                   "current_model_id": "grok-4.6"})
+            .to_string(),
         )
         .unwrap();
         fs::write(

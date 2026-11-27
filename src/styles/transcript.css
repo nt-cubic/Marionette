@@ -2894,6 +2894,187 @@
   text-transform: uppercase;
 }
 
+/* Delegated agents are rows first. Child detail is opt-in and scrolls inside
+   the same card, so a silent worker never reserves a blank 140px block. */
+.event-card--subtask {
+  position: relative;
+  display: block;
+  min-height: 42px;
+  padding: 0;
+  overflow: hidden;
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+}
+
+.event-card--subtask::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--agent-ink, var(--text-faint));
+  pointer-events: none;
+}
+
+.event-card--subtask.is-running {
+  border-color: color-mix(in srgb, var(--agent-ink, var(--accent)) 38%, var(--border));
+  background: color-mix(in srgb, var(--agent-ink, var(--accent)) 4%, var(--panel-soft));
+}
+
+.event-card--subtask.is-done {
+  border-color: color-mix(in srgb, var(--green) 28%, var(--border));
+}
+
+.event-card--subtask.is-failed,
+.event-card--subtask.is-timeout,
+.event-card--subtask.is-cancelled {
+  border-color: color-mix(in srgb, var(--red) 30%, var(--border));
+}
+
+.subtask-card__row {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 24px;
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  row-gap: 1px;
+  align-items: center;
+  min-height: 42px;
+  padding: 6px 7px 6px 11px;
+}
+
+.subtask-card__row > :first-child {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+
+.subtask-card__title {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.subtask-card__meta {
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subtask-card__chip {
+  display: none;
+}
+
+.subtask-card__toggle {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.subtask-card__toggle:hover,
+.subtask-card__toggle:focus-visible {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.subtask-card__toggle svg {
+  transition: transform var(--dur-fast) var(--ease-standard);
+}
+
+.subtask-card__toggle svg.is-open {
+  transform: rotate(180deg);
+}
+
+.subtask-card__actions {
+  position: absolute;
+  right: 34px;
+  top: 50%;
+  z-index: 1;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding-left: 12px;
+  background: linear-gradient(90deg, transparent, var(--panel-soft) 12px);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity var(--dur-fast) var(--ease-standard);
+}
+
+.event-card--subtask:hover .subtask-card__actions,
+.event-card--subtask:focus-within .subtask-card__actions,
+.event-card--subtask.is-open .subtask-card__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.subtask-card__actions .subtask-card__btn {
+  height: 22px;
+  white-space: nowrap;
+}
+
+.subtask-card__stream,
+.subtask-card__reply,
+.tool-running-panel--subtask {
+  margin: 0 9px 8px 11px;
+}
+
+.subtask-card__stream {
+  max-height: 220px;
+  padding-top: 7px;
+  border-top-color: var(--hairline);
+}
+
+.subtask-card__stream--live {
+  min-height: 0;
+  max-height: 250px;
+}
+
+.tool-running-panel--subtask {
+  min-height: 38px;
+  margin-top: 0;
+  padding: 8px 10px;
+  border-style: solid;
+  flex-direction: row;
+  text-align: left;
+}
+
+.tool-running-panel--subtask .tool-running-panel__hint {
+  font-size: 11px;
+}
+
+.subtask-card__reply {
+  padding: 7px 0 1px;
+  border-top: 1px solid var(--hairline);
+}
+
+.subtask-card__reply input,
+.subtask-card__reply button {
+  border-radius: var(--radius);
+}
+
+.subtask-card__stream-line strong {
+  font-size: 10.5px;
+  font-weight: 500;
+  text-transform: none;
+}
+
 .context-card {
   min-width: 0;
   padding: 12px 10px;

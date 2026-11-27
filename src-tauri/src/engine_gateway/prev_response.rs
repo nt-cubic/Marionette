@@ -37,11 +37,11 @@
 //! （时间戳 + 序号保证进程内唯一）。`fresh_id` 1:1 抄这个形状。
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 /// 默认条数上限。Go 没有条数上限（它按 256MB 字节 + 6h TTL 计，见模块头）；
 /// 这里取「几百」量级——一整段会话通常几十轮，够绕几圈，重启即清。
@@ -80,7 +80,10 @@ impl PrevStore {
     /// 指定条数上限建表。容量 0 = 什么都不存（save 静默 no-op）。
     pub(crate) fn new(capacity: usize) -> PrevStore {
         PrevStore {
-            inner: Mutex::new(Inner { map: HashMap::new(), tick: 0 }),
+            inner: Mutex::new(Inner {
+                map: HashMap::new(),
+                tick: 0,
+            }),
             capacity,
         }
     }
@@ -96,7 +99,14 @@ impl PrevStore {
         let tick = inner.tick;
         inner.map.insert(
             id.to_string(),
-            Entry { resp: StoredResponse { model: model.to_string(), input, output }, last_used: tick },
+            Entry {
+                resp: StoredResponse {
+                    model: model.to_string(),
+                    input,
+                    output,
+                },
+                last_used: tick,
+            },
         );
         while inner.map.len() > self.capacity {
             evict_oldest(&mut inner);
@@ -187,8 +197,10 @@ mod tests {
     use std::thread;
 
     fn resp(tag: &str) -> (Value, Value) {
-        (json!([{"type": "message", "role": "user", "content": tag}]),
-         json!([{"type": "message", "role": "assistant", "content": tag}]))
+        (
+            json!([{"type": "message", "role": "user", "content": tag}]),
+            json!([{"type": "message", "role": "assistant", "content": tag}]),
+        )
     }
 
     #[test]
@@ -238,7 +250,10 @@ mod tests {
         assert!(store.replay("resp_a").is_some(), "摸一下 a，a 变最新");
         let (i, o) = resp("resp_d");
         store.save("resp_d", "m", i, o);
-        assert!(store.replay("resp_b").is_none(), "被挤出的是最久未用的 b，不是 a");
+        assert!(
+            store.replay("resp_b").is_none(),
+            "被挤出的是最久未用的 b，不是 a"
+        );
         assert!(store.replay("resp_a").is_some());
     }
 
@@ -250,7 +265,11 @@ mod tests {
         let (i2, o2) = resp("two");
         store.save("resp_a", "m2", i2.clone(), o2.clone());
         let got = store.replay("resp_a").expect("同 id 仍在");
-        assert_eq!((got.model.as_str(), got.input, got.output), ("m2", i2, o2), "同 id 再存 = 整条替换");
+        assert_eq!(
+            (got.model.as_str(), got.input, got.output),
+            ("m2", i2, o2),
+            "同 id 再存 = 整条替换"
+        );
         // 替换不吃额外容量：cap=2 再放一个新 id 也不该挤掉 resp_a
         let (i3, o3) = resp("three");
         store.save("resp_b", "m", i3, o3);
@@ -308,7 +327,10 @@ mod tests {
         let id = fresh_id("resp_");
         let rest = id.strip_prefix("resp_").expect("前缀原样保留");
         assert!(
-            rest.len() > 8 && rest.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            rest.len() > 8
+                && rest
+                    .chars()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
             "全小写 hex、且有序号段：{rest}"
         );
         // 同纳秒下靠序号保证进程内唯一（Go idSeq 同款）
@@ -316,7 +338,11 @@ mod tests {
         for _ in 0..1000 {
             assert!(seen.insert(fresh_id("resp_")), "连续生成的 id 不得重复");
         }
-        assert_eq!(fresh_id("rs_").starts_with("rs_"), true, "前缀可换（rs_ 形状给 reasoning 等）");
+        assert_eq!(
+            fresh_id("rs_").starts_with("rs_"),
+            true,
+            "前缀可换（rs_ 形状给 reasoning 等）"
+        );
     }
 
     #[test]
@@ -327,6 +353,9 @@ mod tests {
         assert_eq!(err["code"], "previous_response_not_found");
         assert_eq!(err["param"], "previous_response_id");
         assert_eq!(err["type"], "invalid_request_error");
-        assert_eq!(err["message"], "Previous response with id 'resp_abc123' not found.");
+        assert_eq!(
+            err["message"],
+            "Previous response with id 'resp_abc123' not found."
+        );
     }
 }

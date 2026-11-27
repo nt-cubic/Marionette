@@ -163,9 +163,7 @@ fn fold_line(line: &str, out: &mut CompositionFacts, skip_system: bool) {
                     if let Some(name) = call.get("function").and_then(|f| json_str(f, "name")) {
                         tokens = tokens.saturating_add(est_tokens(name.len()));
                     }
-                    if let Some(args) = call
-                        .get("function")
-                        .and_then(|f| json_str(f, "arguments"))
+                    if let Some(args) = call.get("function").and_then(|f| json_str(f, "arguments"))
                     {
                         tokens = tokens.saturating_add(est_tokens(args.len()));
                     }
@@ -188,7 +186,10 @@ fn fold_line(line: &str, out: &mut CompositionFacts, skip_system: bool) {
 /// Composition of one grok session directory. `measured_prompt` comes from the
 /// caller (grok.rs already walks updates.jsonl for usage). Returns None when
 /// none of the three ingredient files exist.
-pub(crate) fn grok_session_composition(dir: &Path, measured_prompt: Option<u64>) -> Option<CompositionFacts> {
+pub(crate) fn grok_session_composition(
+    dir: &Path,
+    measured_prompt: Option<u64>,
+) -> Option<CompositionFacts> {
     let mut out = CompositionFacts {
         measured_prompt,
         ..CompositionFacts::default()
@@ -245,7 +246,8 @@ mod tests {
     use super::*;
 
     fn tmp_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("marionette-comp-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("marionette-comp-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -266,9 +268,19 @@ mod tests {
                 r#"{{"type":"user","content":[{{"type":"text","text":"{}"}}]}}"#,
                 "<user_info>\\nwindows\\n</user_info>"
             ),
-            format!(r#"{{"type":"user","content":[{{"type":"text","text":"{}"}},{{"type":"image","url":"x"}}]}}"#, "把按钮改成胶片格"),
-            format!(r#"{{"type":"assistant","content":"{}","tool_calls":[{{"function":{{"name":"read","arguments":"{{\"path\":\"a.ts\"}}"}}}}]}}"#, "好的，我看下布局"),
-            format!(r#"{{"type":"reasoning","summary":[{{"type":"summary_text","text":"{}"}}],"encrypted_content":"{}"}}"#, "先查样式", "Z".repeat(500)),
+            format!(
+                r#"{{"type":"user","content":[{{"type":"text","text":"{}"}},{{"type":"image","url":"x"}}]}}"#,
+                "把按钮改成胶片格"
+            ),
+            format!(
+                r#"{{"type":"assistant","content":"{}","tool_calls":[{{"function":{{"name":"read","arguments":"{{\"path\":\"a.ts\"}}"}}}}]}}"#,
+                "好的，我看下布局"
+            ),
+            format!(
+                r#"{{"type":"reasoning","summary":[{{"type":"summary_text","text":"{}"}}],"encrypted_content":"{}"}}"#,
+                "先查样式",
+                "Z".repeat(500)
+            ),
             format!(r#"{{"type":"tool_result","content":"{}"}}"#, "width: 28px"),
         ];
         fs::write(dir.join("chat_history.jsonl"), history.join("\n") + "\n").unwrap();
@@ -278,7 +290,10 @@ mod tests {
         // system_prompt.txt wins; the history's duplicate system line is skipped.
         assert_eq!(comp.system, 100); // 400 chars / 4
         assert!(comp.tool_defs > 0);
-        assert_eq!(comp.inject, est_tokens("<user_info>\nwindows\n</user_info>".len()));
+        assert_eq!(
+            comp.inject,
+            est_tokens("<user_info>\nwindows\n</user_info>".len())
+        );
         assert_eq!(comp.user, est_tokens("把按钮改成胶片格".len()));
         assert_eq!(comp.attach, IMAGE_TOKENS_EST);
         assert!(comp.assistant > 0 && comp.tool_calls > 0);
@@ -292,7 +307,11 @@ mod tests {
     #[test]
     fn bare_string_user_message_counts_as_user() {
         let dir = tmp_dir("bare");
-        fs::write(dir.join("chat_history.jsonl"), "{\"type\":\"user\",\"content\":\"继续\"}\n").unwrap();
+        fs::write(
+            dir.join("chat_history.jsonl"),
+            "{\"type\":\"user\",\"content\":\"继续\"}\n",
+        )
+        .unwrap();
         let comp = grok_session_composition(&dir, None).unwrap();
         // Bare-string user content: est("继续") + per-message overhead.
         assert_eq!(comp.user, est_tokens("继续".len()) + MSG_OVERHEAD);
@@ -343,8 +362,7 @@ mod tests {
             }
         }
         let (_, dir) = newest.expect("at least one grok session with chat history");
-        let comp =
-            grok_session_composition(&dir, signals_context_used(&dir)).expect("composition");
+        let comp = grok_session_composition(&dir, signals_context_used(&dir)).expect("composition");
         println!(
             "grok composition of {}:\n  system={} tool_defs={} inject={} user={} attach={} \
              assistant={} reasoning={} tool_calls={} tool_results={} est_total={} measured={:?}",

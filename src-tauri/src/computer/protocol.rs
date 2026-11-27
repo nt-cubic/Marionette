@@ -29,11 +29,7 @@ pub enum Frame {
     /// pipes; until this arrives it knows only that the process is alive).
     Ready { protocol: u32 },
     /// Main → helper.
-    Request {
-        id: u64,
-        op: String,
-        params: Value,
-    },
+    Request { id: u64, op: String, params: Value },
     /// Helper → main.
     Reply {
         id: u64,
@@ -150,7 +146,9 @@ impl WindowAction {
         match self {
             WindowAction::Click { .. } => "click".to_string(),
             WindowAction::Drag { .. } => "drag".to_string(),
-            WindowAction::Scroll { direction, amount, .. } => format!("scroll {direction} ×{amount}"),
+            WindowAction::Scroll {
+                direction, amount, ..
+            } => format!("scroll {direction} ×{amount}"),
             WindowAction::Type { text, .. } => format!("type \"{}\"", truncate(text, 30)),
             WindowAction::Press { key, .. } => format!("press {key}"),
             WindowAction::SetValue { .. } => "set field value".to_string(),
@@ -172,8 +170,7 @@ fn truncate(text: &str, max: usize) -> String {
 // ---------------------------------------------------------------------------
 
 pub fn write_frame<W: std::io::Write>(out: &mut W, frame: &Frame) -> Result<(), String> {
-    let payload =
-        serde_json::to_vec(frame).map_err(|e| format!("frame encode: {e}"))?;
+    let payload = serde_json::to_vec(frame).map_err(|e| format!("frame encode: {e}"))?;
     if payload.len() > MAX_FRAME_BYTES {
         return Err("frame too large".to_string());
     }
@@ -207,7 +204,9 @@ mod tests {
     #[test]
     fn frames_round_trip() {
         let frames = vec![
-            Frame::Ready { protocol: PROTOCOL_VERSION },
+            Frame::Ready {
+                protocol: PROTOCOL_VERSION,
+            },
             Frame::Request {
                 id: 7,
                 op: OP_ACT.to_string(),
@@ -216,7 +215,12 @@ mod tests {
                     "action": {"kind": "click", "x": 10.5, "y": 20.0, "count": 2}
                 }),
             },
-            Frame::Reply { id: 7, ok: true, result: Some(serde_json::json!({"done": true})), error: None },
+            Frame::Reply {
+                id: 7,
+                ok: true,
+                result: Some(serde_json::json!({"done": true})),
+                error: None,
+            },
             Frame::Reply {
                 id: 8,
                 ok: false,

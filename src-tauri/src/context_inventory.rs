@@ -154,7 +154,9 @@ pub fn strip_jsonc_comments(input: &str) -> String {
                 }
                 '*' => {
                     index += 2;
-                    while index + 1 < bytes.len() && !(bytes[index] == '*' && bytes[index + 1] == '/') {
+                    while index + 1 < bytes.len()
+                        && !(bytes[index] == '*' && bytes[index + 1] == '/')
+                    {
                         index += 1;
                     }
                     index = (index + 2).min(bytes.len());
@@ -243,7 +245,8 @@ impl Collector {
 fn scan_opencode_config(path: &Path, source: &str, agent: Option<&str>, out: &mut Collector) {
     let Some(value) = read_jsonc(path) else {
         if path.exists() {
-            out.notes.push(format!("Could not parse {}", path.display()));
+            out.notes
+                .push(format!("Could not parse {}", path.display()));
         }
         return;
     };
@@ -321,7 +324,8 @@ fn scan_codex_config(path: &Path, out: &mut Collector) {
     let parsed: toml::Value = match toml::from_str(&raw) {
         Ok(value) => value,
         Err(error) => {
-            out.notes.push(format!("Could not parse {}: {error}", path.display()));
+            out.notes
+                .push(format!("Could not parse {}: {error}", path.display()));
             return;
         }
     };
@@ -329,7 +333,9 @@ fn scan_codex_config(path: &Path, out: &mut Collector) {
         return;
     };
     for (name, entry) in servers {
-        let Some(table) = entry.as_table() else { continue };
+        let Some(table) = entry.as_table() else {
+            continue;
+        };
         if table.get("enabled").and_then(toml::Value::as_bool) == Some(false) {
             continue;
         }
@@ -365,7 +371,11 @@ fn scan_codex_config(path: &Path, out: &mut Collector) {
         out.add_server(McpServerSpec {
             id: name.to_lowercase(),
             name: name.clone(),
-            transport: if url.is_some() { "http".into() } else { "stdio".into() },
+            transport: if url.is_some() {
+                "http".into()
+            } else {
+                "stdio".into()
+            },
             command,
             args,
             env_keys,
@@ -386,7 +396,8 @@ fn scan_grok_config(path: &Path, out: &mut Collector) {
     let parsed: toml::Value = match toml::from_str(&raw) {
         Ok(value) => value,
         Err(error) => {
-            out.notes.push(format!("Could not parse {}: {error}", path.display()));
+            out.notes
+                .push(format!("Could not parse {}: {error}", path.display()));
             return;
         }
     };
@@ -394,7 +405,9 @@ fn scan_grok_config(path: &Path, out: &mut Collector) {
         return;
     };
     for (name, entry) in servers {
-        let Some(table) = entry.as_table() else { continue };
+        let Some(table) = entry.as_table() else {
+            continue;
+        };
         if table.get("enabled").and_then(toml::Value::as_bool) == Some(false) {
             continue;
         }
@@ -429,7 +442,11 @@ fn scan_grok_config(path: &Path, out: &mut Collector) {
         out.add_server(McpServerSpec {
             id: name.to_lowercase(),
             name: name.clone(),
-            transport: if url.is_some() { "http".into() } else { "stdio".into() },
+            transport: if url.is_some() {
+                "http".into()
+            } else {
+                "stdio".into()
+            },
             command,
             args,
             env_keys,
@@ -449,7 +466,8 @@ fn scan_grok_config(path: &Path, out: &mut Collector) {
 fn scan_zcode_config(path: &Path, out: &mut Collector) {
     let Some(value) = read_jsonc(path) else {
         if path.exists() {
-            out.notes.push(format!("Could not parse {}", path.display()));
+            out.notes
+                .push(format!("Could not parse {}", path.display()));
         }
         return;
     };
@@ -462,12 +480,17 @@ fn scan_zcode_config(path: &Path, out: &mut Collector) {
         return;
     };
     for (name, entry) in servers {
-        let Some(obj) = entry.as_object() else { continue };
+        let Some(obj) = entry.as_object() else {
+            continue;
+        };
         if obj.get("enabled").and_then(Value::as_bool) == Some(false) {
             continue;
         }
         let url = obj.get("url").and_then(Value::as_str).map(str::to_string);
-        let command = obj.get("command").and_then(Value::as_str).map(str::to_string);
+        let command = obj
+            .get("command")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let args = obj
             .get("args")
             .and_then(Value::as_array)
@@ -505,12 +528,16 @@ fn scan_zcode_config(path: &Path, out: &mut Collector) {
 
 /// Claude / generic: `{ "mcpServers": { name: { command, args, env } | { url } } }`
 fn scan_mcp_json(path: &Path, source: &str, agent: Option<&str>, out: &mut Collector) {
-    let Some(value) = read_jsonc(path) else { return };
+    let Some(value) = read_jsonc(path) else {
+        return;
+    };
     let Some(servers) = value.get("mcpServers").and_then(Value::as_object) else {
         return;
     };
     for (name, entry) in servers {
-        let Some(obj) = entry.as_object() else { continue };
+        let Some(obj) = entry.as_object() else {
+            continue;
+        };
         let url = obj.get("url").and_then(Value::as_str).map(str::to_string);
         out.add_server(McpServerSpec {
             id: name.to_lowercase(),
@@ -520,7 +547,10 @@ fn scan_mcp_json(path: &Path, source: &str, agent: Option<&str>, out: &mut Colle
                 _ if url.is_some() => "http".into(),
                 _ => "stdio".into(),
             },
-            command: obj.get("command").and_then(Value::as_str).map(str::to_string),
+            command: obj
+                .get("command")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             args: obj
                 .get("args")
                 .and_then(Value::as_array)
@@ -573,16 +603,14 @@ pub(crate) fn parse_skill_front_matter(text: &str) -> (Option<String>, Option<St
 
 /// pub(crate)（仅测试跨模块用）：见 Collector。
 #[cfg(test)]
-pub(crate) fn scan_skills_dir_for_test(
-    dir: &Path,
-    source: &str,
-    out: &mut Collector,
-) {
+pub(crate) fn scan_skills_dir_for_test(dir: &Path, source: &str, out: &mut Collector) {
     scan_skills_dir(dir, source, None, out)
 }
 
 fn scan_skills_dir(dir: &Path, source: &str, agent: Option<&str>, out: &mut Collector) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_dir() {
@@ -646,16 +674,46 @@ pub fn scan(project_root: &Path) -> ContextInventory {
         // we re-inject servers Grok already owns — and used to drop their auth
         // headers, so Unity MCP came up as 401 and the agent only saw `tasks`.
         scan_grok_config(&home.join(".grok/config.toml"), &mut out);
-        scan_mcp_json(&home.join(".claude.json"), "claude-code", Some("claude-code"), &mut out);
+        scan_mcp_json(
+            &home.join(".claude.json"),
+            "claude-code",
+            Some("claude-code"),
+            &mut out,
+        );
         // ZCode keeps user MCP in `~/.zcode/cli/config.json` (`mcp.servers`);
         // plugin MCP stays zcode-internal (the runtime loads it itself).
         scan_zcode_config(&home.join(".zcode/cli/config.json"), &mut out);
 
-        scan_skills_dir(&home.join(".config/opencode/skills"), "opencode", Some("opencode"), &mut out);
-        scan_skills_dir(&home.join(".claude/skills"), "claude-code", Some("claude-code"), &mut out);
-        scan_skills_dir(&home.join(".grok/skills"), "grok-build", Some("grok-build"), &mut out);
-        scan_skills_dir(&home.join(".codex/skills"), "codex", Some("codex"), &mut out);
-        scan_skills_dir(&home.join(".zcode/cli/skills"), "zcode", Some("zcode"), &mut out);
+        scan_skills_dir(
+            &home.join(".config/opencode/skills"),
+            "opencode",
+            Some("opencode"),
+            &mut out,
+        );
+        scan_skills_dir(
+            &home.join(".claude/skills"),
+            "claude-code",
+            Some("claude-code"),
+            &mut out,
+        );
+        scan_skills_dir(
+            &home.join(".grok/skills"),
+            "grok-build",
+            Some("grok-build"),
+            &mut out,
+        );
+        scan_skills_dir(
+            &home.join(".codex/skills"),
+            "codex",
+            Some("codex"),
+            &mut out,
+        );
+        scan_skills_dir(
+            &home.join(".zcode/cli/skills"),
+            "zcode",
+            Some("zcode"),
+            &mut out,
+        );
         // Universal-plugin skills (docs/plans/plan-plugin-layer.md): one global dir,
         // default-on lending — install once, every agent sees it.
         if let Ok(marionette_root) = crate::app_paths::global_dir() {
@@ -670,10 +728,30 @@ pub fn scan(project_root: &Path) -> ContextInventory {
 
     // Project: these travel with the repo, so they win on relevance.
     scan_mcp_json(&project_root.join(".mcp.json"), "project", None, &mut out);
-    scan_opencode_config(&project_root.join("opencode.jsonc"), "project", None, &mut out);
-    scan_opencode_config(&project_root.join("opencode.json"), "project", None, &mut out);
-    scan_skills_dir(&project_root.join(".claude/skills"), "project", Some("claude-code"), &mut out);
-    scan_skills_dir(&project_root.join(".agents/skills"), "project", None, &mut out);
+    scan_opencode_config(
+        &project_root.join("opencode.jsonc"),
+        "project",
+        None,
+        &mut out,
+    );
+    scan_opencode_config(
+        &project_root.join("opencode.json"),
+        "project",
+        None,
+        &mut out,
+    );
+    scan_skills_dir(
+        &project_root.join(".claude/skills"),
+        "project",
+        Some("claude-code"),
+        &mut out,
+    );
+    scan_skills_dir(
+        &project_root.join(".agents/skills"),
+        "project",
+        None,
+        &mut out,
+    );
     scan_skills_dir(
         &crate::app_paths::project_dir(project_root).join("skills"),
         "project",
@@ -681,7 +759,8 @@ pub fn scan(project_root: &Path) -> ContextInventory {
         &mut out,
     );
 
-    out.servers.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.servers
+        .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     out.skills.sort_by(|a, b| a.id.cmp(&b.id));
 
     ContextInventory {
@@ -774,7 +853,9 @@ pub fn grant_dir_for(path: &Path) -> PathBuf {
     if path.is_dir() {
         path.to_path_buf()
     } else {
-        path.parent().map(Path::to_path_buf).unwrap_or_else(|| path.to_path_buf())
+        path.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| path.to_path_buf())
     }
 }
 
@@ -816,7 +897,9 @@ pub fn grant_workspace_root(project_root: &Path, dir: &str) -> Result<Vec<String
 
 pub fn revoke_workspace_root(project_root: &Path, dir: &str) -> Result<Vec<String>, String> {
     let mut selection = load_selection(project_root);
-    selection.workspace_roots.retain(|root| normalize_path(root) != normalize_path(dir));
+    selection
+        .workspace_roots
+        .retain(|root| normalize_path(root) != normalize_path(dir));
     selection.updated_at = now_millis();
     save_selection(project_root, &selection)?;
     Ok(selection.workspace_roots)
@@ -885,7 +968,10 @@ pub fn outside_project_paths(project_root: &Path, paths: &[String]) -> Vec<Value
         if granted.iter().any(|root| is_inside(root, &display)) {
             continue;
         }
-        if seen.iter().any(|other| normalize_path(other) == normalize_path(&dir)) {
+        if seen
+            .iter()
+            .any(|other| normalize_path(other) == normalize_path(&dir))
+        {
             continue;
         }
         seen.push(dir.clone());
@@ -937,9 +1023,7 @@ pub fn ensure_grok_folder_trust(project_root: &Path) {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let block = format!(
-        "\n[folders.'{key}']\ntrusted = true\ndecided_at = {now}\n"
-    );
+    let block = format!("\n[folders.'{key}']\ntrusted = true\ndecided_at = {now}\n");
     if let Ok(mut parsed) = toml::from_str::<toml::Value>(&raw) {
         let folders = parsed
             .as_table_mut()
@@ -1147,7 +1231,9 @@ pub fn mcp_payload_for_agent(
                 } else {
                     supports_http
                 };
-                let Some(url) = spec.url.clone() else { continue };
+                let Some(url) = spec.url.clone() else {
+                    continue;
+                };
                 if !ok {
                     skipped.push(format!(
                         "{} ({} unsupported by agent)",
@@ -1294,7 +1380,11 @@ mod tests {
         )
         .unwrap();
 
-        let mut out = Collector { servers: vec![], skills: vec![], notes: vec![] };
+        let mut out = Collector {
+            servers: vec![],
+            skills: vec![],
+            notes: vec![],
+        };
         scan_opencode_config(&oc, "opencode", Some("opencode"), &mut out);
         scan_codex_config(&codex, &mut out);
 
@@ -1368,7 +1458,11 @@ mod tests {
             !skipped.iter().any(|s| s.contains("already native")),
             "claude-code should receive a lend, not a native skip: {skipped:?}"
         );
-        assert_eq!(payload.len(), 1, "expected inject for claude: {payload:?} skipped={skipped:?}");
+        assert_eq!(
+            payload.len(),
+            1,
+            "expected inject for claude: {payload:?} skipped={skipped:?}"
+        );
         let headers = payload[0]
             .get("headers")
             .and_then(Value::as_array)
@@ -1435,8 +1529,10 @@ mod tests {
 
     #[test]
     fn ensure_grok_folder_trust_writes_trusted_entry() {
-        let home = std::env::temp_dir().join(format!("Marionette-trust-home-{}", std::process::id()));
-        let project = std::env::temp_dir().join(format!("Marionette-trust-proj-{}", std::process::id()));
+        let home =
+            std::env::temp_dir().join(format!("Marionette-trust-home-{}", std::process::id()));
+        let project =
+            std::env::temp_dir().join(format!("Marionette-trust-proj-{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
         let _ = fs::remove_dir_all(&project);
         fs::create_dir_all(&home).unwrap();
@@ -1476,10 +1572,7 @@ mod tests {
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("Marionette-trust-proj");
-        assert!(
-            raw.contains(leaf),
-            "expected path leaf {leaf} in:\n{raw}"
-        );
+        assert!(raw.contains(leaf), "expected path leaf {leaf} in:\n{raw}");
         let _ = fs::remove_dir_all(&home);
         let _ = fs::remove_dir_all(&project);
     }
@@ -1493,8 +1586,14 @@ mod tests {
         set_enabled(&root, "skill", "docx", false).unwrap();
 
         let reloaded = load_selection(&root);
-        assert!(reloaded.is_enabled("mcp", "blender"), "explicit yes must persist");
-        assert!(!reloaded.is_enabled("skill", "docx"), "explicit no must persist");
+        assert!(
+            reloaded.is_enabled("mcp", "blender"),
+            "explicit yes must persist"
+        );
+        assert!(
+            !reloaded.is_enabled("skill", "docx"),
+            "explicit no must persist"
+        );
         // Untouched items keep the per-kind default.
         assert!(!reloaded.is_enabled("mcp", "notion"));
         assert!(reloaded.is_enabled("skill", "unity-tools"));
@@ -1553,7 +1652,11 @@ mod tests {
 
         // Before granting: the outside file is flagged, the project file is not.
         let found = outside_project_paths(&project, &[inside.clone(), image_path.clone()]);
-        assert_eq!(found.len(), 1, "only the outside path needs a grant: {found:?}");
+        assert_eq!(
+            found.len(),
+            1,
+            "only the outside path needs a grant: {found:?}"
+        );
         assert_eq!(
             found[0]["dir"].as_str().unwrap().to_lowercase(),
             outside.to_string_lossy().to_lowercase(),
@@ -1569,7 +1672,11 @@ mod tests {
         let parent = root.join("pictures");
         grant_workspace_root(&project, &parent.to_string_lossy()).unwrap();
         let roots = workspace_roots(&project);
-        assert_eq!(roots.len(), 1, "narrower root should be folded in: {roots:?}");
+        assert_eq!(
+            roots.len(),
+            1,
+            "narrower root should be folded in: {roots:?}"
+        );
         // Re-granting a child of an existing root is a no-op.
         grant_workspace_root(&project, &outside.to_string_lossy()).unwrap();
         assert_eq!(workspace_roots(&project).len(), 1);
@@ -1588,7 +1695,10 @@ mod tests {
         fs::create_dir_all(&project).unwrap();
         fs::create_dir_all(&granted).unwrap();
 
-        assert!(opencode_permission_env(&project, None).is_none(), "nothing granted → no env");
+        assert!(
+            opencode_permission_env(&project, None).is_none(),
+            "nothing granted → no env"
+        );
 
         grant_workspace_root(&project, &granted.to_string_lossy()).unwrap();
         let value = opencode_permission_env(&project, None).unwrap();
@@ -1613,11 +1723,23 @@ mod tests {
 
     #[test]
     fn inside_check_survives_separators_and_case() {
-        assert!(is_inside(r"D:\Projects\AgentsShell", r"D:\Projects\AgentsShell\src\main.rs"));
+        assert!(is_inside(
+            r"D:\Projects\AgentsShell",
+            r"D:\Projects\AgentsShell\src\main.rs"
+        ));
         // Extended prefix + forward slashes + different case still match.
-        assert!(is_inside(r"D:\Projects\AgentsShell", r"\\?\d:/Projects/agentsshell/src"));
-        assert!(!is_inside(r"D:\Projects\AgentsShell", r"D:\Projects\AgentsShellOther\x"));
-        assert!(!is_inside(r"D:\Projects\AgentsShell", r"C:\Users\me\pic.png"));
+        assert!(is_inside(
+            r"D:\Projects\AgentsShell",
+            r"\\?\d:/Projects/agentsshell/src"
+        ));
+        assert!(!is_inside(
+            r"D:\Projects\AgentsShell",
+            r"D:\Projects\AgentsShellOther\x"
+        ));
+        assert!(!is_inside(
+            r"D:\Projects\AgentsShell",
+            r"C:\Users\me\pic.png"
+        ));
     }
 
     #[test]
@@ -1636,7 +1758,11 @@ mod tests {
         assert!(prompt.contains("Unity project helpers"));
 
         // Same skill, but sourced from the agent's own directory → not lent back.
-        let mut out = Collector { servers: vec![], skills: vec![], notes: vec![] };
+        let mut out = Collector {
+            servers: vec![],
+            skills: vec![],
+            notes: vec![],
+        };
         scan_skills_dir(
             &root.join(".marionette/skills"),
             "project",

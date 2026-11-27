@@ -10,8 +10,8 @@
 //! single window.
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter};
 use sha2::{Digest, Sha256};
+use tauri::{AppHandle, Emitter};
 
 use crate::app_paths::global_dir;
 
@@ -39,8 +39,7 @@ const MIN_DOWNLOAD_BYTES: u64 = 30 * 1024 * 1024;
 /// Download agent honoring the user's proxy (engine.rs shape, minus its
 /// test hook — this path is never exercised in tests).
 fn download_agent() -> Result<ureq::Agent, String> {
-    let connector = ureq::native_tls::TlsConnector::new()
-        .map_err(|e| format!("tls init: {e}"))?;
+    let connector = ureq::native_tls::TlsConnector::new().map_err(|e| format!("tls init: {e}"))?;
     let mut builder = ureq::AgentBuilder::new();
     builder = builder.tls_connector(std::sync::Arc::new(connector));
     let config = crate::proxy::load_proxy_config();
@@ -63,7 +62,9 @@ pub fn installed_exe_path() -> Result<std::path::PathBuf, String> {
 }
 
 pub fn is_installed() -> bool {
-    installed_exe_path().map(|path| path.is_file()).unwrap_or(false)
+    installed_exe_path()
+        .map(|path| path.is_file())
+        .unwrap_or(false)
 }
 
 fn manifest_path() -> Result<std::path::PathBuf, String> {
@@ -132,7 +133,9 @@ pub fn install(app: &AppHandle) -> Result<Value, String> {
         let mut chunk = [0u8; 64 * 1024];
         loop {
             use std::io::Read;
-            let read = reader.read(&mut chunk).map_err(|e| format!("download: {e}"))?;
+            let read = reader
+                .read(&mut chunk)
+                .map_err(|e| format!("download: {e}"))?;
             if read == 0 {
                 break;
             }

@@ -24,6 +24,10 @@ import {
   isBridgeWireModelId,
 } from "../src/lib/capabilityDrift";
 import type { CapabilitySnapshot, SessionComposerPrefs } from "../src/lib/types";
+import {
+  clampEffortIdToLiveMenu,
+  expandAcpConfigAttempts,
+} from "../src/lib/acpSupplements";
 
 await applyLocale("zh-CN");
 
@@ -160,4 +164,51 @@ console.log("bridge wire ids survive a spawn without the injected provider");
   );
   ok("dead native model still cleared", deadNative?.clearedPrefs.preferredModel === null);
 }
+
+console.log("effort ids are clamped to the model's live menu");
+{
+  const menu = [
+    { id: "none", label: "None" },
+    { id: "low", label: "Low" },
+    { id: "medium", label: "Medium" },
+    { id: "high", label: "High" },
+  ] as unknown as CapabilitySnapshot["effortOptions"];
+  const withMenu = (over: Partial<CapabilitySnapshot> = {}): CapabilitySnapshot =>
+    caps({ effortConfigId: "thought", effortOptions: menu, currentEffortId: "high", ...over });
+
+  ok("exact id passes through", clampEffortIdToLiveMenu("high", withMenu()) === "high");
+  ok("case-insensitive match keeps the menu spelling", clampEffortIdToLiveMenu("HIGH", withMenu()) === "high");
+  ok("max on a menu that stops at high lands on high", clampEffortIdToLiveMenu("max", withMenu()) === "high");
+  ok("xhigh lands on high", clampEffortIdToLiveMenu("xhigh", withMenu()) === "high");
+  ok("minimal lands on low", clampEffortIdToLiveMenu("minimal", withMenu()) === "low");
+  ok(
+    "unknown scale falls back to what the agent reports",
+    clampEffortIdToLiveMenu("turbo", withMenu()) === "high",
+  );
+  ok(
+    "nothing to report falls back to the first option",
+    clampEffortIdToLiveMenu("turbo", withMenu({ currentEffortId: null })) === "none",
+  );
+  ok(
+    "empty menu keeps the value (Claude/Codex validate it themselves)",
+    clampEffortIdToLiveMenu("max", caps({ effortConfigId: "effort", effortOptions: [] })) === "max",
+  );
+
+  // The transport boundary: what actually goes on the wire.
+  const attempts = expandAcpConfigAttempts("opencode", { effortId: "max" }, withMenu());
+  ok(
+    "opencode effort patch is clamped on the wire",
+    attempts.length === 1 && attempts[0]?.value === "high",
+  );
+  const grok = expandAcpConfigAttempts(
+    "grok-build",
+    { effortId: "max" },
+    caps({ effortOptions: undefined }),
+  );
+  ok(
+    "grok legacy effort still goes verbatim (Rust clamps against its table)",
+    grok.some((attempt) => attempt.effortId === "max"),
+  );
+}
+
 console.log(`\nverify-capability-drift: ${passed} checks passed`);

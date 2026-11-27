@@ -8,7 +8,6 @@
 
 use serde::Serialize;
 
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessFacts {
@@ -20,7 +19,7 @@ pub fn process_facts(pid: u32) -> Option<ProcessFacts> {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::System::Threading::{
-        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+        GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
     };
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
@@ -33,7 +32,10 @@ pub fn process_facts(pid: u32) -> Option<ProcessFacts> {
         if QueryFullProcessImageNameW(handle, 0, name.as_mut_ptr(), &mut size) != 0 {
             path = String::from_utf16_lossy(&name[..size as usize]);
         }
-        let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let zero = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
         let mut creation = zero;
         let mut exit = zero;
         let mut kernel = zero;
@@ -48,7 +50,10 @@ pub fn process_facts(pid: u32) -> Option<ProcessFacts> {
         if path.is_empty() && started == 0 {
             return None;
         }
-        Some(ProcessFacts { image_path: path, started_at_ms: started })
+        Some(ProcessFacts {
+            image_path: path,
+            started_at_ms: started,
+        })
     }
 }
 
@@ -116,10 +121,8 @@ pub fn clipboard_read_text() -> Option<String> {
                 }
                 end += 2;
             }
-            let text = String::from_utf16_lossy(std::slice::from_raw_parts(
-                lock as *const u16,
-                end / 2,
-            ));
+            let text =
+                String::from_utf16_lossy(std::slice::from_raw_parts(lock as *const u16, end / 2));
             GlobalUnlock(handle);
             Some(text)
         })();
@@ -224,10 +227,7 @@ mod dropfiles_tests {
 
     #[test]
     fn reads_wide_and_narrow_lists() {
-        let got = parse_dropfiles(&hdrop(&[
-            "D:\\docs\\需求.md",
-            "D:\\with space.txt",
-        ]));
+        let got = parse_dropfiles(&hdrop(&["D:\\docs\\需求.md", "D:\\with space.txt"]));
         assert_eq!(got, vec!["D:\\docs\\需求.md", "D:\\with space.txt"]);
 
         let mut narrow = vec![0u8; 20];
@@ -253,7 +253,9 @@ pub fn clipboard_write_text(text: &str) -> Option<u32> {
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
     };
-    use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    use windows_sys::Win32::System::Memory::{
+        GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
+    };
     use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
     unsafe {
         if OpenClipboard(std::ptr::null_mut()) == 0 {

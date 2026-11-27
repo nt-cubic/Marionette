@@ -240,7 +240,9 @@ pub(super) fn pretty_agent_preset_label(id: &str, name: &str) -> String {
 ///
 /// These ids are the ones `session/set_mode` takes; nothing here names a
 /// `session/set_config_option` id.
-pub(super) fn legacy_modes_from_json(session_response: &Value) -> Option<(Vec<ModeDef>, Option<String>)> {
+pub(super) fn legacy_modes_from_json(
+    session_response: &Value,
+) -> Option<(Vec<ModeDef>, Option<String>)> {
     let modes = session_response.get("modes")?;
     let available = modes
         .get("availableModes")
@@ -420,19 +422,13 @@ pub(super) fn extract_typed_options(
     options: &acp_schema::SessionConfigSelectOptions,
 ) -> Vec<(String, String, Option<String>)> {
     let one = |o: &acp_schema::SessionConfigSelectOption| {
-        (
-            o.value.0.to_string(),
-            o.name.clone(),
-            o.description.clone(),
-        )
+        (o.value.0.to_string(), o.name.clone(), o.description.clone())
     };
     match options {
         acp_schema::SessionConfigSelectOptions::Ungrouped(list) => list.iter().map(one).collect(),
-        acp_schema::SessionConfigSelectOptions::Grouped(groups) => groups
-            .iter()
-            .flat_map(|g| &g.options)
-            .map(one)
-            .collect(),
+        acp_schema::SessionConfigSelectOptions::Grouped(groups) => {
+            groups.iter().flat_map(|g| &g.options).map(one).collect()
+        }
         _ => vec![],
     }
 }
@@ -622,14 +618,17 @@ pub(super) fn merge_legacy_models_field(session_response: &Value, caps: &mut Cap
         // Effort levels live on each model's `_meta` for Grok. Composer still
         // reads the session-level list, so copy the current model's menu there.
         let current = caps.current_model.clone();
-        let pick = list.iter().find(|m| {
-            let id = m
-                .get("modelId")
-                .or_else(|| m.get("model_id"))
-                .or_else(|| m.get("id"))
-                .and_then(Value::as_str);
-            current.as_deref().zip(id).is_some_and(|(c, i)| c == i)
-        }).or_else(|| list.first());
+        let pick = list
+            .iter()
+            .find(|m| {
+                let id = m
+                    .get("modelId")
+                    .or_else(|| m.get("model_id"))
+                    .or_else(|| m.get("id"))
+                    .and_then(Value::as_str);
+                current.as_deref().zip(id).is_some_and(|(c, i)| c == i)
+            })
+            .or_else(|| list.first());
 
         if caps.effort_options.is_empty() {
             let menu_key = current
@@ -911,7 +910,11 @@ pub(super) fn parse_capabilities_fallback(
 
     if let Some(options) = config_options {
         for opt in options {
-            let id = opt.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+            let id = opt
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             let category = opt
                 .get("category")
                 .and_then(Value::as_str)
@@ -925,7 +928,10 @@ pub(super) fn parse_capabilities_fallback(
                 .and_then(|o| o.as_array())
                 .map(|arr| json_select_options(arr))
                 .unwrap_or_default();
-            let select_ids: Vec<String> = select_options.iter().map(|(oid, _, _)| oid.clone()).collect();
+            let select_ids: Vec<String> = select_options
+                .iter()
+                .map(|(oid, _, _)| oid.clone())
+                .collect();
             let knob = reclassify_mode_if_sandbox(
                 &id,
                 config_option_knob(&id, Some(category.as_str()), held),
@@ -1003,10 +1009,7 @@ pub(super) fn parse_capabilities_fallback(
                 }
                 Some(ConfigKnob::Permission) => {
                     permission_config_id = Some(id);
-                    permission_label = opt
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .map(str::to_string);
+                    permission_label = opt.get("name").and_then(Value::as_str).map(str::to_string);
                     if !select_options.is_empty() {
                         permission_options = select_options
                             .into_iter()

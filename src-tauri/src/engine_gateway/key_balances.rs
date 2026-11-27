@@ -97,7 +97,10 @@ fn url_path_of(url: &str) -> &str {
 
 fn origin_of(url: &str) -> String {
     match url.split_once("://") {
-        Some((scheme, rest)) => format!("{scheme}://{}", rest.split(['/', '?', '#']).next().unwrap_or("")),
+        Some((scheme, rest)) => format!(
+            "{scheme}://{}",
+            rest.split(['/', '?', '#']).next().unwrap_or("")
+        ),
         None => String::new(),
     }
 }
@@ -107,7 +110,10 @@ fn origin_of(url: &str) -> String {
 fn effective_token(p: &Provider) -> String {
     let raw = extra_str(p, "balanceToken").trim().to_string();
     let mut t = raw.clone();
-    if t.len() > 7 && t.get(..7).is_some_and(|h| h.eq_ignore_ascii_case("bearer ")) {
+    if t.len() > 7
+        && t.get(..7)
+            .is_some_and(|h| h.eq_ignore_ascii_case("bearer "))
+    {
         t = t[7..].trim().to_string();
     }
     if !t.is_empty() && t == p.key.trim() {
@@ -126,7 +132,8 @@ fn key_query(p: &Provider, token: &str) -> (String, String) {
         return (url, path);
     }
     let own_auth = p.headers.iter().any(|(k, v)| {
-        !v.trim().is_empty() && (k.eq_ignore_ascii_case("authorization") || k.eq_ignore_ascii_case("cookie"))
+        !v.trim().is_empty()
+            && (k.eq_ignore_ascii_case("authorization") || k.eq_ignore_ascii_case("cookie"))
     });
     if own_auth {
         return (url, path);
@@ -141,7 +148,11 @@ fn key_query(p: &Provider, token: &str) -> (String, String) {
         (NEW_API_USER_SELF, NEW_API_KEY_USAGE, NEW_API_QUOTA_PATH),
     ] {
         if let Some(base) = url_path.strip_suffix(account) {
-            let new_path = if path.trim() == field { String::new() } else { path };
+            let new_path = if path.trim() == field {
+                String::new()
+            } else {
+                path
+            };
             return (format!("{origin}{base}{key_query}"), new_path);
         }
     }
@@ -173,7 +184,14 @@ fn source_of(p: &Provider) -> Option<Source> {
     let token = effective_token(p);
     let (custom_url, custom_path) = key_query(p, &token);
     if !custom_url.is_empty() {
-        let method = if extra_str(p, "balanceMethod").trim().eq_ignore_ascii_case("POST") { "POST" } else { "GET" };
+        let method = if extra_str(p, "balanceMethod")
+            .trim()
+            .eq_ignore_ascii_case("POST")
+        {
+            "POST"
+        } else {
+            "GET"
+        };
         let path = path_of(&custom_url, &custom_path);
         return Some(Source {
             url: custom_url,
@@ -204,7 +222,14 @@ fn source_of(p: &Provider) -> Option<Source> {
             }
             _ => continue,
         };
-        return Some(Source { url: url.into(), method: "GET", token: String::new(), reader, custom: false, account_wide: wide });
+        return Some(Source {
+            url: url.into(),
+            method: "GET",
+            token: String::new(),
+            reader,
+            custom: false,
+            account_wide: wide,
+        });
     }
     None
 }
@@ -215,12 +240,20 @@ fn source_of(p: &Provider) -> Option<Source> {
 
 fn with_key(s: &str, key: &str, in_url: bool) -> String {
     // Go balanceKeyNames：`{key}` `{apiKey}` `{api_key}` `{token}` `{{key}}` `${API_KEY}`（不分大小写）
-    let key = if in_url { query_escape(key) } else { key.to_string() };
+    let key = if in_url {
+        query_escape(key)
+    } else {
+        key.to_string()
+    };
     let chars: Vec<char> = s.chars().collect();
     let mut out = String::new();
     let mut i = 0;
     while i < chars.len() {
-        let start = if chars[i] == '$' && chars.get(i + 1) == Some(&'{') { i + 1 } else { i };
+        let start = if chars[i] == '$' && chars.get(i + 1) == Some(&'{') {
+            i + 1
+        } else {
+            i
+        };
         if chars.get(start) == Some(&'{') {
             let mut j = start + 1;
             if chars.get(j) == Some(&'{') {
@@ -230,8 +263,18 @@ fn with_key(s: &str, key: &str, in_url: bool) -> String {
             while j < chars.len() && chars[j] != '}' && chars[j] != '{' {
                 j += 1;
             }
-            let name: String = chars[name_start..j].iter().collect::<String>().trim().to_ascii_lowercase();
-            if j < chars.len() && chars[j] == '}' && matches!(name.as_str(), "key" | "apikey" | "api_key" | "api-key" | "token") {
+            let name: String = chars[name_start..j]
+                .iter()
+                .collect::<String>()
+                .trim()
+                .to_ascii_lowercase();
+            if j < chars.len()
+                && chars[j] == '}'
+                && matches!(
+                    name.as_str(),
+                    "key" | "apikey" | "api_key" | "api-key" | "token"
+                )
+            {
                 j += 1;
                 if chars.get(j) == Some(&'}') {
                     j += 1;
@@ -251,7 +294,9 @@ fn query_escape(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             b' ' => out.push('+'),
             _ => out.push_str(&format!("%{b:02X}")),
         }
@@ -274,8 +319,11 @@ fn balance_authorization(token: &str) -> String {
 /// Go balanceRefusal：`{"success":false,"message":…}`（new-api 中继拒绝的方式，
 /// 200 与 401 都可能）。
 fn refusal(body: &str) -> bool {
-    let Ok(v) = serde_json::from_str::<Value>(body) else { return false };
-    v.get("success").and_then(Value::as_bool) == Some(false) && !text(v.get("message")).trim().is_empty()
+    let Ok(v) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+    v.get("success").and_then(Value::as_bool) == Some(false)
+        && !text(v.get("message")).trim().is_empty()
 }
 
 fn read_with(reader: &Reader, body: &str) -> Option<String> {
@@ -345,27 +393,66 @@ fn ask(p: &Provider, src: &Source, key: &str) -> Option<String> {
 type ProbeEntry = (Option<String>, Instant);
 
 fn probe_cache() -> &'static Mutex<HashMap<String, ProbeEntry>> {
-    static CACHE: std::sync::OnceLock<Mutex<HashMap<String, ProbeEntry>>> = std::sync::OnceLock::new();
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<String, ProbeEntry>>> =
+        std::sync::OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 #[cfg(test)]
 pub(super) fn reset_probes_for_tests() {
-    probe_cache().lock().unwrap_or_else(|p| p.into_inner()).clear();
+    probe_cache()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clear();
 }
 
 /// 厂商自己的 host（Go presetHosts 的 vendor/local 部分）与不探测的中继：
 /// 绝不拿它们当「手加中继站」去问中继查询。
 const NO_PROBE_HOSTS: &[&str] = &[
-    "opencode.ai", "api.cline.bot", "api.openai.com", "api.anthropic.com", "generativelanguage.googleapis.com",
-    "api.x.ai", "api.mistral.ai", "api.groq.com", "api.together.xyz", "api.fireworks.ai", "api.cerebras.ai",
-    "api.perplexity.ai", "api.cohere.com", "api.deepinfra.com", "api.sambanova.ai", "integrate.api.nvidia.com",
-    "api.deepseek.com", "api.moonshot.cn", "api.moonshot.ai", "api.kimi.com", "api.kimi.ai", "openrouter.ai",
-    "api.siliconflow.cn", "api.siliconflow.com", "api.stepfun.com", "api.stepfun.ai", "open.bigmodel.cn",
-    "api.z.ai", "api.minimaxi.com", "api.minimax.cn", "api.minimax.io", "dashscope.aliyuncs.com",
-    "dashscope-intl.aliyuncs.com", "ark.cn-beijing.volces.com", "api.commandcode.ai", "ollama.com",
-    "aihubmix.com", "api-inference.modelscope.cn", "api.githubcopilot.com", "models.github.ai",
-    "api.hunyuan.cloud.tencent.com", "qianfan.baidubce.com", "api.lingyiwanwu.com", "api.baichuan-ai.com",
+    "opencode.ai",
+    "api.cline.bot",
+    "api.openai.com",
+    "api.anthropic.com",
+    "generativelanguage.googleapis.com",
+    "api.x.ai",
+    "api.mistral.ai",
+    "api.groq.com",
+    "api.together.xyz",
+    "api.fireworks.ai",
+    "api.cerebras.ai",
+    "api.perplexity.ai",
+    "api.cohere.com",
+    "api.deepinfra.com",
+    "api.sambanova.ai",
+    "integrate.api.nvidia.com",
+    "api.deepseek.com",
+    "api.moonshot.cn",
+    "api.moonshot.ai",
+    "api.kimi.com",
+    "api.kimi.ai",
+    "openrouter.ai",
+    "api.siliconflow.cn",
+    "api.siliconflow.com",
+    "api.stepfun.com",
+    "api.stepfun.ai",
+    "open.bigmodel.cn",
+    "api.z.ai",
+    "api.minimaxi.com",
+    "api.minimax.cn",
+    "api.minimax.io",
+    "dashscope.aliyuncs.com",
+    "dashscope-intl.aliyuncs.com",
+    "ark.cn-beijing.volces.com",
+    "api.commandcode.ai",
+    "ollama.com",
+    "aihubmix.com",
+    "api-inference.modelscope.cn",
+    "api.githubcopilot.com",
+    "models.github.ai",
+    "api.hunyuan.cloud.tencent.com",
+    "qianfan.baidubce.com",
+    "api.lingyiwanwu.com",
+    "api.baichuan-ai.com",
     "api.xiaomimimo.com",
 ];
 
@@ -390,7 +477,12 @@ fn not_probed(host: &str) -> bool {
         return true;
     }
     #[cfg(not(test))]
-    if host == "localhost" || host.ends_with(".localhost") || host == "127.0.0.1" || host == "::1" || host == "[::1]" {
+    if host == "localhost"
+        || host.ends_with(".localhost")
+        || host == "127.0.0.1"
+        || host == "::1"
+        || host == "[::1]"
+    {
         return true;
     }
     if NO_PROBE_HOSTS.contains(&host.as_str()) || host.ends_with(".opencode.ai") {
@@ -401,7 +493,9 @@ fn not_probed(host: &str) -> bool {
         for r in preset.regions {
             bases.extend([r.chat, r.responses, r.anthropic]);
         }
-        bases.into_iter().any(|b| !b.is_empty() && hostname_of(b) == host)
+        bases
+            .into_iter()
+            .any(|b| !b.is_empty() && hostname_of(b) == host)
     })
 }
 
@@ -409,7 +503,10 @@ fn probe_origins(p: &Provider) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for raw in [&p.chat, &p.responses, &p.anthropic] {
         let raw = raw.trim();
-        let scheme = raw.split_once("://").map(|(s, _)| s.to_ascii_lowercase()).unwrap_or_default();
+        let scheme = raw
+            .split_once("://")
+            .map(|(s, _)| s.to_ascii_lowercase())
+            .unwrap_or_default();
         if (scheme != "https" && scheme != "http") || hostname_of(raw).is_empty() {
             continue;
         }
@@ -469,13 +566,20 @@ fn probe_balance(p: &Provider, key: &str) -> Option<String> {
     'origins: for origin in &origins {
         for path in [SUB2API_KEY_USAGE, NEW_API_KEY_USAGE] {
             let url = format!("{origin}{path}");
-            let mut headers = vec![h("Authorization", &format!("Bearer {key}")), h("Accept", "application/json")];
+            let mut headers = vec![
+                h("Authorization", &format!("Bearer {key}")),
+                h("Accept", "application/json"),
+            ];
             for (k, v) in &p.headers {
                 headers.push((k.clone(), with_key(v, key, false)));
             }
-            let Some(reply) = send("GET", &url, &headers, None) else { continue };
+            let Some(reply) = send("GET", &url, &headers, None) else {
+                continue;
+            };
             reached = true;
-            if previous_url.as_deref() == Some(url.as_str()) && (reply.status == 401 || reply.status == 403) {
+            if previous_url.as_deref() == Some(url.as_str())
+                && (reply.status == 401 || reply.status == 403)
+            {
                 refused = true;
             }
             if reply.status == 200 {
@@ -497,7 +601,10 @@ fn probe_balance(p: &Provider, key: &str) -> Option<String> {
         (None, _) if !reached => wait = PROBE_DOWN,
         _ => wait = PROBE_MISS,
     }
-    probe_cache().lock().unwrap_or_else(|e| e.into_inner()).insert(cache_key, (found.clone(), Instant::now() + wait));
+    probe_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(cache_key, (found.clone(), Instant::now() + wait));
     found
 }
 
@@ -597,10 +704,16 @@ impl Expr<'_> {
         }
         if c.is_ascii_digit() || c == '.' {
             let start = self.i;
-            while self.i < self.src.len() && (self.src[self.i].is_ascii_digit() || self.src[self.i] == '.') {
+            while self.i < self.src.len()
+                && (self.src[self.i].is_ascii_digit() || self.src[self.i] == '.')
+            {
                 self.i += 1;
             }
-            return self.src[start..self.i].iter().collect::<String>().parse().ok();
+            return self.src[start..self.i]
+                .iter()
+                .collect::<String>()
+                .parse()
+                .ok();
         }
         let start = self.i;
         while self.i < self.src.len() && !"+-*/() ".contains(self.src[self.i]) {
@@ -640,7 +753,8 @@ fn read_balance_one(reply: &Value, path: &str) -> Option<String> {
     if path.is_empty() {
         return None;
     }
-    let lone = !path.contains(['+', '-', '*', '/', '(', ')', ' ', '[']) && !path.starts_with(|c: char| c.is_ascii_digit());
+    let lone = !path.contains(['+', '-', '*', '/', '(', ')', ' ', '['])
+        && !path.starts_with(|c: char| c.is_ascii_digit());
     if lone {
         let v = path_value(reply, path)?;
         if let Some(n) = num(Some(v)) {
@@ -651,7 +765,11 @@ fn read_balance_one(reply: &Value, path: &str) -> Option<String> {
             _ => None,
         };
     }
-    let mut expr = Expr { src: path.chars().collect(), i: 0, reply };
+    let mut expr = Expr {
+        src: path.chars().collect(),
+        i: 0,
+        reply,
+    };
     let n = expr.number().filter(|n| n.is_finite())?;
     Some(balance_amount(sign, n, percent))
 }
@@ -678,7 +796,11 @@ pub(super) fn read_balance_path(body: &str, path: &str) -> Option<String> {
             None => ("—".to_string(), false),
         };
         read |= ok;
-        parts.push(if label.is_empty() { text } else { format!("{label} {text}") });
+        parts.push(if label.is_empty() {
+            text
+        } else {
+            format!("{label} {text}")
+        });
     }
     (read && !parts.is_empty()).then(|| parts.join(" · "))
 }
@@ -743,7 +865,11 @@ pub fn rows(providers: &[Provider]) -> Vec<Value> {
             keys
         };
         for (key, user) in usable {
-            jobs.push(Job { provider: p, key, user });
+            jobs.push(Job {
+                provider: p,
+                key,
+                user,
+            });
         }
     }
     let mut results: Vec<Option<Value>> = Vec::new();
@@ -761,7 +887,10 @@ pub fn rows(providers: &[Provider]) -> Vec<Value> {
     for (job, row) in jobs.iter().zip(results) {
         let Some(row) = row else { continue };
         if source_of(job.provider).is_some_and(|s| s.account_wide) {
-            let id = (job.provider.id.clone(), text(row.get("balance")).to_string());
+            let id = (
+                job.provider.id.clone(),
+                text(row.get("balance")).to_string(),
+            );
             if seen.contains(&id) {
                 continue;
             }
@@ -785,37 +914,83 @@ mod tests {
     fn path_expressions_follow_go() {
         let body = r#"{"data":{"quota":2500000,"total_available":1000000,"balance":12.5,"list":[{"v":3},{"v":4}],
             "name":"abc"},"remaining":7,"win":{"used":1,"cap":4}}"#;
-        assert_eq!(read_balance_path(body, "$data.quota / 500000").as_deref(), Some("$5.00"));
-        assert_eq!(read_balance_path(body, "$data.total_available / 500000").as_deref(), Some("$2.00"));
-        assert_eq!(read_balance_path(body, "$data.balance").as_deref(), Some("$12.50"));
-        assert_eq!(read_balance_path(body, "¥remaining").as_deref(), Some("¥7.00"));
-        assert_eq!(read_balance_path(body, "data.list.1.v").as_deref(), Some("4.00"));
-        assert_eq!(read_balance_path(body, "(data.balance - 2.5) * 2").as_deref(), Some("20.00"));
+        assert_eq!(
+            read_balance_path(body, "$data.quota / 500000").as_deref(),
+            Some("$5.00")
+        );
+        assert_eq!(
+            read_balance_path(body, "$data.total_available / 500000").as_deref(),
+            Some("$2.00")
+        );
+        assert_eq!(
+            read_balance_path(body, "$data.balance").as_deref(),
+            Some("$12.50")
+        );
+        assert_eq!(
+            read_balance_path(body, "¥remaining").as_deref(),
+            Some("¥7.00")
+        );
+        assert_eq!(
+            read_balance_path(body, "data.list.1.v").as_deref(),
+            Some("4.00")
+        );
+        assert_eq!(
+            read_balance_path(body, "(data.balance - 2.5) * 2").as_deref(),
+            Some("20.00")
+        );
         // 字符串字段原样（不是数字）
         assert_eq!(read_balance_path(body, "data.name").as_deref(), Some("abc"));
         // 百分比：win.used / win.cap → 25%
-        assert_eq!(read_balance_path(body, "win.used / win.cap %").as_deref(), Some("25%"));
+        assert_eq!(
+            read_balance_path(body, "win.used / win.cap %").as_deref(),
+            Some("25%")
+        );
         // 多段 + 读不出的一段显示 —
         assert_eq!(
-            read_balance_path(body, "5h: win.used / win.cap %; week: nope.x; $remaining").as_deref(),
+            read_balance_path(body, "5h: win.used / win.cap %; week: nope.x; $remaining")
+                .as_deref(),
             Some("5h 25% · week — · $7.00")
         );
-        assert!(read_balance_path(body, "5h: nope.a; week: nope.b").is_none(), "全读不出才失败");
+        assert!(
+            read_balance_path(body, "5h: nope.a; week: nope.b").is_none(),
+            "全读不出才失败"
+        );
         assert!(read_balance_path(body, "nope.field").is_none());
-        assert!(read_balance_path(body, "data.balance / 0").is_none(), "除零");
-        assert!(read_balance_path(body, "data.*.x").is_none(), "通配不在标量子集内");
+        assert!(
+            read_balance_path(body, "data.balance / 0").is_none(),
+            "除零"
+        );
+        assert!(
+            read_balance_path(body, "data.*.x").is_none(),
+            "通配不在标量子集内"
+        );
         assert!(read_balance_path("not json", "data.balance").is_none());
         // 字符串金额
-        assert_eq!(read_balance_path(r#"{"b":"3.5"}"#, "$b").as_deref(), Some("$3.50"));
+        assert_eq!(
+            read_balance_path(r#"{"b":"3.5"}"#, "$b").as_deref(),
+            Some("$3.50")
+        );
     }
 
     #[test]
     fn default_paths_for_known_relay_queries() {
-        assert_eq!(path_of("https://r.test/api/user/self", ""), NEW_API_QUOTA_PATH);
-        assert_eq!(path_of("https://r.test/api/usage/token", ""), NEW_API_KEY_PATH);
+        assert_eq!(
+            path_of("https://r.test/api/user/self", ""),
+            NEW_API_QUOTA_PATH
+        );
+        assert_eq!(
+            path_of("https://r.test/api/usage/token", ""),
+            NEW_API_KEY_PATH
+        );
         assert_eq!(path_of("https://r.test/v1/usage", ""), "$remaining");
-        assert_eq!(path_of("https://r.test/api/v1/user/profile", ""), "$data.balance");
-        assert_eq!(path_of("https://r.test/dashboard/billing/credit_grants", ""), "$total_available");
+        assert_eq!(
+            path_of("https://r.test/api/v1/user/profile", ""),
+            "$data.balance"
+        );
+        assert_eq!(
+            path_of("https://r.test/dashboard/billing/credit_grants", ""),
+            "$total_available"
+        );
         assert_eq!(path_of("https://r.test/anything", ""), "");
         assert_eq!(path_of("https://r.test/anything", "$x.y"), "$x.y");
     }
@@ -826,7 +1001,10 @@ mod tests {
             r#"{"id":"r","name":"r","key":"sk-k","chat":"https://r.test/v1","balanceURL":"https://r.test/api/user/self"}"#,
         );
         let src = source_of(&p).expect("source");
-        assert_eq!(src.url, "https://r.test/api/usage/token", "无 token 的账号查询退到钥匙自己的查询");
+        assert_eq!(
+            src.url, "https://r.test/api/usage/token",
+            "无 token 的账号查询退到钥匙自己的查询"
+        );
         assert_eq!(src.reader, Reader::Path(NEW_API_KEY_PATH.to_string()));
         // 有 token：账号查询原样，token 当整个 Authorization
         let p = provider(
@@ -850,7 +1028,14 @@ mod tests {
 
     #[test]
     fn key_placeholders_and_authorization_shapes() {
-        assert_eq!(with_key("https://a/b?key={key}&x={API_KEY}&t=${token}&q={{apiKey}}", "k 1", true), "https://a/b?key=k+1&x=k+1&t=k+1&q=k+1");
+        assert_eq!(
+            with_key(
+                "https://a/b?key={key}&x={API_KEY}&t=${token}&q={{apiKey}}",
+                "k 1",
+                true
+            ),
+            "https://a/b?key=k+1&x=k+1&t=k+1&q=k+1"
+        );
         assert_eq!(with_key("Bearer {token}", "k 1", false), "Bearer k 1");
         assert_eq!(with_key("{other}", "k", false), "{other}");
         assert_eq!(balance_authorization("plain-token"), "plain-token");
@@ -860,15 +1045,20 @@ mod tests {
 
     #[test]
     fn host_table_picks_the_four_missing_vendors() {
-        let p = provider(r#"{"id":"c","name":"c","key":"k","chat":"https://api.commandcode.ai/v1"}"#);
+        let p =
+            provider(r#"{"id":"c","name":"c","key":"k","chat":"https://api.commandcode.ai/v1"}"#);
         assert_eq!(source_of(&p).unwrap().reader, Reader::CommandCode);
-        let p = provider(r#"{"id":"m","name":"m","key":"k","chat":"https://api-inference.modelscope.cn/v1"}"#);
+        let p = provider(
+            r#"{"id":"m","name":"m","key":"k","chat":"https://api-inference.modelscope.cn/v1"}"#,
+        );
         assert_eq!(source_of(&p).unwrap().reader, Reader::ModelScope);
         let p = provider(r#"{"id":"o","name":"o","key":"k","chat":"https://ollama.com/v1"}"#);
         assert_eq!(source_of(&p).unwrap().reader, Reader::OllamaCredits);
         let p = provider(r#"{"id":"a","name":"a","key":"k","chat":"https://aihubmix.com/v1"}"#);
         assert_eq!(source_of(&p).unwrap().reader, Reader::AiHubMixKey);
-        let p = provider(r#"{"id":"a","name":"a","key":"k","chat":"https://aihubmix.com/v1","balanceToken":"t"}"#);
+        let p = provider(
+            r#"{"id":"a","name":"a","key":"k","chat":"https://aihubmix.com/v1","balanceToken":"t"}"#,
+        );
         let src = source_of(&p).unwrap();
         assert_eq!(src.reader, Reader::AiHubMixAccount);
         assert_eq!(src.url, AIHUBMIX_ACCOUNT_URL);
@@ -887,21 +1077,49 @@ mod tests {
             Some("1300 魔粒")
         );
         assert_eq!(
-            read_with(&Reader::OllamaCredits, r#"{"included":{"balance_usd":72.5},"purchased":{"balance_usd":25.0}}"#).as_deref(),
+            read_with(
+                &Reader::OllamaCredits,
+                r#"{"included":{"balance_usd":72.5},"purchased":{"balance_usd":25.0}}"#
+            )
+            .as_deref(),
             Some("$25.00")
         );
         assert_eq!(
-            read_with(&Reader::OllamaCredits, r#"{"included":{"balance_usd":72.5}}"#),
+            read_with(
+                &Reader::OllamaCredits,
+                r#"{"included":{"balance_usd":72.5}}"#
+            ),
             None,
             "只有含额没有买的 credits：不出余额卡"
         );
-        assert_eq!(read_with(&Reader::AiHubMixKey, r#"{"object":"list","total_usage":12.5}"#).as_deref(), Some("$12.50"));
-        assert_eq!(read_with(&Reader::AiHubMixKey, r#"{"total_usage":-1}"#), None, "无限额钥匙没有自己的余额");
         assert_eq!(
-            read_with(&Reader::AiHubMixAccount, r#"{"success":true,"data":{"quota":2500000}}"#).as_deref(),
+            read_with(
+                &Reader::AiHubMixKey,
+                r#"{"object":"list","total_usage":12.5}"#
+            )
+            .as_deref(),
+            Some("$12.50")
+        );
+        assert_eq!(
+            read_with(&Reader::AiHubMixKey, r#"{"total_usage":-1}"#),
+            None,
+            "无限额钥匙没有自己的余额"
+        );
+        assert_eq!(
+            read_with(
+                &Reader::AiHubMixAccount,
+                r#"{"success":true,"data":{"quota":2500000}}"#
+            )
+            .as_deref(),
             Some("$5.00")
         );
-        assert_eq!(read_with(&Reader::AiHubMixAccount, r#"{"success":false,"message":"no"}"#), None);
+        assert_eq!(
+            read_with(
+                &Reader::AiHubMixAccount,
+                r#"{"success":false,"message":"no"}"#
+            ),
+            None
+        );
         assert!(refusal(r#"{"success":false,"message":"bad token"}"#));
         assert!(!refusal(r#"{"success":false}"#));
         assert!(!refusal(r#"{"success":true,"message":"x"}"#));
@@ -909,7 +1127,9 @@ mod tests {
 
     #[test]
     fn rows_end_to_end_with_mock_vendors_and_dedupe() {
-        let _lock = super::super::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _lock = super::super::TEST_SANDBOX_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         reset_probes_for_tests();
         let mock = Mock::start();
         mock.route(
@@ -917,8 +1137,16 @@ mod tests {
             200,
             r#"{"credits":{"planId":"individual-go","monthlyCredits":3,"purchasedCredits":1,"freeCredits":0}}"#,
         );
-        mock.route("/api/balance", 200, r#"{"included":{"balance_usd":10,"allowance_usd":40},"purchased":{"balance_usd":0}}"#);
-        mock.route("/openapi/v1/magicubes/balance", 200, r#"{"success":true,"data":{"available_balance":1300}}"#);
+        mock.route(
+            "/api/balance",
+            200,
+            r#"{"included":{"balance_usd":10,"allowance_usd":40},"purchased":{"balance_usd":0}}"#,
+        );
+        mock.route(
+            "/openapi/v1/magicubes/balance",
+            200,
+            r#"{"success":true,"data":{"available_balance":1300}}"#,
+        );
         mock.route("/dashboard/billing/remain", 200, r#"{"total_usage":8.25}"#);
         mock.route("/relay/balance", 200, r#"{"data":{"left":12.5}}"#);
         let _r = Redirects::new(&[
@@ -929,41 +1157,86 @@ mod tests {
             redirect("https://relay.test/relay", &format!("{}/relay", mock.base)),
         ]);
         let providers = vec![
-            provider(r#"{"id":"cc","name":"Command Code","key":"sk-cc","chat":"https://api.commandcode.ai/v1","keys":[{"key":"sk-cc2"}]}"#),
+            provider(
+                r#"{"id":"cc","name":"Command Code","key":"sk-cc","chat":"https://api.commandcode.ai/v1","keys":[{"key":"sk-cc2"}]}"#,
+            ),
             provider(r#"{"id":"ol","name":"ollama","key":"sk-ol","chat":"https://ollama.com/v1"}"#),
-            provider(r#"{"id":"ms","name":"ModelScope","key":"sk-ms","chat":"https://api-inference.modelscope.cn/v1"}"#),
-            provider(r#"{"id":"ah","name":"AiHubMix","key":"sk-ah","chat":"https://aihubmix.com/v1"}"#),
-            provider(r#"{"id":"relay","name":"Relay","key":"sk-rl","chat":"https://relay.test/v1","balanceURL":"https://relay.test/relay/balance","balancePath":"$data.left"}"#),
+            provider(
+                r#"{"id":"ms","name":"ModelScope","key":"sk-ms","chat":"https://api-inference.modelscope.cn/v1"}"#,
+            ),
+            provider(
+                r#"{"id":"ah","name":"AiHubMix","key":"sk-ah","chat":"https://aihubmix.com/v1"}"#,
+            ),
+            provider(
+                r#"{"id":"relay","name":"Relay","key":"sk-rl","chat":"https://relay.test/v1","balanceURL":"https://relay.test/relay/balance","balancePath":"$data.left"}"#,
+            ),
             // 自报 balanceURL 的 DeepSeek host：由本文件接管（Go：BalanceURL 优先）
-            provider(r#"{"id":"ds","name":"DS","key":"sk-ds","chat":"https://api.deepseek.com/v1","balanceURL":"https://relay.test/relay/balance","balancePath":"$data.left"}"#),
+            provider(
+                r#"{"id":"ds","name":"DS","key":"sk-ds","chat":"https://api.deepseek.com/v1","balanceURL":"https://relay.test/relay/balance","balancePath":"$data.left"}"#,
+            ),
             provider(r#"{"id":"nokey","name":"x","chat":"https://ollama.com/v1"}"#),
-            provider(r#"{"id":"gone","name":"x","key":"k","off":true,"chat":"https://ollama.com/v1"}"#),
+            provider(
+                r#"{"id":"gone","name":"x","key":"k","off":true,"chat":"https://ollama.com/v1"}"#,
+            ),
         ];
         let rows = rows(&providers);
         let by_id = |id: &str| rows.iter().filter(|r| r["provider"] == id).count();
         assert_eq!(by_id("cc"), 1, "账号级读数同来源同读数折成一行");
-        assert_eq!(rows.iter().find(|r| r["provider"] == "cc").unwrap()["balance"], "$4.00");
-        assert_eq!(rows.iter().find(|r| r["provider"] == "ol").unwrap()["balance"], "$0.00", "purchased 给了 0 就是真实读数（Go 同款，owner 机上也是 $0.00）");
-        assert_eq!(rows.iter().find(|r| r["provider"] == "ms").unwrap()["balance"], "1300 魔粒");
-        assert_eq!(rows.iter().find(|r| r["provider"] == "ah").unwrap()["balance"], "$8.25");
-        assert_eq!(rows.iter().find(|r| r["provider"] == "relay").unwrap()["balance"], "$12.50");
-        assert_eq!(rows.iter().find(|r| r["provider"] == "ds").unwrap()["balance"], "$12.50");
-        assert_eq!(rows.iter().find(|r| r["provider"] == "ms").unwrap()["windows"], json!([]));
+        assert_eq!(
+            rows.iter().find(|r| r["provider"] == "cc").unwrap()["balance"],
+            "$4.00"
+        );
+        assert_eq!(
+            rows.iter().find(|r| r["provider"] == "ol").unwrap()["balance"],
+            "$0.00",
+            "purchased 给了 0 就是真实读数（Go 同款，owner 机上也是 $0.00）"
+        );
+        assert_eq!(
+            rows.iter().find(|r| r["provider"] == "ms").unwrap()["balance"],
+            "1300 魔粒"
+        );
+        assert_eq!(
+            rows.iter().find(|r| r["provider"] == "ah").unwrap()["balance"],
+            "$8.25"
+        );
+        assert_eq!(
+            rows.iter().find(|r| r["provider"] == "relay").unwrap()["balance"],
+            "$12.50"
+        );
+        assert_eq!(
+            rows.iter().find(|r| r["provider"] == "ds").unwrap()["balance"],
+            "$12.50"
+        );
+        assert_eq!(
+            rows.iter().find(|r| r["provider"] == "ms").unwrap()["windows"],
+            json!([])
+        );
         assert_eq!(by_id("nokey") + by_id("gone"), 0);
         let requests = mock.requests();
-        let cc = requests.iter().find(|r| r.path.starts_with("/alpha/billing/credits")).unwrap();
+        let cc = requests
+            .iter()
+            .find(|r| r.path.starts_with("/alpha/billing/credits"))
+            .unwrap();
         assert_eq!(cc.header("authorization"), "Bearer sk-cc");
     }
 
     #[test]
     fn relay_probe_finds_the_query_and_caches_misses() {
-        let _lock = super::super::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _lock = super::super::TEST_SANDBOX_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         reset_probes_for_tests();
         let mock = Mock::start();
         // sub2api 的 /v1/usage 没有，new-api 的 /api/usage/token 有
-        mock.route("/api/usage/token", 200, r#"{"code":true,"data":{"total_available":1500000}}"#);
+        mock.route(
+            "/api/usage/token",
+            200,
+            r#"{"code":true,"data":{"total_available":1500000}}"#,
+        );
         let _r = Redirects::new(&[redirect("https://relay.test", &mock.base)]);
-        let providers = vec![provider(r#"{"id":"relay","name":"Relay","key":"sk-rl","chat":"https://relay.test/v1"}"#)];
+        let providers = vec![provider(
+            r#"{"id":"relay","name":"Relay","key":"sk-rl","chat":"https://relay.test/v1"}"#,
+        )];
         let first = rows(&providers);
         assert_eq!(first.len(), 1);
         assert_eq!(first[0]["balance"], "$3.00", "1500000 / 500000");
@@ -979,7 +1252,9 @@ mod tests {
         reset_probes_for_tests();
         let mock2 = Mock::start();
         let _r2 = Redirects::new(&[redirect("https://empty.test", &mock2.base)]);
-        let empty = vec![provider(r#"{"id":"empty","name":"E","key":"sk-e","chat":"https://empty.test/v1"}"#)];
+        let empty = vec![provider(
+            r#"{"id":"empty","name":"E","key":"sk-e","chat":"https://empty.test/v1"}"#,
+        )];
         assert!(rows(&empty).is_empty());
         let n = mock2.requests().len();
         assert_eq!(n, 2);
@@ -993,18 +1268,33 @@ mod tests {
         assert!(!probes(&p), "厂商自己的 host 不探测");
         let p = provider(r#"{"id":"d","name":"d","key":"k","chat":"https://api.deepseek.com/v1"}"#);
         assert!(!probes(&p));
-        let p = provider(r#"{"id":"r","name":"r","key":"k","chat":"https://relay.test/v1","noBalanceProbe":true}"#);
+        let p = provider(
+            r#"{"id":"r","name":"r","key":"k","chat":"https://relay.test/v1","noBalanceProbe":true}"#,
+        );
         assert!(!probes(&p));
-        let p = provider(r#"{"id":"r","name":"r","key":"k","chat":"https://relay.test/v1","preset":"deepseek"}"#);
+        let p = provider(
+            r#"{"id":"r","name":"r","key":"k","chat":"https://relay.test/v1","preset":"deepseek"}"#,
+        );
         assert!(!probes(&p), "有 preset 的不是手加中继");
-        let p = provider(r#"{"id":"r","name":"r","key":"k","chat":"https://opencode.ai/inference/go/v1"}"#);
+        let p = provider(
+            r#"{"id":"r","name":"r","key":"k","chat":"https://opencode.ai/inference/go/v1"}"#,
+        );
         assert!(!probes(&p), "套餐来源不探测余额");
         let p = provider(r#"{"id":"r","name":"r","key":"k","chat":"https://relay.test/v1"}"#);
         assert!(probes(&p));
         // 局域网 / Tailscale 的 IP 字面量不是中继站：不拿钥匙去探
-        let p = provider(r#"{"id":"r","name":"r","key":"k","chat":"http://100.94.137.45:8082/v1"}"#);
+        let p =
+            provider(r#"{"id":"r","name":"r","key":"k","chat":"http://100.94.137.45:8082/v1"}"#);
         assert!(!probes(&p));
-        assert!(private_ip_literal("192.168.1.5") && private_ip_literal("172.20.0.1") && private_ip_literal("10.0.0.2"));
-        assert!(!private_ip_literal("8.8.8.8") && !private_ip_literal("172.32.0.1") && !private_ip_literal("relay.test"));
+        assert!(
+            private_ip_literal("192.168.1.5")
+                && private_ip_literal("172.20.0.1")
+                && private_ip_literal("10.0.0.2")
+        );
+        assert!(
+            !private_ip_literal("8.8.8.8")
+                && !private_ip_literal("172.32.0.1")
+                && !private_ip_literal("relay.test")
+        );
     }
 }

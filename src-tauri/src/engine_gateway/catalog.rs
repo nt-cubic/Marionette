@@ -38,19 +38,18 @@ pub struct Catalog {
 const FAIL_BACKOFF: Duration = Duration::from_secs(60);
 
 fn positive(item: &serde_json::Value, keys: &[&str]) -> u64 {
-    keys.iter().find_map(|k| {
-        item.get(*k)
-            .and_then(|v| v.as_u64())
-            .filter(|v| *v > 0)
-    })
-    .unwrap_or(0)
+    keys.iter()
+        .find_map(|k| item.get(*k).and_then(|v| v.as_u64()).filter(|v| *v > 0))
+        .unwrap_or(0)
 }
 
 fn takes_images(item: &serde_json::Value) -> bool {
     // 两种形状都认（magpie live.go 同款）：modalities.input 数组，
     // 或 input_modalities 数组。
     let lists = [
-        item.get("modalities").and_then(|m| m.get("input")).and_then(|v| v.as_array()),
+        item.get("modalities")
+            .and_then(|m| m.get("input"))
+            .and_then(|v| v.as_array()),
         item.get("input_modalities").and_then(|v| v.as_array()),
     ];
     for list in lists.into_iter().flatten() {
@@ -65,8 +64,14 @@ fn takes_images(item: &serde_json::Value) -> bool {
 /// 兜底用它区分「厂商说了 text-only」与「厂商什么都没说」——Go Decorate
 /// 只在厂商没说（ImageInput == nil）时认目录的图片信息。
 fn said_input_modalities(item: &serde_json::Value) -> bool {
-    item.get("modalities").and_then(|m| m.get("input")).and_then(|v| v.as_array()).is_some()
-        || item.get("input_modalities").and_then(|v| v.as_array()).is_some()
+    item.get("modalities")
+        .and_then(|m| m.get("input"))
+        .and_then(|v| v.as_array())
+        .is_some()
+        || item
+            .get("input_modalities")
+            .and_then(|v| v.as_array())
+            .is_some()
 }
 
 fn parse_rows(body: &str) -> Vec<VendorRow> {
@@ -77,17 +82,24 @@ fn parse_rows(body: &str) -> Vec<VendorRow> {
         .get("data")
         .and_then(|d| d.as_array())
         .or_else(|| value.get("models").and_then(|m| m.as_array()));
-    let Some(items) = items else { return Vec::new() };
+    let Some(items) = items else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     for item in items {
-        let Some(id) = item.get("id").and_then(|v| v.as_str()) else { continue };
+        let Some(id) = item.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
         let id = id.trim();
         if id.is_empty() {
             continue;
         }
         out.push(VendorRow {
             id: id.to_string(),
-            context_window: positive(item, &["context_window", "context_length", "max_input_tokens"]),
+            context_window: positive(
+                item,
+                &["context_window", "context_length", "max_input_tokens"],
+            ),
             max_output: positive(item, &["max_output_tokens", "max_tokens"]),
             images: takes_images(item),
             raw: item.clone(),
@@ -117,10 +129,16 @@ impl Catalog {
             // 目录也不知道（0）就不写——写个 0 进 raw 等于把「不知道」
             // 伪装成「厂商报了 0」。
             if row.context_window == 0 && preset.context_window > 0 {
-                map.insert("context_window".into(), serde_json::json!(preset.context_window));
+                map.insert(
+                    "context_window".into(),
+                    serde_json::json!(preset.context_window),
+                );
             }
             if row.max_output == 0 && preset.max_output > 0 {
-                map.insert("max_output_tokens".into(), serde_json::json!(preset.max_output));
+                map.insert(
+                    "max_output_tokens".into(),
+                    serde_json::json!(preset.max_output),
+                );
             }
             // 显示名（Go Decorate 的 Name 行）：厂商起了名（display_name /
             // name，非空且不等于 id）就用厂商的；没起名才认目录的。
@@ -146,15 +164,30 @@ impl Catalog {
                 }
                 None => {
                     if !preset.display_name.is_empty() {
-                        map.insert("display_name".into(), serde_json::json!(preset.display_name));
+                        map.insert(
+                            "display_name".into(),
+                            serde_json::json!(preset.display_name),
+                        );
                     }
                 }
             }
         }
         VendorRow {
-            context_window: if row.context_window == 0 { preset.context_window } else { row.context_window },
-            max_output: if row.max_output == 0 { preset.max_output } else { row.max_output },
-            images: if vendor_said_input { row.images } else { row.images || preset.images },
+            context_window: if row.context_window == 0 {
+                preset.context_window
+            } else {
+                row.context_window
+            },
+            max_output: if row.max_output == 0 {
+                preset.max_output
+            } else {
+                row.max_output
+            },
+            images: if vendor_said_input {
+                row.images
+            } else {
+                row.images || preset.images
+            },
             raw,
             ..row
         }
@@ -166,7 +199,9 @@ impl Catalog {
         // 同款）：放在最前，缓存命中/厂商退避的早退路径也照过——厂商挂了
         // 也要补目录。纯状态检查 + 单飞后台补抓，绝不阻塞本线程。
         super::presets::ensure_fresh();
-        let base = provider.chat_base().ok_or_else(|| format!("{} has no endpoint configured", provider.id))?;
+        let base = provider
+            .chat_base()
+            .ok_or_else(|| format!("{} has no endpoint configured", provider.id))?;
         let url = format!("{}/models", base);
         if !force {
             if let Ok(cache) = self.cache.lock() {
@@ -206,7 +241,11 @@ impl Catalog {
                 // 厂商一时抓不到：有旧清单就继续用旧的（magpie 同款——
                 // 跨用菜单不该因为一次网络抖动整家消失），没有才报错。
                 let stale = self.stale_rows(&provider.id);
-                if stale.is_empty() { Err(e) } else { Ok(stale) }
+                if stale.is_empty() {
+                    Err(e)
+                } else {
+                    Ok(stale)
+                }
             }
         }
     }
@@ -233,22 +272,36 @@ impl Catalog {
             .call()
             .map_err(|e| format!("{}: {}", provider.id, e))?;
         let body = response.into_string().map_err(|e| e.to_string())?;
-        Ok(parse_rows(&body).into_iter().map(Self::with_preset_fallback).collect())
+        Ok(parse_rows(&body)
+            .into_iter()
+            .map(Self::with_preset_fallback)
+            .collect())
     }
 
     /// 整串 `provider/model` 是不是该来源**已知**的模型（钉死清单或缓存里
     /// 有）——组成员后缀拆分用（`qwen:7b` 不是 `qwen` 加强度）。纯内存，
     /// 绝不联网。
     pub fn knows(&self, providers: &[Provider], whole: &str) -> bool {
-        let Some((pid, model)) = whole.split_once('/') else { return false };
-        let Some(provider) = providers.iter().find(|p| p.id == pid) else { return false };
-        if provider.models.as_ref().is_some_and(|m| m.iter().any(|x| x == model)) {
+        let Some((pid, model)) = whole.split_once('/') else {
+            return false;
+        };
+        let Some(provider) = providers.iter().find(|p| p.id == pid) else {
+            return false;
+        };
+        if provider
+            .models
+            .as_ref()
+            .is_some_and(|m| m.iter().any(|x| x == model))
+        {
             return true;
         }
         self.cache
             .lock()
             .ok()
-            .and_then(|c| c.get(pid).map(|(_, rows)| rows.iter().any(|r| r.id == model)))
+            .and_then(|c| {
+                c.get(pid)
+                    .map(|(_, rows)| rows.iter().any(|r| r.id == model))
+            })
             .unwrap_or(false)
     }
 
@@ -259,9 +312,18 @@ impl Catalog {
             Ok(c) => c,
             Err(_) => return Vec::new(),
         };
-        let Some((_, rows)) = cache.get(provider_id) else { return Vec::new() };
-        let Some(row) = rows.iter().find(|r| r.id == model) else { return Vec::new() };
-        for key in ["reasoning_levels", "supported_reasoning_levels", "reasoning_efforts", "efforts"] {
+        let Some((_, rows)) = cache.get(provider_id) else {
+            return Vec::new();
+        };
+        let Some(row) = rows.iter().find(|r| r.id == model) else {
+            return Vec::new();
+        };
+        for key in [
+            "reasoning_levels",
+            "supported_reasoning_levels",
+            "reasoning_efforts",
+            "efforts",
+        ] {
             if let Some(list) = row.raw.get(key).and_then(|v| v.as_array()) {
                 let words: Vec<String> = list
                     .iter()
@@ -324,25 +386,21 @@ impl Catalog {
             Some(pinned) => pinned
                 .iter()
                 .filter_map(|want| {
-                    fetched
-                        .iter()
-                        .find(|r| &r.id == want)
-                        .cloned()
-                        .or_else(|| {
-                            let mut row = VendorRow {
-                                id: want.clone(),
-                                context_window: 0,
-                                max_output: 0,
-                                images: false,
-                                raw: serde_json::json!({ "id": want }),
-                            };
-                            if let Some(p) = super::presets::lookup(want) {
-                                row.context_window = p.context_window;
-                                row.max_output = p.max_output;
-                                row.images = p.images;
-                            }
-                            Some(row)
-                        })
+                    fetched.iter().find(|r| &r.id == want).cloned().or_else(|| {
+                        let mut row = VendorRow {
+                            id: want.clone(),
+                            context_window: 0,
+                            max_output: 0,
+                            images: false,
+                            raw: serde_json::json!({ "id": want }),
+                        };
+                        if let Some(p) = super::presets::lookup(want) {
+                            row.context_window = p.context_window;
+                            row.max_output = p.max_output;
+                            row.images = p.images;
+                        }
+                        Some(row)
+                    })
                 })
                 .collect(),
         }
@@ -379,7 +437,9 @@ mod tests {
     }
 
     fn sandbox() -> Sandbox {
-        let lock = crate::engine_gateway::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let lock = crate::engine_gateway::TEST_SANDBOX_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         crate::engine_gateway::presets::reset_for_tests();
         let dir = std::env::temp_dir().join(format!(
             "marionette-engine-catalog-{}-{}",
@@ -389,7 +449,11 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("temp config dir");
         let prior_xdg = std::env::var("XDG_CONFIG_HOME").ok();
         std::env::set_var("XDG_CONFIG_HOME", &dir);
-        Sandbox { dir, prior_xdg, lock }
+        Sandbox {
+            dir,
+            prior_xdg,
+            lock,
+        }
     }
 
     /// models.dev 目录（真实形状的 zhipu 子集，数值照 2026-11-19 api.json
@@ -433,7 +497,11 @@ mod tests {
         assert_eq!(filled.context_window, 131072);
         assert_eq!(filled.max_output, 98304);
         assert!(!filled.images, "glm-4.5 是纯文本模型");
-        assert_eq!(filled.raw["context_window"].as_u64(), Some(131072), "raw 回填");
+        assert_eq!(
+            filled.raw["context_window"].as_u64(),
+            Some(131072),
+            "raw 回填"
+        );
         assert_eq!(filled.raw["max_output_tokens"].as_u64(), Some(98304));
         assert_eq!(filled.raw["display_name"].as_str(), Some("GLM-4.5"));
         // 视觉变体：厂商没说模态 → 目录说 image 就 image。
@@ -463,7 +531,11 @@ mod tests {
         assert_eq!(explicit.context_window, 4096);
         assert_eq!(explicit.max_output, 512);
         assert!(!explicit.images, "厂商明确 text-only，目录不得翻案");
-        assert_eq!(explicit.raw["context_window"].as_u64(), Some(4096), "厂商值原样，不回填");
+        assert_eq!(
+            explicit.raw["context_window"].as_u64(),
+            Some(4096),
+            "厂商值原样，不回填"
+        );
         // 厂商显式报了 image：目录说纯文本也不动它。
         let said_image = Catalog::with_preset_fallback(VendorRow {
             id: "glm-4.5".into(),
@@ -510,10 +582,14 @@ mod tests {
         let rows = parse_rows(body);
         assert_eq!(rows.len(), 2);
         assert!(
-            rows.iter().all(|r| r.context_window == 0 && r.max_output == 0),
+            rows.iter()
+                .all(|r| r.context_window == 0 && r.max_output == 0),
             "zhipu 行解析出来就是零元数据"
         );
-        let filled: Vec<VendorRow> = rows.into_iter().map(Catalog::with_preset_fallback).collect();
+        let filled: Vec<VendorRow> = rows
+            .into_iter()
+            .map(Catalog::with_preset_fallback)
+            .collect();
         assert_eq!(filled[0].context_window, 131072, "glm-4.5 由 presets 兜上");
         assert_eq!(filled[0].max_output, 98304);
         assert_eq!(filled[1].context_window, 0, "目录也没有 = 不知道，不编数");

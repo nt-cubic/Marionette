@@ -70,8 +70,9 @@ pub(crate) fn scrub_cow<'a>(on: bool, body: &'a [u8]) -> Result<Cow<'a, [u8]>, S
     if !on {
         return Ok(Cow::Borrowed(body));
     }
-    let text = std::str::from_utf8(body)
-        .map_err(|e| format!("redact: body is not valid UTF-8 ({e}); fails closed, nothing sent"))?;
+    let text = std::str::from_utf8(body).map_err(|e| {
+        format!("redact: body is not valid UTF-8 ({e}); fails closed, nothing sent")
+    })?;
     let mut hits = Vec::new();
     scan(text, &mut hits);
     if hits.is_empty() {
@@ -114,7 +115,9 @@ fn placeholder(kind: &str, value: &str) -> String {
     kind.hash(&mut h);
     let bits = h.finish();
     let alphabet = b"abcdefghijklmnopqrstuvwxyz234567";
-    let code: String = (0..8).map(|i| alphabet[((bits >> (5 * i)) & 31) as usize] as char).collect();
+    let code: String = (0..8)
+        .map(|i| alphabet[((bits >> (5 * i)) & 31) as usize] as char)
+        .collect();
     format!("{{{{{kind}_{code}}}}}")
 }
 
@@ -130,7 +133,8 @@ fn not_a_variable(v: &str) -> bool {
             return false;
         }
     }
-    !v.trim_matches(|c| matches!(c, '*' | 'x' | 'X' | '.')).is_empty()
+    !v.trim_matches(|c| matches!(c, '*' | 'x' | 'X' | '.'))
+        .is_empty()
 }
 
 /// notASlug（redact.go:525）：小写连字符词（页面地址 `sk-hynix-…`）不是钥匙；
@@ -141,7 +145,10 @@ fn not_a_slug(v: &str) -> bool {
         return true;
     }
     let body = v.strip_prefix("sk-").unwrap_or(v);
-    if body.bytes().all(|b| b == b'-' || b == b'_' || b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+    if body
+        .bytes()
+        .all(|b| b == b'-' || b == b'_' || b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
         return true;
     }
     v.split(['-', '_']).any(|w| w.len() >= 16)
@@ -184,7 +191,11 @@ fn header_value(v: &str) -> bool {
 
 /// luhn（redact.go:739）——顺带限定 15–19 位数字。
 fn luhn(v: &str) -> bool {
-    let ds: Vec<u32> = v.bytes().filter(|b| b.is_ascii_digit()).map(|b| u32::from(b - b'0')).collect();
+    let ds: Vec<u32> = v
+        .bytes()
+        .filter(|b| b.is_ascii_digit())
+        .map(|b| u32::from(b - b'0'))
+        .collect();
     if !(15..=19).contains(&ds.len()) {
         return false;
     }
@@ -225,20 +236,41 @@ fn chinese_id(v: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// localTLDs（redact.go:669）。
-const LOCAL_TLDS: [&str; 7] = ["local", "internal", "lan", "corp", "home", "intranet", "localdomain"];
+const LOCAL_TLDS: [&str; 7] = [
+    "local",
+    "internal",
+    "lan",
+    "corp",
+    "home",
+    "intranet",
+    "localdomain",
+];
 /// fileExt（redact.go:689）＋scaleExt（:704）：文件扩展名不是邮箱 TLD
 /// （`@2x.jpg` 是文件名；`.zip/.mov/.md/.map` 前带倍率也是）。
 const FILE_EXT: [&str; 50] = [
-    "jpg", "jpeg", "png", "gif", "webp", "svg", "heic", "heif", "avif", "bmp", "tif", "tiff", "ico", "icns", "pdf",
-    "svgz", "apng", "jxl", "psd", "eps", "lottie", "mp4", "m4v", "webm", "mkv", "avi", "mp3", "m4a", "wav", "ogg",
-    "flac", "aac", "ttf", "otf", "woff", "woff2", "eot", "json", "yaml", "yml", "toml", "xml", "txt", "csv", "tsv",
-    "log", "html", "htm", "css", "js",
+    "jpg", "jpeg", "png", "gif", "webp", "svg", "heic", "heif", "avif", "bmp", "tif", "tiff",
+    "ico", "icns", "pdf", "svgz", "apng", "jxl", "psd", "eps", "lottie", "mp4", "m4v", "webm",
+    "mkv", "avi", "mp3", "m4a", "wav", "ogg", "flac", "aac", "ttf", "otf", "woff", "woff2", "eot",
+    "json", "yaml", "yml", "toml", "xml", "txt", "csv", "tsv", "log", "html", "htm", "css", "js",
 ];
 const SCALE_EXT: [&str; 4] = ["zip", "mov", "md", "map"];
 /// docFiles（redact.go:661）：`xxx@AGENTS.md` 是提示词点名文件不是地址。
 const DOC_FILES: [&str; 15] = [
-    "agents.md", "claude.md", "gemini.md", "readme.md", "skill.md", "changelog.md", "contributing.md", "license.md",
-    "lessons.md", "todo.md", "copilot-instructions.md", "crush.md", "qwen.md", "iflow.md", "warp.md",
+    "agents.md",
+    "claude.md",
+    "gemini.md",
+    "readme.md",
+    "skill.md",
+    "changelog.md",
+    "contributing.md",
+    "license.md",
+    "lessons.md",
+    "todo.md",
+    "copilot-instructions.md",
+    "crush.md",
+    "qwen.md",
+    "iflow.md",
+    "warp.md",
 ];
 /// mailHost 的 linkerWords（redact.go:656）：`system@plt`、`puts@got.plt` 是反
 /// 汇编符号不是域名。
@@ -268,10 +300,20 @@ fn real_email(v: &str) -> bool {
     if DOC_FILES.contains(&host) || FILE_EXT.contains(&tld) {
         return false;
     }
-    if !LOCAL_TLDS.contains(&tld) && !(tld.len() >= 2 && tld.len() <= 63 && tld.bytes().all(|b| b.is_ascii_alphabetic())) {
+    if !LOCAL_TLDS.contains(&tld)
+        && !(tld.len() >= 2 && tld.len() <= 63 && tld.bytes().all(|b| b.is_ascii_alphabetic()))
+    {
         return false;
     }
-    for fake in ["example.com", "example.org", "example.net", "localhost", ".test", ".invalid", ".example"] {
+    for fake in [
+        "example.com",
+        "example.org",
+        "example.net",
+        "localhost",
+        ".test",
+        ".invalid",
+        ".example",
+    ] {
         let bare = fake.trim_start_matches('.');
         if host == bare || host.ends_with(fake) {
             return false;
@@ -287,7 +329,11 @@ fn mail_host(local: &str, host: &str) -> bool {
     }
     let mut linker = true;
     for label in host.split('.') {
-        if label.is_empty() || label.bytes().any(|b| b < 0x80 && b != b'-' && !b.is_ascii_alphanumeric()) {
+        if label.is_empty()
+            || label
+                .bytes()
+                .any(|b| b < 0x80 && b != b'-' && !b.is_ascii_alphanumeric())
+        {
             return false;
         }
         if !LINKER_WORDS.contains(&label) {
@@ -299,7 +345,9 @@ fn mail_host(local: &str, host: &str) -> bool {
 
 /// fileHost（redact.go:712）＋scaleExt 的倍率判定。
 fn file_host(host: &str) -> bool {
-    let Some(dot) = host.rfind('.') else { return false };
+    let Some(dot) = host.rfind('.') else {
+        return false;
+    };
     let ext = &host[dot + 1..];
     if FILE_EXT.contains(&ext) {
         return true;
@@ -308,7 +356,10 @@ fn file_host(host: &str) -> bool {
         // 倍率（2x、1.5x）＋扩展名 → 文件名；`ops@files.zip` 仍是地址
         let stem = &host[..dot];
         if let Some(x) = stem.strip_suffix('x') {
-            if !x.is_empty() && x.split('.').all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit())) {
+            if !x.is_empty()
+                && x.split('.')
+                    .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+            {
                 return true;
             }
         }
@@ -371,14 +422,47 @@ fn in_userinfo(s: &str, a: usize) -> bool {
 /// phoneWords / phoneMarks（phone.go:31/34）——fax 是电话词不是编号词
 /// （Go phoneWords 收尾的 fax，2026-11-18 收口时从 ID_WORDS 挪回原位）。
 const PHONE_WORDS: [&str; 14] = [
-    "phone", "phones", "mobile", "mobiles", "tel", "telephone", "cell", "cellphone", "contact", "contacts",
-    "whatsapp", "sms", "msisdn", "fax",
+    "phone",
+    "phones",
+    "mobile",
+    "mobiles",
+    "tel",
+    "telephone",
+    "cell",
+    "cellphone",
+    "contact",
+    "contacts",
+    "whatsapp",
+    "sms",
+    "msisdn",
+    "fax",
 ];
 const PHONE_MARKS: [&str; 6] = ["手机", "电话", "電話", "联系", "聯繫", "联络"];
 /// idWords（phone.go:37）：数字前面贴着这些词 = 编号不是手机号（词面 1:1）。
 const ID_WORDS: [&str; 23] = [
-    "order", "id", "uid", "no", "no.", "#", "number", "ticket", "invoice", "订单", "订单号", "单号", "编号", "流水号",
-    "工单", "工单号", "运单号", "快递单号", "订单编号", "交易号", "序号", "账单号", "id号",
+    "order",
+    "id",
+    "uid",
+    "no",
+    "no.",
+    "#",
+    "number",
+    "ticket",
+    "invoice",
+    "订单",
+    "订单号",
+    "单号",
+    "编号",
+    "流水号",
+    "工单",
+    "工单号",
+    "运单号",
+    "快递单号",
+    "订单编号",
+    "交易号",
+    "序号",
+    "账单号",
+    "id号",
 ];
 
 /// phoneAt（phone.go:41）：>11 位（+86/86 前缀）直接是；恰 11 位先看
@@ -391,7 +475,9 @@ fn phone_at(s: &str, a: usize, b: usize) -> bool {
         return true; // +86 / 86
     }
     if let Some((name, prev)) = field_name(s, a) {
-        return phone_name(name) || (!prev.is_empty() && phone_name(prev)) || name.eq_ignore_ascii_case("number");
+        return phone_name(name)
+            || (!prev.is_empty() && phone_name(prev))
+            || name.eq_ignore_ascii_case("number");
     }
     let bytes = s.as_bytes();
     if a > 0 && bytes[a - 1] == b'#' {
@@ -413,7 +499,9 @@ fn phone_at(s: &str, a: usize, b: usize) -> bool {
         }
     }
     for w in ID_WORDS {
-        let Some(rest) = before.strip_suffix(w) else { continue };
+        let Some(rest) = before.strip_suffix(w) else {
+            continue;
+        };
         // 整词：ASCII idWord 前面贴着 [a-z0-9_] 的是更长词的尾巴（recorder
         // 的 order）；中文 idWord 没有这条（Go 只对 w[0] < 0x80 查，phone.go:62）
         if !rest.is_empty() && w.as_bytes()[0] < 0x80 {
@@ -452,12 +540,18 @@ fn field_name<'a>(s: &'a str, a: usize) -> Option<(&'a str, &'a str)> {
         while lo < i && !s.is_char_boundary(lo) {
             lo += 1;
         }
-        let Some(k) = s[lo..i - 1].rfind('<') else { return None };
+        let Some(k) = s[lo..i - 1].rfind('<') else {
+            return None;
+        };
         let mut tag = &s[lo + k + 1..i - 1];
         if let Some(sp) = tag.find([' ', '\t']) {
             tag = &tag[..sp];
         }
-        if tag.is_empty() || !tag.bytes().all(|c| is_alnum(c) || matches!(c, b'_' | b'.' | b':' | b'-')) {
+        if tag.is_empty()
+            || !tag
+                .bytes()
+                .all(|c| is_alnum(c) || matches!(c, b'_' | b'.' | b':' | b'-'))
+        {
             return None;
         }
         return Some((tag, ""));
@@ -496,7 +590,10 @@ fn field_name<'a>(s: &'a str, a: usize) -> Option<(&'a str, &'a str)> {
 /// phoneName（phone.go:79）：字段名是电话的——词表里有它的词
 /// （phone_number、mobileNo），或带 phoneMarks（手机号）。
 fn phone_name(name: &str) -> bool {
-    if name_words(name).iter().any(|w| PHONE_WORDS.contains(&w.as_str())) {
+    if name_words(name)
+        .iter()
+        .any(|w| PHONE_WORDS.contains(&w.as_str()))
+    {
         return true;
     }
     PHONE_MARKS.iter().any(|m| name.contains(m))
@@ -537,7 +634,9 @@ fn name_words(name: &str) -> Vec<String> {
 fn name_start(s: &str, i: usize) -> usize {
     let mut j = i;
     while j > 0 {
-        let Some(c) = s[..j].chars().next_back() else { break };
+        let Some(c) = s[..j].chars().next_back() else {
+            break;
+        };
         let ok = (c.is_ascii() && (is_alnum(c as u8) || matches!(c as u8, b'_' | b'.' | b'-')))
             || ('\u{4e00}'..='\u{9fff}').contains(&c);
         if !ok {
@@ -564,12 +663,16 @@ fn hidden_in_url(s: &str, pw_start: usize, pw_end: usize) -> bool {
     if pw_start == 0 || s.as_bytes()[pw_start - 1] != b':' {
         return true;
     }
-    let Some(i) = s[..pw_start - 1].rfind("//") else { return true };
+    let Some(i) = s[..pw_start - 1].rfind("//") else {
+        return true;
+    };
     if &s[i + 2..pw_start - 1] == pw {
         return false; // 它就是用户名
     }
     let rest = &s[pw_end + 1..]; // @ 之后的 host 与 path
-    let end = rest.find(|c: char| " \t\r\n\"'<>`\\)]}".contains(c)).unwrap_or(rest.len());
+    let end = rest
+        .find(|c: char| " \t\r\n\"'<>`\\)]}".contains(c))
+        .unwrap_or(rest.len());
     for part in rest[..end].split(|c: char| "/:.?#&=;,@".contains(c)) {
         if part == pw {
             return false;
@@ -697,7 +800,9 @@ fn scan(s: &str, out: &mut Vec<Hit>) {
 fn scan_private_key(s: &str, out: &mut Vec<Hit>) {
     each_hit(s, "-----BEGIN ", |s, i| {
         let rest = &s[i + 11..];
-        let Some(rel) = rest.find("-----") else { return };
+        let Some(rel) = rest.find("-----") else {
+            return;
+        };
         let label = &rest[..rel];
         if !private_key_label_ok(label) {
             return;
@@ -706,7 +811,11 @@ fn scan_private_key(s: &str, out: &mut Vec<Hit>) {
         let after = &rest[rel + 5..];
         if let Some(j) = after.find(&end_mark).filter(|j| *j >= 1) {
             let end = i + 11 + rel + 5 + j + end_mark.len();
-            out.push(Hit { start: i, end, kind: "PRIVATE_KEY" });
+            out.push(Hit {
+                start: i,
+                end,
+                kind: "PRIVATE_KEY",
+            });
         }
     });
 }
@@ -719,9 +828,11 @@ fn private_key_label_ok(label: &str) -> bool {
     if words.len() < 2 || words[words.len() - 1] != "KEY" || words[words.len() - 2] != "PRIVATE" {
         return false;
     }
-    words[..words.len() - 2]
-        .iter()
-        .all(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))
+    words[..words.len() - 2].iter().all(|w| {
+        !w.is_empty()
+            && w.bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+    })
 }
 
 /// `sk-(?:ant-|proj-|or-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}`（ok notASlug）。
@@ -736,7 +847,11 @@ fn scan_sk_key(s: &str, out: &mut Vec<Hit>) {
             }
         }
         if body.len() >= 20 && not_a_slug(&s[i..end]) && bound_ok(s, i, end, is_token) {
-            out.push(Hit { start: i, end, kind: "API_KEY" });
+            out.push(Hit {
+                start: i,
+                end,
+                kind: "API_KEY",
+            });
         }
     });
 }
@@ -754,7 +869,11 @@ fn scan_relay_sk(s: &str, out: &mut Vec<Hit>) {
         }
         let end = run_end(s, i + 4, is_token);
         if end - (i + 4) >= 20 && secret_value(&s[a..end]) && bound_ok(s, a, end, is_token) {
-            out.push(Hit { start: a, end, kind: "API_KEY" });
+            out.push(Hit {
+                start: a,
+                end,
+                kind: "API_KEY",
+            });
         }
     });
 }
@@ -764,7 +883,11 @@ fn scan_ark(s: &str, out: &mut Vec<Hit>) {
     each_hit(s, "ark-", |s, i| {
         let end = run_end(s, i + 4, is_token);
         if end - (i + 4) >= 16 && secret_value(&s[i..end]) && bound_ok(s, i, end, is_token) {
-            out.push(Hit { start: i, end, kind: "API_KEY" });
+            out.push(Hit {
+                start: i,
+                end,
+                kind: "API_KEY",
+            });
         }
     });
 }
@@ -780,20 +903,32 @@ fn scan_gh_pat(s: &str, out: &mut Vec<Hit>) {
             }
             let end = run_end(s, i + 4, is_alnum);
             if end - (i + 4) >= 30 && bound_ok(s, i, end, is_token) {
-                out.push(Hit { start: i, end, kind: "API_KEY" });
+                out.push(Hit {
+                    start: i,
+                    end,
+                    kind: "API_KEY",
+                });
             }
         });
     }
     each_hit(s, "github_pat_", |s, i| {
         let end = run_end(s, i + 11, |c| c.is_ascii_alphanumeric() || c == b'_');
         if end - (i + 11) >= 40 && bound_ok(s, i, end, is_token) {
-            out.push(Hit { start: i, end, kind: "API_KEY" });
+            out.push(Hit {
+                start: i,
+                end,
+                kind: "API_KEY",
+            });
         }
     });
     each_hit(s, "glpat-", |s, i| {
         let end = run_end(s, i + 6, is_token);
         if end - (i + 6) >= 20 && bound_ok(s, i, end, is_token) {
-            out.push(Hit { start: i, end, kind: "API_KEY" });
+            out.push(Hit {
+                start: i,
+                end,
+                kind: "API_KEY",
+            });
         }
     });
 }
@@ -806,7 +941,11 @@ fn scan_vendor_prefixed(s: &str, out: &mut Vec<Hit>) {
     each_hit(s, "AIza", |s, i| {
         let end = run_end(s, i + 4, is_token);
         if end - (i + 4) >= 35 && bound_ok(s, i, end, is_token) {
-            out.push(Hit { start: i, end, kind: "API_KEY" });
+            out.push(Hit {
+                start: i,
+                end,
+                kind: "API_KEY",
+            });
         }
     });
     for p in [b'a', b'b', b'p', b'o', b's', b'r'] {
@@ -817,7 +956,11 @@ fn scan_vendor_prefixed(s: &str, out: &mut Vec<Hit>) {
             }
             let end = run_end(s, i + 5, |c| c.is_ascii_alphanumeric() || c == b'-');
             if end - (i + 5) >= 10 && bound_ok(s, i, end, is_token) {
-                out.push(Hit { start: i, end, kind: "API_KEY" });
+                out.push(Hit {
+                    start: i,
+                    end,
+                    kind: "API_KEY",
+                });
             }
         });
     }
@@ -825,7 +968,11 @@ fn scan_vendor_prefixed(s: &str, out: &mut Vec<Hit>) {
         each_hit(s, &format!("{head}_live_"), |s, i| {
             let end = run_end(s, i + 8, is_alnum);
             if end - (i + 8) >= 20 && bound_ok(s, i, end, is_token) {
-                out.push(Hit { start: i, end, kind: "API_KEY" });
+                out.push(Hit {
+                    start: i,
+                    end,
+                    kind: "API_KEY",
+                });
             }
         });
     }
@@ -839,7 +986,11 @@ fn scan_vendor_prefixed(s: &str, out: &mut Vec<Hit>) {
         each_hit(s, needle, |s, i| {
             let end = run_end(s, i + at, class);
             if end - (i + at) >= min && bound_ok(s, i, end, is_token) {
-                out.push(Hit { start: i, end, kind: "API_KEY" });
+                out.push(Hit {
+                    start: i,
+                    end,
+                    kind: "API_KEY",
+                });
             }
         });
     }
@@ -847,7 +998,11 @@ fn scan_vendor_prefixed(s: &str, out: &mut Vec<Hit>) {
         let hex_lower = |c: u8| c.is_ascii_digit() || (b'a'..=b'f').contains(&c);
         let end = run_end(s, i + 7, hex_lower);
         if end - (i + 7) == 64 && bound_ok(s, i, end, is_token) {
-            out.push(Hit { start: i, end, kind: "API_KEY" });
+            out.push(Hit {
+                start: i,
+                end,
+                kind: "API_KEY",
+            });
         }
     });
     each_hit(s, "SG.", |s, i| {
@@ -857,7 +1012,11 @@ fn scan_vendor_prefixed(s: &str, out: &mut Vec<Hit>) {
         }
         let end = run_end(s, mid + 1, is_token);
         if end - (mid + 1) == 43 && bound_ok(s, i, end, is_token) {
-            out.push(Hit { start: i, end, kind: "API_KEY" });
+            out.push(Hit {
+                start: i,
+                end,
+                kind: "API_KEY",
+            });
         }
     });
 }
@@ -869,7 +1028,11 @@ fn scan_aws(s: &str, out: &mut Vec<Hit>) {
         each_hit(s, head, |s, i| {
             let end = run_end(s, i + 4, upper);
             if end - (i + 4) >= 16 && bound_ok(s, i, end, is_alnum) {
-                out.push(Hit { start: i, end, kind: "API_KEY" });
+                out.push(Hit {
+                    start: i,
+                    end,
+                    kind: "API_KEY",
+                });
             }
         });
     }
@@ -882,7 +1045,11 @@ fn scan_cf(s: &str, out: &mut Vec<Hit>) {
         each_hit(s, needle, |s, i| {
             let end = run_end(s, i + needle.len(), is_token);
             if end - (i + needle.len()) >= 40 && bound_ok(s, i, end, is_token) {
-                out.push(Hit { start: i, end, kind: "API_KEY" });
+                out.push(Hit {
+                    start: i,
+                    end,
+                    kind: "API_KEY",
+                });
             }
         });
     }
@@ -893,7 +1060,11 @@ fn scan_cf(s: &str, out: &mut Vec<Hit>) {
         }
         let end = run_end(s, mid + 1, is_alnum);
         if end - (mid + 1) >= 40 && bound_ok(s, i, end, is_token) {
-            out.push(Hit { start: i, end, kind: "API_KEY" });
+            out.push(Hit {
+                start: i,
+                end,
+                kind: "API_KEY",
+            });
         }
     });
 }
@@ -911,7 +1082,11 @@ fn scan_tunnel_token(s: &str, out: &mut Vec<Hit>) {
                 end += 1;
             }
             if bound_ok(s, i, end, is_token) {
-                out.push(Hit { start: i, end, kind: "TOKEN" });
+                out.push(Hit {
+                    start: i,
+                    end,
+                    kind: "TOKEN",
+                });
             }
         }
     });
@@ -932,7 +1107,11 @@ fn scan_jwt(s: &str, out: &mut Vec<Hit>) {
         }
         let end = run_end(s, p2 + 1, b64u);
         if end - (p2 + 1) >= 8 && bound_ok(s, i, end, is_token) {
-            out.push(Hit { start: i, end, kind: "TOKEN" });
+            out.push(Hit {
+                start: i,
+                end,
+                kind: "TOKEN",
+            });
         }
     });
 }
@@ -945,17 +1124,28 @@ fn scan_x_auth_key(s: &str, out: &mut Vec<Hit>) {
     let value_class = |c: u8| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-');
     each_hit_fold(s, "x-auth-", |s, i| {
         let mut at = i + 7;
-        if s.get(at..at + 13).is_some_and(|seg| seg.eq_ignore_ascii_case("user-service-")) {
+        if s.get(at..at + 13)
+            .is_some_and(|seg| seg.eq_ignore_ascii_case("user-service-"))
+        {
             at += 13;
         }
-        if !s.get(at..at + 3).is_some_and(|k| k.eq_ignore_ascii_case("key")) {
+        if !s
+            .get(at..at + 3)
+            .is_some_and(|k| k.eq_ignore_ascii_case("key"))
+        {
             return;
         }
         at += 3;
-        let Some(j) = field_value_start(s, skip_quote(s, at)) else { return };
+        let Some(j) = field_value_start(s, skip_quote(s, at)) else {
+            return;
+        };
         let end = run_end(s, j, value_class);
         if end - j >= 16 && not_a_variable(&s[j..end]) {
-            out.push(Hit { start: j, end, kind: "SECRET" });
+            out.push(Hit {
+                start: j,
+                end,
+                kind: "SECRET",
+            });
         }
     });
 }
@@ -968,7 +1158,9 @@ fn scan_url_password(s: &str, out: &mut Vec<Hit>) {
     each_hit(s, "://", |s, i| {
         let bytes = s.as_bytes();
         let mut a = i;
-        while a > 0 && (bytes[a - 1].is_ascii_alphanumeric() || matches!(bytes[a - 1], b'+' | b'.' | b'-')) {
+        while a > 0
+            && (bytes[a - 1].is_ascii_alphanumeric() || matches!(bytes[a - 1], b'+' | b'.' | b'-'))
+        {
             a -= 1;
         }
         if a == i || !bytes[a].is_ascii_alphabetic() {
@@ -990,7 +1182,11 @@ fn scan_url_password(s: &str, out: &mut Vec<Hit>) {
             return;
         }
         if k - pw_start >= 3 && not_a_variable(&s[pw_start..k]) && hidden_in_url(s, pw_start, k) {
-            out.push(Hit { start: pw_start, end: k, kind: "PASSWORD" });
+            out.push(Hit {
+                start: pw_start,
+                end: k,
+                kind: "PASSWORD",
+            });
         }
     });
 }
@@ -1001,8 +1197,23 @@ fn scan_url_password(s: &str, out: &mut Vec<Hit>) {
 /// 排除）没搬。
 fn scan_secret_fields(s: &str, out: &mut Vec<Hit>) {
     const NAMES: [&str; 18] = [
-        "password", "passwd", "passphrase", "secret", "token", "api_key", "apikey", "api-key", "access_key",
-        "accesskey", "access-key", "private_key", "privatekey", "private-key", "priv_key", "privkey", "priv-key",
+        "password",
+        "passwd",
+        "passphrase",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+        "api-key",
+        "access_key",
+        "accesskey",
+        "access-key",
+        "private_key",
+        "privatekey",
+        "private-key",
+        "priv_key",
+        "privkey",
+        "priv-key",
         "credential",
     ];
     for name in NAMES {
@@ -1017,10 +1228,16 @@ fn scan_secret_fields(s: &str, out: &mut Vec<Hit>) {
             while b < bytes.len() && is_field_name(bytes[b]) {
                 b += 1;
             }
-            let Some(j) = field_value_start(s, b) else { return };
+            let Some(j) = field_value_start(s, b) else {
+                return;
+            };
             let end = run_end(s, j, is_secret_ch);
             if end - j >= 8 && secret_value(&s[j..end]) {
-                out.push(Hit { start: j, end, kind: "SECRET" });
+                out.push(Hit {
+                    start: j,
+                    end,
+                    kind: "SECRET",
+                });
             }
         });
     }
@@ -1038,10 +1255,16 @@ fn scan_env_key_pass(s: &str, out: &mut Vec<Hit>) {
             while a > 0 && is_field_name(bytes[a - 1]) {
                 a -= 1;
             }
-            let Some(j) = field_value_start(s, i + suffix.len()) else { return };
+            let Some(j) = field_value_start(s, i + suffix.len()) else {
+                return;
+            };
             let end = run_end(s, j, is_secret_ch);
             if end - j >= 8 && secret_value(&s[j..end]) {
-                out.push(Hit { start: j, end, kind: "SECRET" });
+                out.push(Hit {
+                    start: j,
+                    end,
+                    kind: "SECRET",
+                });
             }
         });
     }
@@ -1076,7 +1299,11 @@ fn scan_header_lines(s: &str, out: &mut Vec<Hit>) {
             // (\S[^\r\n]{7,})：非空白起头、总长 ≥8（行内已无换行）
             if value.len() >= 8 && header_value(value) {
                 let start = offset + lead + head.len() + j;
-                out.push(Hit { start, end: start + value.len(), kind: "SECRET" });
+                out.push(Hit {
+                    start,
+                    end: start + value.len(),
+                    kind: "SECRET",
+                });
             }
         }
         offset += line.len() + 1;
@@ -1092,10 +1319,16 @@ fn scan_bare_key(s: &str, out: &mut Vec<Hit>) {
         if i > 0 && is_field_name(bytes[i - 1]) {
             return; // 前面贴着 ident 字符 → 不是裸 key（sort_key 一类）
         }
-        let Some(j) = field_value_start(s, i + 3) else { return };
+        let Some(j) = field_value_start(s, i + 3) else {
+            return;
+        };
         let end = run_end(s, j, is_secret_ch);
         if end - j >= 16 && secret_value(&s[j..end]) {
-            out.push(Hit { start: j, end, kind: "SECRET" });
+            out.push(Hit {
+                start: j,
+                end,
+                kind: "SECRET",
+            });
         }
     });
 }
@@ -1134,7 +1367,11 @@ fn scan_email(s: &str, out: &mut Vec<Hit>) {
             return;
         }
         if bound_ok(s, a, e, bound) && real_email(&s[a..e]) && email_at(s, a, e) {
-            out.push(Hit { start: a, end: e, kind: "EMAIL" });
+            out.push(Hit {
+                start: a,
+                end: e,
+                kind: "EMAIL",
+            });
         }
     });
 }
@@ -1149,7 +1386,11 @@ fn scan_id_card(s: &str, out: &mut Vec<Hit>) {
         if (b'1'..=b'9').contains(&bytes[i]) {
             let end = run_end(s, i, |c| c.is_ascii_digit() || c == b'X' || c == b'x');
             if end - i >= 18 && chinese_id(&s[i..i + 18]) && bound_ok(s, i, i + 18, is_alnum) {
-                out.push(Hit { start: i, end: i + 18, kind: "ID_CARD" });
+                out.push(Hit {
+                    start: i,
+                    end: i + 18,
+                    kind: "ID_CARD",
+                });
             }
         }
         i += 1;
@@ -1162,7 +1403,10 @@ fn scan_phone(s: &str, out: &mut Vec<Hit>) {
     let mut i = 0usize;
     while i < bytes.len() {
         let b = bytes[i];
-        if b == b'+' || b == b'8' || (b == b'1' && bytes.get(i + 1).is_some_and(|c| (b'3'..=b'9').contains(c))) {
+        if b == b'+'
+            || b == b'8'
+            || (b == b'1' && bytes.get(i + 1).is_some_and(|c| (b'3'..=b'9').contains(c)))
+        {
             let mut j = i;
             if bytes[j] == b'+' {
                 j += 1;
@@ -1173,10 +1417,16 @@ fn scan_phone(s: &str, out: &mut Vec<Hit>) {
                     j += 1;
                 }
             }
-            if bytes.get(j) == Some(&b'1') && bytes.get(j + 1).is_some_and(|c| (b'3'..=b'9').contains(c)) {
+            if bytes.get(j) == Some(&b'1')
+                && bytes.get(j + 1).is_some_and(|c| (b'3'..=b'9').contains(c))
+            {
                 let k = run_end(s, j + 2, is_alnum);
                 if k - j == 11 && bound_ok(s, i, k, is_alnum) && phone_at(s, i, k) {
-                    out.push(Hit { start: i, end: k, kind: "PHONE" });
+                    out.push(Hit {
+                        start: i,
+                        end: k,
+                        kind: "PHONE",
+                    });
                 }
             }
         }
@@ -1203,7 +1453,9 @@ fn scan_bank_card(s: &str, out: &mut Vec<Hit>) {
                     break;
                 }
                 groups.push((start, j));
-                if matches!(bytes.get(j), Some(b' ') | Some(b'-')) && bytes.get(j + 1).is_some_and(|c| c.is_ascii_digit()) {
+                if matches!(bytes.get(j), Some(b' ') | Some(b'-'))
+                    && bytes.get(j + 1).is_some_and(|c| c.is_ascii_digit())
+                {
                     j += 1; // 跳过分隔符，下一组从数字起
                 } else {
                     break;
@@ -1214,7 +1466,11 @@ fn scan_bank_card(s: &str, out: &mut Vec<Hit>) {
             while take > 0 {
                 let span_end = groups[take - 1].1;
                 if luhn(&s[i..span_end]) && bound_ok(s, i, span_end, is_alnum) {
-                    out.push(Hit { start: i, end: span_end, kind: "BANK_CARD" });
+                    out.push(Hit {
+                        start: i,
+                        end: span_end,
+                        kind: "BANK_CARD",
+                    });
                     matched_to = Some(span_end);
                     break;
                 }
@@ -1277,9 +1533,15 @@ mod tests {
             .collect();
         assert_eq!(ph.len(), 2, "两处都换到了：{out}");
         assert_eq!(ph[0], ph[1], "同一值同一占位符：{out}");
-        let code = ph[0].trim_start_matches("{{API_KEY_").trim_end_matches("}}");
+        let code = ph[0]
+            .trim_start_matches("{{API_KEY_")
+            .trim_end_matches("}}");
         assert_eq!(code.len(), 8, "{}", ph[0]);
-        assert!(code.chars().all(|c| c.is_ascii_lowercase() || ('2'..='7').contains(&c)), "{code}");
+        assert!(
+            code.chars()
+                .all(|c| c.is_ascii_lowercase() || ('2'..='7').contains(&c)),
+            "{code}"
+        );
     }
 
     #[test]
@@ -1301,7 +1563,10 @@ mod tests {
             "AKIAIOSFODNN7EXAMPLE",
             "ASIAIOSFODNN7EXAMPLE",
             concat!("ghp_", "AbCdEf0123456789abcdefghij012345"),
-            concat!("github_pat_", "AbCdEf0123456789abcdefghij0123456789ABCDEFGH"),
+            concat!(
+                "github_pat_",
+                "AbCdEf0123456789abcdefghij0123456789ABCDEFGH"
+            ),
             concat!("xoxb-", "1234567890abcdef-AbCd"),
             // 拆开写：GitHub push protection 会把连续字面量当 Stripe live key
             // （它是测试夹具；concat! 编译期拼回同一字符串）。
@@ -1312,9 +1577,18 @@ mod tests {
             concat!("gsk_", "AbCdEf0123456789abcdefghij0123456789abcd"),
             concat!("xai-", "AbCdEf0123456789abcdefghij0123456789abcd"),
             concat!("npm_", "AbCdEf0123456789abcdefghij0123456789ab"),
-            concat!("pypi-", "AbCdEf0123456789abcdefghij0123456789abcdefghij01234567"),
-            concat!("dop_v1_", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
-            concat!("SG.", "abcdefghij012345678901.abcdEf0123456789abcdefghij0123456789abcdefg"),
+            concat!(
+                "pypi-",
+                "AbCdEf0123456789abcdefghij0123456789abcdefghij01234567"
+            ),
+            concat!(
+                "dop_v1_",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            ),
+            concat!(
+                "SG.",
+                "abcdefghij012345678901.abcdEf0123456789abcdefghij0123456789abcdefg"
+            ),
         ] {
             let body = format!(r#"{{"k":"{k}"}}"#);
             let out = String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap();
@@ -1325,7 +1599,13 @@ mod tests {
 
     #[test]
     fn short_or_wrong_vendor_keys_pass() {
-        for k in ["AKIAIOSFODNN7EXAMP", "AIzaTooShort", "ghp_short", "dop_v1_0123456789abcdef", "hf_short"] {
+        for k in [
+            "AKIAIOSFODNN7EXAMP",
+            "AIzaTooShort",
+            "ghp_short",
+            "dop_v1_0123456789abcdef",
+            "hf_short",
+        ] {
             let body = format!("value {k} end");
             let out = String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap();
             assert_eq!(out, body, "{k}");
@@ -1358,7 +1638,10 @@ mod tests {
         // 两段的不是
         let two = "eyJhbGciOiJq.eyJzdWIiOiIxMjM0";
         let body = format!("value {two} end");
-        assert_eq!(String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap(), body);
+        assert_eq!(
+            String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap(),
+            body
+        );
     }
 
     #[test]
@@ -1370,10 +1653,16 @@ mod tests {
         assert!(out.contains("{{SECRET_"), "{out}");
         // 散文开头不算（headerValue：一个词且全字母）
         let prose = "Authorization: the user must sign in first";
-        assert_eq!(String::from_utf8(scrub_with(true, prose.as_bytes()).unwrap()).unwrap(), prose);
+        assert_eq!(
+            String::from_utf8(scrub_with(true, prose.as_bytes()).unwrap()).unwrap(),
+            prose
+        );
         // 变量占位不算
         let var = "Authorization: Bearer ${TOKEN}";
-        assert_eq!(String::from_utf8(scrub_with(true, var.as_bytes()).unwrap()).unwrap(), var);
+        assert_eq!(
+            String::from_utf8(scrub_with(true, var.as_bytes()).unwrap()).unwrap(),
+            var
+        );
         // CRLF 行尾也认
         let body = "Authorization: Bearer AbCdEf12345678\r\nX-Other: 1";
         let out = String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap();
@@ -1397,7 +1686,10 @@ mod tests {
         assert!(!out.contains("abcd1234efgh5678"), "{out}");
         // 名字后面不是 [:=] 的不算；纯单词值不算（secretValue 要字母数字都有）
         let body = r#"{"note":"password is hunter2 here"}"#;
-        assert_eq!(String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap(), body);
+        assert_eq!(
+            String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap(),
+            body
+        );
     }
 
     #[test]
@@ -1448,15 +1740,24 @@ mod tests {
         assert_eq!(out, body);
         // example 域 / localhost / 保留尾
         for body in ["a@example.com", "ops@files.localhost", "x@y.test"] {
-            assert_eq!(String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap(), body);
+            assert_eq!(
+                String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap(),
+                body
+            );
         }
         // 文件名形态（@2x.jpg / @AGENTS.md / 带倍率的 @1.5x.mov）
         for body in ["icon@2x.jpg", "prompt@AGENTS.md", "intro@1.5x.mov"] {
-            assert_eq!(String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap(), body);
+            assert_eq!(
+                String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap(),
+                body
+            );
         }
         // 链接器符号
         let body = "system@plt calls puts@got.plt";
-        assert_eq!(String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap(), body);
+        assert_eq!(
+            String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap(),
+            body
+        );
         // URL userinfo 里的不是邮箱（redis://bob@… 只有用户名没有密码）
         let body = "redis://bob@redis.example.com:6379";
         let out = String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap();
@@ -1478,7 +1779,10 @@ mod tests {
         // 校验位错的不动
         let bad = "110105194912310021";
         let body = format!("id card {bad} here");
-        assert_eq!(String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap(), body);
+        assert_eq!(
+            String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap(),
+            body
+        );
     }
 
     #[test]
@@ -1489,8 +1793,16 @@ mod tests {
         assert!(out.contains("{{PHONE_"), "{out}");
         assert!(!out.contains("13800138000"), "{out}");
         // 编号形态不是
-        for body in ["order 13800138000", "订单号 13800138000", "#13800138000", "id: 13800138000"] {
-            assert_eq!(String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap(), body);
+        for body in [
+            "order 13800138000",
+            "订单号 13800138000",
+            "#13800138000",
+            "id: 13800138000",
+        ] {
+            assert_eq!(
+                String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap(),
+                body
+            );
         }
         // phone no. / 电话 前缀仍是电话
         for body in ["phone no. 13800138000", "电话 13800138000"] {
@@ -1503,7 +1815,10 @@ mod tests {
         assert!(out.contains("{{PHONE_"), "{out}");
         // 更长的数字串（时间戳）不是——bound 挡
         let body = "ts 1380013800012345 here";
-        assert_eq!(String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap(), body);
+        assert_eq!(
+            String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap(),
+            body
+        );
     }
 
     #[test]
@@ -1518,7 +1833,10 @@ mod tests {
             r#"{"order_id": 13800138000}"#,
             "<uid>13800138000</uid>",
         ] {
-            assert_eq!(String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap(), body);
+            assert_eq!(
+                String::from_utf8(scrub_with(true, body.as_bytes()).unwrap()).unwrap(),
+                body
+            );
         }
         // number: 字段（EqualFold 特例，phone.go:46）是电话；长 CJK 句子取
         // 尾 6 字命名（我的手机号是：…，phone.go:137）

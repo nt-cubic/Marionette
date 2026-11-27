@@ -38,11 +38,18 @@ const ZCODE_APP_VERSION: &str = "3.14.3";
 pub(super) enum Kind {
     /// 智谱 / Z.ai：host 是 open.bigmodel.cn 或 api.z.ai；coding = base 落在
     /// `/api/coding/` 上（是套餐而不只是厂商）。
-    Zhipu { host: String, coding: bool },
+    Zhipu {
+        host: String,
+        coding: bool,
+    },
     OpenCodeGo,
-    Kimi { url: String },
+    Kimi {
+        url: String,
+    },
     CommandCode,
-    MiniMax { host: String },
+    MiniMax {
+        host: String,
+    },
     Ollama,
     Mistral,
 }
@@ -57,7 +64,12 @@ pub(super) struct Read {
 
 impl Read {
     fn new(plan: &str, windows: Vec<Win>) -> Read {
-        Read { plan: plan.to_string(), windows, until: None, renew: String::new() }
+        Read {
+            plan: plan.to_string(),
+            windows,
+            until: None,
+            renew: String::new(),
+        }
     }
 }
 
@@ -113,16 +125,23 @@ pub(super) fn plan_source_of(p: &Provider) -> Option<Kind> {
         }
         match host_of(base).as_str() {
             h @ ("open.bigmodel.cn" | "api.z.ai") => {
-                return Some(Kind::Zhipu { host: h.to_string(), coding })
+                return Some(Kind::Zhipu {
+                    host: h.to_string(),
+                    coding,
+                })
             }
             "api.kimi.com" | "api.kimi.ai" => {
                 if base.contains("/coding") {
-                    return Some(Kind::Kimi { url: kimi_usage_url(base) });
+                    return Some(Kind::Kimi {
+                        url: kimi_usage_url(base),
+                    });
                 }
             }
             "api.commandcode.ai" => return Some(Kind::CommandCode),
             h @ ("api.minimaxi.com" | "api.minimax.cn" | "api.minimax.io") => {
-                return Some(Kind::MiniMax { host: h.to_string() })
+                return Some(Kind::MiniMax {
+                    host: h.to_string(),
+                })
             }
             "ollama.com" => return Some(Kind::Ollama),
             "api.mistral.ai" => return Some(Kind::Mistral),
@@ -142,17 +161,32 @@ static SESSION_SEQ: AtomicU64 = AtomicU64::new(0);
 /// （毫秒×0x1000+计数，取反——最新排前）+ 14 位 base62 随机。
 fn opencode_session_id() -> String {
     const BASE62: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let seq = SESSION_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
-    let current = !((now.as_millis() as u64).wrapping_mul(0x1000).wrapping_add(seq & 0xfff));
-    let digest = Sha256::digest(format!("{}-{}-{}", now.as_nanos(), seq, std::process::id()).as_bytes());
-    let tail: String = digest[..14].iter().map(|b| BASE62[*b as usize % BASE62.len()] as char).collect();
+    let current = !((now.as_millis() as u64)
+        .wrapping_mul(0x1000)
+        .wrapping_add(seq & 0xfff));
+    let digest =
+        Sha256::digest(format!("{}-{}-{}", now.as_nanos(), seq, std::process::id()).as_bytes());
+    let tail: String = digest[..14]
+        .iter()
+        .map(|b| BASE62[*b as usize % BASE62.len()] as char)
+        .collect();
     format!("ses_{:012x}{}", current & 0xffff_ffff_ffff, tail)
 }
 
 fn plan_headers(url: &str, key: &str, bearer: bool) -> Vec<(String, String)> {
     let mut headers = vec![
-        h("Authorization", &if bearer { format!("Bearer {key}") } else { key.to_string() }),
+        h(
+            "Authorization",
+            &if bearer {
+                format!("Bearer {key}")
+            } else {
+                key.to_string()
+            },
+        ),
         h("Accept", "application/json"),
         h("Accept-Language", "en-US,en"),
     ];
@@ -199,10 +233,18 @@ fn read_zhipu(body: &str) -> Result<(String, Vec<Win>), ReadErr> {
         }
         return Err(ReadErr::Other);
     }
-    let data = v.get("data").filter(|d| d.is_object()).ok_or(ReadErr::Other)?;
+    let data = v
+        .get("data")
+        .filter(|d| d.is_object())
+        .ok_or(ReadErr::Other)?;
     let level = text(data.get("level")).to_string();
     let mut out = Vec::new();
-    for l in data.get("limits").and_then(Value::as_array).into_iter().flatten() {
+    for l in data
+        .get("limits")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let mut w = Win::new("", num(l.get("percentage")).unwrap_or(0.0));
         let reset = num(l.get("nextResetTime")).unwrap_or(0.0) as i64;
         if reset > 0 {
@@ -291,7 +333,11 @@ fn last_date(s: &str) -> Option<String> {
 
 /// 智谱团队套餐窗口（Go zhipuKeyTeamWindows）：type=2，团队的 org/project 进
 /// header（用户给了才带——没给是猜，Go 同款）；自己的 host 先、再 ZCode 问的地方。
-fn zhipu_team_windows(host: &str, key: &str, team: Option<(String, String)>) -> Option<(String, Vec<Win>)> {
+fn zhipu_team_windows(
+    host: &str,
+    key: &str,
+    team: Option<(String, String)>,
+) -> Option<(String, Vec<Win>)> {
     let own = format!("https://{host}");
     let biz = if host == "open.bigmodel.cn" || host.ends_with("bigmodel.cn") {
         "https://bigmodel.cn".to_string()
@@ -311,10 +357,19 @@ fn zhipu_team_windows(host: &str, key: &str, team: Option<(String, String)>) -> 
         if let Some((org, project)) = &team {
             headers.push(h("Bigmodel-Organization", org));
             headers.push(h("Bigmodel-Project", project));
-            headers.push(h("Set-Language", if biz == "https://bigmodel.cn" { "zh" } else { "en" }));
+            headers.push(h(
+                "Set-Language",
+                if biz == "https://bigmodel.cn" {
+                    "zh"
+                } else {
+                    "en"
+                },
+            ));
         }
         let url = format!("{root}/api/monitor/usage/quota/limit?type=2");
-        let Some(reply) = get(&url, &headers) else { continue };
+        let Some(reply) = get(&url, &headers) else {
+            continue;
+        };
         if !reply.ok() {
             continue;
         }
@@ -330,12 +385,13 @@ fn zhipu_team_windows(host: &str, key: &str, team: Option<(String, String)>) -> 
 fn read_zhipu_plan(p: &Provider, host: &str, key: &str) -> Option<Read> {
     let root = format!("https://{host}");
     let url = format!("{root}/api/monitor/usage/quota/limit");
-    let result: Result<(String, Vec<Win>), ReadErr> = match get(&url, &plan_headers(&url, key, false)) {
-        None => Err(ReadErr::Other),
-        Some(r) if r.status == 401 => Err(ReadErr::Refused),
-        Some(r) if !r.ok() => Err(ReadErr::Other),
-        Some(r) => read_zhipu(&r.body),
-    };
+    let result: Result<(String, Vec<Win>), ReadErr> =
+        match get(&url, &plan_headers(&url, key, false)) {
+            None => Err(ReadErr::Other),
+            Some(r) if r.status == 401 => Err(ReadErr::Refused),
+            Some(r) if !r.ok() => Err(ReadErr::Other),
+            Some(r) => read_zhipu(&r.body),
+        };
     let refused = matches!(result, Err(ReadErr::Refused));
     let empty = !matches!(&result, Ok((_, ws)) if !ws.is_empty());
     if empty && !refused {
@@ -377,9 +433,15 @@ fn read_opencode_go(body: &str) -> Option<Vec<Win>> {
     let v: Value = serde_json::from_str(body).ok()?;
     let usage = v.get("usage")?;
     let mut out = Vec::new();
-    for (key, name, span) in [("rolling", "5 hours", 5 * 3600), ("weekly", "7 days", 7 * 86400), ("monthly", "Month", 0)] {
+    for (key, name, span) in [
+        ("rolling", "5 hours", 5 * 3600),
+        ("weekly", "7 days", 7 * 86400),
+        ("monthly", "Month", 0),
+    ] {
         let Some(w) = usage.get(key) else { continue };
-        let Some(percent) = num(w.get("percent")) else { continue };
+        let Some(percent) = num(w.get("percent")) else {
+            continue;
+        };
         let mut win = Win::new(name, percent);
         win.span_secs = span;
         if percent > 0.0 {
@@ -400,7 +462,11 @@ fn reset_of(d: &Value) -> Option<DateTime<Utc>> {
         }
         if let Some(n) = num(d.get(k)) {
             if n > 0.0 {
-                return if n > 1e11 { from_millis(n as i64) } else { from_secs(n as i64) };
+                return if n > 1e11 {
+                    from_millis(n as i64)
+                } else {
+                    from_secs(n as i64)
+                };
             }
         }
     }
@@ -450,8 +516,16 @@ fn read_kimi(body: &str) -> Option<Vec<Win>> {
         Some(w)
     };
     let mut out: Vec<Win> = Vec::new();
-    for l in r.get("limits").and_then(Value::as_array).into_iter().flatten() {
-        let d = l.get("detail").filter(|d| d.is_object()).or_else(|| l.get("window"));
+    for l in r
+        .get("limits")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let d = l
+            .get("detail")
+            .filter(|d| d.is_object())
+            .or_else(|| l.get("window"));
         let Some(d) = d else { continue };
         let win = l.get("window").cloned().unwrap_or(Value::Null);
         let n = num(win.get("duration")).unwrap_or(0.0) as i64;
@@ -487,9 +561,13 @@ fn read_kimi(body: &str) -> Option<Vec<Win>> {
         ("limit_month_code", "Month", 30 * 86400),
     ] {
         let d = usages.and_then(|u| u.get(key).or_else(|| u.get(camel(key))));
-        let Some(d) = d.filter(|d| d.is_object()) else { continue };
+        let Some(d) = d.filter(|d| d.is_object()) else {
+            continue;
+        };
         let ratio = num(d.get("used_ratio")).or_else(|| num(d.get("usedRatio")));
-        let Some(ratio) = ratio.filter(|r| r.is_finite()) else { continue };
+        let Some(ratio) = ratio.filter(|r| r.is_finite()) else {
+            continue;
+        };
         if shares.iter().any(|s| s.span_secs == span) {
             continue;
         }
@@ -501,19 +579,32 @@ fn read_kimi(body: &str) -> Option<Vec<Win>> {
     if !shares.is_empty() {
         out.retain(|w| !shares.iter().any(|s| s.span_secs == w.span_secs));
         out.extend(shares);
-        out.sort_by_key(|w| if w.span_secs == 0 { i64::MAX } else { w.span_secs });
+        out.sort_by_key(|w| {
+            if w.span_secs == 0 {
+                i64::MAX
+            } else {
+                w.span_secs
+            }
+        });
     }
     if out.is_empty() {
         return None;
     }
     // 加油包（kimiBooster）：balance.type=BOOSTER 且 amount>0；amountLeft 是
     // 分×10^6，缺省 = 没有了。
-    let wallet = r.get("booster_wallet").filter(|w| w.as_object().is_some_and(|o| !o.is_empty()))
+    let wallet = r
+        .get("booster_wallet")
+        .filter(|w| w.as_object().is_some_and(|o| !o.is_empty()))
         .or_else(|| r.get("boosterWallet"));
     if let Some(wallet) = wallet {
         let bal = wallet.get("balance").filter(|b| b.is_object());
-        if let Some(bal) = bal.filter(|b| text(b.get("type")) == "BOOSTER" && num(b.get("amount")).is_some_and(|a| a > 0.0)) {
-            let left = num(bal.get("amountLeft")).filter(|l| *l > 0.0).map(|l| (l / 1e6).round() / 100.0).unwrap_or(0.0);
+        if let Some(bal) = bal.filter(|b| {
+            text(b.get("type")) == "BOOSTER" && num(b.get("amount")).is_some_and(|a| a > 0.0)
+        }) {
+            let left = num(bal.get("amountLeft"))
+                .filter(|l| *l > 0.0)
+                .map(|l| (l / 1e6).round() / 100.0)
+                .unwrap_or(0.0);
             let mut unit = "USD".to_string();
             for k in ["monthlyChargeLimit", "monthlyUsed"] {
                 let c = text(wallet.get(k).and_then(|m| m.get("currency")));
@@ -563,23 +654,54 @@ fn read_minimax(body: &str) -> Option<Vec<Win>> {
     if base.get("status_code").and_then(Value::as_i64).unwrap_or(0) != 0 {
         return None;
     }
-    let at = |n: i64| if n < 1_000_000_000_000 { from_secs(n) } else { from_millis(n) };
+    let at = |n: i64| {
+        if n < 1_000_000_000_000 {
+            from_secs(n)
+        } else {
+            from_millis(n)
+        }
+    };
     let int = |v: Option<&Value>| num(v).unwrap_or(0.0) as i64;
     let zero = |v: Option<f64>| v == Some(0.0);
     let mut out = Vec::new();
-    for k in r.get("model_remains").and_then(Value::as_array).into_iter().flatten() {
+    for k in r
+        .get("model_remains")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let name = text(k.get("model_name")).trim().to_string();
-        let (status, week_status) = (int(k.get("current_interval_status")), int(k.get("current_weekly_status")));
-        let (total, week_total) = (num(k.get("current_interval_total_count")), num(k.get("current_weekly_total_count")));
+        let (status, week_status) = (
+            int(k.get("current_interval_status")),
+            int(k.get("current_weekly_status")),
+        );
+        let (total, week_total) = (
+            num(k.get("current_interval_total_count")),
+            num(k.get("current_weekly_total_count")),
+        );
         if name.is_empty() || (status == 3 && week_status == 3 && zero(total) && zero(week_total)) {
             continue;
         }
         let general = name.eq_ignore_ascii_case("general");
         let buckets = [
-            (num(k.get("current_interval_remaining_percent")), status, int(k.get("start_time")), int(k.get("end_time")), false,
-             num(k.get("current_interval_usage_count")), total),
-            (num(k.get("current_weekly_remaining_percent")), week_status, int(k.get("weekly_start_time")), int(k.get("weekly_end_time")), true,
-             num(k.get("current_weekly_usage_count")), week_total),
+            (
+                num(k.get("current_interval_remaining_percent")),
+                status,
+                int(k.get("start_time")),
+                int(k.get("end_time")),
+                false,
+                num(k.get("current_interval_usage_count")),
+                total,
+            ),
+            (
+                num(k.get("current_weekly_remaining_percent")),
+                week_status,
+                int(k.get("weekly_start_time")),
+                int(k.get("weekly_end_time")),
+                true,
+                num(k.get("current_weekly_usage_count")),
+                week_total,
+            ),
         ];
         for (left, st, start, end, week, count, tot) in buckets {
             if st == 3 || (left.is_none() && st != 2) {
@@ -621,7 +743,10 @@ fn read_minimax(body: &str) -> Option<Vec<Win>> {
             }
             if !general {
                 let mut chars = name.chars();
-                let head: String = chars.next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
+                let head: String = chars
+                    .next()
+                    .map(|c| c.to_uppercase().collect())
+                    .unwrap_or_default();
                 w.name = format!("{head}{} · {}", chars.as_str(), w.name);
                 w.aside = true;
             }
@@ -635,19 +760,31 @@ fn read_minimax(body: &str) -> Option<Vec<Win>> {
 fn read_ollama_plan(body: &str) -> Option<Vec<Win>> {
     let r: Value = serde_json::from_str(body).ok()?;
     let included = r.get("included").filter(|i| i.is_object());
-    let Some(included) = included else { return Some(Vec::new()) };
+    let Some(included) = included else {
+        return Some(Vec::new());
+    };
     let bought = num(r.pointer("/purchased/balance_usd")).is_some_and(|v| v > 0.0);
     let mut out = Vec::new();
-    for (key, name, span) in [("session", "Session limit", 0i64), ("weekly", "Weekly", 7 * 86400)] {
-        let Some(l) = included.get(key).filter(|l| l.is_object()) else { continue };
-        let Some(left) = num(l.get("remaining_percent")) else { continue };
+    for (key, name, span) in [
+        ("session", "Session limit", 0i64),
+        ("weekly", "Weekly", 7 * 86400),
+    ] {
+        let Some(l) = included.get(key).filter(|l| l.is_object()) else {
+            continue;
+        };
+        let Some(left) = num(l.get("remaining_percent")) else {
+            continue;
+        };
         let mut w = Win::new(name, (100.0 - left).clamp(0.0, 100.0));
         w.span_secs = span;
         w.resets_at = parse_rfc3339(text(l.get("resets_at")));
         w.aside = bought;
         out.push(w);
     }
-    let (Some(allowance), Some(left)) = (num(included.get("allowance_usd")), num(included.get("balance_usd"))) else {
+    let (Some(allowance), Some(left)) = (
+        num(included.get("allowance_usd")),
+        num(included.get("balance_usd")),
+    ) else {
         return Some(out);
     };
     if allowance <= 0.0 {
@@ -692,7 +829,10 @@ const CMD_PLANS: &[(&str, &str, f64, bool)] = &[
 
 fn cmd_plan_of(id: &str) -> Option<(&'static str, f64, bool)> {
     let id = id.to_ascii_lowercase().replace('_', "-");
-    CMD_PLANS.iter().find(|(prefix, ..)| id.starts_with(prefix)).map(|(_, n, m, u)| (*n, *m, *u))
+    CMD_PLANS
+        .iter()
+        .find(|(prefix, ..)| id.starts_with(prefix))
+        .map(|(_, n, m, u)| (*n, *m, *u))
 }
 
 fn cmd_time(v: Option<&Value>) -> Option<DateTime<Utc>> {
@@ -702,15 +842,28 @@ fn cmd_time(v: Option<&Value>) -> Option<DateTime<Utc>> {
         }
     }
     let n = num(v).filter(|n| *n > 0.0)?;
-    from_millis(if n < 1e12 { (n * 1000.0) as i64 } else { n as i64 })
+    from_millis(if n < 1e12 {
+        (n * 1000.0) as i64
+    } else {
+        n as i64
+    })
 }
 
 fn cmd_windows(c: &Value) -> Vec<Win> {
     let mut out = Vec::new();
-    let Some(limits) = c.get("windowLimits").filter(|w| w.is_object()) else { return out };
-    for (key, name, span) in [("fiveHour", "5 hours", 5 * 3600i64), ("weekly", "Weekly", 7 * 86400)] {
-        let Some(w) = limits.get(key).filter(|w| w.is_object()) else { continue };
-        let (Some(used), Some(cap)) = (num(w.get("used")), num(w.get("cap"))) else { continue };
+    let Some(limits) = c.get("windowLimits").filter(|w| w.is_object()) else {
+        return out;
+    };
+    for (key, name, span) in [
+        ("fiveHour", "5 hours", 5 * 3600i64),
+        ("weekly", "Weekly", 7 * 86400),
+    ] {
+        let Some(w) = limits.get(key).filter(|w| w.is_object()) else {
+            continue;
+        };
+        let (Some(used), Some(cap)) = (num(w.get("used")), num(w.get("cap"))) else {
+            continue;
+        };
         if cap <= 0.0 {
             continue;
         }
@@ -728,7 +881,10 @@ pub(super) fn cmd_left(c: &Value) -> Option<(f64, f64)> {
     let mut monthly = 0.0;
     let mut left = 0.0;
     let mut known = false;
-    for (i, k) in ["monthlyCredits", "purchasedCredits", "freeCredits"].iter().enumerate() {
+    for (i, k) in ["monthlyCredits", "purchasedCredits", "freeCredits"]
+        .iter()
+        .enumerate()
+    {
         if let Some(n) = num(credits.get(*k)) {
             let n = n.max(0.0);
             if i == 0 {
@@ -743,12 +899,18 @@ pub(super) fn cmd_left(c: &Value) -> Option<(f64, f64)> {
 
 fn cmd_subscription(key: &str) -> (String, Option<DateTime<Utc>>) {
     let url = format!("{COMMAND_CODE_API}/alpha/billing/subscriptions");
-    let Some(body) = plan_body(&url, key, true) else { return (String::new(), None) };
-    let Ok(r) = serde_json::from_str::<Value>(&body) else { return (String::new(), None) };
+    let Some(body) = plan_body(&url, key, true) else {
+        return (String::new(), None);
+    };
+    let Ok(r) = serde_json::from_str::<Value>(&body) else {
+        return (String::new(), None);
+    };
     if r.get("success").and_then(Value::as_bool) == Some(false) {
         return (String::new(), None);
     }
-    let Some(d) = r.get("data").filter(|d| d.is_object()) else { return (String::new(), None) };
+    let Some(d) = r.get("data").filter(|d| d.is_object()) else {
+        return (String::new(), None);
+    };
     let plan_id = text(d.get("planId"));
     let status = text(d.get("status"));
     if !plan_id.is_empty() && status != "canceled" && status != "incomplete_expired" {
@@ -780,7 +942,11 @@ fn read_command_code(key: &str) -> Option<Read> {
     if let Some((monthly, left)) = cmd_left(&c) {
         if plan_monthly > 0.0 && units {
             let pool = plan_monthly.max(monthly);
-            let mut display = format!("{} / {} credits", money("", pool - monthly), money("", pool));
+            let mut display = format!(
+                "{} / {} credits",
+                money("", pool - monthly),
+                money("", pool)
+            );
             let extra = left - monthly;
             if extra > 0.0 {
                 display.push_str(&format!(" + {} extra", money("$", extra)));
@@ -803,13 +969,17 @@ fn read_command_code(key: &str) -> Option<Read> {
 // ---- Mistral -----------------------------------------------------------------
 
 fn mistral_budget_window(body: &str, kind: &str, payg: Option<bool>) -> Vec<Win> {
-    let Ok(r) = serde_json::from_str::<Value>(body) else { return Vec::new() };
+    let Ok(r) = serde_json::from_str::<Value>(body) else {
+        return Vec::new();
+    };
     let (detail, name) = match kind {
         "api" => (r.get("api_budget"), "API · Month"),
         "chat" => (r.get("vibe_budget"), "Month"),
         _ => (None, "Month"),
     };
-    let Some(v) = detail.filter(|v| v.is_object()) else { return Vec::new() };
+    let Some(v) = detail.filter(|v| v.is_object()) else {
+        return Vec::new();
+    };
     let initial = num(v.get("initial_budget")).unwrap_or(0.0);
     if initial <= 0.0 {
         return Vec::new();
@@ -840,8 +1010,14 @@ fn read_mistral(key: &str) -> Option<Read> {
         return Some(Read::new("", windows));
     }
     let mut plan = String::new();
-    if let Some(sub) = plan_body(MISTRAL_SUBSCRIPTION_URL, key, true).and_then(|b| serde_json::from_str::<Value>(&b).ok()) {
-        let payg = if kind == "api" { sub.get("payg_enabled") } else { sub.get("vibe_payg_enabled") };
+    if let Some(sub) = plan_body(MISTRAL_SUBSCRIPTION_URL, key, true)
+        .and_then(|b| serde_json::from_str::<Value>(&b).ok())
+    {
+        let payg = if kind == "api" {
+            sub.get("payg_enabled")
+        } else {
+            sub.get("vibe_payg_enabled")
+        };
         windows = mistral_budget_window(&budget, &kind, payg.and_then(Value::as_bool));
         let raw = text(sub.get("plan_name")).trim();
         plan = match raw.to_ascii_uppercase().as_str() {
@@ -863,7 +1039,11 @@ fn read_plan(kind: &Kind, p: &Provider, key: &str) -> Option<Read> {
     match kind {
         Kind::Zhipu { host, .. } => read_zhipu_plan(p, host, key),
         Kind::OpenCodeGo => {
-            let ws = read_opencode_go(&plan_body("https://opencode.ai/zen/go/v1/usage", key, true)?)?;
+            let ws = read_opencode_go(&plan_body(
+                "https://opencode.ai/zen/go/v1/usage",
+                key,
+                true,
+            )?)?;
             Some(Read::new("", ws))
         }
         Kind::Kimi { url } => Some(Read::new("", read_kimi(&plan_body(url, key, true)?)?)),
@@ -872,7 +1052,10 @@ fn read_plan(kind: &Kind, p: &Provider, key: &str) -> Option<Read> {
             let url = format!("https://{host}/v1/token_plan/remains");
             Some(Read::new("", read_minimax(&plan_body(&url, key, true)?)?))
         }
-        Kind::Ollama => Some(Read::new("", read_ollama_plan(&plan_body(OLLAMA_BALANCE_URL, key, true)?)?)),
+        Kind::Ollama => Some(Read::new(
+            "",
+            read_ollama_plan(&plan_body(OLLAMA_BALANCE_URL, key, true)?)?,
+        )),
         Kind::Mistral => read_mistral(key),
     }
 }
@@ -912,9 +1095,16 @@ pub fn rows(providers: &[Provider]) -> Vec<Value> {
         if p.key.is_empty() || skipped(p) {
             continue;
         }
-        let Some(kind) = plan_source_of(p) else { continue };
+        let Some(kind) = plan_source_of(p) else {
+            continue;
+        };
         for (key, user) in keys_of(p) {
-            jobs.push(Job { provider: p, kind: kind.clone(), key, user });
+            jobs.push(Job {
+                provider: p,
+                kind: kind.clone(),
+                key,
+                user,
+            });
         }
     }
     let mut results: Vec<Option<Value>> = Vec::new();
@@ -940,8 +1130,8 @@ pub fn rows(providers: &[Provider]) -> Vec<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::quota_kit::testkit::{redirect, Mock, Redirects};
+    use super::*;
 
     fn provider(json: &str) -> Provider {
         serde_json::from_str(json).expect("provider json")
@@ -949,19 +1139,44 @@ mod tests {
 
     #[test]
     fn source_table_follows_go_host_rules() {
-        let p = provider(r#"{"id":"zhipu","name":"Zhipu","key":"k","chat":"https://open.bigmodel.cn/api/coding/paas/v4"}"#);
-        assert_eq!(plan_source_of(&p), Some(Kind::Zhipu { host: "open.bigmodel.cn".into(), coding: true }));
-        let p = provider(r#"{"id":"og","name":"og","key":"k","chat":"https://opencode.ai/inference/go/v1"}"#);
+        let p = provider(
+            r#"{"id":"zhipu","name":"Zhipu","key":"k","chat":"https://open.bigmodel.cn/api/coding/paas/v4"}"#,
+        );
+        assert_eq!(
+            plan_source_of(&p),
+            Some(Kind::Zhipu {
+                host: "open.bigmodel.cn".into(),
+                coding: true
+            })
+        );
+        let p = provider(
+            r#"{"id":"og","name":"og","key":"k","chat":"https://opencode.ai/inference/go/v1"}"#,
+        );
         assert_eq!(plan_source_of(&p), Some(Kind::OpenCodeGo));
         // zen（按量）与 custom 不是 Go
         let p = provider(r#"{"id":"z","name":"z","key":"k","chat":"https://opencode.ai/zen/v1"}"#);
         assert_eq!(plan_source_of(&p), None);
-        let p = provider(r#"{"id":"c","name":"c","key":"k","chat":"https://opencode.ai/inference/custom/v1"}"#);
+        let p = provider(
+            r#"{"id":"c","name":"c","key":"k","chat":"https://opencode.ai/inference/custom/v1"}"#,
+        );
         assert_eq!(plan_source_of(&p), None);
-        let p = provider(r#"{"id":"k","name":"k","key":"k","chat":"https://api.kimi.com/coding/v1"}"#);
-        assert_eq!(plan_source_of(&p), Some(Kind::Kimi { url: "https://api.kimi.com/coding/v1/usages".into() }));
-        let p = provider(r#"{"id":"k","name":"k","key":"k","anthropic":"https://api.kimi.com/coding"}"#);
-        assert_eq!(plan_source_of(&p), Some(Kind::Kimi { url: "https://api.kimi.com/coding/v1/usages".into() }));
+        let p =
+            provider(r#"{"id":"k","name":"k","key":"k","chat":"https://api.kimi.com/coding/v1"}"#);
+        assert_eq!(
+            plan_source_of(&p),
+            Some(Kind::Kimi {
+                url: "https://api.kimi.com/coding/v1/usages".into()
+            })
+        );
+        let p = provider(
+            r#"{"id":"k","name":"k","key":"k","anthropic":"https://api.kimi.com/coding"}"#,
+        );
+        assert_eq!(
+            plan_source_of(&p),
+            Some(Kind::Kimi {
+                url: "https://api.kimi.com/coding/v1/usages".into()
+            })
+        );
         // Kimi 非 coding 基址不是套餐
         let p = provider(r#"{"id":"k","name":"k","key":"k","chat":"https://api.kimi.com/v1"}"#);
         assert_eq!(plan_source_of(&p), None);
@@ -986,9 +1201,18 @@ mod tests {
         assert!(ws[0].resets_at.is_some());
         assert!(ws[2].aside);
         // 拒答信封：钥匙被拒与别的失败分开
-        assert_eq!(read_zhipu(r#"{"success":false,"code":1001,"msg":"x"}"#).err(), Some(ReadErr::Refused));
-        assert_eq!(read_zhipu(r#"{"success":false,"code":1302,"msg":"x"}"#).err(), Some(ReadErr::Other));
-        assert_eq!(read_zhipu(r#"{"success":true}"#).err(), Some(ReadErr::Other));
+        assert_eq!(
+            read_zhipu(r#"{"success":false,"code":1001,"msg":"x"}"#).err(),
+            Some(ReadErr::Refused)
+        );
+        assert_eq!(
+            read_zhipu(r#"{"success":false,"code":1302,"msg":"x"}"#).err(),
+            Some(ReadErr::Other)
+        );
+        assert_eq!(
+            read_zhipu(r#"{"success":true}"#).err(),
+            Some(ReadErr::Other)
+        );
     }
 
     #[test]
@@ -1000,7 +1224,11 @@ mod tests {
         .unwrap();
         let (t, renew) = zhipu_term_of(&subs).expect("term");
         assert_eq!(renew, "auto");
-        assert_eq!(rfc3339(t), "2026-10-18T04:00:00Z", "北京时间 12:00 = UTC 04:00");
+        assert_eq!(
+            rfc3339(t),
+            "2026-10-18T04:00:00Z",
+            "北京时间 12:00 = UTC 04:00"
+        );
         let subs: Value = serde_json::from_str(
             r#"[{"status":"VALID","autoRenew":0,"valid":"2026-09-18 12:00:00-2026-10-18 12:00:00"}]"#,
         )
@@ -1041,11 +1269,16 @@ mod tests {
         let legacy = r#"{"included":{"session":{"remaining_percent":75,"resets_at":"2026-10-01T07:00:00Z"},
             "weekly":{"remaining_percent":40,"resets_at":"2026-10-05T00:00:00Z"}},"purchased":{"balance_usd":25}}"#;
         let ws = read_ollama_plan(legacy).expect("read");
-        assert_eq!(ws.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(), vec!["Session limit", "Weekly"]);
+        assert_eq!(
+            ws.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(),
+            vec!["Session limit", "Weekly"]
+        );
         assert_eq!(ws[0].used, 25.0);
         assert!(ws[0].aside, "买过额外 credits：含额用完也不挡");
         // 没有 included → 没有窗口
-        assert!(read_ollama_plan(r#"{"purchased":{"balance_usd":3}}"#).expect("read").is_empty());
+        assert!(read_ollama_plan(r#"{"purchased":{"balance_usd":3}}"#)
+            .expect("read")
+            .is_empty());
     }
 
     #[test]
@@ -1088,7 +1321,10 @@ mod tests {
         assert_eq!(ws[0].name, "5 hours");
         assert_eq!(ws[0].used, 20.0);
         assert_eq!(ws[1].name, "7 days");
-        assert!(read_minimax(r#"{"model_remains":[],"base_resp":{"status_code":1004,"status_msg":"bad"}}"#).is_none());
+        assert!(read_minimax(
+            r#"{"model_remains":[],"base_resp":{"status_code":1004,"status_msg":"bad"}}"#
+        )
+        .is_none());
         assert!(read_minimax(r#"{"model_remains":[]}"#).is_none());
     }
 
@@ -1129,7 +1365,9 @@ mod tests {
 
     #[test]
     fn rows_end_to_end_with_mock_vendors() {
-        let _lock = super::super::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _lock = super::super::TEST_SANDBOX_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let mock = Mock::start();
         mock.route(
             "/api/monitor/usage/quota/limit",
@@ -1157,16 +1395,33 @@ mod tests {
             redirect("https://ollama.com", &mock.base),
         ]);
         let providers: Vec<Provider> = vec![
-            provider(r#"{"id":"zhipu","name":"Zhipu GLM","key":"sk-zp","chat":"https://open.bigmodel.cn/api/coding/paas/v4"}"#),
-            provider(r#"{"id":"source-og","name":"opencode.ai","key":"sk-og","chat":"https://opencode.ai/inference/go/v1"}"#),
-            provider(r#"{"id":"source-ol","name":"ollama","key":"sk-ol","chat":"https://ollama.com/v1"}"#),
+            provider(
+                r#"{"id":"zhipu","name":"Zhipu GLM","key":"sk-zp","chat":"https://open.bigmodel.cn/api/coding/paas/v4"}"#,
+            ),
+            provider(
+                r#"{"id":"source-og","name":"opencode.ai","key":"sk-og","chat":"https://opencode.ai/inference/go/v1"}"#,
+            ),
+            provider(
+                r#"{"id":"source-ol","name":"ollama","key":"sk-ol","chat":"https://ollama.com/v1"}"#,
+            ),
             provider(r#"{"id":"nokey","name":"x","chat":"https://ollama.com/v1"}"#),
-            provider(r#"{"id":"hid","name":"x","key":"k","hidden":true,"chat":"https://ollama.com/v1"}"#),
-            provider(r#"{"id":"plain","name":"plain","key":"k","chat":"https://api.example.test/v1"}"#),
+            provider(
+                r#"{"id":"hid","name":"x","key":"k","hidden":true,"chat":"https://ollama.com/v1"}"#,
+            ),
+            provider(
+                r#"{"id":"plain","name":"plain","key":"k","chat":"https://api.example.test/v1"}"#,
+            ),
         ];
         let rows = rows(&providers);
-        let ids: Vec<&str> = rows.iter().map(|r| r["provider"].as_str().unwrap()).collect();
-        assert_eq!(ids, vec!["zhipu", "source-og", "source-ol"], "无钥匙/隐藏/无套餐来源不出行");
+        let ids: Vec<&str> = rows
+            .iter()
+            .map(|r| r["provider"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["zhipu", "source-og", "source-ol"],
+            "无钥匙/隐藏/无套餐来源不出行"
+        );
         assert_eq!(rows[0]["plan"], "pro");
         assert_eq!(rows[0]["renew"], "auto");
         assert_eq!(rows[0]["windows"][0]["name"], "5 hours");
@@ -1176,37 +1431,62 @@ mod tests {
         assert_eq!(rows[2]["windows"][0]["unit"], "USD");
         // 认证形态：智谱裸钥匙、OpenCode 带会话头、其余 Bearer
         let requests = mock.requests();
-        let zhipu = requests.iter().find(|r| r.path.starts_with("/api/monitor/usage/quota/limit")).unwrap();
+        let zhipu = requests
+            .iter()
+            .find(|r| r.path.starts_with("/api/monitor/usage/quota/limit"))
+            .unwrap();
         assert_eq!(zhipu.header("authorization"), "sk-zp");
-        let og = requests.iter().find(|r| r.path.starts_with("/zen/go/v1/usage")).unwrap();
+        let og = requests
+            .iter()
+            .find(|r| r.path.starts_with("/zen/go/v1/usage"))
+            .unwrap();
         assert_eq!(og.header("authorization"), "Bearer sk-og");
         assert!(og.header("x-opencode-session").starts_with("ses_"));
-        assert_eq!(og.header("x-opencode-session"), og.header("x-opencode-session-id"));
-        let ol = requests.iter().find(|r| r.path.starts_with("/api/balance")).unwrap();
+        assert_eq!(
+            og.header("x-opencode-session"),
+            og.header("x-opencode-session-id")
+        );
+        let ol = requests
+            .iter()
+            .find(|r| r.path.starts_with("/api/balance"))
+            .unwrap();
         assert_eq!(ol.header("authorization"), "Bearer sk-ol");
     }
 
     #[test]
     fn failures_are_quiet_and_zhipu_team_is_tried() {
-        let _lock = super::super::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _lock = super::super::TEST_SANDBOX_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let mock = Mock::start();
         // 个人套餐读不出（空 limits）→ 团队套餐 type=2 带 org/project
         mock.route("/api/monitor/usage/quota/limit?type=2", 200,
             r#"{"success":true,"data":{"limits":[{"type":"TOKENS_LIMIT","unit":3,"percentage":9}]}}"#);
-        mock.route("/api/monitor/usage/quota/limit", 200, r#"{"success":true,"data":{"level":"","limits":[]}}"#);
+        mock.route(
+            "/api/monitor/usage/quota/limit",
+            200,
+            r#"{"success":true,"data":{"level":"","limits":[]}}"#,
+        );
         let _r = Redirects::new(&[
             redirect("https://api.z.ai", &mock.base),
             redirect("https://open.bigmodel.cn", &mock.base),
             redirect("https://opencode.ai", "http://127.0.0.1:9"),
         ]);
         let providers = vec![
-            provider(r#"{"id":"team","name":"Team","key":"k","chat":"https://api.z.ai/api/coding/paas/v4","zhipuTeam":{"org":"org-1","project":"proj-1"}}"#),
-            provider(r#"{"id":"down","name":"down","key":"k","chat":"https://opencode.ai/inference/go/v1"}"#),
+            provider(
+                r#"{"id":"team","name":"Team","key":"k","chat":"https://api.z.ai/api/coding/paas/v4","zhipuTeam":{"org":"org-1","project":"proj-1"}}"#,
+            ),
+            provider(
+                r#"{"id":"down","name":"down","key":"k","chat":"https://opencode.ai/inference/go/v1"}"#,
+            ),
         ];
         let rows = rows(&providers);
         assert_eq!(rows.len(), 1, "出站失败的来源安静跳过");
         assert_eq!(rows[0]["plan"], "GLM Coding Team");
-        assert_eq!(rows[0]["windows"][0]["name"], "5 hours", "团队五小时不带 number → 5");
+        assert_eq!(
+            rows[0]["windows"][0]["name"], "5 hours",
+            "团队五小时不带 number → 5"
+        );
         let requests = mock.requests();
         let team = requests.iter().find(|r| r.path.contains("type=2")).unwrap();
         assert_eq!(team.header("bigmodel-organization"), "org-1");
@@ -1215,9 +1495,15 @@ mod tests {
 
     #[test]
     fn multiple_keys_get_user_names_on_their_own_rows() {
-        let _lock = super::super::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _lock = super::super::TEST_SANDBOX_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let mock = Mock::start();
-        mock.route("/zen/go/v1/usage", 200, r#"{"usage":{"weekly":{"percent":10}}}"#);
+        mock.route(
+            "/zen/go/v1/usage",
+            200,
+            r#"{"usage":{"weekly":{"percent":10}}}"#,
+        );
         let _r = Redirects::new(&[redirect("https://opencode.ai", &mock.base)]);
         let providers = vec![provider(
             r#"{"id":"og","name":"OG","key":"sk-first-key-1234","chat":"https://opencode.ai/zen/go/v1",

@@ -83,9 +83,13 @@ pub enum ActionKind {
     },
     /// Press a key — `"Enter"`, `"a"`, `"Control+Shift+k"` — on the element,
     /// or on whatever has focus when the request names none.
-    Press { key: String },
+    Press {
+        key: String,
+    },
     /// Choose options of a `<select>`, by value or by label.
-    Select { values: Vec<String> },
+    Select {
+        values: Vec<String>,
+    },
 }
 
 /// One action on one tab.
@@ -107,7 +111,8 @@ pub fn act_call(request: &ActionRequest) -> String {
         "typeof globalThis.{AGENT_GLOBAL} === 'undefined' ? {absent} : \
          JSON.stringify(globalThis.{AGENT_GLOBAL}.act({generation}, {target}, {action}))",
         absent = serde_json::Value::from(ENGINE_ABSENT),
-        generation = serde_json::to_string(&request.generation).unwrap_or_else(|_| "\"\"".to_string()),
+        generation =
+            serde_json::to_string(&request.generation).unwrap_or_else(|_| "\"\"".to_string()),
         target = match &request.target {
             Some(target) => serde_json::to_string(target).unwrap_or_else(|_| "null".to_string()),
             None => "null".to_string(),
@@ -154,9 +159,12 @@ mod tests {
         let request = ActionRequest {
             generation: "0.1".to_string(),
             target: None,
-            action: ActionKind::Press { key: "Enter".to_string() },
+            action: ActionKind::Press {
+                key: "Enter".to_string(),
+            },
         };
         let expr = act_call(&request);
-        assert!(expr.contains("__codegAgent.act(\"0.1\", null, {\"kind\":\"press\",\"key\":\"Enter\"})"));
+        assert!(expr
+            .contains("__codegAgent.act(\"0.1\", null, {\"kind\":\"press\",\"key\":\"Enter\"})"));
     }
 }

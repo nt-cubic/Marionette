@@ -50,7 +50,13 @@ pub fn get_changed_files(project_root: &Path) -> Result<Vec<ChangedFile>, String
     // (`"docs/\351\234\200..."`), which the UI would display verbatim.
     let output = run_git(
         project_root,
-        &["-c", "core.quotePath=false", "status", "--porcelain", "-uall"],
+        &[
+            "-c",
+            "core.quotePath=false",
+            "status",
+            "--porcelain",
+            "-uall",
+        ],
     )?;
     let code = output.status.code().unwrap_or(-1);
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -84,7 +90,10 @@ pub struct RestoreTurnResult {
 /// Restore this turn's files to HEAD: tracked paths via `git restore`,
 /// files that never existed in HEAD are deleted (untracked / staged-new).
 /// Paths must sit inside the project. No HEAD → error, nothing is deleted.
-pub fn restore_turn_files(project_root: &Path, paths: &[String]) -> Result<RestoreTurnResult, String> {
+pub fn restore_turn_files(
+    project_root: &Path,
+    paths: &[String],
+) -> Result<RestoreTurnResult, String> {
     if !project_root.is_dir() {
         return Err(format!("Not a directory: {}", project_root.display()));
     }
@@ -92,7 +101,10 @@ pub fn restore_turn_files(project_root: &Path, paths: &[String]) -> Result<Resto
         return Err(crate::ts!("没有可撤销的文件", "No files to undo"));
     }
     if !has_head(project_root) {
-        return Err(crate::ts!("仓库还没有 commit，无法还原到 HEAD", "The repository has no commits yet; cannot restore to HEAD"));
+        return Err(crate::ts!(
+            "仓库还没有 commit，无法还原到 HEAD",
+            "The repository has no commits yet; cannot restore to HEAD"
+        ));
     }
 
     let mut relative = Vec::new();
@@ -135,9 +147,10 @@ pub fn restore_turn_files(project_root: &Path, paths: &[String]) -> Result<Resto
     for path in remove {
         let abs = project_root.join(&path);
         if abs.is_dir() {
-            result
-                .errors
-                .push(crate::ts!("{path}: 是目录，未删除", "{path}: is a directory, not deleted"));
+            result.errors.push(crate::ts!(
+                "{path}: 是目录，未删除",
+                "{path}: is a directory, not deleted"
+            ));
             continue;
         }
         if abs.is_file() {
@@ -208,7 +221,14 @@ pub fn get_file_diff(project_root: &Path, path: &str) -> Result<String, String> 
     if text.trim().is_empty() {
         let untracked = run_git(
             project_root,
-            &["-c", "core.quotePath=false", "status", "--porcelain", "--", &path],
+            &[
+                "-c",
+                "core.quotePath=false",
+                "status",
+                "--porcelain",
+                "--",
+                &path,
+            ],
         )?;
         let st = String::from_utf8_lossy(&untracked.stdout);
         if st.trim().starts_with("??") {
@@ -306,8 +326,8 @@ const SNAPSHOT_TTL_MS: u128 = 10 * 60 * 1000;
 /// holds the caller's thread (delivery-card turns, Tauri commands) hostage.
 const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
-fn snapshot_registry() -> &'static std::sync::Mutex<std::collections::HashMap<String, WorkspaceSnapshot>>
-{
+fn snapshot_registry(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, WorkspaceSnapshot>> {
     static REGISTRY: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<String, WorkspaceSnapshot>>,
     > = std::sync::OnceLock::new();
@@ -366,7 +386,8 @@ fn run_snapshot_git(
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    cmd.output().map_err(|error| format!("Failed to run git: {error}"))
+    cmd.output()
+        .map_err(|error| format!("Failed to run git: {error}"))
 }
 
 fn snapshot_git_ok(cwd: &Path, git: &SnapshotGit<'_>, args: &[&str]) -> Result<String, String> {
@@ -412,7 +433,9 @@ fn worktree_tree(
         };
         snapshot_git_ok(root, git, &["add", "--all"])?;
     }
-    Ok(snapshot_git_ok(root, git, &["write-tree"])?.trim().to_string())
+    Ok(snapshot_git_ok(root, git, &["write-tree"])?
+        .trim()
+        .to_string())
 }
 
 /// `<repo>/.git/index` (per-worktree index for linked worktrees). Only ever
@@ -535,7 +558,9 @@ pub fn begin_workspace_snapshot(project_root: &Path) -> Result<Option<TurnSnapsh
     let probe = run_git(project_root, &["rev-parse", "--is-inside-work-tree"])?;
     if !probe.status.success() {
         let stderr = String::from_utf8_lossy(&probe.stderr).to_lowercase();
-        if stderr.contains("not recognized") || stderr.contains("not found") || stderr.contains("enoent")
+        if stderr.contains("not recognized")
+            || stderr.contains("not found")
+            || stderr.contains("enoent")
         {
             return Err("git is not available on PATH".to_string());
         }
@@ -589,7 +614,11 @@ pub fn begin_workspace_snapshot(project_root: &Path) -> Result<Option<TurnSnapsh
         alternates: &alternates,
     };
 
-    let head_tree = match snapshot_git_ok(project_root, &git, &["rev-parse", "--verify", "-q", "HEAD^{tree}"]) {
+    let head_tree = match snapshot_git_ok(
+        project_root,
+        &git,
+        &["rev-parse", "--verify", "-q", "HEAD^{tree}"],
+    ) {
         Ok(tree) => {
             let tree = tree.trim().to_string();
             if tree.is_empty() {
@@ -601,7 +630,12 @@ pub fn begin_workspace_snapshot(project_root: &Path) -> Result<Option<TurnSnapsh
         Err(_) => None,
     };
 
-    let base_tree = match worktree_tree(project_root, &git, head_tree.as_deref(), seed_index.as_deref()) {
+    let base_tree = match worktree_tree(
+        project_root,
+        &git,
+        head_tree.as_deref(),
+        seed_index.as_deref(),
+    ) {
         Ok(tree) => tree,
         Err(error) => {
             let _ = std::fs::remove_dir_all(&dir);
@@ -735,11 +769,15 @@ fn finish_snapshot(snapshot: &WorkspaceSnapshot) -> Result<TurnSnapshotEnd, Stri
         ],
     )?;
     let head_paths: std::collections::HashSet<String> = match snapshot.head_tree.as_deref() {
-        Some(head) => snapshot_git_ok(&snapshot.root, &git, &["ls-tree", "-r", "--name-only", "-z", head])?
-            .split('\0')
-            .filter(|path| !path.is_empty())
-            .map(str::to_string)
-            .collect(),
+        Some(head) => snapshot_git_ok(
+            &snapshot.root,
+            &git,
+            &["ls-tree", "-r", "--name-only", "-z", head],
+        )?
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .collect(),
         None => std::collections::HashSet::new(),
     };
 
@@ -844,7 +882,8 @@ fn parse_porcelain(stdout: &str) -> Vec<ChangedFile> {
         }
         let status = &line[..2];
         let path_part = line[2..].trim_start();
-        let path = porcelain_path_after_rename(path_part).unwrap_or_else(|| unquote_git_path(path_part));
+        let path =
+            porcelain_path_after_rename(path_part).unwrap_or_else(|| unquote_git_path(path_part));
         if path.is_empty() {
             continue;
         }
@@ -922,7 +961,6 @@ fn map_status(xy: &str) -> String {
     "modified".to_string()
 }
 
-
 // ---------------------------------------------------------------------------
 // Council worktree isolation (M2) — parallel coding tasks each get their own
 // `git worktree add --detach/-b` checkout; merges back in topological order
@@ -941,12 +979,25 @@ pub enum MergeOutcome {
 
 /// Create an isolated worktree at `worktree_path` on a new branch
 /// `council/<run_id>/<step_id>` rooted at HEAD of `project_root`.
-pub fn create_worktree(project_root: &Path, worktree_path: &Path, branch: &str) -> Result<(), String> {
-    let branch = branch.replace(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '/'), "-");
+pub fn create_worktree(
+    project_root: &Path,
+    worktree_path: &Path,
+    branch: &str,
+) -> Result<(), String> {
+    let branch = branch.replace(
+        |c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '/'),
+        "-",
+    );
     let branch_arg = format!("-b{branch}");
     run_git_checked(
         project_root,
-        &["worktree", "add", &branch_arg, &worktree_path.to_string_lossy(), "HEAD"],
+        &[
+            "worktree",
+            "add",
+            &branch_arg,
+            &worktree_path.to_string_lossy(),
+            "HEAD",
+        ],
         "创建 worktree",
     )
     .map(|_| ())
@@ -957,7 +1008,12 @@ pub fn create_worktree(project_root: &Path, worktree_path: &Path, branch: &str) 
 pub fn remove_worktree(project_root: &Path, worktree_path: &Path) -> Result<(), String> {
     let out = run_git(
         project_root,
-        &["worktree", "remove", "--force", &worktree_path.to_string_lossy()],
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            &worktree_path.to_string_lossy(),
+        ],
     )?;
     let _ = run_git(project_root, &["worktree", "prune"])?;
     let _ = out;
@@ -969,12 +1025,31 @@ pub fn remove_worktree(project_root: &Path, worktree_path: &Path) -> Result<(), 
 /// merge commits so attribution survives; a conflict aborts the merge
 /// (--no-commit + conflict check leaves the tree dirty → we abort hard and
 /// report files).
-pub fn merge_worktree_branch(project_root: &Path, worktree_path: &Path, branch: &str, message: &str) -> Result<MergeOutcome, String> {
+pub fn merge_worktree_branch(
+    project_root: &Path,
+    worktree_path: &Path,
+    branch: &str,
+    message: &str,
+) -> Result<MergeOutcome, String> {
     // 1. Commit everything inside the task worktree (skip if clean).
     let status = run_git(worktree_path, &["status", "--porcelain"])?;
     if !String::from_utf8_lossy(&status.stdout).trim().is_empty() {
         run_git_checked(worktree_path, &["add", "--all"], "暂存任务改动")?;
-        let _ = run_git(worktree_path, &["-c", "user.name=Marionette Council", "-c", "user.email=council@marionette.local", "-c", "commit.gpgsign=false", "commit", "-q", "-m", message]);
+        let _ = run_git(
+            worktree_path,
+            &[
+                "-c",
+                "user.name=Marionette Council",
+                "-c",
+                "user.email=council@marionette.local",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                message,
+            ],
+        );
         // commit failing on nothing-to-commit is fine.
     }
     // 2. Merge into the project worktree.
@@ -1027,7 +1102,12 @@ pub fn merge_worktree_branch(project_root: &Path, worktree_path: &Path, branch: 
 pub fn is_git_worktree(project_root: &Path) -> bool {
     run_git(project_root, &["rev-parse", "--is-inside-work-tree"])
         .ok()
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<bool>().ok())
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse::<bool>()
+                .ok()
+        })
         .unwrap_or(false)
 }
 
@@ -1121,7 +1201,9 @@ mod tests {
 
         // A rename record carries an empty path and puts old/new in the two
         // following NUL records; `-` marks binary.
-        let stats = parse_numstat("1\t2\tsrc/one.rs\u{0}-\t-\tlogo.png\u{0}0\t0\t\u{0}old.rs\u{0}new.rs\u{0}");
+        let stats = parse_numstat(
+            "1\t2\tsrc/one.rs\u{0}-\t-\tlogo.png\u{0}0\t0\t\u{0}old.rs\u{0}new.rs\u{0}",
+        );
         assert_eq!(stats["src/one.rs"], (1, 2, false));
         assert_eq!(stats["logo.png"], (0, 0, true));
         assert_eq!(stats["new.rs"], (0, 0, false));
@@ -1131,15 +1213,27 @@ mod tests {
     fn snapshot_change_type_separates_added_from_untracked() {
         let mut head = std::collections::HashSet::new();
         head.insert("tracked.rs".to_string());
-        assert_eq!(snapshot_change_type("A", "tracked.rs", None, &head), "added");
-        assert_eq!(snapshot_change_type("A", "fresh.rs", None, &head), "untracked");
+        assert_eq!(
+            snapshot_change_type("A", "tracked.rs", None, &head),
+            "added"
+        );
+        assert_eq!(
+            snapshot_change_type("A", "fresh.rs", None, &head),
+            "untracked"
+        );
         assert_eq!(snapshot_change_type("D", "gone.rs", None, &head), "deleted");
-        assert_eq!(snapshot_change_type("M", "tracked.rs", None, &head), "modified");
+        assert_eq!(
+            snapshot_change_type("M", "tracked.rs", None, &head),
+            "modified"
+        );
         assert_eq!(
             snapshot_change_type("R100", "new.rs", Some("tracked.rs"), &head),
             "modified"
         );
-        assert_eq!(snapshot_change_type("R100", "new.rs", Some("old.rs"), &head), "untracked");
+        assert_eq!(
+            snapshot_change_type("R100", "new.rs", Some("old.rs"), &head),
+            "untracked"
+        );
     }
 
     /// The delivery card used to publish every dirty file in the workspace on a
@@ -1276,7 +1370,8 @@ mod tests {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
-        cmd.output().unwrap_or_else(|error| panic!("git {args:?}: {error}"))
+        cmd.output()
+            .unwrap_or_else(|error| panic!("git {args:?}: {error}"))
     }
 
     #[test]
@@ -1293,22 +1388,25 @@ mod tests {
         let tracked = dir.join("keep.txt");
         std::fs::write(&tracked, "original\n").unwrap();
         assert!(run_in(&dir, &["init", "-q"]).status.success());
-        assert!(run_in(&dir, &["config", "user.email", "test@example.com"]).status.success());
-        assert!(run_in(&dir, &["config", "user.name", "test"]).status.success());
+        assert!(run_in(&dir, &["config", "user.email", "test@example.com"])
+            .status
+            .success());
+        assert!(run_in(&dir, &["config", "user.name", "test"])
+            .status
+            .success());
         let _ = run_in(&dir, &["config", "commit.gpgsign", "false"]);
         let _ = run_in(&dir, &["config", "core.autocrlf", "false"]);
         assert!(run_in(&dir, &["add", "keep.txt"]).status.success());
-        assert!(run_in(&dir, &["commit", "-q", "-m", "init"]).status.success());
+        assert!(run_in(&dir, &["commit", "-q", "-m", "init"])
+            .status
+            .success());
 
         std::fs::write(&tracked, "edited\n").unwrap();
         let extra = dir.join("new.txt");
         std::fs::write(&extra, "untracked\n").unwrap();
 
-        let result = restore_turn_files(
-            &dir,
-            &["keep.txt".into(), "new.txt".into()],
-        )
-        .expect("restore");
+        let result =
+            restore_turn_files(&dir, &["keep.txt".into(), "new.txt".into()]).expect("restore");
         assert_eq!(result.restored, vec!["keep.txt".to_string()]);
         assert_eq!(result.removed, vec!["new.txt".to_string()]);
         assert_eq!(std::fs::read_to_string(&tracked).unwrap(), "original\n");
@@ -1330,11 +1428,17 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("keep.txt"), "x\n").unwrap();
         assert!(run_in(&dir, &["init", "-q"]).status.success());
-        assert!(run_in(&dir, &["config", "user.email", "test@example.com"]).status.success());
-        assert!(run_in(&dir, &["config", "user.name", "test"]).status.success());
+        assert!(run_in(&dir, &["config", "user.email", "test@example.com"])
+            .status
+            .success());
+        assert!(run_in(&dir, &["config", "user.name", "test"])
+            .status
+            .success());
         let _ = run_in(&dir, &["config", "commit.gpgsign", "false"]);
         assert!(run_in(&dir, &["add", "keep.txt"]).status.success());
-        assert!(run_in(&dir, &["commit", "-q", "-m", "init"]).status.success());
+        assert!(run_in(&dir, &["commit", "-q", "-m", "init"])
+            .status
+            .success());
 
         let err = restore_turn_files(&dir, &["../secret.txt".into()]).unwrap_err();
         assert!(err.to_lowercase().contains("invalid"), "{err}");

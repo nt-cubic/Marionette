@@ -91,12 +91,16 @@ fn fold_file(path: &Path, session_key: &str, parent_id: Option<&str>, sinks: &mu
         }
         match json_str(&row, "type") {
             Some("assistant") => {
-                let Some(message) = row.get("message") else { continue };
+                let Some(message) = row.get("message") else {
+                    continue;
+                };
                 let model = json_str(message, "model").unwrap_or("");
                 if model.is_empty() || model.contains("<synthetic>") {
                     continue;
                 }
-                let Some(usage) = message.get("usage") else { continue };
+                let Some(usage) = message.get("usage") else {
+                    continue;
+                };
                 let msg_id = json_str(message, "id").unwrap_or("").to_string();
                 let request_id = json_str(&row, "requestId").unwrap_or("").to_string();
                 if !msg_id.is_empty() || !request_id.is_empty() {
@@ -107,8 +111,7 @@ fn fold_file(path: &Path, session_key: &str, parent_id: Option<&str>, sinks: &mu
                 }
                 let t_ms = json_str(&row, "timestamp").and_then(iso_ms).unwrap_or(0);
                 let input = json_u64(usage, "input_tokens").unwrap_or(0);
-                let cache_creation =
-                    json_u64(usage, "cache_creation_input_tokens").unwrap_or(0);
+                let cache_creation = json_u64(usage, "cache_creation_input_tokens").unwrap_or(0);
                 let cached = json_u64(usage, "cache_read_input_tokens").unwrap_or(0);
                 let output = json_u64(usage, "output_tokens").unwrap_or(0);
                 if input == 0 && output == 0 && cached == 0 && cache_creation == 0 {
@@ -118,14 +121,20 @@ fn fold_file(path: &Path, session_key: &str, parent_id: Option<&str>, sinks: &mu
                     .get("output_tokens_details")
                     .and_then(|d| json_u64(d, "thinking_tokens"))
                     .unwrap_or(0);
-                let sidechain = row.get("isSidechain").and_then(|v| v.as_bool()).unwrap_or(false);
+                let sidechain = row
+                    .get("isSidechain")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 let target = if sidechain {
                     let agent_key = json_str(&row, "agentId")
                         .map(|a| format!("agent-{a}"))
                         .unwrap_or_else(|| "agent-sidechain".to_string());
-                    sinks.sidechains.entry(agent_key.clone()).or_insert_with(|| {
-                        new_sidechain(&agent_key, parent_id.unwrap_or(session_key))
-                    })
+                    sinks
+                        .sidechains
+                        .entry(agent_key.clone())
+                        .or_insert_with(|| {
+                            new_sidechain(&agent_key, parent_id.unwrap_or(session_key))
+                        })
                 } else {
                     &mut *sinks.main
                 };
@@ -144,7 +153,10 @@ fn fold_file(path: &Path, session_key: &str, parent_id: Option<&str>, sinks: &mu
                 });
             }
             Some("user") => {
-                let sidechain = row.get("isSidechain").and_then(|v| v.as_bool()).unwrap_or(false);
+                let sidechain = row
+                    .get("isSidechain")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 let compact_summary = row
                     .get("isCompactSummary")
                     .and_then(|v| v.as_bool())
@@ -153,7 +165,9 @@ fn fold_file(path: &Path, session_key: &str, parent_id: Option<&str>, sinks: &mu
                 if compact_summary || is_meta {
                     continue;
                 }
-                let Some(message) = row.get("message") else { continue };
+                let Some(message) = row.get("message") else {
+                    continue;
+                };
                 let text = user_text(message);
                 let Some(text) = text else { continue };
                 let t_ms = json_str(&row, "timestamp").and_then(iso_ms).unwrap_or(0);
@@ -161,12 +175,13 @@ fn fold_file(path: &Path, session_key: &str, parent_id: Option<&str>, sinks: &mu
                     let agent_key = json_str(&row, "agentId")
                         .map(|a| format!("agent-{a}"))
                         .unwrap_or_else(|| "agent-sidechain".to_string());
-                    let collector = sinks
-                        .sidechains
-                        .entry(agent_key.clone())
-                        .or_insert_with(|| {
-                            new_sidechain(&agent_key, parent_id.unwrap_or(session_key))
-                        });
+                    let collector =
+                        sinks
+                            .sidechains
+                            .entry(agent_key.clone())
+                            .or_insert_with(|| {
+                                new_sidechain(&agent_key, parent_id.unwrap_or(session_key))
+                            });
                     collector.push_turn(t_ms);
                 } else {
                     if first_user_text.is_none() {
@@ -242,11 +257,7 @@ fn user_text(message: &Value) -> Option<String> {
 
 /// Fold one main session file (stem = native id) plus its sibling
 /// `subagents/agent-*.jsonl` files.
-fn parse_session(
-    path: &Path,
-    keep_from_ms: i64,
-    out: &mut Vec<SessionFacts>,
-) {
+fn parse_session(path: &Path, keep_from_ms: i64, out: &mut Vec<SessionFacts>) {
     let stem = path
         .file_stem()
         .and_then(|n| n.to_str())
@@ -276,8 +287,7 @@ fn parse_session(
             .map(|e| e.path())
             .filter(|p| {
                 p.extension().and_then(|e| e.to_str()) == Some("jsonl")
-                    && p
-                        .file_name()
+                    && p.file_name()
                         .and_then(|n| n.to_str())
                         .map(|n| n.starts_with("agent-"))
                         .unwrap_or(false)
@@ -322,7 +332,12 @@ fn parse_session(
     }
 }
 
-pub(crate) fn scan(root: &Path, cache: &mut Cache, force: bool, keep_from_ms: i64) -> SourceOutcome {
+pub(crate) fn scan(
+    root: &Path,
+    cache: &mut Cache,
+    force: bool,
+    keep_from_ms: i64,
+) -> SourceOutcome {
     let mut outcome = SourceOutcome::new(AGENT, Some(root.to_string_lossy().into_owned()));
     let mut live_keys: Vec<String> = Vec::new();
     let mut sessions: Vec<SessionFacts> = Vec::new();
@@ -552,7 +567,10 @@ mod tests {
         let mut out = Vec::new();
         parse_session(&file, 0, &mut out);
         assert_eq!(out.len(), 2);
-        let child = out.iter().find(|s| s.native_id == "agent-beef0000").unwrap();
+        let child = out
+            .iter()
+            .find(|s| s.native_id == "agent-beef0000")
+            .unwrap();
         assert_eq!(child.parent_native_id.as_deref(), Some("sess-3"));
         assert_eq!(child.hours[0].requests, 1);
         let parent = out.iter().find(|s| s.native_id == "sess-3").unwrap();

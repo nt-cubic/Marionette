@@ -340,11 +340,20 @@ fn chat_buckets(u: &serde_json::Value) -> Buckets {
     let g = |k: &str| u.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
     let prompt = g("prompt_tokens");
     let details = u.get("prompt_tokens_details").and_then(|d| d.as_object());
-    let dn = |k: &str| details.and_then(|d| d.get(k)).and_then(|v| v.as_u64()).unwrap_or(0);
+    let dn = |k: &str| {
+        details
+            .and_then(|d| d.get(k))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    };
     let mut read = dn("cached_tokens");
     let mut write = dn("cache_write_tokens");
     if read == 0 {
-        for k in ["prompt_cache_hit_tokens", "cached_tokens", "num_cached_tokens"] {
+        for k in [
+            "prompt_cache_hit_tokens",
+            "cached_tokens",
+            "num_cached_tokens",
+        ] {
             let n = g(k);
             if n != 0 {
                 read = n;
@@ -358,8 +367,17 @@ fn chat_buckets(u: &serde_json::Value) -> Buckets {
         write = g("cache_creation_input_tokens");
         whole = prompt >= read + write;
     }
-    let input = if whole { prompt.saturating_sub(read + write) } else { prompt };
-    Buckets { in_tokens: input, out_tokens: g("completion_tokens"), cache_read: read, cache_write: write }
+    let input = if whole {
+        prompt.saturating_sub(read + write)
+    } else {
+        prompt
+    };
+    Buckets {
+        in_tokens: input,
+        out_tokens: g("completion_tokens"),
+        cache_read: read,
+        cache_write: write,
+    }
 }
 
 /// responses 方言的桶（Go responses.go:1659 rUsage / :1675 usage()）：
@@ -440,9 +458,15 @@ impl UsageTap {
         if !has_usage(line) {
             return;
         }
-        let Ok(text) = std::str::from_utf8(line) else { return };
-        let Some(data) = text.trim_start().strip_prefix("data:") else { return };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(data.trim()) else { return };
+        let Ok(text) = std::str::from_utf8(line) else {
+            return;
+        };
+        let Some(data) = text.trim_start().strip_prefix("data:") else {
+            return;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(data.trim()) else {
+            return;
+        };
         self.note_event(&v);
     }
 
@@ -490,7 +514,12 @@ impl UsageTap {
     /// Go ir.go:652 `Usage.add`：后到的**非零**桶覆盖，零不清洗已见非零值
     /// ——显式 0 与缺字段在账面上都是 None，不编数。
     fn add(&mut self, b: Buckets) {
-        let Buckets { in_tokens, out_tokens, cache_read, cache_write } = b;
+        let Buckets {
+            in_tokens,
+            out_tokens,
+            cache_read,
+            cache_write,
+        } = b;
         if in_tokens > 0 {
             self.buckets.in_tokens = Some(in_tokens);
         }
@@ -554,7 +583,12 @@ impl TurnLog {
         session: Option<String>,
         began: Instant,
     ) -> TurnLog {
-        TurnLog { agent, model: model.to_string(), session, began }
+        TurnLog {
+            agent,
+            model: model.to_string(),
+            session,
+            began,
+        }
     }
 
     /// 开一个流式 tap（配合 [`TapReader`] 包在 relay 链上）。
@@ -620,7 +654,13 @@ pub(crate) struct TapReader<R: Read> {
 
 impl<R: Read> TapReader<R> {
     pub(crate) fn new(tap: UsageTap, inner: R) -> TapReader<R> {
-        TapReader { inner, tap, partial: Vec::new(), line_dead: false, in_line: false }
+        TapReader {
+            inner,
+            tap,
+            partial: Vec::new(),
+            line_dead: false,
+            in_line: false,
+        }
     }
 
     /// 喂一段刚读到的字节（零拷贝逐行；跨 chunk 行经 partial 缓冲）。
@@ -726,7 +766,12 @@ impl<R: Read> Drop for TapReader<R> {
 /// Go 在非 Windows 上为吞吐持有句柄（usage.go:340-372 `heldLog`，#3725），
 /// Windows 本就每次开关；Rust 引擎的调用频率下不值得一枚常开句柄。
 fn append_line(path: &Path, line: &str, failures: &AtomicU64) {
-    let open = || std::fs::OpenOptions::new().create(true).append(true).open(path);
+    let open = || {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+    };
     let mut file = match open() {
         Ok(f) => f,
         Err(_) => {
@@ -780,7 +825,9 @@ fn read_tail_records(path: &Path) -> Vec<UsageRecord> {
 /// （Windows rename 不覆盖目标）。删/换名失败（文件被占）就这次不轮转，
 /// 下次启动再试——台账仍可 append，只是继续变大。
 fn rotate_if_huge(path: &Path) {
-    let Ok(md) = std::fs::metadata(path) else { return };
+    let Ok(md) = std::fs::metadata(path) else {
+        return;
+    };
     if md.len() <= ROTATE_BYTES {
         return;
     }
@@ -941,7 +988,13 @@ mod tests {
             ..Default::default()
         });
         ledger.flush();
-        assert_eq!(std::fs::read_to_string(usage_path()).unwrap().lines().count(), 1);
+        assert_eq!(
+            std::fs::read_to_string(usage_path())
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
         let got = ledger.records_since(0);
         assert_eq!(got.len(), 1);
         assert!(got[0].rejected);
@@ -1057,7 +1110,11 @@ mod tests {
         std::fs::write(&legacy, &original).unwrap();
         let ledger = UsageLedger::open();
         assert_eq!(ledger.records_since(0).len(), 1);
-        assert_eq!(std::fs::read_to_string(&legacy).unwrap(), original, "legacy Magpie ledger is untouched");
+        assert_eq!(
+            std::fs::read_to_string(&legacy).unwrap(),
+            original,
+            "legacy Magpie ledger is untouched"
+        );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), rust_line);
         drop(ledger);
 
@@ -1206,10 +1263,22 @@ mod tests {
         tap.finish();
         let r = tap_record_of(&ledger);
         assert_eq!(r.agent, "anthropic");
-        assert_eq!(r.in_tokens, Some(700), "anthropic 的 input_tokens 本就只数非缓存");
-        assert_eq!(r.out_tokens, Some(42), "delta 的 output 覆盖 start 的占位 1");
+        assert_eq!(
+            r.in_tokens,
+            Some(700),
+            "anthropic 的 input_tokens 本就只数非缓存"
+        );
+        assert_eq!(
+            r.out_tokens,
+            Some(42),
+            "delta 的 output 覆盖 start 的占位 1"
+        );
         assert_eq!(r.cache_read, Some(500));
-        assert_eq!(r.cache_write, Some(140), "cache_creation 两档之和（120 vs 80+60 取大）");
+        assert_eq!(
+            r.cache_write,
+            Some(140),
+            "cache_creation 两档之和（120 vs 80+60 取大）"
+        );
     }
 
     /// 不编数：全零 usage（翻译层补的占位、空回合）与没提 usage 的体，
@@ -1258,7 +1327,11 @@ mod tests {
         assert_eq!(r.in_tokens, Some(650));
         assert_eq!(r.out_tokens, Some(30));
         assert_eq!(r.cache_read, Some(250));
-        assert!(r.millis > 0, "真实 millis（回合起点→流尾），got {}", r.millis);
+        assert!(
+            r.millis > 0,
+            "真实 millis（回合起点→流尾），got {}",
+            r.millis
+        );
     }
 
     /// 任意切割不变量：一字节一段与整段喂入，落账行一致（Chattidy 同款
@@ -1304,7 +1377,8 @@ mod tests {
     /// 上层提前收口）同样落——两路各恰一行。
     #[test]
     fn tap_reader_records_on_error_and_drop() {
-        let head = "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":3}}\n\n";
+        let head =
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":3}}\n\n";
         // 头是正常字节、读完即抛错（厂商半途断流的最小模拟）。
         struct HeadThenErr(Vec<u8>, bool);
         impl Read for HeadThenErr {
@@ -1318,7 +1392,10 @@ mod tests {
                     }
                     return Ok(n);
                 }
-                Err(std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "cut"))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionAborted,
+                    "cut",
+                ))
             }
         }
         let ledger = memory_ledger();
@@ -1326,7 +1403,11 @@ mod tests {
         let mut reader = TapReader::new(tap, HeadThenErr(head.as_bytes().to_vec(), false));
         let mut out = Vec::new();
         let err = reader.read_to_end(&mut out).unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::ConnectionAborted, "错误原样上抛");
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::ConnectionAborted,
+            "错误原样上抛"
+        );
         assert_eq!(out, head.as_bytes());
         let r = tap_record_of(&ledger);
         assert_eq!(r.in_tokens, Some(11), "断流前已见的桶照记");

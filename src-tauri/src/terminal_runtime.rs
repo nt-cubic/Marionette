@@ -212,10 +212,9 @@ impl TerminalInstance {
                     // Reaped elsewhere (kill_command / refresh_exit_status) —
                     // the status is already recorded in the snapshot.
                     None => {
-                        let snap = self
-                            .snapshot
-                            .lock()
-                            .map_err(|_| TerminalError::Internal("snapshot lock poisoned".into()))?;
+                        let snap = self.snapshot.lock().map_err(|_| {
+                            TerminalError::Internal("snapshot lock poisoned".into())
+                        })?;
                         return Ok((snap.exit_code, snap.signal.clone()));
                     }
                 }
@@ -412,9 +411,13 @@ fn drain_pty_pending_with(
                 }
                 // Remaining bytes are CP932 pairs (ASCII already drained as
                 // UTF-8). Odd length + trailing lead = truncated pair.
-                let keep_lead = pending.len() % 2 == 1
-                    && pending.last().copied().is_some_and(is_dbcs_lead);
-                let take = if keep_lead { pending.len() - 1 } else { pending.len() };
+                let keep_lead =
+                    pending.len() % 2 == 1 && pending.last().copied().is_some_and(is_dbcs_lead);
+                let take = if keep_lead {
+                    pending.len() - 1
+                } else {
+                    pending.len()
+                };
                 if take == 0 {
                     return;
                 }
@@ -471,9 +474,7 @@ impl TerminalRuntime {
                 .filter(|(_, t)| t.marionette_session_id == marionette_session_id)
                 .map(|(id, _)| id.clone())
                 .collect();
-            ids.into_iter()
-                .filter_map(|id| map.remove(&id))
-                .collect()
+            ids.into_iter().filter_map(|id| map.remove(&id)).collect()
         };
         for term in removed {
             let _ = term.kill_command();
@@ -490,9 +491,7 @@ impl TerminalRuntime {
                 .filter(|(_, t)| t.agent_session_id == agent_session_id)
                 .map(|(id, _)| id.clone())
                 .collect();
-            ids.into_iter()
-                .filter_map(|id| map.remove(&id))
-                .collect()
+            ids.into_iter().filter_map(|id| map.remove(&id)).collect()
         };
         for term in removed {
             let _ = term.kill_command();
@@ -507,7 +506,9 @@ impl TerminalRuntime {
         fallback_agent_session_id: Option<&str>,
     ) -> Result<Value, TerminalError> {
         match method {
-            "terminal/create" => self.create(params, marionette_session_id, fallback_agent_session_id),
+            "terminal/create" => {
+                self.create(params, marionette_session_id, fallback_agent_session_id)
+            }
             "terminal/output" => self.output(params),
             "terminal/wait_for_exit" => self.wait_for_exit(params),
             "terminal/kill" => self.kill(params),
@@ -551,11 +552,7 @@ impl TerminalRuntime {
                 row
             })
             .collect();
-        rows.sort_by_key(|row| {
-            row.get("startedAtMs")
-                .and_then(Value::as_u64)
-                .unwrap_or(0)
-        });
+        rows.sort_by_key(|row| row.get("startedAtMs").and_then(Value::as_u64).unwrap_or(0));
         rows
     }
 
@@ -962,10 +959,7 @@ mod tests {
             )
             .expect("output");
         let text = out["output"].as_str().unwrap_or("");
-        assert!(
-            text.contains("hello-marionette"),
-            "output was: {text:?}"
-        );
+        assert!(text.contains("hello-marionette"), "output was: {text:?}");
 
         let _ = rt.handle(
             "terminal/release",

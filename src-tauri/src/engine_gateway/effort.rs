@@ -57,7 +57,10 @@ fn spell_levels(suffix: &str) -> Option<Vec<String>> {
 pub fn parse_member(id: &str, has_model: &dyn Fn(&str) -> bool) -> ParsedMember {
     let id = id.trim();
     if id.starts_with("group/") {
-        return ParsedMember { model: id.to_string(), ..Default::default() };
+        return ParsedMember {
+            model: id.to_string(),
+            ..Default::default()
+        };
     }
     // `#account`（账号名里不含 `/`；`m#x` 的 `#` 不在位置 0）
     let mut rest = id;
@@ -82,12 +85,22 @@ pub fn parse_member(id: &str, has_model: &dyn Fn(&str) -> bool) -> ParsedMember 
         if i > 0 {
             if let Some(levels) = spell_levels(&rest[i + 1..]) {
                 if !has_model(rest) {
-                    return ParsedMember { model: rest[..i].to_string(), levels, account, fast };
+                    return ParsedMember {
+                        model: rest[..i].to_string(),
+                        levels,
+                        account,
+                        fast,
+                    };
                 }
             }
         }
     }
-    ParsedMember { model: rest.to_string(), levels: Vec::new(), account, fast }
+    ParsedMember {
+        model: rest.to_string(),
+        levels: Vec::new(),
+        account,
+        fast,
+    }
 }
 
 /// 在 `levels` 里取离 `asked` 最近的一档（Go `Member.Levels` 语义：agent 要的
@@ -136,7 +149,8 @@ pub fn budget_of(effort: &str) -> u64 {
 /// 请求体当前要的强度（自己协议的话）；没要 → None。
 pub fn requested(proto: Proto, v: &serde_json::Value) -> Option<String> {
     let word = |s: Option<&str>| {
-        s.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty() && s != "none")
+        s.map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty() && s != "none")
     };
     match proto {
         Proto::Chat => word(v.get("reasoning_effort").and_then(|x| x.as_str())),
@@ -150,7 +164,10 @@ pub fn requested(proto: Proto, v: &serde_json::Value) -> Option<String> {
             if let Some(e) = word(v.pointer("/output_config/effort").and_then(|x| x.as_str())) {
                 return Some(e);
             }
-            let budget = thinking.get("budget_tokens").and_then(|b| b.as_u64()).unwrap_or(0);
+            let budget = thinking
+                .get("budget_tokens")
+                .and_then(|b| b.as_u64())
+                .unwrap_or(0);
             Some(
                 match budget {
                     0 => "medium",
@@ -192,8 +209,12 @@ pub fn apply(
             map.insert("reasoning_effort".into(), serde_json::Value::String(sent));
         }
         Proto::Responses => {
-            let reasoning = map.entry("reasoning").or_insert_with(|| serde_json::json!({}));
-            reasoning.as_object_mut()?.insert("effort".into(), serde_json::Value::String(sent));
+            let reasoning = map
+                .entry("reasoning")
+                .or_insert_with(|| serde_json::json!({}));
+            reasoning
+                .as_object_mut()?
+                .insert("effort".into(), serde_json::Value::String(sent));
         }
         Proto::Anthropic => {
             let adaptive = map
@@ -202,8 +223,11 @@ pub fn apply(
                 .and_then(|t| t.as_str())
                 == Some("adaptive");
             if adaptive {
-                let oc = map.entry("output_config").or_insert_with(|| serde_json::json!({}));
-                oc.as_object_mut()?.insert("effort".into(), serde_json::Value::String(sent));
+                let oc = map
+                    .entry("output_config")
+                    .or_insert_with(|| serde_json::json!({}));
+                oc.as_object_mut()?
+                    .insert("effort".into(), serde_json::Value::String(sent));
             } else {
                 let mut budget = budget_of(&sent);
                 if let Some(max) = map.get("max_tokens").and_then(|m| m.as_u64()) {
@@ -238,7 +262,10 @@ mod tests {
     #[test]
     fn member_suffixes() {
         // 用户机上真实存在的两个别名组成员
-        let m = parse_member("source-73800e7663517058/deepseek-v4.1-flash:1017:max", &none);
+        let m = parse_member(
+            "source-73800e7663517058/deepseek-v4.1-flash:1017:max",
+            &none,
+        );
         assert_eq!(m.model, "source-73800e7663517058/deepseek-v4.1-flash:1017");
         assert_eq!(m.levels, vec!["max"]);
         let m = parse_member("codex/gpt-6-luna:xhigh", &none);
@@ -246,7 +273,13 @@ mod tests {
         assert_eq!(m.levels, vec!["xhigh"]);
         // 模型自己的 tag 不是强度
         for id in ["ollama/qwen:7b", "openrouter/x/y:free", "p/m:1017", "p/m:0"] {
-            assert_eq!(parse_member(id, &none), ParsedMember { model: id.into(), ..Default::default() });
+            assert_eq!(
+                parse_member(id, &none),
+                ParsedMember {
+                    model: id.into(),
+                    ..Default::default()
+                }
+            );
         }
         // 多档 + fast + account
         let m = parse_member("p/m:High+low:fast#acct", &none);
@@ -266,8 +299,17 @@ mod tests {
     fn apply_only_when_reasoning_asked() {
         let lv = vec!["max".to_string()];
         // chat：要了思考 → 改；没要 → 不动（None）
-        let out = apply(Proto::Chat, br#"{"model":"m","reasoning_effort":"low"}"#, &lv, &[]).unwrap();
-        assert_eq!(serde_json::from_slice::<serde_json::Value>(&out).unwrap()["reasoning_effort"], "max");
+        let out = apply(
+            Proto::Chat,
+            br#"{"model":"m","reasoning_effort":"low"}"#,
+            &lv,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&out).unwrap()["reasoning_effort"],
+            "max"
+        );
         assert!(apply(Proto::Chat, br#"{"model":"m"}"#, &lv, &[]).is_none());
         assert!(apply(Proto::Chat, br#"{"reasoning_effort":"none"}"#, &lv, &[]).is_none());
         // responses：只改 effort，reasoning 其余字段保留
@@ -289,7 +331,10 @@ mod tests {
             &[],
         )
         .unwrap();
-        assert_eq!(serde_json::from_slice::<serde_json::Value>(&out).unwrap()["reasoning_effort"], "low");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&out).unwrap()["reasoning_effort"],
+            "low"
+        );
     }
 
     #[test]
@@ -302,9 +347,21 @@ mod tests {
             &[],
         )
         .unwrap();
-        assert_eq!(serde_json::from_slice::<serde_json::Value>(&out).unwrap()["thinking"]["budget_tokens"], 24000);
-        let out = apply(Proto::Anthropic, br#"{"thinking":{"type":"adaptive"}}"#, &lv, &[]).unwrap();
-        assert_eq!(serde_json::from_slice::<serde_json::Value>(&out).unwrap()["output_config"]["effort"], "high");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&out).unwrap()["thinking"]["budget_tokens"],
+            24000
+        );
+        let out = apply(
+            Proto::Anthropic,
+            br#"{"thinking":{"type":"adaptive"}}"#,
+            &lv,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&out).unwrap()["output_config"]["effort"],
+            "high"
+        );
         assert!(apply(Proto::Anthropic, br#"{"messages":[]}"#, &lv, &[]).is_none());
     }
 

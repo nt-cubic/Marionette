@@ -100,7 +100,10 @@ pub enum EngineStatus {
     /// 未安装也未尝试。UI 引导「启用」。
     Absent,
     /// 后台下载中（进度同时走 `engine-download-progress` 事件）。
-    Downloading { downloaded: u64, total: u64 },
+    Downloading {
+        downloaded: u64,
+        total: u64,
+    },
     /// 已装好，正在拉 serve + 等健康。
     Starting,
     /// 网关在 127.0.0.1 上可用。`reused = true` 表示复用了用户自装实例
@@ -110,7 +113,9 @@ pub enum EngineStatus {
         version: Option<String>,
         reused: bool,
     },
-    Failed { error: String },
+    Failed {
+        error: String,
+    },
 }
 
 /// serve 子进程句柄。测试用 Fake 变体（不起真进程）。
@@ -136,7 +141,8 @@ struct InProcessServe {
 #[cfg(engine_rust_active)]
 impl InProcessServe {
     fn stop(&self) {
-        self.shutdown.store(true, std::sync::atomic::Ordering::Release);
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::Release);
         // 有界等退出：kill 之后立刻有端口探测的路径（update → place_and_prep
         // → find_free_port_from / 复用探测），必须确认监听真关了再放行；
         // 但绝不能无限等——线程卡死时把关窗挂死比留个残监听更糟。50ms 轮询
@@ -214,7 +220,9 @@ fn state_lock() -> &'static Mutex<EngineState> {
 }
 
 fn lock_state() -> std::sync::MutexGuard<'static, EngineState> {
-    state_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    state_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 // ─── 事件（进度驱动 UI；无 AppHandle 的测试环境静默跳过）─────────────────────
@@ -260,13 +268,21 @@ fn set_status(status: EngineStatus) {
         EngineStatus::Absent => "engine state → absent".to_string(),
         EngineStatus::Downloading { .. } => unreachable!("handled above"),
         EngineStatus::Starting => "engine state → starting".to_string(),
-        EngineStatus::Running { port, version, reused } => format!(
+        EngineStatus::Running {
+            port,
+            version,
+            reused,
+        } => format!(
             "engine state → running port={port} version={} reused={reused}",
             version.as_deref().unwrap_or("?")
         ),
         EngineStatus::Failed { error } => format!("engine state → failed: {error}"),
     };
-    let level = if matches!(status, EngineStatus::Failed { .. }) { "warn" } else { "info" };
+    let level = if matches!(status, EngineStatus::Failed { .. }) {
+        "warn"
+    } else {
+        "info"
+    };
     crate::debug_log::append("engine", level, "", &summary, None);
 }
 
@@ -305,7 +321,12 @@ pub fn engine_dir() -> Result<PathBuf, String> {
     }
     crate::app_paths::global_dir()
         .map(|dir| dir.join("engine"))
-        .map_err(|error| crate::ts!("无法定位 ~/.marionette: {error}", "Could not locate ~/.marionette: {error}"))
+        .map_err(|error| {
+            crate::ts!(
+                "无法定位 ~/.marionette: {error}",
+                "Could not locate ~/.marionette: {error}"
+            )
+        })
 }
 
 fn exe_path(dir: &Path) -> PathBuf {
@@ -334,8 +355,7 @@ pub(crate) fn load_manifest_at(dir: &Path) -> Option<EngineManifest> {
     };
     match serde_json::from_str::<EngineManifest>(&text) {
         Ok(manifest)
-            if !manifest.version.trim().is_empty()
-                && !manifest.sha256.trim().is_empty() =>
+            if !manifest.version.trim().is_empty() && !manifest.sha256.trim().is_empty() =>
         {
             // sha256 归一成小写（SHA256SUMS 与我们自己的计算都是小写；规范
             // 化后 roundtrip 与比较不用惦记大小写）。
@@ -365,15 +385,31 @@ pub(crate) fn load_manifest_at(dir: &Path) -> Option<EngineManifest> {
 }
 
 pub(crate) fn save_manifest_at(dir: &Path, manifest: &EngineManifest) -> Result<(), String> {
-    let body = serde_json::to_string_pretty(manifest)
-        .map_err(|e| crate::ts!("序列化 manifest.json 失败: {e}", "Failed to serialize manifest.json: {e}"))?;
-    std::fs::create_dir_all(dir).map_err(|e| crate::ts!("创建 engine 目录失败: {e}", "Failed to create engine directory: {e}"))?;
+    let body = serde_json::to_string_pretty(manifest).map_err(|e| {
+        crate::ts!(
+            "序列化 manifest.json 失败: {e}",
+            "Failed to serialize manifest.json: {e}"
+        )
+    })?;
+    std::fs::create_dir_all(dir).map_err(|e| {
+        crate::ts!(
+            "创建 engine 目录失败: {e}",
+            "Failed to create engine directory: {e}"
+        )
+    })?;
     let temp = dir.join(format!("manifest.json.{}.tmp", std::process::id()));
-    std::fs::write(&temp, format!("{body}\n"))
-        .map_err(|e| crate::ts!("写 manifest.json 失败: {e}", "Failed to write manifest.json: {e}"))?;
+    std::fs::write(&temp, format!("{body}\n")).map_err(|e| {
+        crate::ts!(
+            "写 manifest.json 失败: {e}",
+            "Failed to write manifest.json: {e}"
+        )
+    })?;
     if let Err(error) = std::fs::rename(&temp, manifest_path(dir)) {
         let _ = std::fs::remove_file(&temp);
-        return Err(crate::ts!("manifest.json 原子落位失败: {error}", "Failed to atomically place manifest.json: {error}"));
+        return Err(crate::ts!(
+            "manifest.json 原子落位失败: {error}",
+            "Failed to atomically place manifest.json: {error}"
+        ));
     }
     Ok(())
 }
@@ -405,14 +441,23 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 fn sha256_of_file(path: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
-    let mut file =
-        std::fs::File::open(path).map_err(|e| crate::ts!("打开 {path} 失败: {e}", "Failed to open {path}: {e}", path = path.display()))?;
+    let mut file = std::fs::File::open(path).map_err(|e| {
+        crate::ts!(
+            "打开 {path} 失败: {e}",
+            "Failed to open {path}: {e}",
+            path = path.display()
+        )
+    })?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 256 * 1024];
     loop {
-        let n = file
-            .read(&mut buffer)
-            .map_err(|e| crate::ts!("读取 {path} 失败: {e}", "Failed to read {path}: {e}", path = path.display()))?;
+        let n = file.read(&mut buffer).map_err(|e| {
+            crate::ts!(
+                "读取 {path} 失败: {e}",
+                "Failed to read {path}: {e}",
+                path = path.display()
+            )
+        })?;
         if n == 0 {
             break;
         }
@@ -452,8 +497,12 @@ fn download_agent() -> Result<ureq::Agent, String> {
         // 测试直连（绕过用户本机代理，本地假 HTTP 服务才可达）。
         return loopback_agent();
     }
-    let connector = ureq::native_tls::TlsConnector::new()
-        .map_err(|e| crate::ts!("TLS 初始化失败 (schannel): {e}", "TLS init failed (schannel): {e}"))?;
+    let connector = ureq::native_tls::TlsConnector::new().map_err(|e| {
+        crate::ts!(
+            "TLS 初始化失败 (schannel): {e}",
+            "TLS init failed (schannel): {e}"
+        )
+    })?;
     let mut builder = ureq::AgentBuilder::new();
     builder = builder.tls_connector(std::sync::Arc::new(connector));
     let config = crate::proxy::load_proxy_config();
@@ -505,17 +554,28 @@ fn resolve_latest_release() -> Result<ReleasePlan, String> {
         .set("User-Agent", USER_AGENT)
         .timeout(Duration::from_secs(20))
         .call()
-        .map_err(|e| crate::ts!("查询 GitHub Releases 失败（无网络或被墙？）: {e}", "Failed to query GitHub Releases (offline or blocked?): {e}"))?;
-    let value: serde_json::Value = response
-        .into_json()
-        .map_err(|e| crate::ts!("解析 GitHub Releases 应答失败: {e}", "Failed to parse GitHub Releases response: {e}"))?;
+        .map_err(|e| {
+            crate::ts!(
+                "查询 GitHub Releases 失败（无网络或被墙？）: {e}",
+                "Failed to query GitHub Releases (offline or blocked?): {e}"
+            )
+        })?;
+    let value: serde_json::Value = response.into_json().map_err(|e| {
+        crate::ts!(
+            "解析 GitHub Releases 应答失败: {e}",
+            "Failed to parse GitHub Releases response: {e}"
+        )
+    })?;
     let tag = value
         .get("tag_name")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("")
         .to_string();
     if tag.is_empty() {
-        return Err(crate::ts!("GitHub Releases 应答里没有 tag_name", "GitHub Releases response has no tag_name"));
+        return Err(crate::ts!(
+            "GitHub Releases 应答里没有 tag_name",
+            "GitHub Releases response has no tag_name"
+        ));
     }
     let assets = value
         .get("assets")
@@ -532,7 +592,12 @@ fn resolve_latest_release() -> Result<ReleasePlan, String> {
         })
         .and_then(|asset| asset.get("browser_download_url"))
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| crate::ts!("latest release 没有 `{ASSET_NAME}` 资产", "latest release has no `{ASSET_NAME}` asset"))?
+        .ok_or_else(|| {
+            crate::ts!(
+                "latest release 没有 `{ASSET_NAME}` 资产",
+                "latest release has no `{ASSET_NAME}` asset"
+            )
+        })?
         .to_string();
     let sums_url = assets
         .iter()
@@ -544,18 +609,37 @@ fn resolve_latest_release() -> Result<ReleasePlan, String> {
         })
         .and_then(|asset| asset.get("browser_download_url"))
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| crate::ts!("latest release 没有校验文件（SHA256SUMS）— 拒绝无校验下载", "latest release has no checksums file (SHA256SUMS) — refusing unverified download"))?
+        .ok_or_else(|| {
+            crate::ts!(
+                "latest release 没有校验文件（SHA256SUMS）— 拒绝无校验下载",
+                "latest release has no checksums file (SHA256SUMS) — refusing unverified download"
+            )
+        })?
         .to_string();
     let sums_text = agent
         .get(&sums_url)
         .set("User-Agent", USER_AGENT)
         .timeout(Duration::from_secs(20))
         .call()
-        .map_err(|e| crate::ts!("下载 SHA256SUMS 失败: {e}", "Failed to download SHA256SUMS: {e}"))?
+        .map_err(|e| {
+            crate::ts!(
+                "下载 SHA256SUMS 失败: {e}",
+                "Failed to download SHA256SUMS: {e}"
+            )
+        })?
         .into_string()
-        .map_err(|e| crate::ts!("读取 SHA256SUMS 失败: {e}", "Failed to read SHA256SUMS: {e}"))?;
-    let sha256 = parse_sums_entry(&sums_text, ASSET_NAME)
-        .ok_or_else(|| crate::ts!("SHA256SUMS 里没有 `{ASSET_NAME}` 的条目", "No `{ASSET_NAME}` entry in SHA256SUMS"))?;
+        .map_err(|e| {
+            crate::ts!(
+                "读取 SHA256SUMS 失败: {e}",
+                "Failed to read SHA256SUMS: {e}"
+            )
+        })?;
+    let sha256 = parse_sums_entry(&sums_text, ASSET_NAME).ok_or_else(|| {
+        crate::ts!(
+            "SHA256SUMS 里没有 `{ASSET_NAME}` 的条目",
+            "No `{ASSET_NAME}` entry in SHA256SUMS"
+        )
+    })?;
     Ok(ReleasePlan {
         version: strip_v(&tag).to_string(),
         asset_url,
@@ -592,7 +676,12 @@ fn download_and_install(plan: &ReleasePlan, dir: &Path) -> Result<(), String> {
 }
 
 fn download_once(plan: &ReleasePlan, dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| crate::ts!("创建 engine 目录失败: {e}", "Failed to create engine directory: {e}"))?;
+    std::fs::create_dir_all(dir).map_err(|e| {
+        crate::ts!(
+            "创建 engine 目录失败: {e}",
+            "Failed to create engine directory: {e}"
+        )
+    })?;
     let temp = dir.join(format!("magpie.exe.{}.download", std::process::id()));
     let response = download_agent()?
         .get(&plan.asset_url)
@@ -606,20 +695,29 @@ fn download_once(plan: &ReleasePlan, dir: &Path) -> Result<(), String> {
         .and_then(|value| value.parse().ok())
         .unwrap_or(0);
     let mut reader = response.into_reader();
-    let mut file = std::fs::File::create(&temp)
-        .map_err(|e| crate::ts!("创建临时文件失败（{temp}）: {e}", "Failed to create temp file ({temp}): {e}", temp = temp.display()))?;
+    let mut file = std::fs::File::create(&temp).map_err(|e| {
+        crate::ts!(
+            "创建临时文件失败（{temp}）: {e}",
+            "Failed to create temp file ({temp}): {e}",
+            temp = temp.display()
+        )
+    })?;
     let mut buffer = vec![0u8; 64 * 1024];
     let mut downloaded: u64 = 0;
     let mut last_event = Instant::now();
     loop {
-        let n = reader
-            .read(&mut buffer)
-            .map_err(|e| crate::ts!("读取下载流失败: {e}", "Failed to read download stream: {e}"))?;
+        let n = reader.read(&mut buffer).map_err(|e| {
+            crate::ts!("读取下载流失败: {e}", "Failed to read download stream: {e}")
+        })?;
         if n == 0 {
             break;
         }
-        file.write_all(&buffer[..n])
-            .map_err(|e| crate::ts!("写入下载流失败: {e}", "Failed to write download stream: {e}"))?;
+        file.write_all(&buffer[..n]).map_err(|e| {
+            crate::ts!(
+                "写入下载流失败: {e}",
+                "Failed to write download stream: {e}"
+            )
+        })?;
         downloaded += n as u64;
         // 体积上限：sha256 只保证「内容对」，不保证不是 20GB 的假镜像。
         // 超限立刻止损，别把磁盘写穿。
@@ -638,7 +736,8 @@ fn download_once(plan: &ReleasePlan, dir: &Path) -> Result<(), String> {
             last_event = Instant::now();
         }
     }
-    file.flush().map_err(|e| crate::ts!("落盘失败: {e}", "Failed to flush file: {e}"))?;
+    file.flush()
+        .map_err(|e| crate::ts!("落盘失败: {e}", "Failed to flush file: {e}"))?;
     drop(file);
     if downloaded < 1024 * 1024 {
         let _ = std::fs::remove_file(&temp);
@@ -658,11 +757,18 @@ fn download_once(plan: &ReleasePlan, dir: &Path) -> Result<(), String> {
             actual = &actual[..8.min(actual.len())]
         ));
     }
-    set_status(EngineStatus::Downloading { downloaded, total: downloaded });
+    set_status(EngineStatus::Downloading {
+        downloaded,
+        total: downloaded,
+    });
     // 原子落位 + 围栏标记 + manifest。
     replace_engine_exe(&temp, dir)?;
-    std::fs::write(dir.join(".portable"), b"")
-        .map_err(|e| crate::ts!("写 .portable 标记失败: {e}", "Failed to write .portable marker: {e}"))?;
+    std::fs::write(dir.join(".portable"), b"").map_err(|e| {
+        crate::ts!(
+            "写 .portable 标记失败: {e}",
+            "Failed to write .portable marker: {e}"
+        )
+    })?;
     let manifest = EngineManifest {
         version: plan.version.clone(),
         sha256: plan.sha256.clone(),
@@ -674,7 +780,10 @@ fn download_once(plan: &ReleasePlan, dir: &Path) -> Result<(), String> {
         "info",
         "",
         &format!("engine installed version={}", plan.version),
-        Some(&format!("sha256={}…", &plan.sha256[..12.min(plan.sha256.len())])),
+        Some(&format!(
+            "sha256={}…",
+            &plan.sha256[..12.min(plan.sha256.len())]
+        )),
     );
     Ok(())
 }
@@ -835,14 +944,22 @@ fn replace_engine_exe(temp: &Path, dir: &Path) -> Result<(), String> {
         Err(error) => error,
     };
     if !target.exists() {
-        return Err(crate::ts!("magpie.exe 原子落位失败: {error}", "Failed to atomically place magpie.exe: {error}"));
+        return Err(crate::ts!(
+            "magpie.exe 原子落位失败: {error}",
+            "Failed to atomically place magpie.exe: {error}"
+        ));
     }
     let aside = dir.join(format!("magpie.exe.{}.old", std::process::id()));
     let _ = std::fs::remove_file(&aside);
     std::fs::rename(&target, &aside).map_err(|move_error| {
         crate::ts!("magpie.exe 原子落位失败（旧文件也让不开: {move_error}）: {error}", "Failed to atomically place magpie.exe (old file would not move aside: {move_error}): {error}")
     })?;
-    std::fs::rename(temp, &target).map_err(|e| crate::ts!("magpie.exe 原子落位失败: {e}", "Failed to atomically place magpie.exe: {e}"))?;
+    std::fs::rename(temp, &target).map_err(|e| {
+        crate::ts!(
+            "magpie.exe 原子落位失败: {e}",
+            "Failed to atomically place magpie.exe: {e}"
+        )
+    })?;
     crate::debug_log::append(
         "engine",
         "info",
@@ -857,14 +974,28 @@ fn replace_engine_exe(temp: &Path, dir: &Path) -> Result<(), String> {
 /// `.portable` 围栏 + manifest 记真实 sha——与下载路径共用 `is_installed_at`
 /// 的校验语义。纯输入参数，测试直接喂小夹具。
 fn install_embedded_engine_at(bytes: &[u8], version: &str, dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| crate::ts!("创建 engine 目录失败: {e}", "Failed to create engine directory: {e}"))?;
+    std::fs::create_dir_all(dir).map_err(|e| {
+        crate::ts!(
+            "创建 engine 目录失败: {e}",
+            "Failed to create engine directory: {e}"
+        )
+    })?;
     let temp = dir.join(format!("magpie.exe.{}.extract", std::process::id()));
-    std::fs::write(&temp, bytes)
-        .map_err(|e| crate::ts!("写解出临时文件失败（{temp}）: {e}", "Failed to write extracted temp file ({temp}): {e}", temp = temp.display()))?;
+    std::fs::write(&temp, bytes).map_err(|e| {
+        crate::ts!(
+            "写解出临时文件失败（{temp}）: {e}",
+            "Failed to write extracted temp file ({temp}): {e}",
+            temp = temp.display()
+        )
+    })?;
     let sha = sha256_of_file(&temp)?;
     replace_engine_exe(&temp, dir)?;
-    std::fs::write(dir.join(".portable"), b"")
-        .map_err(|e| crate::ts!("写 .portable 标记失败: {e}", "Failed to write .portable marker: {e}"))?;
+    std::fs::write(dir.join(".portable"), b"").map_err(|e| {
+        crate::ts!(
+            "写 .portable 标记失败: {e}",
+            "Failed to write .portable marker: {e}"
+        )
+    })?;
     let manifest = EngineManifest {
         version: version.to_string(),
         sha256: sha,
@@ -1023,9 +1154,13 @@ fn spawn_serve_magpie_child(exe: &Path, port: u16) -> Result<ChildHandle, String
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             command.creation_flags(CREATE_NO_WINDOW);
         }
-        let mut child = command
-            .spawn()
-            .map_err(|e| crate::ts!("拉起 magpie serve 失败（{exe}）: {e}", "Failed to launch magpie serve ({exe}): {e}", exe = exe.display()))?;
+        let mut child = command.spawn().map_err(|e| {
+            crate::ts!(
+                "拉起 magpie serve 失败（{exe}）: {e}",
+                "Failed to launch magpie serve ({exe}): {e}",
+                exe = exe.display()
+            )
+        })?;
         // 崩溃/强杀兜底：Job Object kill-on-close 带走引擎，防孤儿 magpie 常驻
         // （实测每个 ~100-160MB private，出过后要几分钟才自退）。正常退出路径
         // 本来就显式 kill，这里只补意外路径。
@@ -1083,13 +1218,23 @@ fn spawn_serve_in_process(port: u16, token: &str) -> Result<ChildHandle, String>
     // 出站代理注入：engine_gateway 不 import 主程序模块（dev bin 的 crate
     // 根不是 marionette），Marionette 的代理设置在这里喂给它。
     let proxy_config = crate::proxy::load_proxy_config();
-    crate::engine_gateway::set_outbound_proxy(
-        if proxy_config.enabled { Some(proxy_config.url) } else { None },
-    );
-    let gateway = crate::engine_gateway::Gateway::open()
-        .map_err(|e| crate::ts!("打开进程内引擎网关失败: {e}", "Failed to open the in-process engine gateway: {e}"))?;
-    let listener = std::net::TcpListener::bind(("127.0.0.1", port))
-        .map_err(|e| crate::ts!("绑定进程内引擎端口 {port} 失败: {e}", "Failed to bind the in-process engine port {port}: {e}"))?;
+    crate::engine_gateway::set_outbound_proxy(if proxy_config.enabled {
+        Some(proxy_config.url)
+    } else {
+        None
+    });
+    let gateway = crate::engine_gateway::Gateway::open().map_err(|e| {
+        crate::ts!(
+            "打开进程内引擎网关失败: {e}",
+            "Failed to open the in-process engine gateway: {e}"
+        )
+    })?;
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port)).map_err(|e| {
+        crate::ts!(
+            "绑定进程内引擎端口 {port} 失败: {e}",
+            "Failed to bind the in-process engine port {port}: {e}"
+        )
+    })?;
     let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let exited = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let thread_shutdown = shutdown.clone();
@@ -1118,35 +1263,40 @@ fn spawn_serve_in_process(port: u16, token: &str) -> Result<ChildHandle, String>
         })
         .is_ok();
     if !spawned {
-        return Err(crate::ts!("启动进程内引擎线程失败", "Failed to spawn the in-process engine thread"));
+        return Err(crate::ts!(
+            "启动进程内引擎线程失败",
+            "Failed to spawn the in-process engine thread"
+        ));
     }
     Ok(ChildHandle::InProcess(InProcessServe { shutdown, exited }))
 }
 
 fn spawn_log_thread<R: Read + Send + 'static>(reader: R) {
-    let _ = std::thread::Builder::new().name("engine-serve-log".into()).spawn(move || {
-        let mut reader = std::io::BufReader::new(reader);
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    let trimmed = line.trim_end_matches(['\r', '\n']);
-                    if trimmed.is_empty() {
-                        continue;
+    let _ = std::thread::Builder::new()
+        .name("engine-serve-log".into())
+        .spawn(move || {
+            let mut reader = std::io::BufReader::new(reader);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        let trimmed = line.trim_end_matches(['\r', '\n']);
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        crate::debug_log::append(
+                            "engine",
+                            "info",
+                            "",
+                            "serve:",
+                            Some(cap_at_char_boundary(trimmed, MAX_LOG_LINE)),
+                        );
                     }
-                    crate::debug_log::append(
-                        "engine",
-                        "info",
-                        "",
-                        "serve:",
-                        Some(cap_at_char_boundary(trimmed, MAX_LOG_LINE)),
-                    );
                 }
             }
-        }
-    });
+        });
 }
 
 /// Windows Job Object（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`）：本进程退出
@@ -1246,7 +1396,11 @@ fn is_orphan_engine(
         return false; // System Idle 亲子关系不明，宁可不碰
     }
     let dir = engine_dir.to_string_lossy().to_lowercase();
-    let dir = if dir.ends_with('\\') { dir } else { format!("{dir}\\") };
+    let dir = if dir.ends_with('\\') {
+        dir
+    } else {
+        format!("{dir}\\")
+    };
     if !image_path.to_lowercase().starts_with(&dir) {
         return false;
     }
@@ -1267,7 +1421,13 @@ fn reap_orphan_engines(dir: &Path) {
 
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot.is_null() || snapshot == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
-        crate::debug_log::append("engine", "warn", "", "orphan engine scan failed (snapshot)", None);
+        crate::debug_log::append(
+            "engine",
+            "warn",
+            "",
+            "orphan engine scan failed (snapshot)",
+            None,
+        );
         return;
     }
     // 先收齐整张表再判定：父进程存活要看「全表 PID 集合」，边遍历边杀会
@@ -1277,7 +1437,11 @@ fn reap_orphan_engines(dir: &Path) {
     entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
     if unsafe { Process32FirstW(snapshot, &mut entry) } != 0 {
         loop {
-            let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+            let len = entry
+                .szExeFile
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(entry.szExeFile.len());
             let name = String::from_utf16_lossy(&entry.szExeFile[..len]).to_lowercase();
             entries.push((entry.th32ProcessID, entry.th32ParentProcessID, name));
             if unsafe { Process32NextW(snapshot, &mut entry) } == 0 {
@@ -1293,7 +1457,9 @@ fn reap_orphan_engines(dir: &Path) {
             continue;
         }
         // 镜像路径拿不到（权限/竞态）就当不认识——绝不误杀。
-        let Some(image) = process_image_path(pid) else { continue };
+        let Some(image) = process_image_path(pid) else {
+            continue;
+        };
         if !is_orphan_engine(&name, &image, ppid, dir, |p| live_pids.contains(&p)) {
             continue;
         }
@@ -1466,7 +1632,10 @@ fn save_registered_ledger(path: &Path, names: &[String]) {
     unique.dedup();
     if let Ok(text) = serde_json::to_string(&unique) {
         let temp = path.with_extension("json.tmp");
-        if std::fs::write(&temp, text).and_then(|_| std::fs::rename(&temp, path)).is_err() {
+        if std::fs::write(&temp, text)
+            .and_then(|_| std::fs::rename(&temp, path))
+            .is_err()
+        {
             crate::debug_log::append(
                 "engine",
                 "warn",
@@ -1509,7 +1678,9 @@ fn register_key_providers(exe: &Path) {
             .iter()
             .filter(|entry| entry.kind == crate::credentials::CredentialKind::KeyPlan)
         {
-            let Some(preset) = entry.preset.as_deref() else { continue };
+            let Some(preset) = entry.preset.as_deref() else {
+                continue;
+            };
             if magpie_provider_for_preset(preset).is_none() {
                 continue;
             }
@@ -1538,7 +1709,10 @@ fn register_key_providers(exe: &Path) {
         crate::credentials::peek_opencode_api_keys(),
     );
     let plan = registration_plan(&key_plans, &references);
-    let ledger_path = home.join(".marionette").join("engine").join("registered-providers.json");
+    let ledger_path = home
+        .join(".marionette")
+        .join("engine")
+        .join("registered-providers.json");
     let ledger = load_registered_ledger(&ledger_path);
     let plan_names: Vec<&str> = plan.iter().map(|(name, _, _)| *name).collect();
     // 对账：账本里有、本次计划没有 → 引擎侧回收（只碰我们自己注册过的名字）。
@@ -1587,10 +1761,7 @@ fn register_key_providers(exe: &Path) {
     }
     for (provider_name, key, extra) in plan {
         // key 绝不进日志/事件——命令行参数只存在于这个短命子进程里。
-        let updated = run_magpie_cli(
-            exe,
-            &["provider", "key", provider_name, key.as_str()],
-        );
+        let updated = run_magpie_cli(exe, &["provider", "key", provider_name, key.as_str()]);
         let result = match updated {
             Ok(()) => Ok(()),
             Err(_) => {
@@ -1717,7 +1888,12 @@ fn maybe_refresh_source_live(exe: &Path, id: &str, force: bool, changed: &mut bo
     {
         due_map.insert(
             id.to_string(),
-            Instant::now() + if ok { SOURCE_LIVE_REFRESH_EVERY } else { SOURCE_LIVE_RETRY_BACKOFF },
+            Instant::now()
+                + if ok {
+                    SOURCE_LIVE_REFRESH_EVERY
+                } else {
+                    SOURCE_LIVE_RETRY_BACKOFF
+                },
         );
     }
 }
@@ -1787,8 +1963,10 @@ fn sync_sources_at(exe: &Path, force_refresh: bool) -> Vec<String> {
     let mut kept = vec![];
     let mut changed = false;
     for source in &discovery.sources {
-        if source.view.issue.is_some() { continue; }
-        let id=provider_id_slug(&source.view.id);
+        if source.view.issue.is_some() {
+            continue;
+        }
+        let id = provider_id_slug(&source.view.id);
         let manual = source.manual_entry_id().is_some();
         let model_ids: Vec<String> = source.view.models.iter().map(|m| m.id.clone()).collect();
         let pinned = pinned_models_pair(manual, &model_ids).is_some();
@@ -1796,51 +1974,84 @@ fn sync_sources_at(exe: &Path, force_refresh: bool) -> Vec<String> {
         // 抓不到列表的中转由旧注册的 picks 兜底，refresh 失败时原样保留。
         // **例外**：手动添加的自定义来源填了模型 ID（见 pinned_models_pair）。
         let endpoint_key = endpoint_key(source);
-        let mut pairs=vec![format!("{endpoint_key}={}",source.view.endpoint),format!("key={}",source.key),format!("name={}",source.view.label)];
-        for (k,v) in &source.headers { pairs.push(format!("header.{k}={v}")); }
-        pairs.extend(pinned_models_pair(manual, &model_ids));
-        let fingerprint=Sha256::digest(pairs.join("\n")).to_vec();
-        if fingerprints.get(&id)==Some(&fingerprint) && ledger.contains(&id) {
-            // 钉死清单不走 live 刷新：refresh→models all 会把清单解钉。
-            if !pinned { maybe_refresh_source_live(exe, &id, force_refresh, &mut changed); }
-            kept.push(id.clone()); continue;
+        let mut pairs = vec![
+            format!("{endpoint_key}={}", source.view.endpoint),
+            format!("key={}", source.key),
+            format!("name={}", source.view.label),
+        ];
+        for (k, v) in &source.headers {
+            pairs.push(format!("header.{k}={v}"));
         }
-        let mut args=vec!["provider", "set", id.as_str()];
+        pairs.extend(pinned_models_pair(manual, &model_ids));
+        let fingerprint = Sha256::digest(pairs.join("\n")).to_vec();
+        if fingerprints.get(&id) == Some(&fingerprint) && ledger.contains(&id) {
+            // 钉死清单不走 live 刷新：refresh→models all 会把清单解钉。
+            if !pinned {
+                maybe_refresh_source_live(exe, &id, force_refresh, &mut changed);
+            }
+            kept.push(id.clone());
+            continue;
+        }
+        let mut args = vec!["provider", "set", id.as_str()];
         args.extend(pairs.iter().map(String::as_str));
-        let result=run_magpie_cli(exe,&args).or_else(|_| {
-            let id_pair=format!("id={id}");
-            let mut args=vec!["provider","add",id.as_str(),id_pair.as_str()];
+        let result = run_magpie_cli(exe, &args).or_else(|_| {
+            let id_pair = format!("id={id}");
+            let mut args = vec!["provider", "add", id.as_str(), id_pair.as_str()];
             args.extend(pairs.iter().map(String::as_str));
-            run_magpie_cli(exe,&args)
+            run_magpie_cli(exe, &args)
         });
         match result {
             Ok(()) => {
-                fingerprints.insert(id.clone(),fingerprint); kept.push(id.clone()); changed = true;
+                fingerprints.insert(id.clone(), fingerprint);
+                kept.push(id.clone());
+                changed = true;
                 // 钉死的不解钉；从「填了 ID」改回留空（live）时指纹必变、必到这里，
                 // 由 refresh→all 把引擎里残留的旧清单解掉。
-                if !pinned { maybe_refresh_source_live(exe, &id, true, &mut changed); }
+                if !pinned {
+                    maybe_refresh_source_live(exe, &id, true, &mut changed);
+                }
             }
             // 过旧的种子二进制还没有精简 provider 命令。新种子已经自带，
             // 不必去下上游完整 magpie。
             Err(error) if error.contains("engine seed") => {
                 warnings.push(crate::ts!("当前内嵌引擎过旧，还不能登记自定义来源。重新安装本应用出厂引擎即可，不必下载上游完整版", "This embedded engine is too old to register custom sources. Reinstall the factory engine shipped with this app; a full upstream magpie download is not required"));
-                if ledger.contains(&id) {kept.push(id.clone());}
+                if ledger.contains(&id) {
+                    kept.push(id.clone());
+                }
             }
-            Err(_) => { warnings.push(crate::ts!("{label} 来源注册失败，可刷新重试", "{label} source registration failed; refresh to retry", label = source.view.label)); if ledger.contains(&id) {kept.push(id.clone());} }
+            Err(_) => {
+                warnings.push(crate::ts!(
+                    "{label} 来源注册失败，可刷新重试",
+                    "{label} source registration failed; refresh to retry",
+                    label = source.view.label
+                ));
+                if ledger.contains(&id) {
+                    kept.push(id.clone());
+                }
+            }
         }
     }
     // On unreadable source files retain old routes for retry; do not interpret
     // a parse failure as the user deliberately removing their provider.
     for id in &ledger {
-        if kept.contains(id) {continue;}
-        if !discovery.warnings.is_empty() || run_magpie_cli(exe,&["provider","rm",id]).is_err() { kept.push(id.clone()); }
-        else { fingerprints.remove(id); changed = true; }
+        if kept.contains(id) {
+            continue;
+        }
+        if !discovery.warnings.is_empty() || run_magpie_cli(exe, &["provider", "rm", id]).is_err() {
+            kept.push(id.clone());
+        } else {
+            fingerprints.remove(id);
+            changed = true;
+        }
     }
-    kept.sort(); kept.dedup();
-    save_registered_ledger(&path,&kept);
+    kept.sort();
+    kept.dedup();
+    save_registered_ledger(&path, &kept);
     if changed {
         if let Some(cache) = CATALOG.get() {
-            if let Ok(mut guard) = cache.lock() { *guard = None; }
+            if let Ok(mut guard) = cache.lock() {
+                *guard = None;
+            }
         }
     }
     warnings
@@ -1849,11 +2060,15 @@ fn sync_sources_at(exe: &Path, force_refresh: bool) -> Vec<String> {
 /// `force_refresh`：true = 手动面板刷新（排队等锁、强制 live 重抓）；
 /// false = 菜单打开等被动路径（不排队、按 6h/退避节奏走）。
 pub fn sync_discovered_sources(force_refresh: bool) -> Vec<String> {
-    if !matches!(status(),EngineStatus::Running {..}) { return vec![]; }
-    let Ok(dir)=engine_dir() else {return vec![]};
-    let exe=exe_path(&dir);
+    if !matches!(status(), EngineStatus::Running { .. }) {
+        return vec![];
+    }
+    let Ok(dir) = engine_dir() else { return vec![] };
+    let exe = exe_path(&dir);
     // Reused user installations are not owned by Marionette.
-    if matches!(status(),EngineStatus::Running {reused:true,..}) { return vec![crate::ts!("当前复用外部引擎；发现的 CLI 来源需由 Marionette 自带引擎接入", "An external engine is in use; discovered CLI sources require the Marionette-bundled engine")]; }
+    if matches!(status(), EngineStatus::Running { reused: true, .. }) {
+        return vec![crate::ts!("当前复用外部引擎；发现的 CLI 来源需由 Marionette 自带引擎接入", "An external engine is in use; discovered CLI sources require the Marionette-bundled engine")];
+    }
     sync_sources_at(&exe, force_refresh)
 }
 
@@ -1864,7 +2079,10 @@ pub fn sync_discovered_sources(force_refresh: bool) -> Vec<String> {
 /// 文件，不缓存、不联网、不写凭据。
 #[cfg(engine_rust_active)]
 pub fn signed_in_families() -> Vec<String> {
-    crate::engine_gateway::signed_in_families().iter().map(|family| family.to_string()).collect()
+    crate::engine_gateway::signed_in_families()
+        .iter()
+        .map(|family| family.to_string())
+        .collect()
 }
 
 /// 引擎数据目录里的 providers.json（读不到 = None）。
@@ -1912,13 +2130,23 @@ pub fn provider_account_aliases_for(
             .collect()
     };
     let model_count = |id: &str| {
-        sources.iter().find(|s| s.view.id == id).map(|s| s.view.models.len()).unwrap_or(0)
+        sources
+            .iter()
+            .find(|s| s.view.id == id)
+            .map(|s| s.view.models.len())
+            .unwrap_or(0)
     };
     let rank = |p: &crate::engine_gateway::store::Provider| {
-        (p.id.starts_with("source-") as u8, usize::MAX - model_count(&p.id), p.id.clone())
+        (
+            p.id.starts_with("source-") as u8,
+            usize::MAX - model_count(&p.id),
+            p.id.clone(),
+        )
     };
-    let mut order: Vec<&crate::engine_gateway::store::Provider> =
-        providers.iter().filter(|p| !p.key.trim().is_empty()).collect();
+    let mut order: Vec<&crate::engine_gateway::store::Provider> = providers
+        .iter()
+        .filter(|p| !p.key.trim().is_empty())
+        .collect();
     order.sort_by_key(|p| rank(p));
     let mut assigned: std::collections::HashSet<String> = std::collections::HashSet::new();
     for p in &order {
@@ -1965,10 +2193,16 @@ pub fn subscription_family_models() -> serde_json::Value {
     // 用户自建的 claude/codex/grok/antigravity 来源让位（与目录行同一份判断）。
     let providers = engine_providers();
     let (claude, codex, grok, gemini) = std::thread::scope(|scope| {
-        let claude = scope.spawn(|| crate::engine_gateway::claude_account::listed_rows_for_inspection(&providers));
-        let codex = scope.spawn(|| crate::engine_gateway::codex_account::listed_rows_for_inspection(&providers));
-        let grok = scope.spawn(|| crate::engine_gateway::grok_account::listed_rows_for_inspection(&providers));
-        let gemini = scope.spawn(|| crate::engine_gateway::antigravity_account::listed_rows_for_inspection(&providers));
+        let claude = scope.spawn(|| {
+            crate::engine_gateway::claude_account::listed_rows_for_inspection(&providers)
+        });
+        let codex = scope
+            .spawn(|| crate::engine_gateway::codex_account::listed_rows_for_inspection(&providers));
+        let grok = scope
+            .spawn(|| crate::engine_gateway::grok_account::listed_rows_for_inspection(&providers));
+        let gemini = scope.spawn(|| {
+            crate::engine_gateway::antigravity_account::listed_rows_for_inspection(&providers)
+        });
         (
             claude.join().unwrap_or_default(),
             codex.join().unwrap_or_default(),
@@ -1990,8 +2224,12 @@ pub fn subscription_family_models() -> serde_json::Value {
 /// 引擎数据目录里的 providers.json（用户自建来源让位判断用；读不到 = 空表）。
 #[cfg(engine_rust_active)]
 fn engine_providers() -> Vec<crate::engine_gateway::store::Provider> {
-    let Ok(dir) = engine_dir() else { return Vec::new() };
-    let Ok(bytes) = std::fs::read(dir.join("data").join("providers.json")) else { return Vec::new() };
+    let Ok(dir) = engine_dir() else {
+        return Vec::new();
+    };
+    let Ok(bytes) = std::fs::read(dir.join("data").join("providers.json")) else {
+        return Vec::new();
+    };
     serde_json::from_slice::<crate::engine_gateway::store::ProvidersFile>(&bytes)
         .map(|file| file.providers)
         .unwrap_or_default()
@@ -1999,7 +2237,10 @@ fn engine_providers() -> Vec<crate::engine_gateway::store::Provider> {
 
 /// 目录行 → 模型设置的订阅清单（前端字段 camelCase）。
 #[cfg(engine_rust_active)]
-fn family_rows(rows: Vec<crate::engine_gateway::catalog::VendorRow>, prefix: &str) -> serde_json::Value {
+fn family_rows(
+    rows: Vec<crate::engine_gateway::catalog::VendorRow>,
+    prefix: &str,
+) -> serde_json::Value {
     let list: Vec<serde_json::Value> = rows
         .iter()
         .map(|row| {
@@ -2007,7 +2248,11 @@ fn family_rows(rows: Vec<crate::engine_gateway::catalog::VendorRow>, prefix: &st
                 .raw
                 .get("reasoning_levels")
                 .and_then(|v| v.as_array())
-                .map(|list| list.iter().filter_map(|item| item.as_str().map(String::from)).collect())
+                .map(|list| {
+                    list.iter()
+                        .filter_map(|item| item.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
             let name = row
                 .raw
@@ -2044,33 +2289,49 @@ pub fn subscription_family_models() -> serde_json::Value {
 /// （发现链已有的那份判断）；其余三族照旧显示未登录。这个 SKU 只剩一个发布周期。
 #[cfg(not(engine_rust_active))]
 pub fn signed_in_families() -> Vec<String> {
-    if crate::model_sources::codex_signed_in() { vec!["codex".to_string()] } else { Vec::new() }
+    if crate::model_sources::codex_signed_in() {
+        vec!["codex".to_string()]
+    } else {
+        Vec::new()
+    }
 }
 
 /// Exact account aliases for menu presentation. Compare resolved credentials
 /// in memory, rather than merging unrelated accounts by model name.
-pub fn model_source_aliases(sources: &[crate::model_sources::Source]) -> std::collections::BTreeMap<String,String> {
-    let mut candidates: Vec<(String,String,String)> = vec![];
-    if let Ok(store)=crate::credentials::load_store() {
+pub fn model_source_aliases(
+    sources: &[crate::model_sources::Source],
+) -> std::collections::BTreeMap<String, String> {
+    let mut candidates: Vec<(String, String, String)> = vec![];
+    if let Ok(store) = crate::credentials::load_store() {
         for e in store.entries {
-            let Some(preset)=e.preset else {continue};
+            let Some(preset) = e.preset else { continue };
             if magpie_provider_for_preset(&preset).is_some() {
-                if let Some(key)=crate::credentials::peek_secret(&e.id) { candidates.push((e.id,preset,key)); }
+                if let Some(key) = crate::credentials::peek_secret(&e.id) {
+                    candidates.push((e.id, preset, key));
+                }
             }
         }
     }
-    for (provider,key) in crate::credentials::peek_opencode_api_keys() {
-        if let Some(preset)=crate::model_bridge::preset_for_opencode_provider(&provider) { candidates.push((format!("opencode/{provider}"),preset.id.into(),key)); }
+    for (provider, key) in crate::credentials::peek_opencode_api_keys() {
+        if let Some(preset) = crate::model_bridge::preset_for_opencode_provider(&provider) {
+            candidates.push((format!("opencode/{provider}"), preset.id.into(), key));
+        }
     }
-    let mut chosen: std::collections::HashMap<String,String>=std::collections::HashMap::new();
-    let mut aliases=std::collections::BTreeMap::new();
-    for (entry,preset,key) in candidates {
-        let Some((provider,_))=magpie_provider_for_preset(&preset) else {continue};
-        let selected=chosen.entry(provider.into()).or_insert_with(||key.clone());
-        if *selected!=key {continue;}
-        let canonical=format!("engine:{provider}");
-        aliases.insert(format!("entry:{entry}"),canonical.clone());
-        let Some(preset)=crate::model_bridge::find_preset(&preset) else {continue};
+    let mut chosen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut aliases = std::collections::BTreeMap::new();
+    for (entry, preset, key) in candidates {
+        let Some((provider, _)) = magpie_provider_for_preset(&preset) else {
+            continue;
+        };
+        let selected = chosen.entry(provider.into()).or_insert_with(|| key.clone());
+        if *selected != key {
+            continue;
+        }
+        let canonical = format!("engine:{provider}");
+        aliases.insert(format!("entry:{entry}"), canonical.clone());
+        let Some(preset) = crate::model_bridge::find_preset(&preset) else {
+            continue;
+        };
         for source in sources {
             // Same account = same key on the same vendor host, however each
             // config spells the path (Grok writes `/inference/go/openai/v1`
@@ -2081,7 +2342,7 @@ pub fn model_source_aliases(sources: &[crate::model_sources::Source]) -> std::co
                 preset.anthropic_base,
             );
             if source.key == key && same_host {
-                aliases.insert(format!("engine:{}",source.view.id),canonical.clone());
+                aliases.insert(format!("engine:{}", source.view.id), canonical.clone());
             }
         }
     }
@@ -2092,10 +2353,7 @@ pub fn model_source_aliases(sources: &[crate::model_sources::Source]) -> std::co
 /// 引擎的 enable 流水线只在拉起时注册一次；这个入口让已 Running 的自拉实例
 /// 即时补上。复用实例（用户自装 magpie）照旧跳过——不碰别人的引擎状态。
 pub fn reregister_key_providers() {
-    if !matches!(
-        status(),
-        EngineStatus::Running { reused: false, .. }
-    ) {
+    if !matches!(status(), EngineStatus::Running { reused: false, .. }) {
         return;
     }
     note_engine_needed();
@@ -2155,11 +2413,15 @@ fn parse_quota_json(text: &str) -> Vec<EngineQuotaEntry> {
         return Vec::new();
     };
     let string = |v: &serde_json::Value, key: &str| {
-        v.get(key).and_then(serde_json::Value::as_str).map(str::to_string)
+        v.get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
     };
     let mut out = Vec::new();
     for item in items {
-        let Some(provider) = string(item, "provider") else { continue };
+        let Some(provider) = string(item, "provider") else {
+            continue;
+        };
         let windows = item
             .get("windows")
             .and_then(serde_json::Value::as_array)
@@ -2236,7 +2498,10 @@ fn fetch_quota_cli() -> Result<String, String> {
     let dir = engine_dir()?;
     let exe = exe_path(&dir);
     if !exe.is_file() {
-        return Err(crate::ts!("magpie.exe 不在引擎目录", "magpie.exe is not in the engine directory"));
+        return Err(crate::ts!(
+            "magpie.exe 不在引擎目录",
+            "magpie.exe is not in the engine directory"
+        ));
     }
     run_magpie_cli_capture(&exe, &["quota", "--json"])
 }
@@ -2352,8 +2617,7 @@ fn test_pref_path_hook() -> Option<std::path::PathBuf> {
 }
 
 #[cfg(test)]
-static PREF_TEST_PATH: std::sync::Mutex<Option<std::path::PathBuf>> =
-    std::sync::Mutex::new(None);
+static PREF_TEST_PATH: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
 
 /// 当前偏好（默认 / 读失败 → Rust）。
 pub fn preferred_engine() -> EngineChoice {
@@ -2526,7 +2790,9 @@ pub fn ensure_bridge_ready_if_installed(timeout: Duration) -> bool {
         }
         #[cfg(not(engine_rust_active))]
         {
-            let installed = engine_dir().map(|dir| is_installed_at(&dir)).unwrap_or(false);
+            let installed = engine_dir()
+                .map(|dir| is_installed_at(&dir))
+                .unwrap_or(false);
             installed && ensure_bridge_ready(timeout)
         }
     }
@@ -2604,7 +2870,10 @@ fn stop_owned_for_replace() -> Result<(), String> {
             ));
         }
         EngineStatus::Downloading { .. } | EngineStatus::Starting => {
-            return Err(crate::ts!("引擎正在安装或启动，请稍后再试", "Engine is installing or starting; try again shortly"));
+            return Err(crate::ts!(
+                "引擎正在安装或启动，请稍后再试",
+                "Engine is installing or starting; try again shortly"
+            ));
         }
         EngineStatus::Running { .. } => {
             if let Some(child) = state.child.as_mut() {
@@ -2740,7 +3009,10 @@ fn update_magpie_download() -> Result<EngineStatus, String> {
             let mut state = lock_state();
             match state.status {
                 EngineStatus::Downloading { .. } | EngineStatus::Starting => {
-                    return Err(crate::ts!("引擎正在安装或启动，请稍后再试", "Engine is installing or starting; try again shortly"));
+                    return Err(crate::ts!(
+                        "引擎正在安装或启动，请稍后再试",
+                        "Engine is installing or starting; try again shortly"
+                    ));
                 }
                 _ => {
                     let initial = EngineStatus::Downloading {
@@ -2760,7 +3032,12 @@ fn update_magpie_download() -> Result<EngineStatus, String> {
                     set_status(EngineStatus::Failed { error });
                 }
             })
-            .map_err(|e| crate::ts!("启动引擎更新线程失败: {e}", "Failed to spawn engine update thread: {e}"))?;
+            .map_err(|e| {
+                crate::ts!(
+                    "启动引擎更新线程失败: {e}",
+                    "Failed to spawn engine update thread: {e}"
+                )
+            })?;
         Ok(initial)
     }
 }
@@ -2799,7 +3076,10 @@ pub fn restore_factory() -> Result<EngineStatus, String> {
     {
         let (bytes, version) = embedded_artifact();
         if bytes.is_empty() || version.is_empty() {
-            return Err(crate::ts!("当前构建没有内嵌引擎，无法恢复出厂", "This build has no embedded engine; factory restore is unavailable"));
+            return Err(crate::ts!(
+                "当前构建没有内嵌引擎，无法恢复出厂",
+                "This build has no embedded engine; factory restore is unavailable"
+            ));
         }
         let version = version.to_string();
         stop_owned_for_replace()?;
@@ -2808,7 +3088,10 @@ pub fn restore_factory() -> Result<EngineStatus, String> {
             let mut state = lock_state();
             match state.status {
                 EngineStatus::Downloading { .. } | EngineStatus::Starting => {
-                    return Err(crate::ts!("引擎正在安装或启动，请稍后再试", "Engine is installing or starting; try again shortly"));
+                    return Err(crate::ts!(
+                        "引擎正在安装或启动，请稍后再试",
+                        "Engine is installing or starting; try again shortly"
+                    ));
                 }
                 _ => {
                     let initial = EngineStatus::Starting;
@@ -2825,7 +3108,12 @@ pub fn restore_factory() -> Result<EngineStatus, String> {
                     set_status(EngineStatus::Failed { error });
                 }
             })
-            .map_err(|e| crate::ts!("启动引擎恢复线程失败: {e}", "Failed to spawn engine restore thread: {e}"))?;
+            .map_err(|e| {
+                crate::ts!(
+                    "启动引擎恢复线程失败: {e}",
+                    "Failed to spawn engine restore thread: {e}"
+                )
+            })?;
         Ok(initial)
     }
 }
@@ -2896,7 +3184,10 @@ fn idle_watchdog() {
             "engine",
             "info",
             "",
-            &format!("engine idle-reclaimed after {}min idle", IDLE_RECLAIM_AFTER.as_secs() / 60),
+            &format!(
+                "engine idle-reclaimed after {}min idle",
+                IDLE_RECLAIM_AFTER.as_secs() / 60
+            ),
             Some("bindings=0; any cross-use entry auto-wakes it"),
         );
         emit_event("engine-state-changed", &EngineStatus::Absent);
@@ -2925,7 +3216,10 @@ fn cli_absent_seed(dir: &Path) -> bool {
 }
 
 fn mark_cli_absent(dir: &Path) {
-    let _ = std::fs::write(cli_absent_marker_path(dir), b"seed engine: no provider CLI\n");
+    let _ = std::fs::write(
+        cli_absent_marker_path(dir),
+        b"seed engine: no provider CLI\n",
+    );
 }
 
 fn run_magpie_cli_capture(exe: &Path, args: &[&str]) -> Result<String, String> {
@@ -2971,7 +3265,12 @@ fn run_magpie_cli_child(exe: &Path, args: &[&str]) -> Result<String, String> {
             command.creation_flags(CREATE_NO_WINDOW);
         }
         let output = crate::process_util::output_with_kill_timeout(command, MAGPIE_CLI_TIMEOUT)
-            .map_err(|e| crate::ts!("启动 magpie CLI 失败: {e}", "Failed to launch magpie CLI: {e}"))?;
+            .map_err(|e| {
+                crate::ts!(
+                    "启动 magpie CLI 失败: {e}",
+                    "Failed to launch magpie CLI: {e}"
+                )
+            })?;
         if !output.status.success() {
             // stderr 一起带上——"no provider x" 这类可判别错误靠它（回收对账
             // 视"不存在"为已回收），也是注册失败时唯一有诊断价值的输出。
@@ -2979,7 +3278,12 @@ fn run_magpie_cli_child(exe: &Path, args: &[&str]) -> Result<String, String> {
             remember_seed_rejection(exe, &stderr);
             return Err(format!(
                 "{}{}",
-                crate::ts!("magpie {subcommand} 退出码 {code:?}", "magpie {subcommand} exited with code {code:?}", subcommand = args.first().unwrap_or(&""), code = output.status.code()),
+                crate::ts!(
+                    "magpie {subcommand} 退出码 {code:?}",
+                    "magpie {subcommand} exited with code {code:?}",
+                    subcommand = args.first().unwrap_or(&""),
+                    code = output.status.code()
+                ),
                 if stderr.is_empty() {
                     String::new()
                 } else {
@@ -2987,7 +3291,12 @@ fn run_magpie_cli_child(exe: &Path, args: &[&str]) -> Result<String, String> {
                 },
             ));
         }
-        String::from_utf8(output.stdout).map_err(|e| crate::ts!("magpie 输出不是 UTF-8: {e}", "magpie output is not UTF-8: {e}"))
+        String::from_utf8(output.stdout).map_err(|e| {
+            crate::ts!(
+                "magpie 输出不是 UTF-8: {e}",
+                "magpie output is not UTF-8: {e}"
+            )
+        })
     }
 }
 
@@ -3054,7 +3363,12 @@ fn run_magpie_cli_passthrough_child(exe: &Path, args: &[&str]) -> Result<(), Str
             command.creation_flags(CREATE_NO_WINDOW);
         }
         let output = crate::process_util::output_with_kill_timeout(command, MAGPIE_CLI_TIMEOUT)
-            .map_err(|e| crate::ts!("拉起 magpie CLI 失败: {e}", "Failed to spawn magpie CLI: {e}"))?;
+            .map_err(|e| {
+                crate::ts!(
+                    "拉起 magpie CLI 失败: {e}",
+                    "Failed to spawn magpie CLI: {e}"
+                )
+            })?;
         if output.status.success() {
             Ok(())
         } else {
@@ -3275,7 +3589,9 @@ pub fn codex_alias_sync(session_id: &str, builtin: &str, engine_model: &str) {
     };
     // 幂等快速路径：同会话、同内建名、同引擎模型 → 不再拉 CLI。
     {
-        let map = alias_map().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let map = alias_map()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if map
             .get(session_id)
             .is_some_and(|(id, model)| id == &group_id && model == &engine_model)
@@ -3307,7 +3623,9 @@ pub fn codex_alias_sync(session_id: &str, builtin: &str, engine_model: &str) {
     let result = write_codex_alias_group(&exe, &name, &group_id, &engine_model);
     match result {
         Ok(()) => {
-            let mut map = alias_map().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut map = alias_map()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             map.insert(
                 session_id.to_string(),
                 (group_id.clone(), engine_model.to_string()),
@@ -3375,11 +3693,10 @@ fn write_codex_alias_group(
     let pick = format!("pick={engine_model}");
     match run_magpie_cli(exe, &["group", "add", name, &models, &id, &pick]) {
         Ok(()) => Ok(()),
-        Err(error) if group_already_exists(&error) => run_magpie_cli(
-            exe,
-            &["group", "set", group_id, &models, &pick],
-        )
-        .map_err(|set_err| format!("{error}; group set: {set_err}")),
+        Err(error) if group_already_exists(&error) => {
+            run_magpie_cli(exe, &["group", "set", group_id, &models, &pick])
+                .map_err(|set_err| format!("{error}; group set: {set_err}"))
+        }
         Err(error) => Err(error),
     }
 }
@@ -3491,10 +3808,17 @@ pub fn enable() -> Result<EngineStatus, String> {
         .name("engine-enable".into())
         .spawn(move || {
             if let Err(error) = enable_pipeline(&dir) {
-                set_status(EngineStatus::Failed { error: error.clone() });
+                set_status(EngineStatus::Failed {
+                    error: error.clone(),
+                });
             }
         })
-        .map_err(|e| crate::ts!("启动引擎后台线程失败: {e}", "Failed to spawn engine background thread: {e}"))?;
+        .map_err(|e| {
+            crate::ts!(
+                "启动引擎后台线程失败: {e}",
+                "Failed to spawn engine background thread: {e}"
+            )
+        })?;
     Ok(initial)
 }
 
@@ -3592,7 +3916,10 @@ fn place_and_prep(dir: &Path, allow_download: bool) -> Result<PrepOutcome, Strin
         }
         if !is_installed_at(dir) {
             if embedded_version().is_some() {
-                return Err(crate::ts!("内嵌引擎落位后仍不完整", "Embedded engine still incomplete after placement"));
+                return Err(crate::ts!(
+                    "内嵌引擎落位后仍不完整",
+                    "Embedded engine still incomplete after placement"
+                ));
             }
             if !allow_download {
                 // 懒启动（startup_lazy）：没装过就没装过，绝不惊喜下载。
@@ -3611,8 +3938,12 @@ fn serve_and_run(dir: &Path) -> Result<(), String> {
     // 4. 拉起 + 等健康。
     set_status(EngineStatus::Starting);
     let exe = exe_path(dir);
-    let port = find_free_port_from(DEFAULT_PORT)
-        .ok_or_else(|| crate::ts!("从 {DEFAULT_PORT} 起找不到空闲环回端口", "No free loopback port found from {DEFAULT_PORT}"))?;
+    let port = find_free_port_from(DEFAULT_PORT).ok_or_else(|| {
+        crate::ts!(
+            "从 {DEFAULT_PORT} 起找不到空闲环回端口",
+            "No free loopback port found from {DEFAULT_PORT}"
+        )
+    })?;
     // Bearer 令牌先定（健康检查自己也要带；serve-token.txt 见 ensure_serve_token）。
     let token = ensure_serve_token(dir);
     lock_state().serve_token = Some(token.clone());
@@ -3624,12 +3955,19 @@ fn serve_and_run(dir: &Path) -> Result<(), String> {
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                return Err(crate::ts!("引擎进程提前退出（code={code}）— 详见 dev.log 的 serve 输出", "Engine process exited early (code={code}) — see serve output in dev.log", code = status));
+                return Err(crate::ts!(
+                    "引擎进程提前退出（code={code}）— 详见 dev.log 的 serve 输出",
+                    "Engine process exited early (code={code}) — see serve output in dev.log",
+                    code = status
+                ));
             }
             Ok(None) => {}
             Err(error) => {
                 child.kill();
-                return Err(crate::ts!("引擎进程状态查询失败: {error}", "Failed to query engine process status: {error}"));
+                return Err(crate::ts!(
+                    "引擎进程状态查询失败: {error}",
+                    "Failed to query engine process status: {error}"
+                ));
             }
         }
         if Instant::now() >= deadline {
@@ -3721,7 +4059,12 @@ pub fn startup_lazy() -> Result<(), String> {
         .name("engine-startup-lazy".into())
         .spawn(move || startup_lazy_run(&dir, bindings))
         .map(|_| ())
-        .map_err(|e| crate::ts!("启动引擎懒加载线程失败: {e}", "Failed to spawn engine lazy-start thread: {e}"))
+        .map_err(|e| {
+            crate::ts!(
+                "启动引擎懒加载线程失败: {e}",
+                "Failed to spawn engine lazy-start thread: {e}"
+            )
+        })
 }
 
 /// `startup_lazy` 的线程体（独立出来供测试同步调用）。
@@ -3785,7 +4128,10 @@ pub fn status() -> EngineStatus {
         if dead {
             state.child = None;
             state.status = EngineStatus::Failed {
-                error: crate::ts!("引擎进程已退出（端口 {port} 不再服务）", "Engine process has exited (port {port} is no longer serving)"),
+                error: crate::ts!(
+                    "引擎进程已退出（端口 {port} 不再服务）",
+                    "Engine process has exited (port {port} is no longer serving)"
+                ),
             };
             let error = state.status.clone();
             drop(state);
@@ -3853,7 +4199,13 @@ pub fn kill_engine() {
     let mut state = lock_state();
     if let Some(mut child) = state.child.take() {
         child.kill();
-        crate::debug_log::append("engine", "info", "", "engine serve killed on shutdown", None);
+        crate::debug_log::append(
+            "engine",
+            "info",
+            "",
+            "engine serve killed on shutdown",
+            None,
+        );
         state.status = EngineStatus::Absent;
     }
 }
@@ -3908,10 +4260,7 @@ pub fn catalog_entries() -> Vec<crate::model_bridge::CatalogModelRow> {
 
 /// 引擎 `/v1/models` 全量（带 TTL 缓存），只要 id。引擎不在 Running → 空。
 pub fn catalog() -> Vec<String> {
-    catalog_entries()
-        .into_iter()
-        .map(|row| row.id)
-        .collect()
+    catalog_entries().into_iter().map(|row| row.id).collect()
 }
 
 /// 面向用户/agent 的引擎目录：剥掉 `group/` 自动路由组（magpie 的跨来源
@@ -3977,7 +4326,8 @@ pub const SUBSCRIPTION_FAMILIES: [&str; 4] = ["claude", "codex", "grok", "gemini
 static SUBSCRIPTION_SHARES: Mutex<Option<std::collections::HashMap<String, bool>>> =
     Mutex::new(None);
 
-fn lock_shares() -> std::sync::MutexGuard<'static, Option<std::collections::HashMap<String, bool>>> {
+fn lock_shares() -> std::sync::MutexGuard<'static, Option<std::collections::HashMap<String, bool>>>
+{
     SUBSCRIPTION_SHARES
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -4090,8 +4440,16 @@ pub fn set_subscription_share(family: &str, enabled: bool) -> Result<(), String>
     next.insert(family.to_string(), serde_json::Value::Bool(enabled));
     preferences
         .as_object_mut()
-        .ok_or_else(|| crate::ts!("模型显示设置格式无效", "Invalid model display preferences format"))?
-        .insert("subscriptionShares".to_string(), serde_json::Value::Object(next));
+        .ok_or_else(|| {
+            crate::ts!(
+                "模型显示设置格式无效",
+                "Invalid model display preferences format"
+            )
+        })?
+        .insert(
+            "subscriptionShares".to_string(),
+            serde_json::Value::Object(next),
+        );
     crate::model_sources::save_preferences(preferences)?;
     reload_subscription_shares();
     Ok(())
@@ -4129,7 +4487,9 @@ fn catalog_cache_path() -> Option<std::path::PathBuf> {
 }
 
 fn save_catalog_cache(rows: &[crate::model_bridge::CatalogModelRow]) {
-    let Some(path) = catalog_cache_path() else { return };
+    let Some(path) = catalog_cache_path() else {
+        return;
+    };
     let file = CatalogCacheFile {
         version: CATALOG_CACHE_VERSION,
         fetched_at: std::time::SystemTime::now()
@@ -4138,7 +4498,9 @@ fn save_catalog_cache(rows: &[crate::model_bridge::CatalogModelRow]) {
             .unwrap_or_else(|_| "0".to_string()),
         rows: rows.to_vec(),
     };
-    let Ok(body) = serde_json::to_string(&file) else { return };
+    let Ok(body) = serde_json::to_string(&file) else {
+        return;
+    };
     // tmp + rename（manifest.json 同款原子写；失败只记 warn——缓存写坏不致命）。
     let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
     if std::fs::write(&temp, body).is_err() {
@@ -4356,7 +4718,9 @@ impl Drop for TestHandle {
 /// 接线测试走 [`test_running`]。
 #[cfg(test)]
 fn install_test_seams(seams: Seams) -> TestHandle {
-    let serial = TEST_SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let serial = TEST_SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let slot = SEAMS.get_or_init(|| Mutex::new(None));
     if let Ok(mut guard) = slot.lock() {
         *guard = Some(seams);
@@ -4371,7 +4735,9 @@ fn install_test_seams(seams: Seams) -> TestHandle {
 /// 锁，会自死锁）；需要中途切 Running 的测试先 `drop` 守卫。
 #[cfg(test)]
 pub(crate) fn test_absent_guard() -> std::sync::MutexGuard<'static, ()> {
-    TEST_SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    TEST_SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// 便捷入口：把引擎摆成 Running + 指定目录缓存 + 对 model_bridge 可见
@@ -4472,7 +4838,9 @@ fn test_cli_capture_hook() -> Option<BoxCliCapture> {
 
 #[cfg(test)]
 fn test_direct_http() -> bool {
-    seams().map(|guard| guard.as_ref().is_some_and(|s| s.direct_http)).unwrap_or(false)
+    seams()
+        .map(|guard| guard.as_ref().is_some_and(|s| s.direct_http))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -4661,10 +5029,9 @@ mod tests {
             "zhipu/glm-5.3",
             "opencode-go/deepseek-v4.1-flash",
         ];
-        let sorted = pay_per_use_last(
-            ids.into_iter().map(str::to_string).collect(),
-            |id| id.as_str(),
-        );
+        let sorted = pay_per_use_last(ids.into_iter().map(str::to_string).collect(), |id| {
+            id.as_str()
+        });
         assert_eq!(
             sorted,
             vec![
@@ -4693,7 +5060,10 @@ mod tests {
         save_manifest_at(&dir, &manifest).unwrap();
         assert_eq!(load_manifest_at(&dir).unwrap().version, "0.1.1267");
         // sha 大小写不敏感（SHA256SUMS 可能是大写）。
-        assert_eq!(load_manifest_at(&dir).unwrap().sha256, sha256_hex(b"fake-exe"));
+        assert_eq!(
+            load_manifest_at(&dir).unwrap().sha256,
+            sha256_hex(b"fake-exe")
+        );
 
         // 损坏 → 留档 + None（绝不当有效）。
         fs::write(manifest_path(&dir), "{\"version\":\"x\",\"sha256\":\"").unwrap();
@@ -4756,7 +5126,10 @@ mod tests {
         let manifest = load_manifest_at(&dir).unwrap();
         assert_eq!(manifest.version, "0.1.9999");
         assert_eq!(manifest.sha256, sha256_hex(payload));
-        assert!(is_installed_at(&dir), "sha 对上 → 已安装（与下载路径同语义）");
+        assert!(
+            is_installed_at(&dir),
+            "sha 对上 → 已安装（与下载路径同语义）"
+        );
 
         // 种子判定：已完整安装 → 不重落位（即使用户版版本号 ≠ 内嵌）。
         assert!(
@@ -4903,10 +5276,16 @@ mod tests {
             "c".repeat(64),
             ASSET_NAME
         );
-        assert_eq!(parse_sums_entry(&text, ASSET_NAME).as_deref(), Some(sha.as_str()));
+        assert_eq!(
+            parse_sums_entry(&text, ASSET_NAME).as_deref(),
+            Some(sha.as_str())
+        );
         // 大小写不敏感；缺资产 / 非 hex → None。
         assert_eq!(parse_sums_entry(&text, "magpie-cli-darwin-arm64"), None);
-        assert_eq!(parse_sums_entry(&format!("zzz  {ASSET_NAME}"), ASSET_NAME), None);
+        assert_eq!(
+            parse_sums_entry(&format!("zzz  {ASSET_NAME}"), ASSET_NAME),
+            None
+        );
         assert_eq!(parse_sums_entry("", ASSET_NAME), None);
     }
 
@@ -4926,7 +5305,10 @@ mod tests {
     fn port_probe_detects_magpie_and_ignores_foreign_bodies() {
         let _seams = install_test_seams(Seams::default());
         // body 含 "magpie"（真网关的 info 端点形状）→ 复用 + 抠到 version。
-        let port = serve_once(r#"{"name":"magpie","version":"0.1.1267"}"#, "application/json");
+        let port = serve_once(
+            r#"{"name":"magpie","version":"0.1.1267"}"#,
+            "application/json",
+        );
         let version = probe_reuse_at(port).expect("应判定为 magpie 实例");
         assert_eq!(version.as_deref(), Some("0.1.1267"));
 
@@ -5008,7 +5390,12 @@ mod tests {
         let initial = enable().unwrap();
         assert!(matches!(initial, EngineStatus::Downloading { .. }));
         let reached = wait_for_terminal(5);
-        let EngineStatus::Running { port, version, reused } = reached else {
+        let EngineStatus::Running {
+            port,
+            version,
+            reused,
+        } = reached
+        else {
             panic!("应到达 Running，实际 {reached:?}");
         };
         assert!(!reused);
@@ -5243,11 +5630,20 @@ mod tests {
             ]),
             ..Seams::default()
         });
-        set_subscription_shares_for_tests(Some(&[("claude", true), ("grok", true), ("gemini", true)]));
+        set_subscription_shares_for_tests(Some(&[
+            ("claude", true),
+            ("grok", true),
+            ("gemini", true),
+        ]));
         let ids = catalog_direct();
         assert_eq!(
             ids,
-            vec!["claude/claude-opus-5-5", "grok/grok-4.7", "antigravity/gemini-3.1-pro-high", "deepseek/deepseek-chat"]
+            vec![
+                "claude/claude-opus-5-5",
+                "grok/grok-4.7",
+                "antigravity/gemini-3.1-pro-high",
+                "deepseek/deepseek-chat"
+            ]
         );
         fs::remove_dir_all(&dir).ok();
     }
@@ -5277,10 +5673,18 @@ mod tests {
         impl Drop for Reset {
             fn drop(&mut self) {
                 // 四个模块的测试缝类型各异，逐个复位（mod.rs 的登录态测试同款）。
-                *crate::engine_gateway::codex_account::TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = None;
-                *crate::engine_gateway::grok_account::TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = None;
-                *crate::engine_gateway::claude_account::TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = None;
-                *crate::engine_gateway::antigravity_account::TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                *crate::engine_gateway::codex_account::TEST_SEAM
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = None;
+                *crate::engine_gateway::grok_account::TEST_SEAM
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = None;
+                *crate::engine_gateway::claude_account::TEST_SEAM
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = None;
+                *crate::engine_gateway::antigravity_account::TEST_SEAM
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = None;
             }
         }
         let _reset = Reset;
@@ -5298,7 +5702,10 @@ mod tests {
     #[test]
     fn provider_account_aliases_point_duplicates_at_the_preset_provider() {
         let dir = temp_dir("provider-alias");
-        let _seams = install_test_seams(Seams { dir: Some(dir.clone()), ..Seams::default() });
+        let _seams = install_test_seams(Seams {
+            dir: Some(dir.clone()),
+            ..Seams::default()
+        });
         std::fs::create_dir_all(dir.join("data")).unwrap();
         std::fs::write(
             dir.join("data").join("providers.json"),
@@ -5313,9 +5720,15 @@ mod tests {
         )
         .unwrap();
         let aliases = provider_account_aliases(&[]);
-        assert_eq!(aliases.get("engine:source-aaa").map(String::as_str), Some("engine:deepseek"));
+        assert_eq!(
+            aliases.get("engine:source-aaa").map(String::as_str),
+            Some("engine:deepseek")
+        );
         // 两个都带 `source-` 前缀、模型一样多 → id 字典序小的当代表；另一份指回来
-        assert_eq!(aliases.get("engine:source-ccc").map(String::as_str), Some("engine:source-bbb"));
+        assert_eq!(
+            aliases.get("engine:source-ccc").map(String::as_str),
+            Some("engine:source-bbb")
+        );
         assert!(!aliases.contains_key("engine:other"));
         assert!(!aliases.contains_key("engine:deepseek"));
         std::fs::remove_dir_all(&dir).ok();
@@ -5345,7 +5758,11 @@ mod tests {
         assert!(
             fs::read_dir(&dir).unwrap().next().is_none(),
             "失败路径不能留下载残留: {:?}",
-            fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect::<Vec<_>>()
+            fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name())
+                .collect::<Vec<_>>()
         );
 
         // Failed → 再 enable 可以重试（重新 claim）。
@@ -5407,11 +5824,17 @@ mod tests {
     #[test]
     fn health_check_requires_catalog_shape_not_just_200() {
         let _seams = install_test_seams(Seams::default());
-        let good = serve_once(r#"{"object":"list","data":[{"id":"grok/grok-4.7"}]}"#, "application/json");
+        let good = serve_once(
+            r#"{"object":"list","data":[{"id":"grok/grok-4.7"}]}"#,
+            "application/json",
+        );
         assert!(engine_healthy_at(good));
         let empty = serve_once(r#"{"object":"list","data":[]}"#, "application/json");
         assert!(engine_healthy_at(empty), "空目录（无订阅）也是健康");
-        let html = serve_once("<html><body>Cloudflare challenge</body></html>", "text/html");
+        let html = serve_once(
+            "<html><body>Cloudflare challenge</body></html>",
+            "text/html",
+        );
         assert!(!engine_healthy_at(html), "200 + HTML 不是引擎");
         let envelope = serve_once(r#"{"code":1000,"message":"denied"}"#, "application/json");
         assert!(!engine_healthy_at(envelope), "200 + 信封不是目录");
@@ -5424,13 +5847,25 @@ mod tests {
     /// provider 名映射锚定（magpie presets.go 2026-10-16 核实）。
     #[test]
     fn magpie_provider_names_are_pinned() {
-        assert_eq!(magpie_provider_for_preset("deepseek"), Some(("deepseek", "")));
+        assert_eq!(
+            magpie_provider_for_preset("deepseek"),
+            Some(("deepseek", ""))
+        );
         assert_eq!(magpie_provider_for_preset("kimi"), Some(("moonshot", "")));
         // glm 的 key 是 Coding Plan key：不带 region=coding 会落到按量端点。
-        assert_eq!(magpie_provider_for_preset("glm"), Some(("zhipu", "region=coding")));
-        assert_eq!(magpie_provider_for_preset("openrouter"), Some(("openrouter", "")));
+        assert_eq!(
+            magpie_provider_for_preset("glm"),
+            Some(("zhipu", "region=coding"))
+        );
+        assert_eq!(
+            magpie_provider_for_preset("openrouter"),
+            Some(("openrouter", ""))
+        );
         assert_eq!(magpie_provider_for_preset("xai"), Some(("xai", "")));
-        assert_eq!(magpie_provider_for_preset("opencode-go"), Some(("opencode-go", "")));
+        assert_eq!(
+            magpie_provider_for_preset("opencode-go"),
+            Some(("opencode-go", ""))
+        );
         assert_eq!(magpie_provider_for_preset("unknown"), None);
     }
 
@@ -5451,10 +5886,7 @@ mod tests {
         assert_eq!(plan[0].1, "store-key");
         assert_eq!(plan[1].1, "ds-key");
 
-        let glm = registration_plan(
-            &[("glm".to_string(), "g".to_string())],
-            &[],
-        );
+        let glm = registration_plan(&[("glm".to_string(), "g".to_string())], &[]);
         assert_eq!(glm[0].0, "zhipu");
         assert_eq!(glm[0].2, "region=coding");
     }
@@ -5481,7 +5913,10 @@ mod tests {
         assert_eq!(pinned_models_pair(true, &ids(&[])), None);
         assert_eq!(pinned_models_pair(true, &ids(&["  ", ""])), None);
         // 手动来源填了 ID = 钉死（保序、去空白；旧数据里的逗号条目被丢掉而不是撑破注册对）。
-        assert_eq!(pinned_models_pair(true, &ids(&["a", " b "])), Some("models=a,b".to_string()));
+        assert_eq!(
+            pinned_models_pair(true, &ids(&["a", " b "])),
+            Some("models=a,b".to_string())
+        );
         assert_eq!(pinned_models_pair(true, &ids(&["a,b"])), None);
     }
 
@@ -5494,7 +5929,10 @@ mod tests {
             "moonshot".to_string(),
         ];
         let plan = vec!["opencode-go", "xai"];
-        assert_eq!(reconcile_removals(&ledger, &plan), vec!["deepseek", "moonshot"]);
+        assert_eq!(
+            reconcile_removals(&ledger, &plan),
+            vec!["deepseek", "moonshot"]
+        );
         // 空计划 → 全回收（用户删光了 key）。
         assert_eq!(reconcile_removals(&ledger, &[]), ledger);
         // 空账本 → 无事可做。
@@ -5526,7 +5964,10 @@ mod tests {
         );
         std::fs::write(&path, "{not json").unwrap();
         assert!(load_registered_ledger(&path).is_empty(), "坏文件 → 空账本");
-        assert!(!path.with_extension("json.tmp").exists(), "临时文件已 rename 走");
+        assert!(
+            !path.with_extension("json.tmp").exists(),
+            "临时文件已 rename 走"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -5556,7 +5997,10 @@ mod tests {
 
         assert!(parse_quota_json("not json").is_empty());
         assert!(parse_quota_json("{}").is_empty());
-        assert!(parse_quota_json(r#"[{"windows":[]}]"#).is_empty(), "无 provider 的条目跳过");
+        assert!(
+            parse_quota_json(r#"[{"windows":[]}]"#).is_empty(),
+            "无 provider 的条目跳过"
+        );
 
         // 网关 GET /v1/magpie/quotas 包一层 {object,data}（2026-10-18 实测）。
         let wrapped = r#"{"object":"list","data":[
@@ -5591,11 +6035,17 @@ mod tests {
         assert_eq!(first.len(), 48, "48 hex chars");
         assert!(first.bytes().all(|b| b.is_ascii_hexdigit()));
         assert_eq!(
-            fs::read_to_string(dir.join("serve-token.txt")).unwrap().trim(),
+            fs::read_to_string(dir.join("serve-token.txt"))
+                .unwrap()
+                .trim(),
             first,
             "minted token must be persisted"
         );
-        assert_eq!(ensure_serve_token(&dir), first, "second run reuses the same token");
+        assert_eq!(
+            ensure_serve_token(&dir),
+            first,
+            "second run reuses the same token"
+        );
         fs::write(dir.join("serve-token.txt"), "not-hex-short").unwrap();
         let second = ensure_serve_token(&dir);
         assert_eq!(second.len(), 48);
@@ -5622,15 +6072,20 @@ mod tests {
         .unwrap();
 
         for entry in ["claude", "claude.cmd"] {
-            let (program, prefix) = resolve_for_gateway(dir.join(entry).to_str().unwrap()).expect("resolved");
-            assert!(program.ends_with(r"claude-code\bin\claude.exe"), "{entry} -> {program}");
+            let (program, prefix) =
+                resolve_for_gateway(dir.join(entry).to_str().unwrap()).expect("resolved");
+            assert!(
+                program.ends_with(r"claude-code\bin\claude.exe"),
+                "{entry} -> {program}"
+            );
             assert!(program.contains("John Smith 张三"), "{program}");
             assert!(prefix.is_empty());
         }
 
         // 解不出 exe 的包装脚本：交脚本本身，不交 cmd /S /C。
         std::fs::write(dir.join("wrapped.cmd"), "@echo hi\r\n").unwrap();
-        let (program, prefix) = resolve_for_gateway(dir.join("wrapped.cmd").to_str().unwrap()).expect("resolved");
+        let (program, prefix) =
+            resolve_for_gateway(dir.join("wrapped.cmd").to_str().unwrap()).expect("resolved");
         assert!(program.ends_with("wrapped.cmd"), "{program}");
         assert!(prefix.is_empty());
 
@@ -5658,7 +6113,11 @@ mod tests {
         assert_eq!(engine_binding_count_at(&path), 2);
 
         std::fs::write(&path, "{corrupt").unwrap();
-        assert_eq!(engine_binding_count_at(&path), 0, "坏文件 → 0（不误判有人在用）");
+        assert_eq!(
+            engine_binding_count_at(&path),
+            0,
+            "坏文件 → 0（不误判有人在用）"
+        );
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -5667,7 +6126,10 @@ mod tests {
     #[test]
     fn manual_stop_clears_running_state() {
         let _engine = crate::engine::test_running(vec!["grok/grok-4.7".to_string()]);
-        assert!(matches!(crate::engine::status(), EngineStatus::Running { .. }));
+        assert!(matches!(
+            crate::engine::status(),
+            EngineStatus::Running { .. }
+        ));
         stop();
         assert!(matches!(crate::engine::status(), EngineStatus::Absent));
         stop();
@@ -5698,7 +6160,10 @@ mod tests {
                     Ok(())
                 }),
             );
-            Self { calls, _engine: engine }
+            Self {
+                calls,
+                _engine: engine,
+            }
         }
 
         fn calls(&self) -> Vec<Vec<String>> {
@@ -5739,10 +6204,7 @@ mod tests {
             "gpt-5.6-luna"
         );
         assert_eq!(codex_group_id("gpt-5.6-luna[xhigh]"), None);
-        assert_eq!(
-            codex_group_id("gpt-5.6-luna"),
-            Some("gpt-5.6-luna".into())
-        );
+        assert_eq!(codex_group_id("gpt-5.6-luna"), Some("gpt-5.6-luna".into()));
         let cli = CliRecorder::install(Vec::new());
         codex_alias_sync("s1", "gpt-5.6-luna[xhigh]", "codex/gpt-6.1-terra");
         let add = &cli.calls()[0];
@@ -5846,8 +6308,7 @@ mod tests {
                     .lock()
                     .unwrap()
                     .push(args.iter().map(|s| s.to_string()).collect());
-                if args.first().copied() == Some("group") && args.get(1).copied() == Some("add")
-                {
+                if args.first().copied() == Some("group") && args.get(1).copied() == Some("add") {
                     return Err("there is a group gpt-5.6-luna already".into());
                 }
                 Ok(())
@@ -5879,7 +6340,11 @@ mod tests {
         assert_eq!(calls[1][..2], ["group".to_string(), "add".to_string()]);
         assert_eq!(
             calls[2],
-            vec!["group".to_string(), "rm".to_string(), "gpt-5.2-codex".to_string()]
+            vec![
+                "group".to_string(),
+                "rm".to_string(),
+                "gpt-5.2-codex".to_string()
+            ]
         );
     }
 
@@ -5892,16 +6357,16 @@ mod tests {
         codex_alias_sync("s2", "gpt-5.2-codex", "kimi/k2.6");
         assert_eq!(cli.calls().len(), 2, "两次 add，无删除");
         codex_alias_clear("s1");
-        assert_eq!(
-            cli.calls().len(),
-            2,
-            "s2 还在用同名组，s1 解绑不能删"
-        );
+        assert_eq!(cli.calls().len(), 2, "s2 还在用同名组，s1 解绑不能删");
         codex_alias_clear("s2");
         let calls = cli.calls();
         assert_eq!(
             calls[2],
-            vec!["group".to_string(), "rm".to_string(), "gpt-5.2-codex".to_string()],
+            vec![
+                "group".to_string(),
+                "rm".to_string(),
+                "gpt-5.2-codex".to_string()
+            ],
             "最后一个引用者解绑时删组"
         );
         // 无登记的会话清别名：no-op。

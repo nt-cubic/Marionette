@@ -137,7 +137,9 @@ pub fn resolve_link_target(target: String, cwd: Option<String>) -> Value {
             "target": path.to_string_lossy(),
             "risky": is_risky(&path),
         }),
-        None => json!({ "kind": "missing", "target": strip_extended_prefix(&local), "risky": false }),
+        None => {
+            json!({ "kind": "missing", "target": strip_extended_prefix(&local), "risky": false })
+        }
     }
 }
 
@@ -378,7 +380,10 @@ fn open_with_os(target: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_risky, is_url, resolve_path, strip_extended_prefix, strip_file_url, strip_scheme, to_explorer_arg};
+    use super::{
+        is_risky, is_url, resolve_path, strip_extended_prefix, strip_file_url, strip_scheme,
+        to_explorer_arg,
+    };
     use std::fs;
     use std::path::Path;
 
@@ -389,14 +394,8 @@ mod tests {
             to_explorer_arg(Path::new("D:/Apps/Marionette/docs/CURRENT.md")),
             r"D:\Apps\Marionette\docs\CURRENT.md"
         );
-        assert_eq!(
-            to_explorer_arg(Path::new("D:/Apps")),
-            r"D:\Apps"
-        );
-        assert_eq!(
-            to_explorer_arg(Path::new(r"D:\Apps\a\b")),
-            r"D:\Apps\a\b"
-        );
+        assert_eq!(to_explorer_arg(Path::new("D:/Apps")), r"D:\Apps");
+        assert_eq!(to_explorer_arg(Path::new(r"D:\Apps\a\b")), r"D:\Apps\a\b");
     }
 
     #[test]
@@ -411,8 +410,14 @@ mod tests {
             strip_file_url("file:///D:/Apps/a.png"),
             Some("D:/Apps/a.png".to_string())
         );
-        assert_eq!(strip_file_url("file://localhost/D:/a"), Some("D:/a".to_string()));
-        assert_eq!(strip_file_url("file://LOCALHOST/D:/a"), Some("D:/a".to_string()));
+        assert_eq!(
+            strip_file_url("file://localhost/D:/a"),
+            Some("D:/a".to_string())
+        );
+        assert_eq!(
+            strip_file_url("file://LOCALHOST/D:/a"),
+            Some("D:/a".to_string())
+        );
         assert_eq!(strip_file_url("file://D:/a"), Some("D:/a".to_string()));
         assert_eq!(strip_file_url("file:///C:/x"), Some("C:/x".to_string()));
         assert_eq!(strip_file_url("  file:///C:/x  "), Some("C:/x".to_string()));
@@ -423,10 +428,16 @@ mod tests {
 
     #[test]
     fn strips_schemes_or_passes_through() {
-        assert_eq!(strip_scheme("file:///D:/Apps/a.png".to_string()), "D:/Apps/a.png");
+        assert_eq!(
+            strip_scheme("file:///D:/Apps/a.png".to_string()),
+            "D:/Apps/a.png"
+        );
         assert_eq!(strip_scheme(r"D:\a\b".to_string()), r"D:\a\b");
         assert_eq!(strip_scheme("".to_string()), "");
-        assert_eq!(strip_scheme("https://example.com".to_string()), "https://example.com");
+        assert_eq!(
+            strip_scheme("https://example.com".to_string()),
+            "https://example.com"
+        );
     }
 
     #[test]
@@ -462,10 +473,18 @@ mod tests {
         assert!(saved["mtimeMs"].as_u64().unwrap() >= read["mtimeMs"].as_u64().unwrap());
 
         // A stale expectation is a refusal value, not an error; force overwrites.
-        let stale = save_doc_file(path.clone(), None, "clobber\n".to_string(), Some(1), None).unwrap();
+        let stale =
+            save_doc_file(path.clone(), None, "clobber\n".to_string(), Some(1), None).unwrap();
         assert_eq!(stale["saved"].as_bool().unwrap(), false);
         assert_eq!(stale["reason"].as_str().unwrap(), "stale");
-        let forced = save_doc_file(path.clone(), None, "clobber\n".to_string(), Some(1), Some(true)).unwrap();
+        let forced = save_doc_file(
+            path.clone(),
+            None,
+            "clobber\n".to_string(),
+            Some(1),
+            Some(true),
+        )
+        .unwrap();
         assert_eq!(forced["saved"].as_bool().unwrap(), true);
         assert_eq!(fs::read_to_string(&file).unwrap(), "clobber\n");
 
@@ -489,7 +508,10 @@ mod tests {
         assert_eq!(resolve_path(&stripped, None), Some(file.clone()));
         // Percent-encoding is a known limitation, not a silent surprise.
         assert_eq!(resolve_path("D:/not%20here", None), None);
-        assert_eq!(strip_file_url("file:///D:/not%20here"), Some("D:/not%20here".to_string()));
+        assert_eq!(
+            strip_file_url("file:///D:/not%20here"),
+            Some("D:/not%20here".to_string())
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -520,7 +542,10 @@ mod tests {
         let cwd = root.to_string_lossy().to_string();
         assert_eq!(resolve_path("src/App.tsx", Some(&cwd)), Some(file.clone()));
         // Editors print `file:line[:col]` — the filesystem does not.
-        assert_eq!(resolve_path("src/App.tsx:42", Some(&cwd)), Some(file.clone()));
+        assert_eq!(
+            resolve_path("src/App.tsx:42", Some(&cwd)),
+            Some(file.clone())
+        );
         assert_eq!(resolve_path("src/App.tsx:42:7", Some(&cwd)), Some(file));
         assert_eq!(resolve_path("src/Missing.tsx", Some(&cwd)), None);
 

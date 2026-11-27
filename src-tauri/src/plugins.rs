@@ -124,9 +124,7 @@ fn validate_spec(spec: &PluginSpec) -> Result<(), String> {
                 Err("http plugin needs an http(s) url".to_string())
             }
         }
-        other => Err(format!(
-            "unsupported transport `{other}` (stdio | http)"
-        )),
+        other => Err(format!("unsupported transport `{other}` (stdio | http)")),
     }
 }
 
@@ -204,7 +202,9 @@ pub fn enabled_ids() -> Vec<String> {
 
 /// The record a proxy request resolves; disabled plugins are invisible.
 pub fn enabled_plugin(id: &str) -> Option<PluginRecord> {
-    load().into_iter().find(|plugin| plugin.enabled && plugin.id == id)
+    load()
+        .into_iter()
+        .find(|plugin| plugin.enabled && plugin.id == id)
 }
 
 // ─── Skills（plugins/skills 的安装/停用/删除，2026-11-06） ─────────────────
@@ -271,7 +271,11 @@ pub fn list_skills_at(root: &Path) -> Vec<SkillRecord> {
 
 /// Copy a skill folder (must contain SKILL.md) into `root/<id>`. Installing is
 /// enabling: a `.disabled` marker in the source is not carried over.
-pub fn install_skill_at(source: &Path, id: Option<String>, root: &Path) -> Result<SkillRecord, String> {
+pub fn install_skill_at(
+    source: &Path,
+    id: Option<String>,
+    root: &Path,
+) -> Result<SkillRecord, String> {
     if !source.is_dir() {
         return Err(format!("source folder not found: {}", source.display()));
     }
@@ -512,10 +516,8 @@ mod tests {
     /// Unique temp dir per test (cargo test runs in one process, so the pid
     /// alone would collide across parallel tests — include the test name).
     fn temp_dir_for(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "Marionette-plugins-{name}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("Marionette-plugins-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -597,10 +599,8 @@ mod tests {
     fn skill_install_requires_skill_md_and_slug_id() {
         let root = temp_dir_for("skills-invalid");
         // Folder without SKILL.md.
-        let bare = std::env::temp_dir().join(format!(
-            "Marionette-skill-bare-{}",
-            std::process::id()
-        ));
+        let bare =
+            std::env::temp_dir().join(format!("Marionette-skill-bare-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&bare);
         std::fs::create_dir_all(&bare).unwrap();
         assert!(install_skill_at(&bare, None, &root).is_err());
@@ -636,20 +636,18 @@ mod tests {
     fn store_round_trip_at_dir() {
         let dir = temp_dir_for("roundtrip");
         assert!(load_at(&dir).is_empty());
-        let plugins = vec![
-            PluginRecord {
-                id: "alpha".into(),
-                transport: "http".into(),
-                command: String::new(),
-                args: vec![],
-                env: HashMap::new(),
-                url: "https://mcp.example.com/mcp".into(),
-                headers: HashMap::from([("Authorization".into(), "Bearer secret".into())]),
-                enabled: true,
-                added_at: "1".into(),
-                last_probe: None,
-            },
-        ];
+        let plugins = vec![PluginRecord {
+            id: "alpha".into(),
+            transport: "http".into(),
+            command: String::new(),
+            args: vec![],
+            env: HashMap::new(),
+            url: "https://mcp.example.com/mcp".into(),
+            headers: HashMap::from([("Authorization".into(), "Bearer secret".into())]),
+            enabled: true,
+            added_at: "1".into(),
+            last_probe: None,
+        }];
         save_at(&dir, &plugins).unwrap();
         assert_eq!(load_at(&dir).len(), 1);
         let loaded = load_at(&dir);
@@ -695,16 +693,15 @@ mod tests {
         let entry = &entries[0];
         assert_eq!(entry["type"], "http");
         assert_eq!(entry["name"], "demo");
-        assert_eq!(
-            entry["url"],
-            "http://127.0.0.1:12345/mcp/p/demo"
-        );
+        assert_eq!(entry["url"], "http://127.0.0.1:12345/mcp/p/demo");
         // The only header is the loopback session token — the plugin's real
         // credentials never appear in a proxy entry.
         assert_eq!(entry["headers"].as_object().unwrap().len(), 1);
         assert_eq!(entry["headers"]["Authorization"], "Bearer session-token");
         assert!(
-            !serde_json::to_string(entry).unwrap().contains("real-secret"),
+            !serde_json::to_string(entry)
+                .unwrap()
+                .contains("real-secret"),
             "source credential must not leak into the entry"
         );
     }

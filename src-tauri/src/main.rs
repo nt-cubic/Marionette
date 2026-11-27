@@ -6,31 +6,31 @@ mod acp;
 mod acp_catalog;
 mod agent_registry;
 mod agent_update;
+mod antigravity_bridge;
 mod antigravity_login;
 mod antigravity_support;
-mod antigravity_bridge;
 mod app_paths;
+mod app_update;
 mod browser;
 mod chief;
-mod elicitation;
-mod app_update;
 mod commands;
 mod computer;
 mod context_inventory;
 mod council;
 mod credentials;
 mod custom_agents;
-mod web_chat_bridge;
 mod data_dir_gate;
 mod debug_log;
 mod delegation;
 mod desktop_notify;
 mod diagnostics;
-mod doctor;
 mod dock_support;
+mod doctor;
 mod drag_text;
 mod dsh_bridge;
+mod elicitation;
 mod engine;
+mod web_chat_bridge;
 // 引擎 Rust 化（T6，feature `engine-rust`）：进程内网关模块——engine.rs 在
 // feature 开启时起 httpd 线程 + 直调 cli 动词。默认构建不编译（magpie 子进程
 // 形态零变化）；开发/合同套件二进制 marionette-engine 经 #[path] 独立挂载，
@@ -41,12 +41,12 @@ mod git_service;
 mod grok_dialect;
 mod handoff;
 mod http_client;
+mod loc;
 mod memory;
 mod memos;
-mod loc;
-mod models;
 mod model_bridge;
 mod model_sources;
+mod models;
 mod open_target;
 mod parsers;
 mod plugin_host;
@@ -192,7 +192,11 @@ fn spawn_main_thread_watchdog(app: tauri::AppHandle) {
             "",
             &format!(
                 "main thread {} after {}s",
-                if recovered { "recovered" } else { "STILL frozen" },
+                if recovered {
+                    "recovered"
+                } else {
+                    "STILL frozen"
+                },
                 started.elapsed().as_secs()
             ),
             Some(&format!("in-flight: {}", debug_log::inflight_summary())),
@@ -215,7 +219,8 @@ fn is_tao_paint_assert(panic_message: &str) -> bool {
 /// hide（实测省 150–250MB），还原 → show。show/hide 必须严格成对（白屏
 /// 红线），这个标志就是那条对的账本。贴边停靠窗口不会最小化（屏外但
 /// visible），天然不进这条。
-static MINIMIZE_SUSPENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static MINIMIZE_SUSPENDED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(test)]
 mod tests {
@@ -282,13 +287,7 @@ fn main() {
     // Explorer "Open Marionette here" / CLI: resolve folder before UI starts.
     let open_path = shell_integration::parse_open_path_from_args();
     if let Some(ref p) = open_path {
-        debug_log::append(
-            "shell",
-            "info",
-            "",
-            "launch with --open-path",
-            Some(p),
-        );
+        debug_log::append("shell", "info", "", "launch with --open-path", Some(p));
     }
 
     // Single instance: a second start hands the path to the running UI and exits.
@@ -353,11 +352,14 @@ fn main() {
             // driver。注册失败（被占用）只警告——共享仍可从面板停止。
             {
                 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
-                if let Err(error) = app.global_shortcut().on_shortcut("Ctrl+Alt+Shift+S", |app, _shortcut, event| {
-                    if event.state() == ShortcutState::Pressed {
-                        computer::stop_shortcut_pressed(app);
-                    }
-                }) {
+                if let Err(error) = app.global_shortcut().on_shortcut(
+                    "Ctrl+Alt+Shift+S",
+                    |app, _shortcut, event| {
+                        if event.state() == ShortcutState::Pressed {
+                            computer::stop_shortcut_pressed(app);
+                        }
+                    },
+                ) {
                     debug_log::append(
                         "computer",
                         "warn",
@@ -410,7 +412,9 @@ fn main() {
             // threads — they need an app handle kept for the process lifetime.
             engine::set_app_handle(app.handle().clone());
             // Council:崩溃/退出残留的运行态 run 置 Paused(用户可 resume)。
-            council::orchestrator::recover_orphaned_runs(&council::orchestrator::CouncilEventEmitter::new(Some(app.handle().clone())));
+            council::orchestrator::recover_orphaned_runs(
+                &council::orchestrator::CouncilEventEmitter::new(Some(app.handle().clone())),
+            );
             // Telegram 远程桥：只读配置 + 起 worker 线程（无 token 时全空转）。
             // try_state：状态缺失时跳过（不 panic——release 是 panic=abort）。
             if let Some(state) = app.try_state::<AppState>() {
@@ -538,7 +542,9 @@ fn main() {
                         // Detached SPA flushes transcript then releases ACP
                         // ownership — do not steal the stream here or main
                         // would rewrite JSONL from an empty in-memory rail.
-                        let _ = window.app_handle().emit("marionette-detached-hidden", &label);
+                        let _ = window
+                            .app_handle()
+                            .emit("marionette-detached-hidden", &label);
                         crate::debug_log::append(
                             "window",
                             "info",
@@ -718,7 +724,6 @@ fn main() {
             commands::memory_import_preview,
             commands::memory_import_run,
             commands::memory_distill,
-
             commands::start_agent_login,
             commands::start_grok_update,
             commands::start_acp_session,

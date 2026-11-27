@@ -40,7 +40,9 @@ pub fn runs_root() -> Result<PathBuf, String> {
 pub fn run_dir(run_id: &str) -> Result<PathBuf, String> {
     // run_id 由我们生成(c{hex}-{seq}),但防御外部传入的路径注入。
     if run_id.is_empty()
-        || !run_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        || !run_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
         return Err(format!("非法 run id:{run_id}"));
     }
@@ -53,7 +55,8 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path, what: &str) -> Result<
 }
 
 fn write_json_atomic(path: &Path, value: &impl serde::Serialize, what: &str) -> Result<(), String> {
-    let body = serde_json::to_string_pretty(value).map_err(|e| format!("序列化 {what} 失败:{e}"))?;
+    let body =
+        serde_json::to_string_pretty(value).map_err(|e| format!("序列化 {what} 失败:{e}"))?;
     crate::storage::write_atomic(path, &body).map_err(|e| format!("写入 {what} 失败:{e}"))
 }
 
@@ -92,7 +95,10 @@ fn append_jsonl(dir: &Path, file: &str, line: &str, what: &str) -> Result<(), St
     // append 时目录可能缺席(OpenOptions 的 create 只建文件不建目录)。
     std::fs::create_dir_all(dir).map_err(|e| format!("创建 run 目录失败:{e}"))?;
     let path = dir.join(file);
-    let mut handle = OpenOptions::new().create(true).append(true).open(&path)
+    let mut handle = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
         .map_err(|e| format!("打开 {what} 失败:{e}"))?;
     writeln!(handle, "{line}").map_err(|e| format!("追加 {what} 失败:{e}"))
 }
@@ -102,7 +108,10 @@ fn append_jsonl(dir: &Path, file: &str, line: &str, what: &str) -> Result<(), St
 pub fn append_message(run_id: &str, message: &CouncilMessage) -> Result<(), String> {
     let dir = run_dir(run_id)?;
     if message_exists_at(&dir, &message.message_id)? {
-        return Err(format!("消息 {} 已存在(重复投递被拒绝)", message.message_id));
+        return Err(format!(
+            "消息 {} 已存在(重复投递被拒绝)",
+            message.message_id
+        ));
     }
     let line = serde_json::to_string(message).map_err(|e| format!("序列化消息失败:{e}"))?;
     append_jsonl(&dir, "messages.jsonl", &line, "messages")
@@ -221,7 +230,10 @@ pub fn list_runs() -> Result<Vec<RunSummary>, String> {
             rounds: spec.rounds,
             message_count: messages,
             created_at: spec.created_at,
-            updated_at: state.as_ref().map(|s| s.updated_at).unwrap_or(spec.created_at),
+            updated_at: state
+                .as_ref()
+                .map(|s| s.updated_at)
+                .unwrap_or(spec.created_at),
         });
     }
     out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
@@ -253,8 +265,10 @@ pub(crate) mod tests {
     impl Sandbox {
         fn new(tag: &str) -> Self {
             // 'static guard:SANDBOX_LOCK 是静态项,守卫可以安全延伸。
-            let guard: std::sync::MutexGuard<'static, ()> = SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-            let dir = std::env::temp_dir().join(format!("marionette-council-test-{tag}-{}", new_run_id()));
+            let guard: std::sync::MutexGuard<'static, ()> =
+                SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+            let dir = std::env::temp_dir()
+                .join(format!("marionette-council-test-{tag}-{}", new_run_id()));
             set_root_override_for_tests(Some(dir.clone()));
             Sandbox(dir, Some(guard))
         }
@@ -276,7 +290,11 @@ pub(crate) mod tests {
             phase: RunPhase::Created,
             round: 1,
             paused_from: None,
-            member_status: spec.members.iter().map(|m| (m.id.clone(), MemberRuntimeStatus::Idle)).collect(),
+            member_status: spec
+                .members
+                .iter()
+                .map(|m| (m.id.clone(), MemberRuntimeStatus::Idle))
+                .collect(),
             budget_usage: Default::default(),
             tasks: Vec::new(),
             verify_attempts: 0,
@@ -336,7 +354,12 @@ pub(crate) mod tests {
     fn transitions_append_only() {
         let _sandbox = Sandbox::new("t1");
         let (spec, _state) = temp_run();
-        let rec = TransitionRecord { at: now_millis(), from: RunPhase::Created, to: RunPhase::Analyzing, reason: None };
+        let rec = TransitionRecord {
+            at: now_millis(),
+            from: RunPhase::Created,
+            to: RunPhase::Analyzing,
+            reason: None,
+        };
         append_transition(&spec.run_id, &rec).unwrap();
         append_transition(&spec.run_id, &rec).unwrap(); // 审计日志允许同记录出现两次(真实时间戳不同)
         assert_eq!(load_transitions(&spec.run_id).unwrap().len(), 2);
@@ -350,7 +373,14 @@ pub(crate) mod tests {
         assert!(load_plan(&spec.run_id).unwrap().is_none());
         let plan = PlanDoc {
             summary: "s".into(),
-            steps: vec![PlanStep { id: "s1".into(), title: "t".into(), detail: "d".into(), depends_on: vec![], acceptance: "a".into(), owner_hint: None }],
+            steps: vec![PlanStep {
+                id: "s1".into(),
+                title: "t".into(),
+                detail: "d".into(),
+                depends_on: vec![],
+                acceptance: "a".into(),
+                owner_hint: None,
+            }],
             open_questions: vec!["q".into()],
             acceptance: vec![],
             verification: vec!["cargo test".into()],

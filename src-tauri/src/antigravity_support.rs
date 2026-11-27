@@ -33,6 +33,24 @@ use std::path::{Path, PathBuf};
 
 pub const AGENT_ID: &str = "antigravity";
 
+/// Antigravity rejects gateway catalogs above 32 entries. Keep the selected
+/// worker model and add the first Flash model because its internal titling and
+/// checkpoint paths require one.
+pub fn gateway_model_allowlist(selected: &str, catalog: &[String]) -> String {
+    let mut models = vec![selected.to_string()];
+    if !selected.to_ascii_lowercase().contains("flash") {
+        if let Some(flash) = catalog
+            .iter()
+            .find(|id| id.to_ascii_lowercase().contains("flash"))
+        {
+            if flash != selected {
+                models.push(flash.clone());
+            }
+        }
+    }
+    models.join(",")
+}
+
 /// Marker the server prints next to the consent URL (stderr on 1.5.0; the
 /// pipe moved between stdout/stderr across versions, so both are scanned).
 pub const AUTH_URL_MARKER: &str = "Open the following link to authenticate the ACP server: ";
@@ -77,7 +95,9 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 fn expand_tilde(path: PathBuf) -> PathBuf {
-    let Some(raw) = path.to_str() else { return path };
+    let Some(raw) = path.to_str() else {
+        return path;
+    };
     if raw == "~" {
         return home_dir().unwrap_or(path);
     }
@@ -145,9 +165,7 @@ fn ensure_settings_auth_type_value_in(acp_dir: &Path, auth_type: &str) -> Settin
     let Some(obj) = root.as_object_mut() else {
         return SettingsSync::UnreadableLeftAlone;
     };
-    let auth = obj
-        .entry("auth")
-        .or_insert_with(|| serde_json::json!({}));
+    let auth = obj.entry("auth").or_insert_with(|| serde_json::json!({}));
     let Some(auth_obj) = auth.as_object_mut() else {
         return SettingsSync::UnreadableLeftAlone;
     };
@@ -229,7 +247,10 @@ pub fn is_server_command(command: &str) -> bool {
 /// `None` when the global dir is unavailable — launch proceeds without the
 /// redirect (the leak returns, but a broken launch is worse).
 pub fn create_scratch(session_id: &str) -> Option<PathBuf> {
-    let root = crate::app_paths::global_dir().ok()?.join("scratch").join("antigravity");
+    let root = crate::app_paths::global_dir()
+        .ok()?
+        .join("scratch")
+        .join("antigravity");
     create_scratch_in(&root, session_id)
 }
 
@@ -276,7 +297,9 @@ fn remove_empty_up_to(dir: &Path, stop: &Path) {
 /// at startup; fresh dirs are never touched (a session handed over from a
 /// previous instance could still own one).
 pub fn sweep_stale_scratch() {
-    let Ok(global) = crate::app_paths::global_dir() else { return };
+    let Ok(global) = crate::app_paths::global_dir() else {
+        return;
+    };
     sweep_stale_in(
         &global.join("scratch").join("antigravity"),
         std::time::Duration::from_secs(SCRATCH_MAX_AGE_SECS),
@@ -284,7 +307,9 @@ pub fn sweep_stale_scratch() {
 }
 
 fn sweep_stale_in(root: &Path, max_age: std::time::Duration) {
-    let Ok(entries) = fs::read_dir(root) else { return };
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
     let cutoff = std::time::SystemTime::now()
         .checked_sub(max_age)
         .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
@@ -306,8 +331,7 @@ fn sweep_stale_in(root: &Path, max_age: std::time::Duration) {
 /// prefers the ACP registry's current version and falls back to this.
 pub const PIN_VERSION: &str = "1.5.0";
 
-const REGISTRY_URL: &str =
-    "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
+const REGISTRY_URL: &str = "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 
 /// The Windows zip is ~105 MB; the cap exists to reject a bogus mirror, not
 /// to police Google's artifact growth (engine download cap, same reasoning).
@@ -361,7 +385,10 @@ fn installed_entry_in(root: &Path) -> Option<PathBuf> {
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
-            e.metadata().ok().map(|m| m.is_dir()).unwrap_or(false)
+            e.metadata()
+                .ok()
+                .map(|m| m.is_dir())
+                .unwrap_or(false)
                 .then_some(name)
         })
         .collect();
@@ -440,8 +467,8 @@ pub fn install(
     expected_sha256: Option<&str>,
     progress: &dyn Fn(&str),
 ) -> Result<PathBuf, String> {
-    let final_dir = install_dir_for(version)
-        .ok_or_else(|| "Marionette global dir unavailable".to_string())?;
+    let final_dir =
+        install_dir_for(version).ok_or_else(|| "Marionette global dir unavailable".to_string())?;
     let entry = final_dir.join(ENTRY_EXE);
     if entry.is_file() && final_dir.join(SIBLING_EXE).is_file() {
         progress(&crate::ts!(
@@ -452,13 +479,10 @@ pub fn install(
         return Ok(entry);
     }
     let _ = fs::remove_dir_all(&final_dir);
-    fs::create_dir_all(&final_dir)
-        .map_err(|e| format!("create install dir: {e}"))?;
+    fs::create_dir_all(&final_dir).map_err(|e| format!("create install dir: {e}"))?;
 
-    let zip_tmp = final_dir.with_file_name(format!(
-        ".{version}.{}.download.zip",
-        std::process::id()
-    ));
+    let zip_tmp =
+        final_dir.with_file_name(format!(".{version}.{}.download.zip", std::process::id()));
     let result = (|| -> Result<PathBuf, String> {
         download_to(url, &zip_tmp, progress)?;
         if let Some(expected) = expected_sha256 {
@@ -468,15 +492,10 @@ pub fn install(
                     "sha256 mismatch: registry said {expected}, download gave {actual}"
                 ));
             }
-            progress(&crate::ts!(
-                "sha256 校验通过",
-                "sha256 verified"
-            ));
+            progress(&crate::ts!("sha256 校验通过", "sha256 verified"));
         }
-        let extract_dir = final_dir.with_file_name(format!(
-            ".{version}.{}.extract",
-            std::process::id()
-        ));
+        let extract_dir =
+            final_dir.with_file_name(format!(".{version}.{}.extract", std::process::id()));
         let _ = fs::remove_dir_all(&extract_dir);
         let outcome = extract_zip(&zip_tmp, &extract_dir, progress)
             .and_then(|()| adopt_tree(&extract_dir, &final_dir));
@@ -512,10 +531,7 @@ fn download_to(url: &str, dest: &Path, progress: &dyn Fn(&str)) -> Result<(), St
     use std::io::{Read, Write};
     // A 105 MB download on a slow link can outlive the default agent; the
     // proxy follows the app setting like every other outbound call.
-    let agent = crate::http_client::agent_with_timeout(
-        std::time::Duration::from_secs(3600),
-        true,
-    )?;
+    let agent = crate::http_client::agent_with_timeout(std::time::Duration::from_secs(3600), true)?;
     let response = agent
         .get(url)
         .set("User-Agent", "Marionette/agent-installer")
@@ -626,11 +642,9 @@ fn extract_zip(zip: &Path, dest: &Path, progress: &dyn Fn(&str)) -> Result<(), S
             dest_lossy.replace('\'', "''"),
         ));
     no_window(&mut cmd);
-    let out = crate::process_util::output_with_kill_timeout(
-        cmd,
-        std::time::Duration::from_secs(900),
-    )
-    .map_err(|e| format!("run Expand-Archive: {e}"))?;
+    let out =
+        crate::process_util::output_with_kill_timeout(cmd, std::time::Duration::from_secs(900))
+            .map_err(|e| format!("run Expand-Archive: {e}"))?;
     if out.status.success() {
         Ok(())
     } else {
@@ -648,9 +662,13 @@ fn adopt_tree(extract_dir: &Path, final_dir: &Path) -> Result<PathBuf, String> {
     let mut queue = vec![extract_dir.to_path_buf()];
     let mut bin_dir = None;
     while let Some(dir) = queue.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else { continue };
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
             if file_type.is_dir() {
                 queue.push(entry.path());
             } else if entry.file_name().eq_ignore_ascii_case(ENTRY_EXE) {
@@ -661,9 +679,8 @@ fn adopt_tree(extract_dir: &Path, final_dir: &Path) -> Result<PathBuf, String> {
             break;
         }
     }
-    let bin_dir = bin_dir.ok_or_else(|| {
-        format!("archive does not contain {ENTRY_EXE} — layout changed upstream")
-    })?;
+    let bin_dir = bin_dir
+        .ok_or_else(|| format!("archive does not contain {ENTRY_EXE} — layout changed upstream"))?;
     if !bin_dir.join(SIBLING_EXE).is_file() {
         return Err(format!(
             "required file '{SIBLING_EXE}' not found beside '{ENTRY_EXE}' in the archive \
@@ -682,7 +699,10 @@ fn adopt_tree(extract_dir: &Path, final_dir: &Path) -> Result<PathBuf, String> {
 }
 
 fn move_dir_contents(from: &Path, to: &Path) -> Result<(), String> {
-    for entry in fs::read_dir(from).map_err(|e| format!("list extract dir: {e}"))?.flatten() {
+    for entry in fs::read_dir(from)
+        .map_err(|e| format!("list extract dir: {e}"))?
+        .flatten()
+    {
         let target = to.join(entry.file_name());
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             fs::create_dir_all(&target).map_err(|e| format!("create dir: {e}"))?;
@@ -748,7 +768,9 @@ fn user_temp_dir() -> Option<PathBuf> {
 
 fn dir_size(path: &Path) -> u64 {
     let mut total = 0;
-    let Ok(entries) = fs::read_dir(path) else { return 0 };
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
     for entry in entries.flatten() {
         total += match entry.metadata() {
             Ok(meta) if meta.is_file() => meta.len(),
@@ -766,11 +788,14 @@ fn dir_size(path: &Path) -> u64 {
 /// files are generic PyInstaller artifacts, which is why reclamation is a
 /// separate, re-validating command instead of an automatic sweep.
 pub fn scan_leaked_temp() -> Vec<LeakedTempItem> {
-    let Some(temp) = user_temp_dir() else { return Vec::new() };
-    let cutoff = std::time::SystemTime::now()
-        - std::time::Duration::from_secs(LEAK_MIN_AGE_SECS);
+    let Some(temp) = user_temp_dir() else {
+        return Vec::new();
+    };
+    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(LEAK_MIN_AGE_SECS);
     let mut out = Vec::new();
-    let Ok(entries) = fs::read_dir(&temp) else { return out };
+    let Ok(entries) = fs::read_dir(&temp) else {
+        return out;
+    };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         let Ok(meta) = entry.metadata() else { continue };
@@ -794,7 +819,11 @@ pub fn scan_leaked_temp() -> Vec<LeakedTempItem> {
         out.push(LeakedTempItem {
             path: entry.path().to_string_lossy().to_string(),
             kind: if is_dir { "dir".into() } else { "file".into() },
-            bytes: if is_dir { dir_size(&entry.path()) } else { meta.len() },
+            bytes: if is_dir {
+                dir_size(&entry.path())
+            } else {
+                meta.len()
+            },
             modified_ms,
         });
     }
@@ -812,13 +841,17 @@ fn dir_in_use(dir: &Path) -> bool {
     let mut stack = vec![dir.to_path_buf()];
     let mut budget = 2048u32; // a full unpack has ~8k entries; enough signal
     while let Some(current) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&current) else { return true };
+        let Ok(entries) = fs::read_dir(&current) else {
+            return true;
+        };
         for entry in entries.flatten() {
             if budget == 0 {
                 return true; // too big to prove idle — assume in use
             }
             budget -= 1;
-            let Ok(file_type) = entry.file_type() else { return true };
+            let Ok(file_type) = entry.file_type() else {
+                return true;
+            };
             if file_type.is_dir() {
                 stack.push(entry.path());
                 continue;
@@ -834,11 +867,11 @@ fn dir_in_use(dir: &Path) -> bool {
             let handle = unsafe {
                 windows_sys::Win32::Storage::FileSystem::CreateFileW(
                     path_w.as_ptr(),
-                    0,                      // no requested access
-                    0,                      // FILE_SHARE_NONE
+                    0, // no requested access
+                    0, // FILE_SHARE_NONE
                     std::ptr::null(),
-                    3,                      // OPEN_EXISTING
-                    0x80,                   // FILE_ATTRIBUTE_NORMAL
+                    3,    // OPEN_EXISTING
+                    0x80, // FILE_ATTRIBUTE_NORMAL
                     std::ptr::null_mut(),
                 )
             };
@@ -871,8 +904,7 @@ pub fn reclaim_leaked_temp(paths: &[String]) -> (usize, usize) {
 }
 
 fn reclaim_in(temp: &Path, paths: &[String]) -> (usize, usize) {
-    let cutoff = std::time::SystemTime::now()
-        - std::time::Duration::from_secs(LEAK_MIN_AGE_SECS);
+    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(LEAK_MIN_AGE_SECS);
     let mut reclaimed = 0;
     let mut skipped = 0;
     for raw in paths {
@@ -933,7 +965,9 @@ mod tests {
         // absl prefixes its log header on stderr — the marker is matched as a
         // substring, not a prefix.
         assert_eq!(
-            extract_auth_url(&format!("I1119 main.py:124] {AUTH_URL_MARKER}{url} trailing")),
+            extract_auth_url(&format!(
+                "I1119 main.py:124] {AUTH_URL_MARKER}{url} trailing"
+            )),
             Some(url)
         );
         assert_eq!(extract_auth_url("unrelated stderr"), None);
@@ -994,8 +1028,8 @@ mod tests {
         let stale = temp.join("_MEI0000dead");
         fs::create_dir_all(&stale).unwrap();
         fs::write(stale.join("x.dll"), b"x").unwrap();
-        let old = std::time::SystemTime::now()
-            - std::time::Duration::from_secs(LEAK_MIN_AGE_SECS + 60);
+        let old =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(LEAK_MIN_AGE_SECS + 60);
         let ftime = std::time::SystemTime::now();
         let _ = ftime; // mtime setting needs filetime; age floor covered by shape/parent cases below
         let _ = old;
@@ -1058,7 +1092,9 @@ mod tests {
         assert!(url_template_matches(
             "https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-agy_acp_server_1.1.1-windows-x86_64.zip"
         ));
-        assert!(!url_template_matches("https://evil.example/agy-acp-server-9.9.9-windows-x86_64.zip"));
+        assert!(!url_template_matches(
+            "https://evil.example/agy-acp-server-9.9.9-windows-x86_64.zip"
+        ));
         assert!(!url_template_matches(
             "https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-1.5.0-linux-x86_64.zip"
         ));
@@ -1143,11 +1179,9 @@ mod tests {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
-        let out = crate::process_util::output_with_kill_timeout(
-            cmd,
-            std::time::Duration::from_secs(60),
-        )
-        .unwrap();
+        let out =
+            crate::process_util::output_with_kill_timeout(cmd, std::time::Duration::from_secs(60))
+                .unwrap();
         assert!(out.status.success(), "Compress-Archive failed");
 
         let extract = dir.join("out");
@@ -1176,16 +1210,17 @@ mod tests {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
-        let out = crate::process_util::output_with_kill_timeout(
-            cmd,
-            std::time::Duration::from_secs(60),
-        )
-        .unwrap();
+        let out =
+            crate::process_util::output_with_kill_timeout(cmd, std::time::Duration::from_secs(60))
+                .unwrap();
         assert!(out.status.success());
         let lone_out = dir.join("lone-out");
         extract_zip(&lone_zip, &lone_out, &|_| {}).unwrap();
         let err = adopt_tree(&lone_out, &dir.join("nope")).unwrap_err();
-        assert!(err.contains(SIBLING_EXE), "error names the missing sibling: {err}");
+        assert!(
+            err.contains(SIBLING_EXE),
+            "error names the missing sibling: {err}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1196,10 +1231,8 @@ mod tests {
     #[test]
     #[ignore = "downloads ~105 MB from dl.google.com"]
     fn live_install_pin_downloads_and_places_tree() {
-        let home = std::env::temp_dir().join(format!(
-            "marionette-agy-live-home-{}",
-            std::process::id()
-        ));
+        let home =
+            std::env::temp_dir().join(format!("marionette-agy-live-home-{}", std::process::id()));
         fs::create_dir_all(&home).unwrap();
         std::env::set_var("USERPROFILE", &home);
         std::env::remove_var("GEMINI_HOME");
@@ -1209,11 +1242,10 @@ mod tests {
         })
         .expect("install");
         assert!(entry.is_file(), "entry exists: {}", entry.display());
-        assert!(entry
-            .parent()
-            .unwrap()
-            .join(SIBLING_EXE)
-            .is_file(), "sibling beside entry");
+        assert!(
+            entry.parent().unwrap().join(SIBLING_EXE).is_file(),
+            "sibling beside entry"
+        );
         assert!(events.get() > 0, "progress fired");
         // Idempotent second run must not re-download (fast return).
         let again = install_pin(&|_| {}).expect("reinstall");
@@ -1254,5 +1286,26 @@ mod tests {
         cleanup_scratch(&third);
         assert!(!third.exists());
         assert!(!root.exists(), "empty parents self-tidy");
+    }
+
+    #[test]
+    fn gateway_allowlist_keeps_selected_and_one_flash_model() {
+        let catalog = vec![
+            "source/deepseek-v4.1-flash".to_string(),
+            "source/deepseek-v4.1-pro".to_string(),
+            "openrouter/google/gemini-4-neon".to_string(),
+        ];
+        assert_eq!(
+            gateway_model_allowlist("source/deepseek-v4.1-pro", &catalog),
+            "source/deepseek-v4.1-pro,source/deepseek-v4.1-flash"
+        );
+        assert_eq!(
+            gateway_model_allowlist("source/deepseek-v4.1-flash", &catalog),
+            "source/deepseek-v4.1-flash"
+        );
+        assert_eq!(
+            gateway_model_allowlist("source/custom", &[]),
+            "source/custom"
+        );
     }
 }

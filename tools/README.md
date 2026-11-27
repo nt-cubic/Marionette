@@ -14,6 +14,7 @@
 | `magpie-seed/` | 引擎种子补丁源：`main_seed.go`（build tag `marionette_seed`）只挂 gateway/routing/usage 三个插件，跑 `serve` 以及精简 `provider`/`group`/`models`（自定义来源登记不需要上游完整 magpie）。改插件集/启动序列在这里改，`import-magpie.ps1` 会把它拷进 `third_party\magpie`。**2026-11-17 起裁掉 `stats.Run`**（上游遥测 + 它是 `internal/agent` 唯一入口，-1.45MB packed）。上游盯梢/移植管线在 `scripts\upstream-watch.mts`（本地研究克隆默认 `<repo>/../magpie-upstream`，不建 fork 零推送），合同清单 `docs\plan-engine-contract.md` |
 | `rebuild-quick.bat` | 增量重建 debug 二进制并重启；Vite 还在跑就只重启 exe |
 | `start-marionette-quick.bat` | 已有 debug 构建时的快速启动：只拉起 Vite + `marionette.exe`，跳过工具链检查 |
+| `doctor.bat` / `doctor-fix.bat` | Double-click health check: runs `Marionette.exe --doctor` (no window, no instance lock, no engine wake, no tokens) and prints `~/.marionette/logs/doctor-report.txt`. `doctor-fix.bat` adds `--fix` (removes dead bridge bindings and saved shared-model choices the engine no longer lists; writes `.bak` first, refuses while the app is running). Exit 0/1/2 = ok/warn/fail. |
 | `bump-version.bat` | 版本号提升的包装（转发给 `bump-version.ps1`；不带参数会交互询问）。完成后提示接着 `build-portable`、再 `publish-release` |
 | `bump-version.ps1` | 一次改完 `package.json`、`package-lock.json`、`src-tauri\tauri.conf.json`、`Cargo.toml`、`Cargo.lock` |
 | `ensure-msvc.bat` | 检查 MSVC / Windows SDK，缺失时可经 winget 安装 |

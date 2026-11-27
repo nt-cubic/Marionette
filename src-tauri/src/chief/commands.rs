@@ -40,7 +40,12 @@ pub fn chief_config_save(config: Value) -> Result<Value, String> {
 /// 全量任务清单（本地 UI 用：跨 chief、不过 MCP 门禁）。
 #[tauri::command(async)]
 pub fn chief_tasks_list_all() -> Value {
-    json!({ "tasks": store::load_tasks() })
+    json!({
+        "tasks": store::load_tasks()
+            .iter()
+            .map(super::broker::task_with_presentation)
+            .collect::<Vec<_>>()
+    })
 }
 
 /// 本地急停（与 Telegram 急停同路）。
@@ -85,16 +90,22 @@ pub fn bootstrap_chief(app: &AppHandle) {
             }
         }
         Ok(_) => {}
-        Err(error) => crate::debug_log::append(
-            "chief",
-            "warn",
-            "",
-            "startup recovery failed",
-            Some(&error),
-        ),
+        Err(error) => {
+            crate::debug_log::append("chief", "warn", "", "startup recovery failed", Some(&error))
+        }
     }
     // 账本修剪（AI 派活开放后任务量不再只属于员工——30 天窗口 + 终态
     // 硬顶，防 tasks.json / events.jsonl 无界增长）。
+    let migrated_lineage = super::broker::backfill_worker_lineage(app);
+    if migrated_lineage > 0 {
+        crate::debug_log::append(
+            "chief",
+            "info",
+            "",
+            "worker lineage backfilled",
+            Some(&format!("migrated {migrated_lineage} sessions")),
+        );
+    }
     match store::prune_ledger(crate::delegation::TASK_RETENTION_MS) {
         Ok(dropped) if dropped > 0 => {
             crate::debug_log::append(

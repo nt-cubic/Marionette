@@ -1,4 +1,4 @@
-use crate::models::{Project, Session};
+use crate::models::{Project, Session, SessionLineage};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fs;
@@ -122,6 +122,17 @@ impl StorageService {
         cwd: &str,
         origin: Option<&str>,
     ) -> Result<Session, String> {
+        self.create_chat_session_with_lineage(agent_id, label, cwd, origin, None)
+    }
+
+    pub fn create_chat_session_with_lineage(
+        &self,
+        agent_id: String,
+        label: String,
+        cwd: &str,
+        origin: Option<&str>,
+        lineage: Option<SessionLineage>,
+    ) -> Result<Session, String> {
         let cwd_path = fs::canonicalize(Path::new(cwd.trim()))
             .map_err(|error| format!("Chat folder is not accessible: {error}"))?;
         if !cwd_path.is_dir() {
@@ -149,7 +160,10 @@ impl StorageService {
             last_active_at: now,
             exited_at: None,
             exit_code: None,
-            raw_log_path: self.chat_session_log_path(&id).to_string_lossy().to_string(),
+            raw_log_path: self
+                .chat_session_log_path(&id)
+                .to_string_lossy()
+                .to_string(),
             transcript_path: self
                 .chat_dir()
                 .join("transcripts")
@@ -169,6 +183,7 @@ impl StorageService {
             preferred_effort_id: None,
             preferred_always_approve: None,
             parent_session_id: None,
+            lineage,
             origin: Some(origin.unwrap_or("user").to_string()),
             native_session_ids: Vec::new(),
             pinned_at: None,
@@ -186,7 +201,12 @@ impl StorageService {
         Ok(self
             .read_chat_sessions_all()?
             .into_iter()
-            .filter(|s| s.parent_session_id.as_ref().map(|p| p.is_empty()).unwrap_or(true))
+            .filter(|s| {
+                s.parent_session_id
+                    .as_ref()
+                    .map(|p| p.is_empty())
+                    .unwrap_or(true)
+            })
             .collect())
     }
 
@@ -215,10 +235,8 @@ impl StorageService {
         if existing.is_empty() {
             return Ok(existing);
         }
-        let mut by_id: std::collections::HashMap<String, Project> = existing
-            .into_iter()
-            .map(|p| (p.id.clone(), p))
-            .collect();
+        let mut by_id: std::collections::HashMap<String, Project> =
+            existing.into_iter().map(|p| (p.id.clone(), p)).collect();
         let mut next = Vec::with_capacity(by_id.len());
         for id in ordered_ids {
             if let Some(project) = by_id.remove(id) {
@@ -246,7 +264,12 @@ impl StorageService {
         // Top-level shelf: hide @-delegate children (they live under the parent card).
         Ok(all
             .into_iter()
-            .filter(|s| s.parent_session_id.as_ref().map(|p| p.is_empty()).unwrap_or(true))
+            .filter(|s| {
+                s.parent_session_id
+                    .as_ref()
+                    .map(|p| p.is_empty())
+                    .unwrap_or(true)
+            })
             .collect())
     }
 
@@ -322,7 +345,12 @@ impl StorageService {
             }
             return Ok(sessions
                 .into_iter()
-                .filter(|s| s.parent_session_id.as_ref().map(|p| p.is_empty()).unwrap_or(true))
+                .filter(|s| {
+                    s.parent_session_id
+                        .as_ref()
+                        .map(|p| p.is_empty())
+                        .unwrap_or(true)
+                })
                 .collect());
         }
 
@@ -348,7 +376,12 @@ impl StorageService {
         }
         Ok(sessions
             .into_iter()
-            .filter(|s| s.parent_session_id.as_ref().map(|p| p.is_empty()).unwrap_or(true))
+            .filter(|s| {
+                s.parent_session_id
+                    .as_ref()
+                    .map(|p| p.is_empty())
+                    .unwrap_or(true)
+            })
             .collect())
     }
 
@@ -370,11 +403,22 @@ impl StorageService {
         label: String,
         origin: Option<&str>,
     ) -> Result<Session, String> {
+        self.create_session_with_lineage(project_id, agent_id, label, origin, None)
+    }
+
+    pub fn create_session_with_lineage(
+        &self,
+        project_id: &str,
+        agent_id: String,
+        label: String,
+        origin: Option<&str>,
+        lineage: Option<SessionLineage>,
+    ) -> Result<Session, String> {
         if project_id == crate::app_paths::CHAT_PROJECT_ID {
             let cwd = crate::app_paths::current_dir()?;
             // Chat 虚拟项目回落时同样保留 origin（agent-worker 落 Chat 库时
             // 靠它分组/角标；原先硬编码 None 会把来源标记吃掉）。
-            return self.create_chat_session(agent_id, label, &cwd, origin);
+            return self.create_chat_session_with_lineage(agent_id, label, &cwd, origin, lineage);
         }
         let project = self.project_by_id(project_id)?;
         let project_path = Path::new(&project.root_path);
@@ -419,6 +463,7 @@ impl StorageService {
             preferred_effort_id: None,
             preferred_always_approve: None,
             parent_session_id: None,
+            lineage,
             origin: Some(origin.unwrap_or("user").to_string()),
             native_session_ids: Vec::new(),
             pinned_at: None,
@@ -466,7 +511,10 @@ impl StorageService {
                 last_active_at: now,
                 exited_at: None,
                 exit_code: None,
-                raw_log_path: self.chat_session_log_path(&id).to_string_lossy().to_string(),
+                raw_log_path: self
+                    .chat_session_log_path(&id)
+                    .to_string_lossy()
+                    .to_string(),
                 transcript_path: self
                     .chat_dir()
                     .join("transcripts")
@@ -486,6 +534,7 @@ impl StorageService {
                 preferred_effort_id: None,
                 preferred_always_approve: None,
                 parent_session_id: Some(parent_session_id.to_string()),
+                lineage: None,
                 origin: Some("delegate".to_string()),
                 native_session_ids: Vec::new(),
                 pinned_at: None,
@@ -543,6 +592,7 @@ impl StorageService {
             preferred_effort_id: None,
             preferred_always_approve: None,
             parent_session_id: Some(parent_session_id.to_string()),
+            lineage: None,
             origin: Some("delegate".to_string()),
             native_session_ids: Vec::new(),
             pinned_at: None,
@@ -645,10 +695,7 @@ impl StorageService {
             if let Some(native) = native_id {
                 self.merge_native_id(&mut session, native);
             }
-            let live = matches!(
-                session.status.as_str(),
-                "starting" | "running" | "waiting"
-            );
+            let live = matches!(session.status.as_str(), "starting" | "running" | "waiting");
             let ours_newer = crate::parsers::util::recency_ms(&session.last_active_at)
                 >= crate::parsers::util::recency_ms(cli_active)
                 && crate::parsers::util::recency_ms(&session.last_active_at) > 0;
@@ -722,6 +769,7 @@ impl StorageService {
             preferred_effort_id: None,
             preferred_always_approve: None,
             parent_session_id: None,
+            lineage: None,
             origin: Some("import".to_string()),
             native_session_ids: native_id
                 .map(str::trim)
@@ -791,6 +839,22 @@ impl StorageService {
             sessions.push(session.clone());
         }
         self.write_sessions(project_path, &sessions)
+    }
+
+    pub fn set_session_lineage(
+        &self,
+        session_id: &str,
+        lineage: SessionLineage,
+    ) -> Result<bool, String> {
+        let Some(mut session) = self.find_session(session_id)? else {
+            return Ok(false);
+        };
+        if session.lineage.as_ref() == Some(&lineage) {
+            return Ok(false);
+        }
+        session.lineage = Some(lineage);
+        self.save_session(&session)?;
+        Ok(true)
     }
 
     pub fn find_session(&self, session_id: &str) -> Result<Option<Session>, String> {
@@ -948,10 +1012,7 @@ impl StorageService {
     }
 
     /// Disk write only — callers should drop the storage lock first.
-    pub fn write_transcript_file(
-        path: &Path,
-        events: &[serde_json::Value],
-    ) -> Result<(), String> {
+    pub fn write_transcript_file(path: &Path, events: &[serde_json::Value]) -> Result<(), String> {
         let mut body = String::new();
         for event in events {
             let line = serde_json::to_string(event)
@@ -968,10 +1029,7 @@ impl StorageService {
     /// （2026-10-31 事故主因之一）。与 `write_atomic` 共用进程级写锁防交错；
     /// 语义前提：调用方保证传入事件是**当前文件末尾之后**的新增（前端按
     /// 「前缀引用全等」判定纯追加后才走这里）。
-    pub fn append_transcript_file(
-        path: &Path,
-        events: &[serde_json::Value],
-    ) -> Result<(), String> {
+    pub fn append_transcript_file(path: &Path, events: &[serde_json::Value]) -> Result<(), String> {
         let _serial = WRITE_ATOMIC_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1025,8 +1083,7 @@ impl StorageService {
         let mut events = Vec::new();
         let mut corrupt = 0usize;
         for line in reader.lines() {
-            let line =
-                line.map_err(|error| format!("Read transcript line failed: {error}"))?;
+            let line = line.map_err(|error| format!("Read transcript line failed: {error}"))?;
             let line = line.trim();
             if line.is_empty() {
                 continue;
@@ -1091,8 +1148,7 @@ impl StorageService {
         let mut ring: std::collections::VecDeque<String> = std::collections::VecDeque::new();
         let mut total = 0usize;
         for line in reader.lines() {
-            let line =
-                line.map_err(|error| format!("Read transcript line failed: {error}"))?;
+            let line = line.map_err(|error| format!("Read transcript line failed: {error}"))?;
             if line.trim().is_empty() {
                 continue;
             }
@@ -1342,8 +1398,7 @@ pub(crate) fn write_atomic(path: &Path, body: &str) -> Result<(), String> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("Create dir failed: {error}"))?;
+        fs::create_dir_all(parent).map_err(|error| format!("Create dir failed: {error}"))?;
     }
     let tmp = path.with_extension("json.tmp");
     let bak = path.with_extension("json.bak");
@@ -1380,8 +1435,8 @@ fn read_json_with_recovery<T: serde::de::DeserializeOwned>(
     what: &str,
 ) -> Result<T, String> {
     let read = |path: &Path| -> Result<T, String> {
-        let content = fs::read_to_string(path)
-            .map_err(|error| format!("Read {what} failed: {error}"))?;
+        let content =
+            fs::read_to_string(path).map_err(|error| format!("Read {what} failed: {error}"))?;
         serde_json::from_str(&content).map_err(|error| format!("Parse {what} failed: {error}"))
     };
     match read(primary) {
@@ -1441,10 +1496,7 @@ fn copy_if_present(source: &str, target: &Path) -> bool {
 }
 
 fn session_recency_key(session: &Session) -> u128 {
-    session
-        .last_active_at
-        .parse::<u128>()
-        .unwrap_or_default()
+    session.last_active_at.parse::<u128>().unwrap_or_default()
 }
 
 fn remove_legacy_chat_layout(root: &Path, sessions: &[Session]) {
@@ -1475,8 +1527,7 @@ fn remove_legacy_chat_layout(root: &Path, sessions: &[Session]) {
             let Ok(file_type) = entry.file_type() else {
                 return false;
             };
-            file_type.is_file()
-                && allowed(entry.file_name().to_string_lossy().as_ref())
+            file_type.is_file() && allowed(entry.file_name().to_string_lossy().as_ref())
         })
     };
     if !has_only_files(&marker.join("sessions"), &|name| {
@@ -1536,7 +1587,7 @@ fn now_string() -> String {
 #[cfg(test)]
 mod tests {
     use super::{now_string, StorageService};
-    use crate::models::Project;
+    use crate::models::{Project, SessionLineage};
     use std::fs;
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1578,7 +1629,11 @@ mod tests {
         fs::write(&index, truncated).unwrap();
         let recovered: Vec<serde_json::Value> =
             super::read_json_with_recovery(&index, "projects").unwrap();
-        assert_eq!(recovered.len(), 1, "restores the previous (.bak) generation");
+        assert_eq!(
+            recovered.len(),
+            1,
+            "restores the previous (.bak) generation"
+        );
         assert!(root.join("projects.json.corrupt").exists(), "corpse kept");
 
         // No .bak and corrupt: the error surfaces (never silently empty).
@@ -1659,6 +1714,48 @@ mod tests {
             .unwrap();
         assert_eq!(again.id, project.id);
         assert_eq!(restarted.list_projects().unwrap().len(), 1);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn delegated_worker_lineage_survives_without_task_ledger() {
+        let root = test_root();
+        let global_dir = root.join("global");
+        let project_dir = root.join("workspace");
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let service = StorageService::from_global_dir(global_dir.clone()).unwrap();
+        let project = service
+            .add_project(project_dir.to_string_lossy().to_string())
+            .unwrap();
+        let parent = service
+            .create_session(&project.id, "codex".to_string(), "Parent".to_string())
+            .unwrap();
+        let worker = service
+            .create_session_with_lineage(
+                &project.id,
+                "opencode".to_string(),
+                "Worker".to_string(),
+                Some("agent-worker"),
+                Some(SessionLineage {
+                    parent_session_id: parent.id.clone(),
+                    root_session_id: parent.id.clone(),
+                    relationship: "subagent".to_string(),
+                }),
+            )
+            .unwrap();
+
+        // Workers stay top-level rows for direct opening; only the frontend
+        // hides them from normal shelves.
+        assert_eq!(service.list_sessions(&project.id).unwrap().len(), 2);
+
+        let restarted = StorageService::from_global_dir(global_dir).unwrap();
+        let restored = restarted.find_session(&worker.id).unwrap().unwrap();
+        let lineage = restored.lineage.expect("worker lineage");
+        assert_eq!(lineage.parent_session_id, parent.id);
+        assert_eq!(lineage.root_session_id, parent.id);
+        assert_eq!(lineage.relationship, "subagent");
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -1778,7 +1875,12 @@ mod tests {
 
         let service = StorageService::from_global_dir(global_dir.clone()).unwrap();
         let session = service
-            .create_chat_session("opencode".to_string(), "Chat".to_string(), &workspace.to_string_lossy(), None)
+            .create_chat_session(
+                "opencode".to_string(),
+                "Chat".to_string(),
+                &workspace.to_string_lossy(),
+                None,
+            )
             .unwrap();
 
         assert!(service.list_projects().unwrap().is_empty());
@@ -1811,7 +1913,11 @@ mod tests {
             .add_project(workspace.to_string_lossy().to_string())
             .unwrap();
         let mut legacy_session = service
-            .create_session(&old_project.id, "opencode".to_string(), "Legacy chat".to_string())
+            .create_session(
+                &old_project.id,
+                "opencode".to_string(),
+                "Legacy chat".to_string(),
+            )
             .unwrap();
         legacy_session.project_id = crate::app_paths::CHAT_PROJECT_ID.to_string();
         fs::write(
@@ -1844,7 +1950,10 @@ mod tests {
         assert_eq!(chats.len(), 1);
         assert_eq!(chats[0].label, "Legacy chat");
         assert_eq!(restarted.list_projects().unwrap().len(), 0);
-        assert!(global_dir.join("chats/transcripts").join(format!("{}.jsonl", chats[0].id)).is_file());
+        assert!(global_dir
+            .join("chats/transcripts")
+            .join(format!("{}.jsonl", chats[0].id))
+            .is_file());
         assert_eq!(
             fs::read_to_string(global_dir.join("chats/handoff.md")).unwrap(),
             "latest"
@@ -1868,12 +1977,16 @@ mod tests {
         let session = service
             .create_session(&project.id, "opencode".to_string(), "M4".to_string())
             .unwrap();
-        service.update_session_status(&session.id, "running").unwrap();
+        service
+            .update_session_status(&session.id, "running")
+            .unwrap();
 
         // Restart: nothing is live, so the dialog must come back idle — and the
         // file must be repaired so the next reader sees the same truth.
         let restarted = StorageService::from_global_dir(global_dir).unwrap();
-        let healed = restarted.list_sessions_healed(&project.id, |_| false).unwrap();
+        let healed = restarted
+            .list_sessions_healed(&project.id, |_| false)
+            .unwrap();
         assert_eq!(healed[0].status, "exited");
         assert!(healed[0].exited_at.is_some());
         assert_eq!(
@@ -1882,8 +1995,12 @@ mod tests {
         );
 
         // A session this process really owns keeps its live status.
-        restarted.update_session_status(&session.id, "running").unwrap();
-        let live = restarted.list_sessions_healed(&project.id, |_| true).unwrap();
+        restarted
+            .update_session_status(&session.id, "running")
+            .unwrap();
+        let live = restarted
+            .list_sessions_healed(&project.id, |_| true)
+            .unwrap();
         assert_eq!(live[0].status, "running");
 
         fs::remove_dir_all(root).unwrap();
@@ -1939,7 +2056,9 @@ mod tests {
         StorageService::write_transcript_file(&path, &events).unwrap();
 
         // tail 模式：末 3 行 + 全文件行数 + 窗口首行。
-        let tail = service.load_transcript_window(&session.id, None, 3).unwrap();
+        let tail = service
+            .load_transcript_window(&session.id, None, 3)
+            .unwrap();
         assert_eq!(tail.total_lines, 10);
         assert_eq!(tail.first_line, 7, "尾部窗口的首行 = total - count");
         assert_eq!(tail.events.len(), 3);
@@ -1947,7 +2066,9 @@ mod tests {
         assert_eq!(tail.events[2]["text"], "m9");
 
         // range 模式：向上翻页 [2, 5)。
-        let page = service.load_transcript_window(&session.id, Some(2), 3).unwrap();
+        let page = service
+            .load_transcript_window(&session.id, Some(2), 3)
+            .unwrap();
         assert_eq!(page.first_line, 2);
         assert_eq!(page.events.len(), 3);
         assert_eq!(page.events[0]["text"], "m2");
@@ -1968,7 +2089,9 @@ mod tests {
             serde_json::to_string(&mk(1)).unwrap()
         );
         fs::write(&path, body).unwrap();
-        let tail = service.load_transcript_window(&session.id, None, 1).unwrap();
+        let tail = service
+            .load_transcript_window(&session.id, None, 1)
+            .unwrap();
         assert_eq!(tail.total_lines, 2, "空行不计数");
         assert_eq!(tail.first_line, 1);
         assert_eq!(tail.events[0]["text"], "m1");

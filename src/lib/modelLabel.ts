@@ -69,6 +69,32 @@ function humanizeSlug(slug: string): string {
     return `Grok ${rest}`;
   }
 
+  // deepseek-v4.1-flash -> DeepSeek V4.1 Flash
+  const deepseek = s.match(/^deepseek[-_](.+)$/i);
+  if (deepseek) {
+    const rest = deepseek[1]!
+      .replace(/[-_]+/g, " ")
+      .replace(/\b([a-z])/g, (c) => c.toUpperCase());
+    return `DeepSeek ${rest}`;
+  }
+
+  const vendor = s.match(/^(gemini|glm|kimi|minimax|mistral|ling|qwen)[-_]?(.+)$/i);
+  if (vendor) {
+    const names: Record<string, string> = {
+      gemini: "Gemini",
+      glm: "GLM",
+      kimi: "Kimi",
+      minimax: "MiniMax",
+      mistral: "Mistral",
+      ling: "Ling",
+      qwen: "Qwen",
+    };
+    const rest = vendor[2]!
+      .replace(/[-_]+/g, " ")
+      .replace(/\b([a-z])/g, (c) => c.toUpperCase());
+    return `${names[vendor[1]!.toLowerCase()]} ${rest}`;
+  }
+
   // gpt-4o / gpt-5.1-codex-max
   if (/^gpt[-_]/i.test(s) || /^o\d/i.test(s) || /^claude[-_]/i.test(s)) {
     return s
@@ -242,6 +268,143 @@ export function modelProviderGroup(model: Pick<ModelDef, "id" | "label">): strin
   return familyGroup(stripLeadingBracket(label)) ?? (bracket ? bracket.tag : "Models");
 }
 
+/** Human model name for a delegated-task card. */
+export function prettyDelegateModelLabel(
+  model: string | null | undefined,
+): string {
+  const raw = (model || "").trim();
+  if (!raw) return "";
+  const tail = raw.includes("/") ? raw.slice(raw.lastIndexOf("/") + 1) : raw;
+  return prettyModelLabel(
+    { id: tail, label: tail, description: undefined },
+    { maxLen: 56 },
+  );
+}
+
+/** `OpenCode Go/DeepSeek V4.1 Flash [Max]` from explicit task metadata. */
+export function delegateModelCaption(
+  provider: string | null | undefined,
+  model: string | null | undefined,
+  effort: string | null | undefined,
+  fallbackEffort: string,
+): string {
+  const providerText = (provider || "").trim();
+  const modelText = prettyDelegateModelLabel(model);
+  const route = [providerText, modelText].filter(Boolean).join("/");
+  if (!route) return "";
+  const effortText = prettyEffortLabel(effort, effort) || fallbackEffort.trim();
+  return [route, effortText ? `[${effortText}]` : ""].filter(Boolean).join(" ");
+}
+
+export type ModelRouteSource = {
+  id: string;
+  label: string;
+  endpoint: string;
+};
+
+const EXPLICIT_MODEL_PROVIDERS: Record<string, string> = {
+  "opencode-go": "OpenCode Go",
+  opencode: "OpenCode",
+  deepseek: "DeepSeek",
+  openrouter: "OpenRouter",
+  glm: "GLM",
+  zhipu: "GLM",
+  moonshot: "Kimi",
+  kimi: "Kimi",
+  xai: "xAI",
+  grok: "xAI",
+  claude: "Claude",
+  anthropic: "Claude",
+  codex: "ChatGPT",
+  openai: "OpenAI",
+  gemini: "Google",
+  google: "Google",
+  copilot: "Copilot",
+  ollama: "Ollama",
+  logfare: "Logfare",
+};
+
+export function modelSourceProviderLabel(source: ModelRouteSource): string | null {
+  const endpoint = source.endpoint.trim().toLowerCase();
+  if (
+    endpoint.includes("opencode.ai") &&
+    (endpoint.includes("/inference/go") || endpoint.includes("/zen/go"))
+  ) {
+    return "OpenCode Go";
+  }
+  if (endpoint.includes("openrouter.ai")) return "OpenRouter";
+  if (endpoint.includes("api.deepseek.com") || endpoint.includes("deepseek.com")) return "DeepSeek";
+  if (endpoint.includes("open.bigmodel.cn") || endpoint.includes("api.z.ai")) return "GLM";
+  if (endpoint.includes("api.kimi.com") || endpoint.includes("api.moonshot")) return "Kimi";
+  if (endpoint.includes("api.x.ai")) return "xAI";
+  if (endpoint.includes("ollama.com")) return "Ollama";
+  return source.label.trim() || null;
+}
+
+function splitModelRoute(modelId: string): { providerId: string; modelPart: string } {
+  let id = (modelId || "").trim();
+  for (const prefix of ["marionette::", "marionette\\", "marionette/"]) {
+    if (id.startsWith(prefix)) {
+      id = id.slice(prefix.length);
+      break;
+    }
+  }
+  id = id.replace(/^models[/\\]/, "");
+  const separators = [id.indexOf("/"), id.indexOf("\\"), id.indexOf("::")].filter(
+    (index) => index >= 0,
+  );
+  if (separators.length === 0) return { providerId: "", modelPart: id };
+  const cut = Math.min(...separators);
+  const width = id.slice(cut, cut + 2) === "::" ? 2 : 1;
+  return { providerId: id.slice(0, cut), modelPart: id.slice(cut + width) };
+}
+
+/** Resolve only the provider side of a model route. */
+export function modelProviderLabelForId(
+  modelId: string | null | undefined,
+  sources: readonly ModelRouteSource[] = [],
+): string | null {
+  const route = splitModelRoute(modelId || "");
+  if (route.providerId) {
+    const source = sources.find((candidate) => candidate.id === route.providerId);
+    if (source) return modelSourceProviderLabel(source);
+    if (route.providerId.startsWith("source-")) return null;
+    return EXPLICIT_MODEL_PROVIDERS[route.providerId.toLowerCase()] ?? null;
+  }
+  const inferred = modelProviderGroup({ id: route.modelPart, label: route.modelPart });
+  return inferred === "Models" ? null : inferred;
+}
+
+/** Provider/model route for conversation metadata, with source ids resolved. */
+export function modelRouteLabel({
+  modelId,
+  modelLabel,
+  providerLabel,
+  sources = [],
+}: {
+  modelId?: string | null;
+  modelLabel?: string | null;
+  providerLabel?: string | null;
+  sources?: readonly ModelRouteSource[];
+}): string {
+  const route = splitModelRoute(modelId || "");
+  const explicit = (providerLabel || "").trim();
+  let provider = explicit || modelProviderLabelForId(modelId, sources);
+
+  const rawModel = (modelLabel || "").trim() || route.modelPart;
+  let model = prettyDelegateModelLabel(rawModel);
+  if (!provider) return model;
+  const normalizedProvider = provider.toLowerCase();
+  for (const duplicate of [provider, provider.split(" ")[0] || ""]) {
+    const prefix = `${duplicate.toLowerCase()} `;
+    if (duplicate && normalizedProvider !== "opencode go" && model.toLowerCase().startsWith(prefix)) {
+      model = model.slice(prefix.length).trim();
+      break;
+    }
+  }
+  return model ? `${provider}/${model}` : provider;
+}
+
 /**
  * Menu row label: the display name without the backend words the group header
  * already prints. `claude-opus-4-8 (Teamo)` reads as noise under "Team Router",
@@ -333,5 +496,8 @@ export function prettyEffortLabel(
   const raw = (label ?? "").trim() || (id ?? "").trim();
   if (!raw) return "";
   // "Max Effort" → "Max"; a label that is only "Effort" is kept as-is.
-  return raw.replace(/\s+effort$/i, "").trim() || raw;
+  const cleaned = raw.replace(/\s+effort$/i, "").trim() || raw;
+  return /^[a-z][a-z0-9_-]*$/i.test(cleaned)
+    ? cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
+    : cleaned;
 }

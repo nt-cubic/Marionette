@@ -44,7 +44,7 @@ use std::io::Read;
 
 use serde_json::{Map, Value};
 
-use super::integral::{WholeNums, whole_args};
+use super::integral::{whole_args, WholeNums};
 
 // ---------------------------------------------------------------------------
 // 行级状态机（Go intTidy 的 write/flush/lines 三段）
@@ -65,7 +65,11 @@ pub(crate) struct Chattidy {
 
 impl Chattidy {
     pub(crate) fn new() -> Chattidy {
-        Chattidy { buf: Vec::new(), machines: HashMap::new(), last_ids: HashMap::new() }
+        Chattidy {
+            buf: Vec::new(),
+            machines: HashMap::new(),
+            last_ids: HashMap::new(),
+        }
     }
 
     /// 喂入一段刚读到的字节，返回现在可以转发的字节（可能为空——整段都
@@ -110,7 +114,10 @@ impl Chattidy {
         if !line_carries(line) {
             return line.to_vec();
         }
-        let body_len = line.iter().rposition(|&b| b != b'\n' && b != b'\r').map_or(0, |i| i + 1);
+        let body_len = line
+            .iter()
+            .rposition(|&b| b != b'\n' && b != b'\r')
+            .map_or(0, |i| i + 1);
         let (body, tail) = line.split_at(body_len);
         let Some(data) = strip_data_prefix(body) else {
             return line.to_vec();
@@ -139,7 +146,9 @@ impl Chattidy {
         // intTidy：choices[].delta（流式分片）与 choices[].message（整块）。
         if let Some(choices) = obj.get_mut("choices").and_then(|c| c.as_array_mut()) {
             for choice in choices.iter_mut() {
-                let Some(cm) = choice.as_object_mut() else { continue };
+                let Some(cm) = choice.as_object_mut() else {
+                    continue;
+                };
                 let choice_key = match cm.get("index").and_then(|v| v.as_i64()) {
                     Some(n) => n.to_string(),
                     None => "null".to_string(), // Go jsonText(nil)
@@ -212,9 +221,17 @@ fn strip_data_prefix(body: &[u8]) -> Option<&str> {
 /// 拒绝。Go `nameless`（#1475，无名调用整链丢弃）**不**搬：直通路径上
 /// 「首片无名 = 整条调用作废」的判定风险高，只剔完全空转的项。
 fn call_junk(call: &Value) -> bool {
-    let Some(f) = call.get("function").and_then(|f| f.as_object()) else { return false };
-    let name_said = f.get("name").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty());
-    let args_said = f.get("arguments").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty());
+    let Some(f) = call.get("function").and_then(|f| f.as_object()) else {
+        return false;
+    };
+    let name_said = f
+        .get("name")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty());
+    let args_said = f
+        .get("arguments")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty());
     !name_said && !args_said
 }
 
@@ -257,18 +274,38 @@ fn merge_call_into(target: &mut Map<String, Value>, donor: Value) {
             .get(key)
             .map(|v| v.is_null() || v.as_str() == Some(""))
             .unwrap_or(true);
-        if target_empty && d.get(key).and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty()) {
+        if target_empty
+            && d.get(key)
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty())
+        {
             target.insert(key.into(), d.get(key).cloned().expect("checked"));
         }
     }
     let donor_fn = d.get("function").and_then(|f| f.as_object()).cloned();
-    match (target.get_mut("function").and_then(|f| f.as_object_mut()), donor_fn) {
+    match (
+        target.get_mut("function").and_then(|f| f.as_object_mut()),
+        donor_fn,
+    ) {
         (Some(tf), Some(df)) => {
-            let tname_empty = tf.get("name").and_then(|v| v.as_str()).unwrap_or("").is_empty();
-            if tname_empty && df.get("name").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty()) {
+            let tname_empty = tf
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .is_empty();
+            if tname_empty
+                && df
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.is_empty())
+            {
                 tf.insert("name".into(), df.get("name").cloned().expect("checked"));
             }
-            let mut args = tf.get("arguments").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let mut args = tf
+                .get("arguments")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             args.push_str(df.get("arguments").and_then(|v| v.as_str()).unwrap_or(""));
             if tf.get("arguments").and_then(|v| v.as_str()) != Some(args.as_str()) {
                 tf.insert("arguments".into(), Value::String(args));
@@ -296,7 +333,9 @@ fn mend_delta_calls(
         changed = true;
     }
     for (j, call) in calls.iter_mut().enumerate() {
-        let Some(m) = call.as_object_mut() else { continue };
+        let Some(m) = call.as_object_mut() else {
+            continue;
+        };
         // withoutEmptyNames（chattidy.go:418）：`"name":""` 剔字段不剔项。
         if let Some(f) = m.get_mut("function").and_then(|f| f.as_object_mut()) {
             if f.get("name").and_then(|v| v.as_str()) == Some("") {
@@ -339,7 +378,9 @@ fn mend_whole_calls(calls: &mut Vec<Value>) -> bool {
         changed = true;
     }
     for call in calls.iter_mut() {
-        let Some(f) = call.get_mut("function").and_then(|f| f.as_object_mut()) else { continue };
+        let Some(f) = call.get_mut("function").and_then(|f| f.as_object_mut()) else {
+            continue;
+        };
         if f.get("name").and_then(|v| v.as_str()) == Some("") {
             f.remove("name");
             changed = true;
@@ -369,11 +410,21 @@ pub(crate) fn mend_usage(raw: &Value) -> Option<Value> {
     let prompt_tokens = g("prompt_tokens");
     let total_tokens = g("total_tokens");
     let details = obj.get("prompt_tokens_details").and_then(|d| d.as_object());
-    let mut cache_read = details.and_then(|d| d.get("cached_tokens")).and_then(|v| v.as_i64()).unwrap_or(0);
-    let mut cache_write = details.and_then(|d| d.get("cache_write_tokens")).and_then(|v| v.as_i64()).unwrap_or(0);
+    let mut cache_read = details
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let mut cache_write = details
+        .and_then(|d| d.get("cache_write_tokens"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
     if cache_read == 0 {
         // DeepSeek / Moonshot / Mistral 的名字（cUsage.usage 的读取顺序）。
-        for k in ["prompt_cache_hit_tokens", "cached_tokens", "num_cached_tokens"] {
+        for k in [
+            "prompt_cache_hit_tokens",
+            "cached_tokens",
+            "num_cached_tokens",
+        ] {
             let n = g(k);
             if n != 0 {
                 cache_read = n;
@@ -398,7 +449,10 @@ pub(crate) fn mend_usage(raw: &Value) -> Option<Value> {
     let in_total = input + cache_read + cache_write; // Go u.prompt()
     if let Some(d) = details {
         let d_read = d.get("cached_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-        let d_write = d.get("cache_write_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+        let d_write = d
+            .get("cache_write_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         if d_read == cache_read && d_write == cache_write && prompt_tokens == in_total {
             return None; // 已经是 OpenAI 口径
         }
@@ -414,7 +468,10 @@ pub(crate) fn mend_usage(raw: &Value) -> Option<Value> {
         let had_total = m.contains_key("total_tokens");
         m.insert("prompt_tokens".into(), Value::from(in_total));
         if had_total {
-            m.insert("total_tokens".into(), Value::from(total_tokens + in_total - prompt_tokens));
+            m.insert(
+                "total_tokens".into(),
+                Value::from(total_tokens + in_total - prompt_tokens),
+            );
         }
     }
     Some(Value::Object(m))
@@ -433,7 +490,9 @@ pub(crate) fn mend_whole_reply(body: &[u8]) -> Vec<u8> {
     let Ok(mut value) = serde_json::from_slice::<Value>(body) else {
         return body.to_vec();
     };
-    let Some(obj) = value.as_object_mut() else { return body.to_vec() };
+    let Some(obj) = value.as_object_mut() else {
+        return body.to_vec();
+    };
     let mut changed = false;
     if let Some(usage) = obj.get("usage") {
         if let Some(mended) = mend_usage(usage) {
@@ -572,11 +631,21 @@ mod tests {
         let out = mended_tool_stream();
         let text = String::from_utf8(out.clone()).unwrap();
         // 零分数被丢弃（改写发生）。
-        assert!(text.contains("\\\"yield_ms\\\":2500}"), "zero fraction must be shed: {text}");
-        assert!(!text.contains("2500.0"), "no zero fraction may survive: {text}");
+        assert!(
+            text.contains("\\\"yield_ms\\\":2500}"),
+            "zero fraction must be shed: {text}"
+        );
+        assert!(
+            !text.contains("2500.0"),
+            "no zero fraction may survive: {text}"
+        );
         // 未改写的行字节不变：首行（含 tool_calls 但无可改写物）与 [DONE]。
-        let first_line = TOOL_STREAM[..TOOL_STREAM.iter().position(|&b| b == b'\n').unwrap() + 2].to_vec();
-        assert!(out.starts_with(&first_line), "an unchanged line must keep its bytes: {text}");
+        let first_line =
+            TOOL_STREAM[..TOOL_STREAM.iter().position(|&b| b == b'\n').unwrap() + 2].to_vec();
+        assert!(
+            out.starts_with(&first_line),
+            "an unchanged line must keep its bytes: {text}"
+        );
         assert!(text.ends_with("data: [DONE]\n\n"));
         // 改写后的第二行仍是合法 data JSON，且参数等于拼接后的去分数形态。
         let l2 = text
@@ -627,7 +696,10 @@ mod tests {
         let l2 = "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a2\",\"function\":{\"name\":\"g\",\"arguments\":\"0}\"}}]}}]}\n".as_bytes();
         let out = fed_in_pieces(&[l1, l2]);
         let text = String::from_utf8(out).unwrap();
-        assert!(text.contains("\"arguments\":\"0}\""), "a2 fragment must start clean: {text}");
+        assert!(
+            text.contains("\"arguments\":\"0}\""),
+            "a2 fragment must start clean: {text}"
+        );
     }
 
     #[test]
@@ -640,10 +712,7 @@ mod tests {
         .as_bytes();
         let out = fed_in_pieces(&[line]);
         let text = String::from_utf8(out).unwrap();
-        let v: Value = serde_json::from_str(
-            text.trim_start_matches("data: ").trim(),
-        )
-        .unwrap();
+        let v: Value = serde_json::from_str(text.trim_start_matches("data: ").trim()).unwrap();
         let calls = v["choices"][0]["delta"]["tool_calls"].as_array().unwrap();
         assert_eq!(calls.len(), 1, "same-index entries must merge: {text}");
         assert_eq!(calls[0]["id"], "c1");
@@ -667,15 +736,18 @@ mod tests {
         let calls = v["choices"][0]["delta"]["tool_calls"].as_array().unwrap();
         assert_eq!(calls.len(), 2, "empty name+args item dropped: {text}");
         assert_eq!(calls[0]["function"]["name"], "f");
-        assert!(calls[1].get("function").unwrap().get("name").is_none(), "empty name field removed");
+        assert!(
+            calls[1].get("function").unwrap().get("name").is_none(),
+            "empty name field removed"
+        );
         assert_eq!(calls[1]["function"]["arguments"], "1}");
     }
 
     #[test]
     fn unparseable_and_non_data_lines_pass_through() {
         let raw = concat!(
-            "data: {\"choices\":[{\"index\":0,\n",   // 坏 JSON 行
-            ": keep-alive comment\n",                // SSE 注释
+            "data: {\"choices\":[{\"index\":0,\n", // 坏 JSON 行
+            ": keep-alive comment\n",              // SSE 注释
             "event: ping\n",
             "data: [DONE]\n",
         )
@@ -691,8 +763,13 @@ mod tests {
         )
         .as_bytes();
         let out = fed_in_pieces(&[line]);
-        let v: Value =
-            serde_json::from_str(String::from_utf8(out).unwrap().trim_start_matches("data: ").trim()).unwrap();
+        let v: Value = serde_json::from_str(
+            String::from_utf8(out)
+                .unwrap()
+                .trim_start_matches("data: ")
+                .trim(),
+        )
+        .unwrap();
         // DeepSeek 的 prompt_tokens 已含缓存 → 数值不动，只补 details。
         assert_eq!(v["usage"]["prompt_tokens"], 1000);
         assert_eq!(v["usage"]["prompt_tokens_details"]["cached_tokens"], 800);
@@ -708,13 +785,21 @@ mod tests {
         )
         .as_bytes();
         let out = fed_in_pieces(&[line]);
-        let v: Value =
-            serde_json::from_str(String::from_utf8(out).unwrap().trim_start_matches("data: ").trim()).unwrap();
+        let v: Value = serde_json::from_str(
+            String::from_utf8(out)
+                .unwrap()
+                .trim_start_matches("data: ")
+                .trim(),
+        )
+        .unwrap();
         // Anthropic 只数非缓存 → prompt_tokens 重写成含缓存口径，total 跟着调。
         assert_eq!(v["usage"]["prompt_tokens"], 1000);
         assert_eq!(v["usage"]["total_tokens"], 1050);
         assert_eq!(v["usage"]["prompt_tokens_details"]["cached_tokens"], 500);
-        assert_eq!(v["usage"]["prompt_tokens_details"]["cache_write_tokens"], 100);
+        assert_eq!(
+            v["usage"]["prompt_tokens_details"]["cache_write_tokens"],
+            100
+        );
         // 原字段保留（Go：every field the upstream sent stays）。
         assert_eq!(v["usage"]["cache_read_input_tokens"], 500);
     }
@@ -727,8 +812,13 @@ mod tests {
         )
         .as_bytes();
         let out = fed_in_pieces(&[line]);
-        let v: Value =
-            serde_json::from_str(String::from_utf8(out).unwrap().trim_start_matches("data: ").trim()).unwrap();
+        let v: Value = serde_json::from_str(
+            String::from_utf8(out)
+                .unwrap()
+                .trim_start_matches("data: ")
+                .trim(),
+        )
+        .unwrap();
         assert_eq!(v["choices"], Value::Array(Vec::new()));
         assert_eq!(v["usage"]["prompt_tokens_details"]["cached_tokens"], 4);
     }
@@ -746,7 +836,10 @@ mod tests {
         let out = mend_whole_reply(body);
         let text = String::from_utf8(out.clone()).unwrap();
         // arguments 是字符串值，text 里引号带转义——对转义形态断言（结构断言在下一行）。
-        assert!(text.contains("\\\"yield_ms\\\":2500"), "zero fraction must be shed: {text}");
+        assert!(
+            text.contains("\\\"yield_ms\\\":2500"),
+            "zero fraction must be shed: {text}"
+        );
         let v: Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(
             v["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],

@@ -15,6 +15,17 @@ import {
 import { isChiefOrigin } from "../src/lib/chiefTee.ts";
 import { projectAttention, STALL_MS } from "../src/lib/fleetAttention.ts";
 import { delegateCardFor } from "../src/lib/delegateCards.ts";
+import { parseTranscriptEvents } from "../src/lib/transcript.ts";
+import {
+  isDelegatedWorkerSession,
+  splitShelfChatSessions,
+} from "../src/lib/sessionGroups.ts";
+import { CHAT_PROJECT_ID } from "../src/lib/api.ts";
+import {
+  delegateModelCaption,
+  modelRouteLabel,
+  prettyDelegateModelLabel,
+} from "../src/lib/modelLabel.ts";
 import { zh as zhDelegate } from "../src/locales/parts/fe-delegate.zh";
 import { en as enDelegate } from "../src/locales/parts/fe-delegate.en";
 import { applyLocale, t } from "../src/lib/i18n.ts";
@@ -29,6 +40,108 @@ function check(name: string, cond: boolean, detail?: string) {
     failed += 1;
     console.error(`FAIL ${name}${detail ? ` — ${detail}` : ""}`);
   }
+}
+
+check(
+  "delegate model slug becomes human text",
+  prettyDelegateModelLabel("deepseek-v4.1-flash") === "DeepSeek V4.1 Flash",
+);
+check(
+  "delegate caption keeps provider, model and effort separate",
+  delegateModelCaption(
+    "OpenCode Go",
+    "deepseek-v4.1-flash",
+    "max",
+    t("session.subtaskDefaultEffort"),
+  ) === "OpenCode Go/DeepSeek V4.1 Flash [Max]",
+);
+check(
+  "delegate caption labels an omitted effort as default",
+  delegateModelCaption(undefined, "opaque-model", null, t("session.subtaskDefaultEffort")) === `opaque-model [${t("session.subtaskDefaultEffort")}]`,
+);
+check(
+  "delegate caption does not invent a model just to show effort",
+  delegateModelCaption(undefined, undefined, "max", t("session.subtaskDefaultEffort")) === "",
+);
+
+const routeSources = [
+  {
+    id: "source-c3f358329cebd120",
+    label: "opencode.ai",
+    endpoint: "https://opencode.ai/inference/go/v1",
+  },
+  {
+    id: "source-official",
+    label: "deepseek.com",
+    endpoint: "https://api.deepseek.com/v1",
+  },
+];
+const routeChecks: Array<[string, string, string]> = [
+  [
+    "OpenCode Go routed model",
+    modelRouteLabel({
+      modelId: "source-c3f358329cebd120/deepseek-v4.1-flash",
+      modelLabel: "deepseek-v4.1-flash",
+      sources: routeSources,
+    }),
+    "OpenCode Go/DeepSeek V4.1 Flash",
+  ],
+  [
+    "official DeepSeek model",
+    modelRouteLabel({
+      modelId: "deepseek/deepseek-v4.1-flash",
+      modelLabel: "deepseek-v4.1-flash",
+      sources: routeSources,
+    }),
+    "DeepSeek/V4.1 Flash",
+  ],
+  [
+    "OpenRouter model",
+    modelRouteLabel({ modelId: "openrouter/anthropic/claude-opus-4.8" }),
+    "OpenRouter/Claude Opus 4.8",
+  ],
+  [
+    "native Claude model",
+    modelRouteLabel({ modelId: "claude-opus-4.8" }),
+    "Claude/Opus 4.8",
+  ],
+  [
+    "native Codex model",
+    modelRouteLabel({ modelId: "gpt-5.1-codex-max" }),
+    "OpenAI/GPT 5.1 Codex Max",
+  ],
+  [
+    "native Grok model",
+    modelRouteLabel({ modelId: "grok-4.6" }),
+    "xAI/Grok 4.6",
+  ],
+  [
+    "native ZCode GLM model",
+    modelRouteLabel({ modelId: "zhipu\\glm-5.3-flash" }),
+    "GLM/5.3 Flash",
+  ],
+  [
+    "native OpenCode model",
+    modelRouteLabel({ modelId: "opencode/deepseek-v4.1-flash" }),
+    "OpenCode/DeepSeek V4.1 Flash",
+  ],
+  [
+    "DeepSeek Harness bridge prefix",
+    modelRouteLabel({
+      modelId: "marionette::source-c3f358329cebd120/deepseek-v4.1-flash",
+      modelLabel: "deepseek-v4.1-flash",
+      sources: routeSources,
+    }),
+    "OpenCode Go/DeepSeek V4.1 Flash",
+  ],
+  [
+    "Antigravity OpenRouter model",
+    modelRouteLabel({ modelId: "openrouter/google/gemini-4-carbon" }),
+    "OpenRouter/Gemini 4 Carbon",
+  ],
+];
+for (const [name, actual, expected] of routeChecks) {
+  check(`${name} route`, actual === expected, `${actual} !== ${expected}`);
 }
 
 // ── 1) agent-delegate 行聚合 ────────────────────────────────────────────────
@@ -194,6 +307,12 @@ function rowsFor(tasks: AgentDelegateSnapshot[]) {
       projectId: "project-x",
       workerSessionId: "worker-card",
       agentId: "grok-build",
+      model: "source-c3f358329cebd120/deepseek-v4.1-flash",
+      displayModel: "source-c3f358329cebd120/deepseek-v4.1-flash",
+      displayProvider: "OpenCode Go",
+      displayModelName: "deepseek-v4.1-flash",
+      displayEffort: "max",
+      preferredEffort: "max",
       status: "running",
       createdAt: 1_000,
       updatedAt: 2_000,
@@ -209,6 +328,13 @@ function rowsFor(tasks: AgentDelegateSnapshot[]) {
   check("运行卡只落一次（事件重放/多窗不重复）",
     delegateCardFor(started, [...baseRail, startCard] as never[]) === null);
 
+  check(
+    "delegate card keeps explicit provider/model/effort metadata",
+    startCard?.providerLabel === "OpenCode Go" &&
+      startCard.modelLabel === "deepseek-v4.1-flash" &&
+      startCard.effortLabel === "max",
+  );
+
   const withStart = [...baseRail, startCard] as never[];
   const napping = event("task.progress", task({ status: "running", waitingReason: "auto_retry" }));
   check("task.progress 不生成卡片（额度午休不能被画成失败）", delegateCardFor(napping, withStart) === null);
@@ -216,6 +342,12 @@ function rowsFor(tasks: AgentDelegateSnapshot[]) {
 
   const doneCard = delegateCardFor(event("task.completed", task({ status: "completed" })), withStart);
   check("completed → done 结果卡", doneCard?.type === "subtask_result" && doneCard.status === "done");
+  check(
+    "completed card keeps provider/model/effort metadata",
+    doneCard?.providerLabel === "OpenCode Go" &&
+      doneCard.modelLabel === "deepseek-v4.1-flash" &&
+      doneCard.effortLabel === "max",
+  );
   const failedCard = delegateCardFor(
     event("task.failed", task({ status: "failed", error: "worker_gone", lastSummary: "worker 进程退出。" })),
     withStart,
@@ -233,6 +365,101 @@ function rowsFor(tasks: AgentDelegateSnapshot[]) {
   check("有存档点才带 checkpointBase（「回滚此任务」的依据）",
     delegateCardFor(event("task.completed", task({ status: "completed", checkpointBase: "abc123" })), withStart)?.checkpointBase === "abc123"
       && doneCard?.checkpointBase === undefined);
+}
+
+// Ã¢ÂÂÃ¢ÂÂ 6) worker threads stay under their parent Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+
+{
+  const sessions = [
+    { id: "parent", projectId: CHAT_PROJECT_ID, origin: "user" },
+    { id: "worker", projectId: CHAT_PROJECT_ID, origin: "agent-worker" },
+    { id: "chief-worker", projectId: CHAT_PROJECT_ID, origin: "chief-worker" },
+    { id: "memo", projectId: CHAT_PROJECT_ID, origin: "memo" },
+  ] as never[];
+  const split = splitShelfChatSessions(sessions);
+  check("parent chat remains in the shelf", split.chat.map((s) => s.id).join(",") === "parent");
+  check(
+    "delegated workers leave the chat shelf",
+    split.workers.map((s) => s.id).join(",") === "worker,chief-worker",
+  );
+  check(
+    "worker sessions are detectable in project lists",
+    isDelegatedWorkerSession({ origin: "agent-worker" }) &&
+      isDelegatedWorkerSession({ origin: "user", parentSessionId: "parent" }) &&
+      isDelegatedWorkerSession({
+        origin: "user",
+        lineage: { parentSessionId: "parent", rootSessionId: "root", relationship: "subagent" },
+      }) &&
+      !isDelegatedWorkerSession({ origin: "user" }),
+  );
+  check(
+    "new agent-thread labels exist in zh/en",
+    "session.subtaskOpen" in zhDelegate &&
+      "agents.title" in zhDelegate &&
+      "session.subtaskOpen" in enDelegate &&
+      "agents.title" in enDelegate,
+  );
+}
+
+// Persisted agent cards must keep the fields that make them agent cards.
+{
+  const parsed = parseTranscriptEvents([
+    {
+      type: "subtask_started",
+      sessionId: "parent",
+      childSessionId: "worker",
+      agentId: "opencode",
+      agentLabel: "OpenCode",
+      modelId: "opencode/deepseek-v4.1-flash",
+      displayModel: "DeepSeek V4.1 Flash",
+      providerLabel: "OpenCode Go",
+      modelLabel: "deepseek-v4.1-flash",
+      effortLabel: "max",
+      prompt: "check release",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      initiatedBy: "agent",
+      taskId: "task-1",
+    },
+    {
+      type: "subtask_result",
+      sessionId: "parent",
+      childSessionId: "worker",
+      agentId: "opencode",
+      status: "done",
+      summary: "ok",
+      displayModel: "DeepSeek V4.1 Flash",
+      providerLabel: "OpenCode Go",
+      modelLabel: "deepseek-v4.1-flash",
+      effortLabel: "max",
+      createdAt: "2026-01-01T00:00:01.000Z",
+      initiatedBy: "agent",
+      taskId: "task-1",
+      checkpointBase: "abc123",
+    },
+  ]);
+  const started = parsed[0];
+  const result = parsed[1];
+  check(
+    "persisted agent start keeps identity",
+    started?.type === "subtask_started" &&
+      started.initiatedBy === "agent" &&
+      started.taskId === "task-1" &&
+      started.displayModel === "DeepSeek V4.1 Flash" &&
+      started.providerLabel === "OpenCode Go" &&
+      started.modelLabel === "deepseek-v4.1-flash" &&
+      started.effortLabel === "max",
+  );
+  check(
+    "persisted agent result keeps rollback identity",
+    result?.type === "subtask_result" &&
+      result.initiatedBy === "agent" &&
+      result.taskId === "task-1" &&
+      result.displayModel === "DeepSeek V4.1 Flash" &&
+      result.providerLabel === "OpenCode Go" &&
+      result.modelLabel === "deepseek-v4.1-flash" &&
+      result.effortLabel === "max" &&
+      result.checkpointBase === "abc123",
+  );
 }
 
 if (failed > 0) {

@@ -64,7 +64,11 @@ fn scan_jsonl_cwd_title(path: &Path) -> (String, String, Option<String>, Option<
                     title = Some(clip_chars(&text.replace('\n', " "), 80));
                 }
             } else if v.get("type").and_then(|x| x.as_str()) == Some("user") {
-                let text = extract_text(v.get("message").and_then(|m| m.get("content")).or(v.get("content")));
+                let text = extract_text(
+                    v.get("message")
+                        .and_then(|m| m.get("content"))
+                        .or(v.get("content")),
+                );
                 if !text.trim().is_empty() {
                     title = Some(clip_chars(&text.replace('\n', " "), 80));
                 }
@@ -174,7 +178,12 @@ fn list_jsonl_tree(
 fn load_locator(locator: &str, agent_id: &str) -> Result<Vec<Value>, String> {
     let path = Path::new(locator);
     if path.is_dir() {
-        for name in ["updates.jsonl", "chat_history.jsonl", "session.jsonl", "events.jsonl"] {
+        for name in [
+            "updates.jsonl",
+            "chat_history.jsonl",
+            "session.jsonl",
+            "events.jsonl",
+        ] {
             let p = path.join(name);
             if p.is_file() {
                 return load_pi_jsonl(&p, agent_id);
@@ -198,7 +207,12 @@ impl AgentParser for KimiParser {
         let roots = home
             .map(|h| vec![h.join("sessions"), h])
             .unwrap_or_default();
-        Ok(list_jsonl_tree(self.source(), self.agent_id(), &roots, project_root))
+        Ok(list_jsonl_tree(
+            self.source(),
+            self.agent_id(),
+            &roots,
+            project_root,
+        ))
     }
     fn load(&self, locator: &str) -> Result<Vec<Value>, String> {
         load_locator(locator, self.agent_id())
@@ -215,8 +229,15 @@ impl AgentParser for CodeBuddyParser {
     }
     fn list(&self, project_root: &str) -> Result<Vec<ExternalConversation>, String> {
         let home = env_dir("CODEBUDDY_CONFIG_DIR").or_else(|| home_join(".codebuddy"));
-        let roots = home.map(|h| vec![h.join("sessions"), h]).unwrap_or_default();
-        Ok(list_jsonl_tree(self.source(), self.agent_id(), &roots, project_root))
+        let roots = home
+            .map(|h| vec![h.join("sessions"), h])
+            .unwrap_or_default();
+        Ok(list_jsonl_tree(
+            self.source(),
+            self.agent_id(),
+            &roots,
+            project_root,
+        ))
     }
     fn load(&self, locator: &str) -> Result<Vec<Value>, String> {
         load_locator(locator, self.agent_id())
@@ -236,7 +257,12 @@ impl AgentParser for OpenClawParser {
         let roots = home
             .map(|h| vec![h.join("agents"), h.join("sessions"), h])
             .unwrap_or_default();
-        Ok(list_jsonl_tree(self.source(), self.agent_id(), &roots, project_root))
+        Ok(list_jsonl_tree(
+            self.source(),
+            self.agent_id(),
+            &roots,
+            project_root,
+        ))
     }
     fn load(&self, locator: &str) -> Result<Vec<Value>, String> {
         load_locator(locator, self.agent_id())

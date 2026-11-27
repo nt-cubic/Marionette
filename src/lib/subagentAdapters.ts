@@ -30,6 +30,51 @@ function compact(name: string): string {
   return name.toLowerCase().replace(/[\s_-]+/g, "");
 }
 
+const COMMAND_TOOL_EXACT = new Set([
+  "bash",
+  "command",
+  "cmd",
+  "exec",
+  "execcommand",
+  "execute",
+  "shell",
+  "shellcommand",
+  "terminal",
+  "powershell",
+  "pwsh",
+  "run",
+  "runcommand",
+  "commandexecution",
+  "writestdin",
+]);
+
+function looksLikeCommandToolName(name: string | null | undefined): boolean {
+  const c = compact(name ?? "");
+  return COMMAND_TOOL_EXACT.has(c);
+}
+
+function looksLikeCommandValue(value: unknown): boolean {
+  return (
+    typeof value === "string" ||
+    (Array.isArray(value) && value.length > 0 && value.every((part) => typeof part === "string"))
+  );
+}
+
+/** A shell-tool payload is authoritative even when a legacy title was polluted. */
+export function looksLikeCommandExecutionInput(input: unknown): boolean {
+  const raw = typeof input === "string" ? input.trim() : "";
+  const rec = asRecord(input) ?? parseObject(raw);
+  if (rec) {
+    return (
+      looksLikeCommandValue(rec.command) ||
+      looksLikeCommandValue(rec.cmd) ||
+      typeof rec.script === "string"
+    );
+  }
+  // rawInput is deliberately clipped for persistence, so it may not parse.
+  return raw.length > 0 && /^\{\s*"(?:command|cmd|script)"\s*:/.test(raw);
+}
+
 /** Codex collab / Grok wait / roster — not a nested-agent card of its own. */
 const WAIT_EXACT = new Set([
   "wait",
@@ -97,20 +142,24 @@ function looksLikeSpawnName(name: string): boolean {
   const c = compact(n);
   if (SPAWN_EXACT.has(c) || SPAWN_EXACT.has(n.toLowerCase())) return true;
   if (/^(task|agent|subagent)$/i.test(n)) return true;
-  return /subagent|spawn_agent|spawnagent|dispatch_agent|invoke_agent|launch_agent|delegate_task|collab_agent/i.test(
-    n,
-  );
+  // Human titles and shell commands are not tool identities. A spawn name is
+  // short and may carry a namespace (`x.spawn_agent`), so match exact segments
+  // rather than any occurrence of the word "subagent" inside prose/path names.
+  if (/\s/.test(n) || n.length > 96) return false;
+  return n
+    .split(/[.:/\\]+/)
+    .some((part) => SPAWN_EXACT.has(compact(part)));
 }
 
 function looksLikeSpawnTitle(title: string): boolean {
   const t = title.trim();
   if (!t) return false;
   if (/^\[background\]/i.test(t)) return true;
-  if (/^spawnagent$/i.test(t) || /^spawn_agent$/i.test(t)) return true;
-  if (/\b(subagent|sub-agent|nested agent|task agent|delegate agent)\b/i.test(t)) return true;
-  if (/子代理|子\s*agent/i.test(t)) return true;
-  if (/^task\b/i.test(t)) return true;
-  if (/\(general\)|\(explore\)|\(scout\)/i.test(t)) return true;
+  if (/^(?:spawnagent|spawn_agent)$/i.test(t)) return true;
+  if (/^(?:subagent|sub-agent|nested agent|task agent|delegate agent)(?:\s*[:\-(]|$)/i.test(t)) return true;
+  if (/^(?:子代理|子\s*agent)(?:\s*[:\-(]|$)/i.test(t)) return true;
+  if (/^(?:task|agent)(?:\s*[:\-(]|$)/i.test(t)) return true;
+  if (/^(?:agent|task|subagent)\s*\((?:general|explore|scout)\)/i.test(t)) return true;
   return false;
 }
 
@@ -214,6 +263,13 @@ export function isSubagentTool(
   input?: string | null,
 ): boolean {
   if (isSubagentWaitTool(toolName, title)) return false;
+  if (
+    (looksLikeCommandToolName(toolName) || looksLikeCommandExecutionInput(input)) &&
+    !isCodexCollabInput(input) &&
+    !inputLooksLikeSubagentSpawn(input)
+  ) {
+    return false;
+  }
   if (looksLikeSpawnName(toolName ?? "")) return true;
   if (looksLikeSpawnTitle(title ?? "")) return true;
   if (inputLooksLikeSubagentSpawn(input)) return true;
@@ -266,6 +322,13 @@ export function recoverSubagentToolName(args: {
     return canonicalSpawnName(fromMeta);
   }
   const wire = (args.name ?? "").trim();
+  if (
+    (looksLikeCommandToolName(wire) || looksLikeCommandExecutionInput(args.input)) &&
+    !isCodexCollabInput(args.input) &&
+    !inputLooksLikeSubagentSpawn(args.input)
+  ) {
+    return null;
+  }
   if (wire && isSubagentTool(wire, args.title, args.input)) {
     return canonicalSpawnName(wire);
   }

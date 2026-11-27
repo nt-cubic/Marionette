@@ -192,7 +192,11 @@ pub(crate) fn decode_step(payload: &[u8]) -> DecodedStep {
             kind: StepKind::Other,
         };
     };
-    let created_ms = step.metadata.as_ref().and_then(|m| m.created.as_ref()).map(|t| t.to_ms());
+    let created_ms = step
+        .metadata
+        .as_ref()
+        .and_then(|m| m.created.as_ref())
+        .map(|t| t.to_ms());
     let usage = step.metadata.as_ref().and_then(|m| m.usage.clone());
     let model = step
         .metadata
@@ -462,7 +466,11 @@ mod tests {
             let thinking = b"hmm";
             let call = {
                 let mut b = Vec::new();
-                for (tag, value) in [(1u8, b"call-1".as_slice()), (2u8, b"view_file".as_slice()), (3u8, br#"{"file_path":"x.txt"}"#.as_slice())] {
+                for (tag, value) in [
+                    (1u8, b"call-1".as_slice()),
+                    (2u8, b"view_file".as_slice()),
+                    (3u8, br#"{"file_path":"x.txt"}"#.as_slice()),
+                ] {
                     b.push(tag << 3 | 2);
                     b.extend(varint(value.len() as u64));
                     b.extend_from_slice(value);
@@ -534,7 +542,11 @@ mod tests {
         let parser = AntigravityParser::new();
         // Per-db diagnosis (which store root, which cwds, step counts).
         let dir = parser.conversations_dir.clone();
-        println!("conversations dir: {} (exists={})", dir.display(), dir.is_dir());
+        println!(
+            "conversations dir: {} (exists={})",
+            dir.display(),
+            dir.is_dir()
+        );
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 let path = entry.path();

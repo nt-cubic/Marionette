@@ -24,10 +24,10 @@
 /// 除这样的分数外不等待下一段；流结束时没有任何持有。
 #[derive(Default)]
 pub(crate) struct WholeNums {
-    str_: bool, // 在字符串里
-    esc: bool,  // 字符串里反斜杠后
-    num: bool,  // 在数字里
-    as_is: bool, // 本数字的余下部分按原样
+    str_: bool,   // 在字符串里
+    esc: bool,    // 字符串里反斜杠后
+    num: bool,    // 在数字里
+    as_is: bool,  // 本数字的余下部分按原样
     zeros: usize, // 持有的零分数：1 = 只有其点，N = 点 + N-1 个零
 }
 
@@ -57,7 +57,12 @@ impl WholeNums {
                     continue;
                 }
                 if self.zeros == 0
-                    && (c.is_ascii_digit() || c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-')
+                    && (c.is_ascii_digit()
+                        || c == '.'
+                        || c == 'e'
+                        || c == 'E'
+                        || c == '+'
+                        || c == '-')
                 {
                     if c == 'e' || c == 'E' || c == '.' {
                         self.as_is = true;
@@ -115,8 +120,14 @@ mod tests {
 
     #[test]
     fn zero_fraction_is_dropped() {
-        assert_eq!(whole_args(r#"{"yield_time_ms":2500.0}"#), r#"{"yield_time_ms":2500}"#);
-        assert_eq!(whole_args(r#"{"session_id":17277.0}"#), r#"{"session_id":17277}"#);
+        assert_eq!(
+            whole_args(r#"{"yield_time_ms":2500.0}"#),
+            r#"{"yield_time_ms":2500}"#
+        );
+        assert_eq!(
+            whole_args(r#"{"session_id":17277.0}"#),
+            r#"{"session_id":17277}"#
+        );
         assert_eq!(whole_args(r#"{"limit":8.0}"#), r#"{"limit":8}"#);
         assert_eq!(whole_args(r#"{"a":2500.00}"#), r#"{"a":2500}"#);
         assert_eq!(whole_args(r#"{"a":-3.0}"#), r#"{"a":-3}"#);

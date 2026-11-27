@@ -61,10 +61,11 @@ impl Source {
     /// origin——`Marionette · <credentials.json>#<条目 id>`（`discover_at` 写入）；
     /// 从 agent 配置文件里发现的来源 origin 以 agent 名开头（`grok-build · …`）。
     pub fn manual_entry_id(&self) -> Option<&str> {
-        self.view
-            .origins
-            .iter()
-            .find_map(|origin| origin.strip_prefix("Marionette · ").and_then(|rest| rest.rsplit_once('#').map(|(_, id)| id)))
+        self.view.origins.iter().find_map(|origin| {
+            origin
+                .strip_prefix("Marionette · ")
+                .and_then(|rest| rest.rsplit_once('#').map(|(_, id)| id))
+        })
     }
 }
 
@@ -104,7 +105,9 @@ fn with_catalog_auth(request: ureq::Request, protocol: &str, key: &str) -> ureq:
         return request;
     }
     if protocol == "anthropic" {
-        request.set("x-api-key", key).set("anthropic-version", "2023-06-01")
+        request
+            .set("x-api-key", key)
+            .set("anthropic-version", "2023-06-01")
     } else {
         request.set("Authorization", &format!("Bearer {key}"))
     }
@@ -112,12 +115,23 @@ fn with_catalog_auth(request: ureq::Request, protocol: &str, key: &str) -> ureq:
 
 /// 轻量的带鉴权目录请求；绝不发生成请求。
 pub fn check_source(id: &str) -> Value {
-    let result = |state: &str, detail: &str| serde_json::json!({ "state": state, "detail": detail });
-    let Some(source) = discover().sources.into_iter().find(|source| source.view.id == id) else {
-        return result(&crate::ts!("配置已变化", "Configuration changed"), &crate::ts!("请重新扫描", "Re-scan required"));
+    let result =
+        |state: &str, detail: &str| serde_json::json!({ "state": state, "detail": detail });
+    let Some(source) = discover()
+        .sources
+        .into_iter()
+        .find(|source| source.view.id == id)
+    else {
+        return result(
+            &crate::ts!("配置已变化", "Configuration changed"),
+            &crate::ts!("请重新扫描", "Re-scan required"),
+        );
     };
     if let Some(issue) = &source.view.issue {
-        return result(&crate::ts!("配置待处理", "Configuration needs attention"), issue);
+        return result(
+            &crate::ts!("配置待处理", "Configuration needs attention"),
+            issue,
+        );
     }
     let agent = match catalog_agent(app_proxy().as_deref()) {
         Ok(agent) => agent,
@@ -139,17 +153,48 @@ pub fn check_source(id: &str) -> Value {
     match request.call() {
         Ok(response) => {
             // Bound the body and require a catalogue, since a login HTML page can also be HTTP 200.
-            let body: Result<Value, _> = serde_json::from_reader(std::io::Read::take(response.into_reader(), 1024 * 1024));
-            if body.as_ref().ok().is_some_and(|body| body.get("data").is_some_and(Value::is_array) || body.get("models").is_some_and(Value::is_array)) {
+            let body: Result<Value, _> =
+                serde_json::from_reader(std::io::Read::take(response.into_reader(), 1024 * 1024));
+            if body.as_ref().ok().is_some_and(|body| {
+                body.get("data").is_some_and(Value::is_array)
+                    || body.get("models").is_some_and(Value::is_array)
+            }) {
                 result(&crate::ts!("已连接 · {ms} ms", "Connected · {ms} ms", ms = started.elapsed().as_millis()), &crate::ts!("模型目录可访问；实际调用还取决于模型权限和余额", "Model catalogue reachable; actual calls still depend on model permissions and balance"))
             } else {
-                result(&crate::ts!("待确认", "Needs confirmation"), &crate::ts!("接口有响应，但未返回模型目录", "Endpoint responded but returned no model catalogue"))
+                result(
+                    &crate::ts!("待确认", "Needs confirmation"),
+                    &crate::ts!(
+                        "接口有响应，但未返回模型目录",
+                        "Endpoint responded but returned no model catalogue"
+                    ),
+                )
             }
         }
-        Err(ureq::Error::Status(401 | 403, _)) => result(&crate::ts!("认证受限", "Auth limited"), &crate::ts!("请检查密钥和访问权限", "Check the API key and access permissions")),
-        Err(ureq::Error::Status(404 | 405, _)) => result(&crate::ts!("待确认", "Needs confirmation"), &crate::ts!("服务不支持模型目录检测，可尝试实际调用", "Service does not support catalogue probing; try an actual call")),
-        Err(ureq::Error::Status(status, _)) => result(&crate::ts!("检测失败", "Check failed"), &format!("HTTP {status}")),
-        Err(_) => result(&crate::ts!("连接失败", "Connection failed"), &crate::ts!("连接超时或网络、TLS 异常", "Timed out or a network/TLS error")),
+        Err(ureq::Error::Status(401 | 403, _)) => result(
+            &crate::ts!("认证受限", "Auth limited"),
+            &crate::ts!(
+                "请检查密钥和访问权限",
+                "Check the API key and access permissions"
+            ),
+        ),
+        Err(ureq::Error::Status(404 | 405, _)) => result(
+            &crate::ts!("待确认", "Needs confirmation"),
+            &crate::ts!(
+                "服务不支持模型目录检测，可尝试实际调用",
+                "Service does not support catalogue probing; try an actual call"
+            ),
+        ),
+        Err(ureq::Error::Status(status, _)) => result(
+            &crate::ts!("检测失败", "Check failed"),
+            &format!("HTTP {status}"),
+        ),
+        Err(_) => result(
+            &crate::ts!("连接失败", "Connection failed"),
+            &crate::ts!(
+                "连接超时或网络、TLS 异常",
+                "Timed out or a network/TLS error"
+            ),
+        ),
     }
 }
 
@@ -174,7 +219,11 @@ pub struct CustomProbe {
 
 impl CustomProbe {
     fn failed(detail: String) -> Self {
-        Self { ok: false, models: Vec::new(), detail }
+        Self {
+            ok: false,
+            models: Vec::new(),
+            detail,
+        }
     }
 }
 
@@ -186,7 +235,12 @@ pub fn probe_custom(endpoint: &str, protocol: &str, key: &str) -> CustomProbe {
     probe_custom_with(endpoint, protocol, key, app_proxy().as_deref())
 }
 
-fn probe_custom_with(endpoint: &str, protocol: &str, key: &str, proxy: Option<&str>) -> CustomProbe {
+fn probe_custom_with(
+    endpoint: &str,
+    protocol: &str,
+    key: &str,
+    proxy: Option<&str>,
+) -> CustomProbe {
     let endpoint = match crate::credentials::clean_custom_endpoint(endpoint) {
         Ok(endpoint) => endpoint,
         Err(error) => return CustomProbe::failed(error),
@@ -204,49 +258,90 @@ fn probe_custom_with(endpoint: &str, protocol: &str, key: &str, proxy: Option<&s
         let response = match with_catalog_auth(agent.get(&url), protocol, key).call() {
             Ok(response) => response,
             Err(ureq::Error::Status(401 | 403, _)) => {
-                return CustomProbe::failed(crate::ts!("密钥被拒绝（HTTP 401/403），检查 API Key 和访问权限", "The key was rejected (HTTP 401/403) — check the API key and its permissions"));
+                return CustomProbe::failed(crate::ts!(
+                    "密钥被拒绝（HTTP 401/403），检查 API Key 和访问权限",
+                    "The key was rejected (HTTP 401/403) — check the API key and its permissions"
+                ));
             }
             Err(ureq::Error::Status(404 | 405, _)) => {
-                return CustomProbe::failed(crate::ts!("这个服务不提供模型目录，请在下方手动填写模型 ID", "This service does not list its models — add model IDs by hand below"));
+                return CustomProbe::failed(crate::ts!(
+                    "这个服务不提供模型目录，请在下方手动填写模型 ID",
+                    "This service does not list its models — add model IDs by hand below"
+                ));
             }
-            Err(ureq::Error::Status(status, _)) => return CustomProbe::failed(format!("HTTP {status}")),
+            Err(ureq::Error::Status(status, _)) => {
+                return CustomProbe::failed(format!("HTTP {status}"))
+            }
             Err(_) => {
                 return CustomProbe::failed(crate::ts!("连接失败或超时，检查接口地址、网络和代理设置", "Could not connect or timed out — check the endpoint, your network and proxy settings"));
             }
         };
         // 1 MiB 上限：登录页/大 HTML 也可能是 200。
-        let body: Result<Value, _> = serde_json::from_reader(std::io::Read::take(response.into_reader(), 1024 * 1024));
-        let rows = body
-            .as_ref()
-            .ok()
-            .and_then(|body| body.get("data").and_then(Value::as_array).or_else(|| body.get("models").and_then(Value::as_array)));
+        let body: Result<Value, _> =
+            serde_json::from_reader(std::io::Read::take(response.into_reader(), 1024 * 1024));
+        let rows = body.as_ref().ok().and_then(|body| {
+            body.get("data")
+                .and_then(Value::as_array)
+                .or_else(|| body.get("models").and_then(Value::as_array))
+        });
         let Some(rows) = rows else {
             return CustomProbe::failed(crate::ts!("接口有响应，但返回的不是模型目录，请检查接口地址是否以 /v1 结尾", "The endpoint answered but did not return a model catalogue — check that the URL ends with /v1"));
         };
         for row in rows {
-            let Some(id) = row.get("id").and_then(Value::as_str).map(str::trim).filter(|id| !id.is_empty()) else { continue };
+            let Some(id) = row
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+            else {
+                continue;
+            };
             if models.iter().any(|m| m.id == id) {
                 continue;
             }
-            let label = row.get("display_name").or_else(|| row.get("name")).and_then(Value::as_str).map(str::trim).unwrap_or("");
-            models.push(ProbedModel { id: id.to_string(), label: if label == id { String::new() } else { label.to_string() } });
+            let label = row
+                .get("display_name")
+                .or_else(|| row.get("name"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or("");
+            models.push(ProbedModel {
+                id: id.to_string(),
+                label: if label == id {
+                    String::new()
+                } else {
+                    label.to_string()
+                },
+            });
             if models.len() >= MAX_MODELS {
                 break;
             }
         }
         let last = body.as_ref().ok().and_then(|body| {
-            body.get("has_more").and_then(Value::as_bool).filter(|more| *more)?;
-            body.get("last_id").and_then(Value::as_str).map(str::trim).filter(|id| !id.is_empty()).map(String::from)
+            body.get("has_more")
+                .and_then(Value::as_bool)
+                .filter(|more| *more)?;
+            body.get("last_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(String::from)
         });
         // 游标没往前走（服务端一直回同一页）就停：别对着一个坏分页空转十次。
-        let Some(last) = last.filter(|last| cursor.as_deref() != Some(last.as_str())) else { break };
+        let Some(last) = last.filter(|last| cursor.as_deref() != Some(last.as_str())) else {
+            break;
+        };
         url = format!("{endpoint}/models?after_id={}", percent_encode(&last));
         cursor = Some(last);
     }
     if models.is_empty() {
         return CustomProbe::failed(crate::ts!("模型目录是空的", "The model catalogue is empty"));
     }
-    CustomProbe { ok: true, models, detail: String::new() }
+    CustomProbe {
+        ok: true,
+        models,
+        detail: String::new(),
+    }
 }
 
 /// 查询串里安全的最小百分号编码（`after_id` 用；模型 id 一般是 `a-z0-9.-_`）。
@@ -321,7 +416,8 @@ fn text<'a>(v: &'a Value, keys: &[&str]) -> &'a str {
 // configurations are never executed as part of background discovery.
 fn env_reference(raw: &str) -> Option<&str> {
     let raw = raw.trim();
-    raw.strip_prefix("{env:").and_then(|s| s.strip_suffix('}'))
+    raw.strip_prefix("{env:")
+        .and_then(|s| s.strip_suffix('}'))
         .or_else(|| raw.strip_prefix("${").and_then(|s| s.strip_suffix('}')))
         .or_else(|| raw.strip_prefix('$'))
 }
@@ -336,7 +432,12 @@ fn resolve(raw: &str) -> Result<String, String> {
         return std::env::var(name)
             .ok()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| crate::ts!("环境变量 {name} 不可用，请在下方填写并保存", "Environment variable {name} is unavailable; fill it in below and save"));
+            .ok_or_else(|| {
+                crate::ts!(
+                    "环境变量 {name} 不可用，请在下方填写并保存",
+                    "Environment variable {name} is unavailable; fill it in below and save"
+                )
+            });
     }
     Ok(raw.into())
 }
@@ -374,10 +475,16 @@ impl Discovery {
                 self.paths.push(ScanPath {
                     path: path.display().to_string(),
                     status: "error".into(),
-                    detail: crate::ts!("文件存在，但读取或解析失败", "File exists but could not be read or parsed"),
+                    detail: crate::ts!(
+                        "文件存在，但读取或解析失败",
+                        "File exists but could not be read or parsed"
+                    ),
                 });
-                self.warnings
-                    .push(crate::ts!("无法读取配置：{path}", "Could not read config: {path}", path = path.display()));
+                self.warnings.push(crate::ts!(
+                    "无法读取配置：{path}",
+                    "Could not read config: {path}",
+                    path = path.display()
+                ));
                 None
             }
         }
@@ -437,7 +544,12 @@ impl Discovery {
             };
             fs::read_to_string(file)
                 .map(|s| s.trim().to_string())
-                .map_err(|_| crate::ts!("无法读取原配置引用的密钥文件", "Could not read the key file referenced by the original config"))
+                .map_err(|_| {
+                    crate::ts!(
+                        "无法读取原配置引用的密钥文件",
+                        "Could not read the key file referenced by the original config"
+                    )
+                })
         } else {
             resolve(auth)
         };
@@ -445,7 +557,8 @@ impl Discovery {
             .chain(headers.values().map(String::as_str))
             .filter_map(env_reference)
             .filter(|name| std::env::var(name).map(|v| v.is_empty()).unwrap_or(true))
-            .map(str::to_string).collect();
+            .map(str::to_string)
+            .collect();
         missing_env.sort();
         missing_env.dedup();
         // Every env name this route can authenticate through, resolved or not.
@@ -473,7 +586,10 @@ impl Discovery {
             && !authority.starts_with("127.0.0.1")
             && !authority.starts_with("[::1]")
         {
-            issue = Some(crate::ts!("未找到可共享的 API key 或环境变量引用", "No shareable API key or environment variable reference found"));
+            issue = Some(crate::ts!(
+                "未找到可共享的 API key 或环境变量引用",
+                "No shareable API key or environment variable reference found"
+            ));
         }
         let origin = format!("{agent} · {}#{route}", path.display());
         let index = if let Some(i) = self.sources.iter().position(|s| {
@@ -520,10 +636,14 @@ impl Discovery {
             return;
         };
         for name in missing_env {
-            if !source.view.missing_env.contains(&name) { source.view.missing_env.push(name); }
+            if !source.view.missing_env.contains(&name) {
+                source.view.missing_env.push(name);
+            }
         }
         for name in &env_names {
-            if !source.env_names.contains(name) { source.env_names.push(name.clone()); }
+            if !source.env_names.contains(name) {
+                source.env_names.push(name.clone());
+            }
         }
         if !source.view.origins.contains(&origin) {
             source.view.origins.push(origin);
@@ -588,7 +708,11 @@ pub fn endpoint_host(endpoint: &str) -> Option<String> {
 /// True when a discovered endpoint and a preset base name the same vendor host.
 /// Grok writes `opencode.ai/inference/go/openai/v1` where the preset publishes
 /// `opencode.ai/inference/go/v1`; both bill the same account.
-pub fn same_vendor_host(endpoint: &str, chat_base: Option<&str>, anthropic_base: Option<&str>) -> bool {
+pub fn same_vendor_host(
+    endpoint: &str,
+    chat_base: Option<&str>,
+    anthropic_base: Option<&str>,
+) -> bool {
     let Some(host) = endpoint_host(endpoint) else {
         return false;
     };
@@ -688,7 +812,10 @@ fn discover_at(home: &Path, use_environment: bool) -> Discovery {
                 {
                     source.view.label = entry.label.clone();
                     source.view.issue = if entry.secret.is_some() && key.is_none() {
-                        Some(crate::ts!("无法解密此来源的 API key", "Could not decrypt this source's API key"))
+                        Some(crate::ts!(
+                            "无法解密此来源的 API key",
+                            "Could not decrypt this source's API key"
+                        ))
                     } else {
                         None
                     };
@@ -975,7 +1102,11 @@ fn chatgpt_account(value: &Value) -> Option<String> {
         .get("tokens")
         .and_then(|tokens| tokens.get("account_id"))
         .or_else(|| value.get("metadata").and_then(|meta| meta.get("accountId")))
-        .or_else(|| value.get("metadata").and_then(|meta| meta.get("account_id")))
+        .or_else(|| {
+            value
+                .get("metadata")
+                .and_then(|meta| meta.get("account_id"))
+        })
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|id| !id.is_empty())
@@ -987,7 +1118,9 @@ fn chatgpt_account(value: &Value) -> Option<String> {
 #[cfg(not(engine_rust_active))]
 pub fn codex_signed_in() -> bool {
     let Some(home) = home() else { return false };
-    local_signin_accounts(&home, true).iter().any(|account| account.kind == "owner")
+    local_signin_accounts(&home, true)
+        .iter()
+        .any(|account| account.kind == "owner")
 }
 
 /// One subscription sign-in is one account. The engine provider that runs it
@@ -1006,7 +1139,11 @@ fn local_signin_accounts(home: &Path, use_environment: bool) -> Vec<EngineAccoun
         let token = text(&value["tokens"], &["access_token"]);
         mode != "apikey" && !token.is_empty()
     });
-    let Some(account) = codex.as_ref().and_then(chatgpt_account).filter(|_| signed_in) else {
+    let Some(account) = codex
+        .as_ref()
+        .and_then(chatgpt_account)
+        .filter(|_| signed_in)
+    else {
         return out;
     };
     // Codex CLI serves its whole catalogue from this sign-in.
@@ -1094,19 +1231,33 @@ fn prefs_path() -> Result<PathBuf, String> {
 pub fn load_preferences() -> Result<Value, String> {
     let path = prefs_path()?;
     match fs::read_to_string(path) {
-        Ok(s) => serde_json::from_str(&s).map_err(|_| crate::ts!("模型显示设置损坏，请恢复默认后保存", "Model display preferences are corrupted; restore defaults and save again")),
+        Ok(s) => serde_json::from_str(&s).map_err(|_| {
+            crate::ts!(
+                "模型显示设置损坏，请恢复默认后保存",
+                "Model display preferences are corrupted; restore defaults and save again"
+            )
+        }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::json!({})),
-        Err(e) => Err(crate::ts!("读取模型显示设置失败：{e}", "Failed to read model display preferences: {e}")),
+        Err(e) => Err(crate::ts!(
+            "读取模型显示设置失败：{e}",
+            "Failed to read model display preferences: {e}"
+        )),
     }
 }
 
 pub fn save_preferences(preferences: Value) -> Result<(), String> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _guard = LOCK
-        .lock()
-        .map_err(|_| crate::ts!("模型显示设置正在保存", "Model display preferences are being saved"))?;
+    let _guard = LOCK.lock().map_err(|_| {
+        crate::ts!(
+            "模型显示设置正在保存",
+            "Model display preferences are being saved"
+        )
+    })?;
     if !preferences.is_object() {
-        return Err(crate::ts!("模型显示设置格式无效", "Invalid model display preferences format"));
+        return Err(crate::ts!(
+            "模型显示设置格式无效",
+            "Invalid model display preferences format"
+        ));
     }
     let path = prefs_path()?;
     let temp = path.with_extension("json.tmp");
@@ -1118,7 +1269,12 @@ pub fn save_preferences(preferences: Value) -> Result<(), String> {
         serde_json::to_vec_pretty(&preferences).map_err(|e| e.to_string())?,
     )
     .and_then(|_| fs::rename(temp, path))
-    .map_err(|e| crate::ts!("保存模型显示设置失败：{e}", "Failed to save model display preferences: {e}"))
+    .map_err(|e| {
+        crate::ts!(
+            "保存模型显示设置失败：{e}",
+            "Failed to save model display preferences: {e}"
+        )
+    })
 }
 
 fn clean_jsonc(input: &str) -> String {
@@ -1311,9 +1467,18 @@ env_key = "MARIONETTE_TEST_DEEPSEEK_KEY"
     /// Host comparison ignores the path shape vendors publish (`…/v1` or bare).
     #[test]
     fn endpoint_host_ignores_path_and_scheme() {
-        assert_eq!(endpoint_host("https://api.deepseek.com/v1").as_deref(), Some("api.deepseek.com"));
-        assert_eq!(endpoint_host("https://API.DeepSeek.com").as_deref(), Some("api.deepseek.com"));
-        assert_eq!(endpoint_host("http://127.0.0.1:3425/v1").as_deref(), Some("127.0.0.1:3425"));
+        assert_eq!(
+            endpoint_host("https://api.deepseek.com/v1").as_deref(),
+            Some("api.deepseek.com")
+        );
+        assert_eq!(
+            endpoint_host("https://API.DeepSeek.com").as_deref(),
+            Some("api.deepseek.com")
+        );
+        assert_eq!(
+            endpoint_host("http://127.0.0.1:3425/v1").as_deref(),
+            Some("127.0.0.1:3425")
+        );
         assert_eq!(endpoint_host("not-a-url"), None);
     }
 
@@ -1336,7 +1501,11 @@ env_key = "MARIONETTE_TEST_DEEPSEEK_KEY"
             Some("https://opencode.ai/inference/go/v1"),
             None,
         ));
-        assert!(!same_vendor_host("not-a-url", Some("https://api.deepseek.com/v1"), None));
+        assert!(!same_vendor_host(
+            "not-a-url",
+            Some("https://api.deepseek.com/v1"),
+            None
+        ));
     }
 
     /// One ChatGPT sign-in, read from wherever each agent keeps its copy: Codex
@@ -1369,10 +1538,30 @@ env_key = "MARIONETTE_TEST_DEEPSEEK_KEY"
         .unwrap();
 
         let discovery = discover_at(&root, false);
-        let owner = discovery.accounts.iter().find(|a| a.kind == "owner").unwrap();
-        assert_eq!((owner.engine.as_str(), owner.agent.as_str(), owner.provider.as_str()), ("codex", "codex", ""));
-        let copies: Vec<&str> = discovery.accounts.iter().filter(|a| a.kind == "duplicate").map(|a| a.provider.as_str()).collect();
-        assert_eq!(copies, vec!["openai"], "only the same ChatGPT account is a copy");
+        let owner = discovery
+            .accounts
+            .iter()
+            .find(|a| a.kind == "owner")
+            .unwrap();
+        assert_eq!(
+            (
+                owner.engine.as_str(),
+                owner.agent.as_str(),
+                owner.provider.as_str()
+            ),
+            ("codex", "codex", "")
+        );
+        let copies: Vec<&str> = discovery
+            .accounts
+            .iter()
+            .filter(|a| a.kind == "duplicate")
+            .map(|a| a.provider.as_str())
+            .collect();
+        assert_eq!(
+            copies,
+            vec!["openai"],
+            "only the same ChatGPT account is a copy"
+        );
 
         // An API key is a separate credential, and a different account id is a
         // different login: neither is folded into the engine group.
@@ -1381,10 +1570,17 @@ env_key = "MARIONETTE_TEST_DEEPSEEK_KEY"
             r#"{"openai":{"type":"api","key":"sk-openai"}}"#,
         )
         .unwrap();
-        assert!(discover_at(&root, false).accounts.iter().all(|a| a.kind == "owner"));
+        assert!(discover_at(&root, false)
+            .accounts
+            .iter()
+            .all(|a| a.kind == "owner"));
 
         // Signed out of Codex: no engine account, so nothing folds.
-        fs::write(root.join(".codex/auth.json"), r#"{"auth_mode":"chatgpt","tokens":{}}"#).unwrap();
+        fs::write(
+            root.join(".codex/auth.json"),
+            r#"{"auth_mode":"chatgpt","tokens":{}}"#,
+        )
+        .unwrap();
         assert!(discover_at(&root, false).accounts.is_empty());
 
         fs::remove_dir_all(root).unwrap();
@@ -1394,7 +1590,9 @@ env_key = "MARIONETTE_TEST_DEEPSEEK_KEY"
 
     /// 回环假目录服务：按请求路径回一条 HTTP 应答，把收到的请求头（首行 +
     /// 鉴权相关头）交回调用方判定（靠前的路由先匹配，没命中的路径回 404）。`routes` = (路径, "状态行\x0d\x0a头…\x0d\x0a\x0d\x0a体")。
-    fn catalog_server(routes: Vec<(&'static str, &'static str)>) -> (u16, std::sync::mpsc::Receiver<String>) {
+    fn catalog_server(
+        routes: Vec<(&'static str, &'static str)>,
+    ) -> (u16, std::sync::mpsc::Receiver<String>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1405,20 +1603,33 @@ env_key = "MARIONETTE_TEST_DEEPSEEK_KEY"
                 let mut head = Vec::new();
                 let mut byte = [0u8; 1];
                 while !head.ends_with(b"\r\n\r\n") {
-                    if stream.read(&mut byte).unwrap_or(0) != 1 { break; }
+                    if stream.read(&mut byte).unwrap_or(0) != 1 {
+                        break;
+                    }
                     head.push(byte[0]);
                 }
                 let text = String::from_utf8_lossy(&head).into_owned();
-                let path = text.lines().next().and_then(|line| line.split_whitespace().nth(1)).unwrap_or("").to_string();
+                let path = text
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("")
+                    .to_string();
                 let auth: Vec<String> = text
                     .lines()
                     .filter(|line| {
                         let lower = line.to_ascii_lowercase();
-                        lower.starts_with("authorization:") || lower.starts_with("x-api-key:") || lower.starts_with("anthropic-version:")
+                        lower.starts_with("authorization:")
+                            || lower.starts_with("x-api-key:")
+                            || lower.starts_with("anthropic-version:")
                     })
                     .map(str::to_string)
                     .collect();
-                let response = routes.iter().find(|(prefix, _)| path.starts_with(prefix)).map(|(_, response)| *response).unwrap_or("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+                let response = routes
+                    .iter()
+                    .find(|(prefix, _)| path.starts_with(prefix))
+                    .map(|(_, response)| *response)
+                    .unwrap_or("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
                 let _ = tx.send(format!("{}\n{}", path, auth.join("\n")));
                 let _ = stream.write_all(response.as_bytes());
             }
@@ -1437,13 +1648,33 @@ env_key = "MARIONETTE_TEST_DEEPSEEK_KEY"
             "/v1/models",
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"object\":\"list\",\"data\":[{\"id\":\"b\",\"owned_by\":\"x\"},{\"id\":\"a\"},{\"id\":\"a\"},{\"id\":\"  \"},{\"no_id\":1}]}",
         )]);
-        let probe = probe_custom_with(&format!("http://127.0.0.1:{port}/v1/"), "chat", "sk-test", None);
+        let probe = probe_custom_with(
+            &format!("http://127.0.0.1:{port}/v1/"),
+            "chat",
+            "sk-test",
+            None,
+        );
         assert!(probe.ok, "{}", probe.detail);
-        assert_eq!(probe.models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["b", "a"]);
+        assert_eq!(
+            probe
+                .models
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b", "a"]
+        );
         assert!(probe.models.iter().all(|m| m.label.is_empty()));
         let request = seen.recv().unwrap();
-        assert!(request.starts_with("/v1/models\n"), "trailing slash normalised: {request}");
-        assert!(request.to_ascii_lowercase().contains("authorization: bearer sk-test"), "{request}");
+        assert!(
+            request.starts_with("/v1/models\n"),
+            "trailing slash normalised: {request}"
+        );
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer sk-test"),
+            "{request}"
+        );
     }
 
     /// Anthropic 目录：`x-api-key` + 版本头，不用 Bearer；`has_more` + `last_id`
@@ -1460,18 +1691,47 @@ env_key = "MARIONETTE_TEST_DEEPSEEK_KEY"
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"data\":[{\"id\":\"claude-a\",\"display_name\":\"Claude A\"},{\"id\":\"claude-b\",\"display_name\":\"claude-b\"}],\"has_more\":true,\"last_id\":\"claude-b\"}",
             ),
         ]);
-        let probe = probe_custom_with(&format!("http://127.0.0.1:{port}/v1"), "anthropic", "sk-ant", None);
+        let probe = probe_custom_with(
+            &format!("http://127.0.0.1:{port}/v1"),
+            "anthropic",
+            "sk-ant",
+            None,
+        );
         assert!(probe.ok, "{}", probe.detail);
-        let models: Vec<(&str, &str)> = probe.models.iter().map(|m| (m.id.as_str(), m.label.as_str())).collect();
+        let models: Vec<(&str, &str)> = probe
+            .models
+            .iter()
+            .map(|m| (m.id.as_str(), m.label.as_str()))
+            .collect();
         let first = seen.recv().unwrap();
-        assert_eq!(models, vec![("claude-a", "Claude A"), ("claude-b", ""), ("claude-c", "Claude C")]);
+        assert_eq!(
+            models,
+            vec![
+                ("claude-a", "Claude A"),
+                ("claude-b", ""),
+                ("claude-c", "Claude C")
+            ]
+        );
         assert!(first.starts_with("/v1/models\n"), "{first}");
         let lower = first.to_ascii_lowercase();
-        assert!(lower.contains("x-api-key: sk-ant") && lower.contains("anthropic-version: 2023-06-01"), "{first}");
-        assert!(!lower.contains("authorization"), "no Bearer on an Anthropic catalogue: {first}");
-        assert!(seen.recv().unwrap().starts_with("/v1/models?after_id=claude-b\n"));
+        assert!(
+            lower.contains("x-api-key: sk-ant") && lower.contains("anthropic-version: 2023-06-01"),
+            "{first}"
+        );
+        assert!(
+            !lower.contains("authorization"),
+            "no Bearer on an Anthropic catalogue: {first}"
+        );
+        assert!(seen
+            .recv()
+            .unwrap()
+            .starts_with("/v1/models?after_id=claude-b\n"));
         // 最后一页 has_more=false：不再往下要。
-        assert!(seen.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "no third request");
+        assert!(
+            seen.recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "no third request"
+        );
     }
 
     /// 服务端分页坏了（一直回同一页 + has_more=true）：翻一页发现游标没动就停，
@@ -1482,12 +1742,28 @@ env_key = "MARIONETTE_TEST_DEEPSEEK_KEY"
             "/v1/models",
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"data\":[{\"id\":\"m\"}],\"has_more\":true,\"last_id\":\"m\"}",
         )]);
-        let probe = probe_custom_with(&format!("http://127.0.0.1:{port}/v1"), "anthropic", "k", None);
+        let probe = probe_custom_with(
+            &format!("http://127.0.0.1:{port}/v1"),
+            "anthropic",
+            "k",
+            None,
+        );
         assert!(probe.ok, "{}", probe.detail);
-        assert_eq!(probe.models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["m"]);
+        assert_eq!(
+            probe
+                .models
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["m"]
+        );
         assert!(seen.recv().unwrap().starts_with("/v1/models\n"));
         assert!(seen.recv().unwrap().starts_with("/v1/models?after_id=m\n"));
-        assert!(seen.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "a stuck cursor must not be requested a third time");
+        assert!(
+            seen.recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "a stuck cursor must not be requested a third time"
+        );
     }
 
     /// 失败要翻成能照着做的结论，而不是裸状态码；`ok` 恒为 false、模型恒为空。
@@ -1502,25 +1778,61 @@ env_key = "MARIONETTE_TEST_DEEPSEEK_KEY"
         ];
         for (name, response, zh, en) in cases {
             let (port, _seen) = catalog_server(vec![("/v1/models", response)]);
-            let probe = probe_custom_with(&format!("http://127.0.0.1:{port}/v1"), "responses", "sk-x", None);
+            let probe = probe_custom_with(
+                &format!("http://127.0.0.1:{port}/v1"),
+                "responses",
+                "sk-x",
+                None,
+            );
             assert!(!probe.ok, "{name}");
             assert!(probe.models.is_empty(), "{name}");
-            assert!(probe_text_is(&probe.detail, zh, en), "{name}: {}", probe.detail);
+            assert!(
+                probe_text_is(&probe.detail, zh, en),
+                "{name}: {}",
+                probe.detail
+            );
         }
     }
 
     /// 地址校验先于联网，与保存同一套规则；连不上的端口如实报连接失败。
     #[test]
     fn custom_probe_rejects_bad_endpoints_before_dialing() {
-        for endpoint in ["ftp://example.com/v1", "http://user:pw@example.com/v1", "example.com/v1", "https://example.com/v1?x=1", "https://example.com/v1#frag", ""] {
+        for endpoint in [
+            "ftp://example.com/v1",
+            "http://user:pw@example.com/v1",
+            "example.com/v1",
+            "https://example.com/v1?x=1",
+            "https://example.com/v1#frag",
+            "",
+        ] {
             let probe = probe_custom_with(endpoint, "chat", "sk", None);
             assert!(!probe.ok && probe.models.is_empty(), "{endpoint}");
-            assert!(probe_text_is(&probe.detail, "有效的 http/https 接口地址", "valid http/https endpoint"), "{endpoint}: {}", probe.detail);
+            assert!(
+                probe_text_is(
+                    &probe.detail,
+                    "有效的 http/https 接口地址",
+                    "valid http/https endpoint"
+                ),
+                "{endpoint}: {}",
+                probe.detail
+            );
         }
-        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let closed = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
         let probe = probe_custom_with(&format!("http://127.0.0.1:{closed}/v1"), "chat", "", None);
         assert!(!probe.ok);
-        assert!(probe_text_is(&probe.detail, "连接失败或超时", "Could not connect or timed out"), "{}", probe.detail);
+        assert!(
+            probe_text_is(
+                &probe.detail,
+                "连接失败或超时",
+                "Could not connect or timed out"
+            ),
+            "{}",
+            probe.detail
+        );
     }
 
     #[test]
@@ -1534,17 +1846,27 @@ env_key = "MARIONETTE_TEST_DEEPSEEK_KEY"
     /// 都靠它，按前缀写的话永远不命中）。
     #[test]
     fn manual_source_is_recognised_by_origin_not_by_id_prefix() {
-        let root = std::env::temp_dir().join(format!("marionette_test_manual_source_{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "marionette_test_manual_source_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join(".marionette")).unwrap();
         let entry_id = crate::credentials::add_custom_provider_at(
             &root.join(".marionette").join("credentials.json"),
             "Relay",
             "sk-x",
-            crate::credentials::CustomProviderConfig { endpoint: "https://relay.example/v1".into(), protocol: "chat".into(), models: vec!["m1".into()] },
+            crate::credentials::CustomProviderConfig {
+                endpoint: "https://relay.example/v1".into(),
+                protocol: "chat".into(),
+                models: vec!["m1".into()],
+            },
         )
         .unwrap();
-        assert!(entry_id.starts_with("custom-"), "credential entry ids do carry the prefix");
+        assert!(
+            entry_id.starts_with("custom-"),
+            "credential entry ids do carry the prefix"
+        );
         // 同一个 home 里再放一个从 agent 配置文件发现的来源。
         std::fs::create_dir_all(root.join(".grok")).unwrap();
         std::fs::write(
@@ -1554,42 +1876,107 @@ env_key = "MARIONETTE_TEST_DEEPSEEK_KEY"
         .unwrap();
 
         let discovery = discover_at(&root, false);
-        let manual = discovery.sources.iter().find(|s| s.manual_entry_id().is_some()).expect("the custom source is discovered");
+        let manual = discovery
+            .sources
+            .iter()
+            .find(|s| s.manual_entry_id().is_some())
+            .expect("the custom source is discovered");
         assert_eq!(manual.manual_entry_id(), Some(entry_id.as_str()));
-        assert!(!manual.view.id.starts_with("custom-"), "a source id is a hash of its route, never the entry id");
-        assert_eq!(manual.view.models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["m1"]);
-        let discovered: Vec<&Source> = discovery.sources.iter().filter(|s| s.manual_entry_id().is_none()).collect();
-        assert!(discovered.iter().any(|s| s.view.origins.iter().any(|o| o.starts_with("grok-build"))), "the grok entry is the non-manual one");
-        assert!(discovered.iter().all(|s| s.view.origins.iter().all(|o| !o.starts_with("Marionette · "))));
+        assert!(
+            !manual.view.id.starts_with("custom-"),
+            "a source id is a hash of its route, never the entry id"
+        );
+        assert_eq!(
+            manual
+                .view
+                .models
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["m1"]
+        );
+        let discovered: Vec<&Source> = discovery
+            .sources
+            .iter()
+            .filter(|s| s.manual_entry_id().is_none())
+            .collect();
+        assert!(
+            discovered
+                .iter()
+                .any(|s| s.view.origins.iter().any(|o| o.starts_with("grok-build"))),
+            "the grok entry is the non-manual one"
+        );
+        assert!(discovered.iter().all(|s| s
+            .view
+            .origins
+            .iter()
+            .all(|o| !o.starts_with("Marionette · "))));
         let _ = std::fs::remove_dir_all(&root);
     }
 }
 
 /// Save only an unresolved credential reference advertised by discovery.
 pub fn set_environment(source_id: &str, name: &str, value: &str) -> Result<(), String> {
-    if name.is_empty() || !name.bytes().enumerate().all(|(i, b)| b.is_ascii_alphabetic() || b == b'_' || (i > 0 && b.is_ascii_digit())) {
-        return Err(crate::ts!("环境变量名称无效", "Invalid environment variable name"));
+    if name.is_empty()
+        || !name
+            .bytes()
+            .enumerate()
+            .all(|(i, b)| b.is_ascii_alphabetic() || b == b'_' || (i > 0 && b.is_ascii_digit()))
+    {
+        return Err(crate::ts!(
+            "环境变量名称无效",
+            "Invalid environment variable name"
+        ));
     }
     if value.trim().is_empty() || value.contains('\0') {
-        return Err(crate::ts!("请输入有效的环境变量值", "Enter a valid environment variable value"));
+        return Err(crate::ts!(
+            "请输入有效的环境变量值",
+            "Enter a valid environment variable value"
+        ));
     }
     let discovery = discover();
-    if !discovery.sources.iter().any(|source| source.view.id == source_id && source.view.missing_env.iter().any(|n| n == name)) {
-        return Err(crate::ts!("该来源不再缺少此环境变量，请重新扫描", "This source no longer misses that environment variable; re-scan"));
+    if !discovery.sources.iter().any(|source| {
+        source.view.id == source_id && source.view.missing_env.iter().any(|n| n == name)
+    }) {
+        return Err(crate::ts!(
+            "该来源不再缺少此环境变量，请重新扫描",
+            "This source no longer misses that environment variable; re-scan"
+        ));
     }
     #[cfg(windows)]
     {
-        crate::shell_integration::reg_set_string("Environment", Some(name), value)
-            .map_err(|_| crate::ts!("无法保存 Windows 用户环境变量", "Could not save the Windows user environment variable"))?;
+        crate::shell_integration::reg_set_string("Environment", Some(name), value).map_err(
+            |_| {
+                crate::ts!(
+                    "无法保存 Windows 用户环境变量",
+                    "Could not save the Windows user environment variable"
+                )
+            },
+        )?;
         std::env::set_var(name, value);
         // Notify Explorer so subsequently launched applications inherit it.
-        use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+        };
         let section: Vec<u16> = "Environment\0".encode_utf16().collect();
-        unsafe { SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, section.as_ptr() as isize, SMTO_ABORTIFHUNG, 1000, std::ptr::null_mut()); }
+        unsafe {
+            SendMessageTimeoutW(
+                HWND_BROADCAST,
+                WM_SETTINGCHANGE,
+                0,
+                section.as_ptr() as isize,
+                SMTO_ABORTIFHUNG,
+                1000,
+                std::ptr::null_mut(),
+            );
+        }
         Ok(())
     }
     #[cfg(not(windows))]
-    Err(crate::ts!("此功能目前仅支持 Windows 用户环境变量", "This feature currently supports only Windows user environment variables"))
+    Err(crate::ts!(
+        "此功能目前仅支持 Windows 用户环境变量",
+        "This feature currently supports only Windows user environment variables"
+    ))
 }
 
 #[cfg(test)]
@@ -1620,7 +2007,12 @@ mod scan_oracle {
             if let Ok(bytes) = std::fs::read(home.join(".marionette").join("engine-catalog.json")) {
                 if let Ok(file) = serde_json::from_slice::<serde_json::Value>(&bytes) {
                     let mut groups: std::collections::BTreeMap<String, usize> = Default::default();
-                    for row in file.get("rows").and_then(|r| r.as_array()).cloned().unwrap_or_default() {
+                    for row in file
+                        .get("rows")
+                        .and_then(|r| r.as_array())
+                        .cloned()
+                        .unwrap_or_default()
+                    {
                         let id = row.get("id").and_then(|i| i.as_str()).unwrap_or("");
                         let provider = id.split('/').next().unwrap_or("").to_string();
                         *groups.entry(provider).or_default() += 1;
@@ -1628,9 +2020,19 @@ mod scan_oracle {
                     println!("engine catalog cache by provider: {groups:?}");
                 }
             }
-            if let Ok(bytes) = std::fs::read(home.join(".marionette").join("engine").join("data").join("providers.json")) {
-                if let Ok(file) = serde_json::from_slice::<crate::engine_gateway::store::ProvidersFile>(&bytes) {
-                    let aliases = crate::engine::provider_account_aliases_for(&file.providers, &discovery.sources);
+            if let Ok(bytes) = std::fs::read(
+                home.join(".marionette")
+                    .join("engine")
+                    .join("data")
+                    .join("providers.json"),
+            ) {
+                if let Ok(file) =
+                    serde_json::from_slice::<crate::engine_gateway::store::ProvidersFile>(&bytes)
+                {
+                    let aliases = crate::engine::provider_account_aliases_for(
+                        &file.providers,
+                        &discovery.sources,
+                    );
                     println!("provider account aliases: {aliases:?}");
                 }
             }

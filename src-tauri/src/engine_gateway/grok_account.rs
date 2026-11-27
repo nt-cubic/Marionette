@@ -82,7 +82,9 @@ fn seam() -> Option<Seam> {
 
 #[cfg(test)]
 fn base_url() -> String {
-    seam().map(|s| s.base).unwrap_or_else(|| "http://127.0.0.1:9/v1".into())
+    seam()
+        .map(|s| s.base)
+        .unwrap_or_else(|| "http://127.0.0.1:9/v1".into())
 }
 #[cfg(not(test))]
 fn base_url() -> String {
@@ -120,16 +122,24 @@ pub(crate) struct Account {
 
 impl Account {
     fn expired(&self) -> bool {
-        self.exp.is_some_and(|e| e <= now_secs() + EXPIRY_MARGIN_SECS)
+        self.exp
+            .is_some_and(|e| e <= now_secs() + EXPIRY_MARGIN_SECS)
     }
 }
 
 fn now_secs() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn str_field(v: &Value, key: &str) -> String {
-    v.get(key).and_then(|x| x.as_str()).unwrap_or("").trim().to_string()
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 /// Go `readGrokCredential`：auth.json 是 `{<issuer::id>: {key, email, expires_at, …}}`，
@@ -150,7 +160,12 @@ fn read_credential(home: &std::path::Path) -> Option<Account> {
             .and_then(|e| e.as_str())
             .and_then(|e| chrono::DateTime::parse_from_rfc3339(e.trim()).ok())
             .map(|t| t.timestamp());
-        return Some(Account { token, email: str_field(entry, "email"), user_id: str_field(entry, "user_id"), exp });
+        return Some(Account {
+            token,
+            email: str_field(entry, "email"),
+            user_id: str_field(entry, "user_id"),
+            exp,
+        });
     }
     None
 }
@@ -228,7 +243,10 @@ struct State {
     backoff_until: Option<Instant>,
 }
 
-static STATE: Mutex<State> = Mutex::new(State { cache: None, backoff_until: None });
+static STATE: Mutex<State> = Mutex::new(State {
+    cache: None,
+    backoff_until: None,
+});
 
 fn lock_state() -> std::sync::MutexGuard<'static, State> {
     STATE.lock().unwrap_or_else(|p| p.into_inner())
@@ -263,7 +281,9 @@ fn window_suffix(tokens: u64) -> String {
 /// `grok-4.7@500k` → (`grok-4.7`, Some(500000))；`@131072`（无 k）按 token 数；
 /// 没有窗口后缀 → (原样, None)。
 fn split_window(id: &str) -> (String, Option<u64>) {
-    let Some((base, tail)) = id.rsplit_once('@') else { return (id.to_string(), None) };
+    let Some((base, tail)) = id.rsplit_once('@') else {
+        return (id.to_string(), None);
+    };
     if base.is_empty() || tail.is_empty() {
         return (id.to_string(), None);
     }
@@ -272,7 +292,9 @@ fn split_window(id: &str) -> (String, Option<u64>) {
         None => (tail, 1),
     };
     match digits.parse::<u64>() {
-        Ok(n) if n > 0 && digits.bytes().all(|b| b.is_ascii_digit()) => (base.to_string(), Some(n * mult)),
+        Ok(n) if n > 0 && digits.bytes().all(|b| b.is_ascii_digit()) => {
+            (base.to_string(), Some(n * mult))
+        }
         _ => (id.to_string(), None),
     }
 }
@@ -311,10 +333,15 @@ fn model_entries(root: &Value) -> Vec<Value> {
 }
 
 fn parse_models(body: &[u8]) -> Vec<VendorRow> {
-    let Ok(root) = serde_json::from_slice::<Value>(body) else { return Vec::new() };
+    let Ok(root) = serde_json::from_slice::<Value>(body) else {
+        return Vec::new();
+    };
     let mut rows = Vec::new();
     for entry in model_entries(&root) {
-        let info = entry.get("info").filter(|i| i.is_object()).unwrap_or(&entry);
+        let info = entry
+            .get("info")
+            .filter(|i| i.is_object())
+            .unwrap_or(&entry);
         let id = {
             let i = str_field(info, "id");
             if i.is_empty() {
@@ -329,7 +356,12 @@ fn parse_models(body: &[u8]) -> Vec<VendorRow> {
         let windows: Vec<u64> = info
             .get("context_windows")
             .and_then(|w| w.as_array())
-            .map(|l| l.iter().filter_map(|x| x.as_u64()).filter(|n| *n > 0).collect())
+            .map(|l| {
+                l.iter()
+                    .filter_map(|x| x.as_u64())
+                    .filter(|n| *n > 0)
+                    .collect()
+            })
             .unwrap_or_default();
         let context = info
             .get("context_window")
@@ -337,7 +369,10 @@ fn parse_models(body: &[u8]) -> Vec<VendorRow> {
             .filter(|c| *c > 0)
             .or_else(|| windows.first().copied())
             .unwrap_or(0);
-        let max_output = info.get("max_completion_tokens").and_then(|m| m.as_u64()).unwrap_or(0);
+        let max_output = info
+            .get("max_completion_tokens")
+            .and_then(|m| m.as_u64())
+            .unwrap_or(0);
         let images = info
             .get("input_modalities")
             .and_then(|v| v.as_array())
@@ -348,7 +383,11 @@ fn parse_models(body: &[u8]) -> Vec<VendorRow> {
             .map(|l| {
                 l.iter()
                     .filter_map(|x| {
-                        x.get("value").or_else(|| x.get("id")).or(Some(x)).and_then(|e| e.as_str()).map(String::from)
+                        x.get("value")
+                            .or_else(|| x.get("id"))
+                            .or(Some(x))
+                            .and_then(|e| e.as_str())
+                            .map(String::from)
                     })
                     .collect()
             })
@@ -366,13 +405,23 @@ fn parse_models(body: &[u8]) -> Vec<VendorRow> {
             if !levels.is_empty() {
                 raw["reasoning_levels"] = json!(levels);
             }
-            VendorRow { id: row_id, context_window: window, max_output, images, raw }
+            VendorRow {
+                id: row_id,
+                context_window: window,
+                max_output,
+                images,
+                raw,
+            }
         };
         rows.push(mk(id.clone(), name.clone(), context));
         // 同一模型的其它窗口：`grok-4.7@500k`（插件 windowsOf）。
         for w in windows.iter().copied().filter(|w| *w != context) {
             let suffix = window_suffix(w);
-            rows.push(mk(format!("{id}@{suffix}"), format!("{name} ({suffix})"), w));
+            rows.push(mk(
+                format!("{id}@{suffix}"),
+                format!("{name} ({suffix})"),
+                w,
+            ));
         }
     }
     rows
@@ -380,16 +429,24 @@ fn parse_models(body: &[u8]) -> Vec<VendorRow> {
 
 fn fetch_models(account: &Account) -> Result<Vec<VendorRow>, String> {
     let url = format!("{}/models", base_url().trim_end_matches('/'));
-    let response = sign(super::outbound_agent().get(&url), account, &client_version())
-        .set("Accept", "application/json")
-        .timeout(FETCH_TIMEOUT)
-        .call()
-        .map_err(|e| match e {
-            ureq::Error::Status(code, _) => format!("Grok models: HTTP {code}"),
-            other => format!("Grok models: {other}"),
-        })?;
+    let response = sign(
+        super::outbound_agent().get(&url),
+        account,
+        &client_version(),
+    )
+    .set("Accept", "application/json")
+    .timeout(FETCH_TIMEOUT)
+    .call()
+    .map_err(|e| match e {
+        ureq::Error::Status(code, _) => format!("Grok models: HTTP {code}"),
+        other => format!("Grok models: {other}"),
+    })?;
     let mut buf = Vec::new();
-    response.into_reader().take(16 << 20).read_to_end(&mut buf).map_err(|e| e.to_string())?;
+    response
+        .into_reader()
+        .take(16 << 20)
+        .read_to_end(&mut buf)
+        .map_err(|e| e.to_string())?;
     let rows = parse_models(&buf);
     if rows.is_empty() {
         return Err("Grok listed no models".into());
@@ -413,7 +470,9 @@ fn rows_impl(providers: &[Provider], gated: bool) -> Vec<VendorRow> {
     if providers.iter().any(|p| p.id == GROK_ID) || (gated && !super::family_enabled(GROK_ID)) {
         return Vec::new();
     }
-    let Some(account) = discover() else { return Vec::new() };
+    let Some(account) = discover() else {
+        return Vec::new();
+    };
     {
         let state = lock_state();
         if let Some((at, rows)) = state.cache.as_ref() {
@@ -421,7 +480,11 @@ fn rows_impl(providers: &[Provider], gated: bool) -> Vec<VendorRow> {
                 return rows.clone();
             }
         }
-        let stale = state.cache.as_ref().map(|c| c.1.clone()).unwrap_or_default();
+        let stale = state
+            .cache
+            .as_ref()
+            .map(|c| c.1.clone())
+            .unwrap_or_default();
         if account.expired() || state.backoff_until.is_some_and(|u| Instant::now() < u) {
             return stale;
         }
@@ -436,26 +499,43 @@ fn rows_impl(providers: &[Provider], gated: bool) -> Vec<VendorRow> {
         Err(_) => {
             let mut state = lock_state();
             state.backoff_until = Some(Instant::now() + FAIL_BACKOFF);
-            state.cache.as_ref().map(|c| c.1.clone()).unwrap_or_default()
+            state
+                .cache
+                .as_ref()
+                .map(|c| c.1.clone())
+                .unwrap_or_default()
         }
     }
 }
 
 /// 整串 `grok/<id>` 是不是已知模型（纯内存，组成员后缀拆分用）。
 fn knows(whole: &str) -> bool {
-    let Some(id) = whole.strip_prefix("grok/") else { return false };
-    lock_state().cache.as_ref().is_some_and(|c| c.1.iter().any(|r| r.id == id))
+    let Some(id) = whole.strip_prefix("grok/") else {
+        return false;
+    };
+    lock_state()
+        .cache
+        .as_ref()
+        .is_some_and(|c| c.1.iter().any(|r| r.id == id))
 }
 
 fn levels_of(id: &str) -> Vec<String> {
     let state = lock_state();
-    let Some(row) = state.cache.as_ref().and_then(|c| c.1.iter().find(|r| r.id == id)) else {
+    let Some(row) = state
+        .cache
+        .as_ref()
+        .and_then(|c| c.1.iter().find(|r| r.id == id))
+    else {
         return Vec::new();
     };
     row.raw
         .get("reasoning_levels")
         .and_then(|v| v.as_array())
-        .map(|l| l.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|l| {
+            l.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -466,7 +546,9 @@ fn levels_of(id: &str) -> Vec<String> {
 /// `end`（RFC3339 串或 unix 秒/毫秒数）→ 秒级 RFC3339 UTC。
 fn reset_time(end: &Value) -> Option<String> {
     let ts = match end {
-        Value::String(s) => chrono::DateTime::parse_from_rfc3339(s.trim()).ok()?.timestamp(),
+        Value::String(s) => chrono::DateTime::parse_from_rfc3339(s.trim())
+            .ok()?
+            .timestamp(),
         Value::Number(n) => {
             let raw = n.as_i64()?;
             if raw > 1_000_000_000_000 {
@@ -491,17 +573,34 @@ pub fn quota_row(providers: &[Provider]) -> Option<Value> {
     if account.expired() {
         return None;
     }
-    let url = format!("{}/billing?format=credits", base_url().trim_end_matches('/'));
-    let response = sign(super::outbound_agent().get(&url), &account, &client_version())
-        .set("Accept", "application/json")
-        .timeout(FETCH_TIMEOUT)
-        .call()
-        .ok()?;
+    let url = format!(
+        "{}/billing?format=credits",
+        base_url().trim_end_matches('/')
+    );
+    let response = sign(
+        super::outbound_agent().get(&url),
+        &account,
+        &client_version(),
+    )
+    .set("Accept", "application/json")
+    .timeout(FETCH_TIMEOUT)
+    .call()
+    .ok()?;
     let mut buf = Vec::new();
-    response.into_reader().take(1 << 20).read_to_end(&mut buf).ok()?;
+    response
+        .into_reader()
+        .take(1 << 20)
+        .read_to_end(&mut buf)
+        .ok()?;
     let data: Value = serde_json::from_slice(&buf).ok()?;
-    let config = data.get("config").filter(|c| c.is_object()).unwrap_or(&data);
-    let used = config.get("creditUsagePercent").and_then(|p| p.as_f64())?.clamp(0.0, 100.0);
+    let config = data
+        .get("config")
+        .filter(|c| c.is_object())
+        .unwrap_or(&data);
+    let used = config
+        .get("creditUsagePercent")
+        .and_then(|p| p.as_f64())?
+        .clamp(0.0, 100.0);
     let period = config.get("currentPeriod").filter(|p| p.is_object());
     let kind = period
         .and_then(|p| p.get("type"))
@@ -585,11 +684,19 @@ fn flat_name(namespace: &str, name: &str) -> String {
 
 /// Go `flatCall`：带 `namespace` 的调用/选择项改叫扁平名；是不是这种项。
 fn flat_call(it: &mut Map<String, Value>) -> bool {
-    let Some(space) = it.get("namespace").and_then(|n| n.as_str()).map(String::from) else {
+    let Some(space) = it
+        .get("namespace")
+        .and_then(|n| n.as_str())
+        .map(String::from)
+    else {
         return false;
     };
     it.remove("namespace");
-    let name = it.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+    let name = it
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("")
+        .to_string();
     if !name.is_empty() && !space.is_empty() && space != LITE_NAMESPACE {
         it.insert("name".into(), Value::String(flat_name(&space, &name)));
     }
@@ -600,7 +707,12 @@ fn flat_call(it: &mut Map<String, Value>) -> bool {
 fn grok_flat(ns: &Map<String, Value>) -> Vec<Value> {
     let space = ns.get("name").and_then(|n| n.as_str()).unwrap_or("");
     let mut out = Vec::new();
-    for n in ns.get("tools").and_then(|t| t.as_array()).into_iter().flatten() {
+    for n in ns
+        .get("tools")
+        .and_then(|t| t.as_array())
+        .into_iter()
+        .flatten()
+    {
         let Some(nm) = n.as_object() else { continue };
         let name = nm.get("name").and_then(|x| x.as_str()).unwrap_or("");
         if nm.get("type").and_then(|t| t.as_str()) != Some("function") || name.is_empty() {
@@ -619,7 +731,9 @@ fn grok_flat(ns: &Map<String, Value>) -> Vec<Value> {
 /// 指的那个。
 fn grok_ref(root: &Value, b: &Value) -> Option<Map<String, Value>> {
     let bm = b.as_object()?;
-    let Some(r) = bm.get("$ref").and_then(|r| r.as_str()) else { return Some(bm.clone()) };
+    let Some(r) = bm.get("$ref").and_then(|r| r.as_str()) else {
+        return Some(bm.clone());
+    };
     for k in ["$defs", "definitions"] {
         if let Some(name) = r.strip_prefix(&format!("#/{k}/")) {
             return root.get(k)?.get(name)?.as_object().cloned();
@@ -629,7 +743,9 @@ fn grok_ref(root: &Value, b: &Value) -> Option<Map<String, Value>> {
 }
 
 fn nested_union(b: &Map<String, Value>) -> bool {
-    ["anyOf", "oneOf", "allOf"].iter().any(|k| b.contains_key(*k))
+    ["anyOf", "oneOf", "allOf"]
+        .iter()
+        .any(|k| b.contains_key(*k))
 }
 
 fn append_distinct(vs: &mut Vec<Value>, v: &Value) {
@@ -650,12 +766,25 @@ fn object_root_in(root: &Value, ps: &mut Map<String, Value>, depth: usize) -> bo
     if ps.get("type").and_then(|t| t.as_str()) == Some("object") && !unions {
         return false;
     }
-    let mut props: Map<String, Value> =
-        ps.get("properties").and_then(|p| p.as_object()).cloned().unwrap_or_default();
-    let mut required: Vec<Value> = ps.get("required").and_then(|r| r.as_array()).cloned().unwrap_or_default();
-    let all_of: Vec<Value> = ps.get("allOf").and_then(|a| a.as_array()).cloned().unwrap_or_default();
+    let mut props: Map<String, Value> = ps
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let mut required: Vec<Value> = ps
+        .get("required")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let all_of: Vec<Value> = ps
+        .get("allOf")
+        .and_then(|a| a.as_array())
+        .cloned()
+        .unwrap_or_default();
     for b in &all_of {
-        let Some(bm) = grok_ref(root, b) else { continue };
+        let Some(bm) = grok_ref(root, b) else {
+            continue;
+        };
         if let Some(bp) = bm.get("properties").and_then(|p| p.as_object()) {
             for (k, v) in bp {
                 props.entry(k.clone()).or_insert_with(|| v.clone());
@@ -673,11 +802,15 @@ fn object_root_in(root: &Value, ps: &mut Map<String, Value>, depth: usize) -> bo
             _ => Vec::new(),
         };
         for b in &list {
-            let Some(mut bm) = grok_ref(root, b) else { continue };
+            let Some(mut bm) = grok_ref(root, b) else {
+                continue;
+            };
             if nested_union(&bm) && depth < 8 {
                 object_root_in(root, &mut bm, depth + 1);
             }
-            if bm.get("type").and_then(|t| t.as_str()) != Some("object") && !bm.contains_key("properties") {
+            if bm.get("type").and_then(|t| t.as_str()) != Some("object")
+                && !bm.contains_key("properties")
+            {
                 continue;
             }
             branches.push(bm);
@@ -700,7 +833,11 @@ fn object_root_in(root: &Value, ps: &mut Map<String, Value>, depth: usize) -> bo
                 append_distinct(from.entry(k.clone()).or_default(), &bp[k]);
             }
         }
-        let br: Vec<Value> = b.get("required").and_then(|r| r.as_array()).cloned().unwrap_or_default();
+        let br: Vec<Value> = b
+            .get("required")
+            .and_then(|r| r.as_array())
+            .cloned()
+            .unwrap_or_default();
         if i == 0 {
             common.extend(br);
             continue;
@@ -740,7 +877,9 @@ fn object_root_in(root: &Value, ps: &mut Map<String, Value>, depth: usize) -> bo
 /// 写在前头）；加密的、空的、含别种分片的原样留着。
 fn grok_agent_message(it: &Value) -> Option<Value> {
     let im = it.as_object()?;
-    if im.get("type").and_then(|t| t.as_str()) != Some("agent_message") || im.contains_key("encrypted_content") {
+    if im.get("type").and_then(|t| t.as_str()) != Some("agent_message")
+        || im.contains_key("encrypted_content")
+    {
         return None;
     }
     let parts = im.get("content")?.as_array()?;
@@ -784,7 +923,11 @@ fn shape_body(mut v: Value) -> Value {
     if let Some(Value::Array(tools)) = m.remove("tools") {
         for mut t in tools {
             if let Some(tm) = t.as_object_mut() {
-                let ty = tm.get("type").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let ty = tm
+                    .get("type")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if ty == "namespace" {
                     kept.extend(grok_flat(tm));
                     continue;
@@ -811,7 +954,11 @@ fn shape_body(mut v: Value) -> Value {
         }
         if let Some(Value::Object(tc)) = m.get_mut("tool_choice") {
             flat_call(tc);
-            let ty = tc.get("type").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let ty = tc
+                .get("type")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
             if !GROK_TOOLS.contains(&ty.as_str()) {
                 m.remove("tool_choice");
             }
@@ -865,22 +1012,43 @@ fn namespaced_in(body: &Value) -> HashMap<String, NsTool> {
     let mut named: HashMap<String, NsTool> = HashMap::new();
     let mut add = |space: &str, name: &str| {
         if !space.is_empty() && space != LITE_NAMESPACE && !name.is_empty() {
-            named.insert(flat_name(space, name), NsTool { namespace: space.to_string(), name: name.to_string() });
+            named.insert(
+                flat_name(space, name),
+                NsTool {
+                    namespace: space.to_string(),
+                    name: name.to_string(),
+                },
+            );
         }
     };
-    for t in body.get("tools").and_then(|t| t.as_array()).into_iter().flatten() {
+    for t in body
+        .get("tools")
+        .and_then(|t| t.as_array())
+        .into_iter()
+        .flatten()
+    {
         if t.get("type").and_then(|x| x.as_str()) != Some("namespace") {
             continue;
         }
         let space = t.get("name").and_then(|n| n.as_str()).unwrap_or("");
-        for nt in t.get("tools").and_then(|x| x.as_array()).into_iter().flatten() {
+        for nt in t
+            .get("tools")
+            .and_then(|x| x.as_array())
+            .into_iter()
+            .flatten()
+        {
             if nt.get("type").and_then(|x| x.as_str()) == Some("function") {
                 add(space, nt.get("name").and_then(|n| n.as_str()).unwrap_or(""));
             }
         }
     }
     // input 是字符串（正文单独来）时不解析——Go json.Unmarshal 到列表失败同款。
-    for it in body.get("input").and_then(|i| i.as_array()).into_iter().flatten() {
+    for it in body
+        .get("input")
+        .and_then(|i| i.as_array())
+        .into_iter()
+        .flatten()
+    {
         add(
             it.get("namespace").and_then(|n| n.as_str()).unwrap_or(""),
             it.get("name").and_then(|n| n.as_str()).unwrap_or(""),
@@ -892,12 +1060,15 @@ fn namespaced_in(body: &Value) -> HashMap<String, NsTool> {
 /// Go `nativeSealedAgentPayload`（codex_backend.go :53：
 /// `^gAAAAA[A-Za-z0-9_-]+={0,2}$`）的纯字符串版。
 fn native_sealed_payload(v: &str) -> bool {
-    let Some(rest) = v.strip_prefix("gAAAAA") else { return false };
+    let Some(rest) = v.strip_prefix("gAAAAA") else {
+        return false;
+    };
     let core = rest.trim_end_matches('=');
     if rest.len() - core.len() > 2 || core.is_empty() {
         return false;
     }
-    core.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    core.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// Go `sealedArgs`（grok_namespace.go :232）：参数对象里哪些键的值是 ChatGPT
@@ -919,13 +1090,27 @@ fn sealed_args(args: &str) -> Option<Vec<String>> {
 /// Go `nsTidy.call`（:187）+ `callTo` 的普通 function 分支（responses.go :2163）：
 /// 把应答里的 function_call 翻回 Codex 认的形状。返回是否改过。
 fn restore_call(it: &mut Value, named: &HashMap<String, NsTool>) -> bool {
-    let Some(im) = it.as_object_mut() else { return false };
-    let ty = im.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
+    let Some(im) = it.as_object_mut() else {
+        return false;
+    };
+    let ty = im
+        .get("type")
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .to_string();
     if ty != "function_call" && ty != "custom_tool_call" {
         return false;
     }
-    let name = im.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
-    let ns = im.get("namespace").and_then(|n| n.as_str()).unwrap_or("").to_string();
+    let name = im
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("")
+        .to_string();
+    let ns = im
+        .get("namespace")
+        .and_then(|n| n.as_str())
+        .unwrap_or("")
+        .to_string();
     if !ns.is_empty() {
         // 上游自己带了 namespace（被当 Codex 问的厂商，#3183）：名字已经是对的，
         // 只在缺 `encrypted_function_args` 清单时补——没有清单 Codex 会把参数
@@ -948,7 +1133,9 @@ fn restore_call(it: &mut Value, named: &HashMap<String, NsTool>) -> bool {
     if ty != "function_call" {
         return false;
     }
-    let Some(q) = named.get(&name) else { return false };
+    let Some(q) = named.get(&name) else {
+        return false;
+    };
     let name = q.name.clone();
     let namespace = q.namespace.clone();
     let im = it.as_object_mut().unwrap();
@@ -970,7 +1157,11 @@ fn restore_event(data: &[u8], named: &HashMap<String, NsTool>) -> Option<Vec<u8>
     }
     let whole = ev.get("object").and_then(|o| o.as_str()) == Some("response");
     if ev.get("response").is_some() || whole {
-        let res = if whole { &mut ev } else { ev.get_mut("response").unwrap() };
+        let res = if whole {
+            &mut ev
+        } else {
+            ev.get_mut("response").unwrap()
+        };
         if let Some(out) = res.get_mut("output").and_then(|o| o.as_array_mut()) {
             for item in out.iter_mut() {
                 changed |= restore_call(item, named);
@@ -1006,7 +1197,14 @@ struct NsTidyReader<R: Read> {
 
 impl<R: Read> NsTidyReader<R> {
     fn new(inner: R, named: HashMap<String, NsTool>) -> NsTidyReader<R> {
-        NsTidyReader { inner, named, pending: Vec::new(), ready: Vec::new(), ready_at: 0, eof: false }
+        NsTidyReader {
+            inner,
+            named,
+            pending: Vec::new(),
+            ready: Vec::new(),
+            ready_at: 0,
+            eof: false,
+        }
     }
 
     /// Go `lines`（:111）：一段**以行为单位**的字节逐行翻回。
@@ -1030,7 +1228,12 @@ impl<R: Read> NsTidyReader<R> {
                 }
             };
             // Go bytes.TrimRight(line, "\r\n")
-            let body_end = line.len() - line.iter().rev().take_while(|&&c| c == b'\r' || c == b'\n').count();
+            let body_end = line.len()
+                - line
+                    .iter()
+                    .rev()
+                    .take_while(|&&c| c == b'\r' || c == b'\n')
+                    .count();
             let body = &line[..body_end];
             let Some(data) = body.strip_prefix(b"data:") else {
                 out.extend_from_slice(line);
@@ -1084,7 +1287,12 @@ impl<R: Read> Read for NsTidyReader<R> {
             }
             self.pending.extend_from_slice(&chunk[..n]);
             // 只处理到最后一行行尾（Go write 的 LastIndexByte('\n')），半行留着。
-            let cut = self.pending.iter().rposition(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+            let cut = self
+                .pending
+                .iter()
+                .rposition(|&b| b == b'\n')
+                .map(|i| i + 1)
+                .unwrap_or(0);
             if cut > 0 {
                 let head: Vec<u8> = self.pending.drain(..cut).collect();
                 self.ready = self.tidy_lines(&head);
@@ -1094,7 +1302,10 @@ impl<R: Read> Read for NsTidyReader<R> {
 }
 
 /// named 为空 = 没有可翻的调用，裸管直通（零开销）。
-fn tidy(reader: impl Read + Send + 'static, named: &HashMap<String, NsTool>) -> Box<dyn Read + Send> {
+fn tidy(
+    reader: impl Read + Send + 'static,
+    named: &HashMap<String, NsTool>,
+) -> Box<dyn Read + Send> {
     if named.is_empty() {
         Box::new(reader)
     } else {
@@ -1132,7 +1343,11 @@ fn ecma_class_for_rust(pat: &str) -> String {
             out.extend_from_slice(b"\\[");
             i += 1;
             continue;
-        } else if class && (c == b'&' || c == b'-' || c == b'~') && i + 1 < src.len() && src[i + 1] == c {
+        } else if class
+            && (c == b'&' || c == b'-' || c == b'~')
+            && i + 1 < src.len()
+            && src[i + 1] == c
+        {
             out.push(c);
             out.push(b'\\');
             out.push(c);
@@ -1165,16 +1380,29 @@ fn fix_tool_patterns(node: &mut Value) {
                             }
                         }
                         match k.as_str() {
-                            "properties" | "$defs" | "definitions" | "dependentSchemas" | "patternProperties" => {
+                            "properties" | "$defs" | "definitions" | "dependentSchemas"
+                            | "patternProperties" => {
                                 if let Value::Object(pm) = val {
                                     for (_, sv) in pm.iter_mut() {
                                         walk(sv, true);
                                     }
                                 }
                             }
-                            "items" | "additionalProperties" | "contains" | "propertyNames" | "not"
-                            | "if" | "then" | "else" | "allOf" | "anyOf" | "oneOf" | "prefixItems"
-                            | "unevaluatedProperties" | "unevaluatedItems" | "contentSchema" => {
+                            "items"
+                            | "additionalProperties"
+                            | "contains"
+                            | "propertyNames"
+                            | "not"
+                            | "if"
+                            | "then"
+                            | "else"
+                            | "allOf"
+                            | "anyOf"
+                            | "oneOf"
+                            | "prefixItems"
+                            | "unevaluatedProperties"
+                            | "unevaluatedItems"
+                            | "contentSchema" => {
                                 walk(val, true);
                             }
                             _ => {}
@@ -1207,7 +1435,10 @@ fn clamp_effort(effort: &str, levels: &[String]) -> Option<String> {
     }
     let rank = |w: &str| super::effort::LEVELS.iter().position(|l| *l == w);
     let want = rank(effort)?;
-    let mut ranked: Vec<(usize, &String)> = levels.iter().filter_map(|l| rank(l).map(|r| (r, l))).collect();
+    let mut ranked: Vec<(usize, &String)> = levels
+        .iter()
+        .filter_map(|l| rank(l).map(|r| (r, l)))
+        .collect();
     ranked.sort();
     let pick = ranked
         .iter()
@@ -1237,13 +1468,20 @@ fn anthropic_error(status: u16, message: &str) -> Reply {
         s if s >= 500 => "api_error",
         _ => "invalid_request_error",
     };
-    Reply::json(status, &json!({ "type": "error", "error": { "type": ty, "message": message } }))
+    Reply::json(
+        status,
+        &json!({ "type": "error", "error": { "type": ty, "message": message } }),
+    )
 }
 
 fn vendor_message(status: u16, body: &[u8]) -> String {
     if let Ok(v) = serde_json::from_slice::<Value>(body) {
         for p in ["/error/message", "/message", "/detail", "/error"] {
-            if let Some(s) = v.pointer(p).and_then(|m| m.as_str()).filter(|s| !s.is_empty()) {
+            if let Some(s) = v
+                .pointer(p)
+                .and_then(|m| m.as_str())
+                .filter(|s| !s.is_empty())
+            {
                 return s.to_string();
             }
         }
@@ -1263,8 +1501,12 @@ fn aggregate_sse(reader: impl Read) -> Result<Value, String> {
     let mut final_response: Option<Value> = None;
     for line in BufReader::new(reader).lines() {
         let Ok(line) = line else { break };
-        let Some(data) = line.strip_prefix("data:") else { continue };
-        let Ok(event) = serde_json::from_str::<Value>(data.trim()) else { continue };
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let Ok(event) = serde_json::from_str::<Value>(data.trim()) else {
+            continue;
+        };
         match event.get("type").and_then(|t| t.as_str()).unwrap_or("") {
             "response.output_item.done" => {
                 if let Some(item) = event.get("item") {
@@ -1296,7 +1538,11 @@ fn aggregate_sse(reader: impl Read) -> Result<Value, String> {
     let Some(mut response) = final_response else {
         return Err("Grok stream ended before response.completed".into());
     };
-    let empty_output = response.get("output").and_then(|o| o.as_array()).map(|o| o.is_empty()).unwrap_or(true);
+    let empty_output = response
+        .get("output")
+        .and_then(|o| o.as_array())
+        .map(|o| o.is_empty())
+        .unwrap_or(true);
     if empty_output && !items.is_empty() {
         response["output"] = Value::Array(items);
     }
@@ -1305,15 +1551,23 @@ fn aggregate_sse(reader: impl Read) -> Result<Value, String> {
 
 /// 发到 `{base}/responses`。成功 = 200 的响应（流）；上游 4xx/5xx 与传输失败
 /// 变成 `(status, body)` 由调用方按各自协议说。
-fn forward(account: &Account, body: &Value, window: Option<u64>) -> Result<ureq::Response, (u16, Vec<u8>)> {
+fn forward(
+    account: &Account,
+    body: &Value,
+    window: Option<u64>,
+) -> Result<ureq::Response, (u16, Vec<u8>)> {
     let url = format!("{}/responses", base_url().trim_end_matches('/'));
     let payload = serde_json::to_vec(body).unwrap_or_default();
-    let mut request = sign(super::outbound_agent().post(&url), account, &client_version())
-        .set("Content-Type", "application/json")
-        .set("Accept", "text/event-stream")
-        // Grok Build 的循环检查：复读的回复 ~1K token 后就停，不跑满输出上限。
-        .set("x-grok-doom-loop-check", "1024")
-        .set("x-grok-exact-repetition-check", "64");
+    let mut request = sign(
+        super::outbound_agent().post(&url),
+        account,
+        &client_version(),
+    )
+    .set("Content-Type", "application/json")
+    .set("Accept", "text/event-stream")
+    // Grok Build 的循环检查：复读的回复 ~1K token 后就停，不跑满输出上限。
+    .set("x-grok-doom-loop-check", "1024")
+    .set("x-grok-exact-repetition-check", "64");
     if let Some(w) = window {
         request = request.set("x-grok-context-window", &w.to_string());
     }
@@ -1343,7 +1597,11 @@ fn finalize_body(mut v: Value, bare: &str) -> Value {
         m.insert("stream".into(), Value::Bool(true));
         m.entry("store").or_insert(Value::Bool(false));
         // 档位夹进模型自报的菜单
-        if let Some(effort) = m.get("reasoning").and_then(|r| r.get("effort")).and_then(|e| e.as_str()).map(String::from)
+        if let Some(effort) = m
+            .get("reasoning")
+            .and_then(|r| r.get("effort"))
+            .and_then(|e| e.as_str())
+            .map(String::from)
         {
             if let Some(fixed) = clamp_effort(&effort, &levels_of_bare(bare)) {
                 m["reasoning"]["effort"] = Value::String(fixed);
@@ -1388,7 +1646,8 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
     let mut with = providers.clone();
     with.push(synthetic);
     let known2 = |id: &str| knows(id) || gateway.catalog.knows(&with, id);
-    let (provider, bare_asked, levels) = super::groups::resolve_with(&groups, &with, &asked, &known2)?;
+    let (provider, bare_asked, levels) =
+        super::groups::resolve_with(&groups, &with, &asked, &known2)?;
     if provider != GROK_ID {
         return None;
     }
@@ -1408,8 +1667,14 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
             .unwrap_or_else(|| request.body.clone())
     };
     let body: Value = serde_json::from_slice(&body_bytes).unwrap_or(parsed);
-    let client_wants_stream = body.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
-    let include_usage = body.pointer("/stream_options/include_usage").and_then(|u| u.as_bool()).unwrap_or(false);
+    let client_wants_stream = body
+        .get("stream")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false);
+    let include_usage = body
+        .pointer("/stream_options/include_usage")
+        .and_then(|u| u.as_bool())
+        .unwrap_or(false);
     let (bare, window) = split_window(&bare_asked);
 
     // 入站协议 → Responses 请求体
@@ -1474,7 +1739,10 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
                 }
             } else {
                 match aggregate_sse(tidy(response.into_reader(), &named)) {
-                    Ok(v) => Reply::json(200, &super::translate::responses_object_to_chat(&v, &asked, &back)),
+                    Ok(v) => Reply::json(
+                        200,
+                        &super::translate::responses_object_to_chat(&v, &asked, &back),
+                    ),
                     Err(e) => error_reply(502, &e),
                 }
             }
@@ -1489,7 +1757,10 @@ pub fn intercept(gateway: &super::Gateway, request: &Request, proto: Proto) -> O
                 Reply::Stream {
                     status: 200,
                     content_type: "text/event-stream".into(),
-                    reader: Box::new(super::messages::AnthropicSseTranslator::new(Box::new(chat), &asked)),
+                    reader: Box::new(super::messages::AnthropicSseTranslator::new(
+                        Box::new(chat),
+                        &asked,
+                    )),
                 }
             } else {
                 match aggregate_sse(tidy(response.into_reader(), &named)) {
@@ -1543,7 +1814,8 @@ mod tests {
             let port = listener.local_addr().unwrap().port();
             let hits = Arc::new(AtomicUsize::new(0));
             let seen: Arc<Mutex<Vec<Recorded>>> = Arc::new(Mutex::new(Vec::new()));
-            let routes: Arc<Mutex<Vec<(String, u16, String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+            let routes: Arc<Mutex<Vec<(String, u16, String, String)>>> =
+                Arc::new(Mutex::new(Vec::new()));
             let (h, s, r) = (hits.clone(), seen.clone(), routes.clone());
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
@@ -1554,7 +1826,11 @@ mod tests {
                         let mut reader = BufReader::new(stream.try_clone().unwrap());
                         let mut request_line = String::new();
                         reader.read_line(&mut request_line).ok();
-                        let path = request_line.split_whitespace().nth(1).unwrap_or("").to_string();
+                        let path = request_line
+                            .split_whitespace()
+                            .nth(1)
+                            .unwrap_or("")
+                            .to_string();
                         let mut headers = HashMap::new();
                         loop {
                             let mut line = String::new();
@@ -1569,7 +1845,10 @@ mod tests {
                                 headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
                             }
                         }
-                        let len: usize = headers.get("content-length").and_then(|l| l.parse().ok()).unwrap_or(0);
+                        let len: usize = headers
+                            .get("content-length")
+                            .and_then(|l| l.parse().ok())
+                            .unwrap_or(0);
                         let mut body = vec![0u8; len];
                         reader.read_exact(&mut body).ok();
                         let reply = r
@@ -1579,7 +1858,11 @@ mod tests {
                             .find(|(prefix, ..)| path.starts_with(prefix.as_str()))
                             .map(|(_, status, ct, b)| (*status, ct.clone(), b.clone()))
                             .unwrap_or((404, "text/plain".into(), "no route".into()));
-                        s.lock().unwrap().push(Recorded { path, headers, body });
+                        s.lock().unwrap().push(Recorded {
+                            path,
+                            headers,
+                            body,
+                        });
                         let mut stream = stream;
                         let out = format!(
                             "HTTP/1.1 {} X\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -1592,13 +1875,23 @@ mod tests {
                     });
                 }
             });
-            Mock { base: format!("http://127.0.0.1:{port}/v1"), hits, seen, routes }
+            Mock {
+                base: format!("http://127.0.0.1:{port}/v1"),
+                hits,
+                seen,
+                routes,
+            }
         }
 
         fn route(&self, prefix: &str, status: u16, content_type: &str, body: &str) {
             let mut routes = self.routes.lock().unwrap();
             routes.retain(|(p, ..)| p != prefix);
-            routes.push((prefix.to_string(), status, content_type.to_string(), body.to_string()));
+            routes.push((
+                prefix.to_string(),
+                status,
+                content_type.to_string(),
+                body.to_string(),
+            ));
         }
 
         fn hits(&self) -> usize {
@@ -1607,7 +1900,11 @@ mod tests {
 
         fn last(&self, path_prefix: &str) -> (HashMap<String, String>, Vec<u8>) {
             let seen = self.seen.lock().unwrap();
-            let r = seen.iter().rev().find(|r| r.path.starts_with(path_prefix)).expect("request seen");
+            let r = seen
+                .iter()
+                .rev()
+                .find(|r| r.path.starts_with(path_prefix))
+                .expect("request seen");
             (r.headers.clone(), r.body.clone())
         }
     }
@@ -1626,7 +1923,9 @@ mod tests {
     }
 
     fn world(providers_json: &str, base: &str) -> (Gateway, World) {
-        let lock = crate::engine_gateway::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let lock = crate::engine_gateway::TEST_SANDBOX_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         reset_for_tests();
         let dir = std::env::temp_dir().join(format!(
             "marionette-engine-grok-{}-{}",
@@ -1636,8 +1935,10 @@ mod tests {
         std::fs::create_dir_all(dir.join("magpie")).unwrap();
         std::fs::create_dir_all(dir.join("home")).unwrap();
         std::fs::write(dir.join("magpie").join("providers.json"), providers_json).unwrap();
-        *TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) =
-            Some(Seam { base: base.to_string(), home: dir.join("home") });
+        *TEST_SEAM.lock().unwrap_or_else(|p| p.into_inner()) = Some(Seam {
+            base: base.to_string(),
+            home: dir.join("home"),
+        });
         let prior = std::env::var("XDG_CONFIG_HOME").ok();
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         let gateway = Gateway::open().expect("gateway");
@@ -1662,7 +1963,11 @@ mod tests {
                 "refresh_token": "never-used-refresh", "expires_at": rfc3339(expires_in),
             }
         });
-        std::fs::write(world.dir.join("home").join("auth.json"), serde_json::to_vec(&auth).unwrap()).unwrap();
+        std::fs::write(
+            world.dir.join("home").join("auth.json"),
+            serde_json::to_vec(&auth).unwrap(),
+        )
+        .unwrap();
     }
 
     const MODELS_BODY: &str = r#"{"models":{
@@ -1675,20 +1980,37 @@ mod tests {
     }}"#;
 
     fn post(path: &str, body: &Value) -> Request {
-        Request { method: "POST".into(), path: path.into(), headers: Vec::new(), body: serde_json::to_vec(body).unwrap() }
+        Request {
+            method: "POST".into(),
+            path: path.into(),
+            headers: Vec::new(),
+            body: serde_json::to_vec(body).unwrap(),
+        }
     }
 
     fn get(path: &str) -> Request {
-        Request { method: "GET".into(), path: path.into(), headers: Vec::new(), body: Vec::new() }
+        Request {
+            method: "GET".into(),
+            path: path.into(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
     }
 
     fn reply_json(reply: Reply) -> (u16, Value) {
         match reply {
-            Reply::Json { status, body } => (status, serde_json::from_slice(&body).unwrap_or(Value::Null)),
-            Reply::Stream { status, mut reader, .. } => {
+            Reply::Json { status, body } => {
+                (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+            }
+            Reply::Stream {
+                status, mut reader, ..
+            } => {
                 let mut buf = Vec::new();
                 reader.read_to_end(&mut buf).unwrap();
-                (status, Value::String(String::from_utf8_lossy(&buf).into_owned()))
+                (
+                    status,
+                    Value::String(String::from_utf8_lossy(&buf).into_owned()),
+                )
             }
         }
     }
@@ -1711,7 +2033,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert!(listed_rows(&[]).is_empty());
         assert!(quota_row(&[]).is_none());
         let reply = super::super::routes::route(
-            &post("/v1/responses", &json!({"model":"grok/grok-4.7","input":"hi"})),
+            &post(
+                "/v1/responses",
+                &json!({"model":"grok/grok-4.7","input":"hi"}),
+            ),
             &gateway,
         );
         assert_eq!(reply_json(reply).0, 404);
@@ -1753,11 +2078,17 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         // hidden 不出；多窗口模型多一行 @500k
         assert!(ids.contains(&"grok/grok-4.7") && ids.contains(&"grok/grok-4.7@500k"));
         assert!(ids.contains(&"grok/grok-4.6") && !ids.contains(&"grok/grok-secret"));
-        let wide = data.iter().find(|r| r["id"] == "grok/grok-4.7@500k").unwrap();
+        let wide = data
+            .iter()
+            .find(|r| r["id"] == "grok/grok-4.7@500k")
+            .unwrap();
         assert_eq!(wide["context_window"], 500000);
         let base_row = data.iter().find(|r| r["id"] == "grok/grok-4.7").unwrap();
         assert_eq!(base_row["context_window"], 256000);
-        assert_eq!(base_row["reasoning_levels"], json!(["xhigh", "high", "low"]));
+        assert_eq!(
+            base_row["reasoning_levels"],
+            json!(["xhigh", "high", "low"])
+        );
         // 签名头
         let (headers, _) = mock.last("/v1/models");
         assert_eq!(headers["authorization"], "Bearer tok-secret");
@@ -1784,7 +2115,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     fn failing_grok_does_not_hide_other_providers() {
         let mock = Mock::start(); // 没有 route → /models 404
         let vendor = Mock::start();
-        vendor.route("/v1/models", 200, "application/json", r#"{"data":[{"id":"m1","context_window":1000}]}"#);
+        vendor.route(
+            "/v1/models",
+            200,
+            "application/json",
+            r#"{"data":[{"id":"m1","context_window":1000}]}"#,
+        );
         let providers = format!(
             r#"{{"providers":[{{"id":"acme","name":"Acme","key":"k","chat":"{}"}}]}}"#,
             vendor.base
@@ -1792,7 +2128,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let (gateway, w) = world(&providers, &mock.base);
         write_auth(&w, "tok", "me@example.test", 3600);
         let body = reply_json(super::super::routes::route(&get("/v1/models"), &gateway)).1;
-        let ids: Vec<&str> = body["data"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap()).collect();
+        let ids: Vec<&str> = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
         assert_eq!(ids, vec!["acme/m1"]);
     }
 
@@ -1846,14 +2187,20 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_auth(&w, "tok", "me@example.test", 3600);
         let (status, resp) = reply_json(super::super::routes::route(
-            &post("/v1/responses", &json!({"model":"grok/grok-4.7","stream":false,"input":"hello"})),
+            &post(
+                "/v1/responses",
+                &json!({"model":"grok/grok-4.7","stream":false,"input":"hello"}),
+            ),
             &gateway,
         ));
         assert_eq!(status, 200);
         assert_eq!(resp["id"], "r1");
         assert_eq!(resp["output"][0]["content"][0]["text"], "hi");
         let (_, body) = mock.last("/v1/responses");
-        assert_eq!(serde_json::from_slice::<Value>(&body).unwrap()["stream"], true);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap()["stream"],
+            true
+        );
     }
 
     #[test]
@@ -1905,37 +2252,64 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_auth(&w, "tok", "me@example.test", 3600);
         let req = json!({"model":"grok/grok-4.7","max_tokens":64,"messages":[{"role":"user","content":"hello"}]});
-        let (status, resp) = reply_json(super::super::routes::route(&post("/v1/messages", &req), &gateway));
+        let (status, resp) = reply_json(super::super::routes::route(
+            &post("/v1/messages", &req),
+            &gateway,
+        ));
         assert_eq!(status, 200);
         assert_eq!(resp["type"], "message");
         assert_eq!(resp["content"][0]["text"], "hi");
         let mut streamed = req.clone();
         streamed["stream"] = json!(true);
-        let (status, text) = reply_json(super::super::routes::route(&post("/v1/messages", &streamed), &gateway));
+        let (status, text) = reply_json(super::super::routes::route(
+            &post("/v1/messages", &streamed),
+            &gateway,
+        ));
         assert_eq!(status, 200);
         let text = text.as_str().unwrap().to_string();
-        assert!(text.contains("message_start") && text.contains("text_delta") && text.contains("message_stop"));
+        assert!(
+            text.contains("message_start")
+                && text.contains("text_delta")
+                && text.contains("message_stop")
+        );
     }
 
     #[test]
     fn upstream_error_status_is_passed_through_per_protocol() {
         let mock = Mock::start();
-        mock.route("/v1/responses", 402, "application/json", r#"{"error":{"message":"Grok Build usage balance exhausted"}}"#);
+        mock.route(
+            "/v1/responses",
+            402,
+            "application/json",
+            r#"{"error":{"message":"Grok Build usage balance exhausted"}}"#,
+        );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_auth(&w, "tok", "me@example.test", 3600);
         let (status, body) = reply_json(super::super::routes::route(
-            &post("/v1/responses", &json!({"model":"grok/grok-4.7","input":"x"})),
+            &post(
+                "/v1/responses",
+                &json!({"model":"grok/grok-4.7","input":"x"}),
+            ),
             &gateway,
         ));
         assert_eq!(status, 402);
-        assert_eq!(body["error"]["message"], "Grok Build usage balance exhausted");
+        assert_eq!(
+            body["error"]["message"],
+            "Grok Build usage balance exhausted"
+        );
         let (status, body) = reply_json(super::super::routes::route(
-            &post("/v1/messages", &json!({"model":"grok/grok-4.7","max_tokens":8,"messages":[{"role":"user","content":"x"}]})),
+            &post(
+                "/v1/messages",
+                &json!({"model":"grok/grok-4.7","max_tokens":8,"messages":[{"role":"user","content":"x"}]}),
+            ),
             &gateway,
         ));
         assert_eq!(status, 402);
         assert_eq!(body["type"], "error");
-        assert_eq!(body["error"]["message"], "Grok Build usage balance exhausted");
+        assert_eq!(
+            body["error"]["message"],
+            "Grok Build usage balance exhausted"
+        );
     }
 
     #[test]
@@ -1947,7 +2321,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert!(synthetic_provider().is_some());
         for path in ["/v1/responses", "/v1/chat/completions"] {
             let (status, body) = reply_json(super::super::routes::route(
-                &post(path, &json!({"model":"grok/grok-4.7","input":"x","messages":[{"role":"user","content":"x"}]})),
+                &post(
+                    path,
+                    &json!({"model":"grok/grok-4.7","input":"x","messages":[{"role":"user","content":"x"}]}),
+                ),
                 &gateway,
             ));
             assert_eq!(status, 401, "{path}");
@@ -1955,7 +2332,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
             assert!(!body.to_string().contains("tok-secret"));
         }
         let (status, body) = reply_json(super::super::routes::route(
-            &post("/v1/messages", &json!({"model":"grok/grok-4.7","max_tokens":8,"messages":[{"role":"user","content":"x"}]})),
+            &post(
+                "/v1/messages",
+                &json!({"model":"grok/grok-4.7","max_tokens":8,"messages":[{"role":"user","content":"x"}]}),
+            ),
             &gateway,
         ));
         assert_eq!(status, 401);
@@ -1970,8 +2350,18 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let mock = Mock::start();
         mock.route("/v1/models", 200, "application/json", MODELS_BODY);
         let vendor = Mock::start();
-        vendor.route("/v1/models", 200, "application/json", r#"{"data":[{"id":"real","context_window":5}]}"#);
-        vendor.route("/v1/responses", 200, "application/json", r#"{"id":"from-real"}"#);
+        vendor.route(
+            "/v1/models",
+            200,
+            "application/json",
+            r#"{"data":[{"id":"real","context_window":5}]}"#,
+        );
+        vendor.route(
+            "/v1/responses",
+            200,
+            "application/json",
+            r#"{"id":"from-real"}"#,
+        );
         let providers = format!(
             r#"{{"providers":[{{"id":"grok","name":"Mine","key":"k","chat":"{0}","responses":"{0}"}}]}}"#,
             vendor.base
@@ -1979,7 +2369,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let (gateway, w) = world(&providers, &mock.base);
         write_auth(&w, "tok", "me@example.test", 3600);
         let body = reply_json(super::super::routes::route(&get("/v1/models"), &gateway)).1;
-        let ids: Vec<&str> = body["data"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap()).collect();
+        let ids: Vec<&str> = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
         assert_eq!(ids, vec!["grok/real"]);
         let (status, resp) = reply_json(super::super::routes::route(
             &post("/v1/responses", &json!({"model":"grok/real","input":"x"})),
@@ -1988,7 +2383,11 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert_eq!(status, 200);
         assert_eq!(resp["id"], "from-real");
         assert_eq!(mock.hits(), 0);
-        assert!(quota_row(&[Provider { id: "grok".into(), ..Default::default() }]).is_none());
+        assert!(quota_row(&[Provider {
+            id: "grok".into(),
+            ..Default::default()
+        }])
+        .is_none());
     }
 
     #[test]
@@ -2002,7 +2401,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         write_auth(&w, "tok", "me@example.test", 3600);
         let _ = super::super::routes::route(&get("/v1/models"), &gateway);
         let (status, _) = reply_json(super::super::routes::route(
-            &post("/v1/responses", &json!({"model":"gpt-6.1-sol","stream":true,"input":"x","reasoning":{"effort":"low"}})),
+            &post(
+                "/v1/responses",
+                &json!({"model":"gpt-6.1-sol","stream":true,"input":"x","reasoning":{"effort":"low"}}),
+            ),
             &gateway,
         ));
         assert_eq!(status, 200);
@@ -2027,7 +2429,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_auth(&w, "tok-secret", "me@example.test", 3600);
         let rows = super::super::quotas::quota_entries(&gateway, true);
-        let row = rows.iter().find(|r| r["provider"] == "grok").expect("grok row");
+        let row = rows
+            .iter()
+            .find(|r| r["provider"] == "grok")
+            .expect("grok row");
         assert_eq!(row["name"], "Grok (SuperGrok)");
         assert_eq!(row["kind"], "subscription");
         assert_eq!(row["user"], "me@example.test");
@@ -2039,7 +2444,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert_eq!(windows[0]["resetsAt"], "2030-01-08T00:00:00Z");
         let (headers, _) = mock.last("/v1/billing");
         assert_eq!(headers["authorization"], "Bearer tok-secret");
-        assert!(mock.seen.lock().unwrap().iter().any(|r| r.path.contains("format=credits")));
+        assert!(mock
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.path.contains("format=credits")));
         // 失败安静跳过
         mock.route("/v1/billing", 500, "text/plain", "x");
         let rows = super::super::quotas::quota_entries(&gateway, true);
@@ -2050,8 +2460,14 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
     fn window_suffix_roundtrip() {
         assert_eq!(window_suffix(500_000), "500k");
         assert_eq!(window_suffix(131_072), "131072");
-        assert_eq!(split_window("grok-4.7@500k"), ("grok-4.7".to_string(), Some(500_000)));
-        assert_eq!(split_window("grok-4.7@131072"), ("grok-4.7".to_string(), Some(131_072)));
+        assert_eq!(
+            split_window("grok-4.7@500k"),
+            ("grok-4.7".to_string(), Some(500_000))
+        );
+        assert_eq!(
+            split_window("grok-4.7@131072"),
+            ("grok-4.7".to_string(), Some(131_072))
+        );
         assert_eq!(split_window("grok-4.7"), ("grok-4.7".to_string(), None));
         assert_eq!(split_window("x@y"), ("x@y".to_string(), None));
         assert_eq!(split_window("@5k"), ("@5k".to_string(), None));
@@ -2079,7 +2495,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let tools = v["tools"].as_array().unwrap();
         assert_eq!(tools[0]["name"], "collab__spawn");
         assert_eq!(tools.len(), 2); // freeform 被丢
-        // 根 anyOf → 普通 object；共同必填保留
+                                    // 根 anyOf → 普通 object；共同必填保留
         assert_eq!(tools[1]["parameters"]["type"], "object");
         assert!(tools[1]["parameters"].get("anyOf").is_none());
         assert_eq!(tools[1]["parameters"]["required"], json!(["k"]));
@@ -2094,7 +2510,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         assert_eq!(input[2]["role"], "user");
         assert_eq!(input[2]["content"][0]["text"], "From lead to w\n\n");
         assert_eq!(input[3]["type"], "agent_message"); // 加密的原样
-        // 没有工具：tool_choice 去掉
+                                                       // 没有工具：tool_choice 去掉
         let v = shape_body(json!({"tool_choice":"auto","input":"x"}));
         assert!(v.get("tool_choice").is_none());
     }
@@ -2125,7 +2541,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
 
     #[test]
     fn clamp_effort_cases() {
-        let menu: Vec<String> = ["xhigh", "high", "low"].iter().map(|s| s.to_string()).collect();
+        let menu: Vec<String> = ["xhigh", "high", "low"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert_eq!(clamp_effort("max", &menu).as_deref(), Some("xhigh"));
         assert_eq!(clamp_effort("medium", &menu).as_deref(), Some("low"));
         assert_eq!(clamp_effort("high", &menu), None);
@@ -2186,7 +2605,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let sent: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(sent["tools"][0]["name"], "collab__spawn");
         assert!(sent["tools"][0].get("type").is_none() || sent["tools"][0]["type"] != "namespace");
-        let fc = sent["input"].as_array().unwrap().iter().find(|i| i["type"] == "function_call").unwrap();
+        let fc = sent["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["type"] == "function_call")
+            .unwrap();
         assert_eq!(fc["name"], "collab__spawn");
         assert!(fc.get("namespace").is_none());
     }
@@ -2211,13 +2635,23 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         // 事件帧里的调用也翻回（output_item.done 与 response.completed 各一）
         let frames: Vec<Value> = text
             .split("\n\n")
-            .filter_map(|b| b.lines().find_map(|l| l.strip_prefix("data: ")).and_then(|d| serde_json::from_str(d).ok()))
+            .filter_map(|b| {
+                b.lines()
+                    .find_map(|l| l.strip_prefix("data: "))
+                    .and_then(|d| serde_json::from_str(d).ok())
+            })
             .collect();
-        let done = frames.iter().find(|f| f["type"] == "response.output_item.done").unwrap();
+        let done = frames
+            .iter()
+            .find(|f| f["type"] == "response.output_item.done")
+            .unwrap();
         assert_eq!(done["item"]["name"], "spawn");
         assert_eq!(done["item"]["namespace"], "collab");
         assert_eq!(done["item"]["encrypted_function_args"], json!([]));
-        let completed = frames.iter().find(|f| f["type"] == "response.completed").unwrap();
+        let completed = frames
+            .iter()
+            .find(|f| f["type"] == "response.completed")
+            .unwrap();
         assert_eq!(completed["response"]["output"][0]["name"], "spawn");
         assert_eq!(completed["response"]["output"][0]["namespace"], "collab");
         // 别的行原样过
@@ -2233,8 +2667,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
             "/v1/responses",
             200,
             "text/event-stream",
-            &ns_sse(json!({"type":"function_call","call_id":"c2","namespace":"collab","name":"spawn",
-                           "arguments":"{\"ztask\":\"plain\",\"atask\":\"gAAAAABCdef123-_\"}"})),
+            &ns_sse(
+                json!({"type":"function_call","call_id":"c2","namespace":"collab","name":"spawn",
+                           "arguments":"{\"ztask\":\"plain\",\"atask\":\"gAAAAABCdef123-_\"}"}),
+            ),
         );
         let (gateway, w) = world(r#"{"providers":[]}"#, &mock.base);
         write_auth(&w, "tok", "me@example.test", 3600);
@@ -2366,6 +2802,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"
         let _ = super::super::routes::route(&post("/v1/chat/completions", &chat), &gateway);
         let (_, body) = mock.last("/v1/responses");
         let sent: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(sent["tools"][0]["parameters"]["properties"]["cls"]["pattern"], "^[^\\s\\[\\]]+$");
+        assert_eq!(
+            sent["tools"][0]["parameters"]["properties"]["cls"]["pattern"],
+            "^[^\\s\\[\\]]+$"
+        );
     }
 }

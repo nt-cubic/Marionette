@@ -81,7 +81,15 @@ pub(crate) fn tool_of_call(name: &str) -> String {
 
 /// Antigravity 的调用 id 只收这些字符（unsafeToolID，:35），其余换 `_`。
 fn tool_id(id: &str) -> String {
-    id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect()
+    id.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 // =====================================================================
@@ -105,7 +113,11 @@ fn is_set(v: Option<&Value>) -> bool {
 pub(crate) fn plain_schema(raw: &Value) -> Value {
     if !raw.is_object() {
         // Go：解不进 map 就原样返回；`null` 解得进去、得空表 → `{}`。
-        return if raw.is_null() { json!({}) } else { raw.clone() };
+        return if raw.is_null() {
+            json!({})
+        } else {
+            raw.clone()
+        };
     }
     let mut defs = HashMap::new();
     for key in ["$defs", "definitions"] {
@@ -130,7 +142,11 @@ impl<'a> Schema<'a> {
                 let token = token.replace("~1", "/").replace("~0", "~");
                 cur = match cur {
                     Some(Value::Object(m)) => m.get(&token),
-                    Some(Value::Array(a)) => token.parse::<usize>().ok().filter(|n| *n < a.len()).and_then(|n| a.get(n)),
+                    Some(Value::Array(a)) => token
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|n| *n < a.len())
+                        .and_then(|n| a.get(n)),
                     _ => return None,
                 };
                 // 指针指到的地方什么都没有：最后一段当 `$defs` 的名字再找一次。
@@ -161,8 +177,13 @@ impl<'a> Schema<'a> {
     /// 说的算数；null 分支 = 可空；对象上，只有分支里声明过的字段并进 properties
     /// （第一个声明它的分支给的），每个非 null 分支都要求的字段才 required。
     fn fold_union(&self, x: &Map<String, Value>) -> Map<String, Value> {
-        let mut out: Map<String, Value> = x.iter().filter(|(k, _)| k.as_str() != "anyOf" && k.as_str() != "oneOf").map(|(k, v)| (k.clone(), v.clone())).collect();
-        let mut object = x.get("type").and_then(Value::as_str) == Some("object") || is_set(x.get("properties"));
+        let mut out: Map<String, Value> = x
+            .iter()
+            .filter(|(k, _)| k.as_str() != "anyOf" && k.as_str() != "oneOf")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let mut object =
+            x.get("type").and_then(Value::as_str) == Some("object") || is_set(x.get("properties"));
         if let Some(ts) = x.get("type").and_then(Value::as_array) {
             object = object || ts.iter().any(|t| t.as_str() == Some("object"));
         }
@@ -173,9 +194,13 @@ impl<'a> Schema<'a> {
         let mut common: Vec<String> = Vec::new();
         let mut branches = 0usize;
         for k in ["anyOf", "oneOf"] {
-            let Some(alts) = x.get(k).and_then(Value::as_array) else { continue };
+            let Some(alts) = x.get(k).and_then(Value::as_array) else {
+                continue;
+            };
             for a in alts {
-                let Some(m) = self.resolve(Some(a)) else { continue };
+                let Some(m) = self.resolve(Some(a)) else {
+                    continue;
+                };
                 if m.get("type").and_then(Value::as_str) == Some("null") {
                     out.insert("nullable".into(), Value::Bool(true));
                     continue;
@@ -203,7 +228,10 @@ impl<'a> Schema<'a> {
             }
             let req = required_names(x.get("required"));
             if req.len() + common.len() > 0 {
-                out.insert("required".into(), json!(distinct_names(req.into_iter().chain(common).collect())));
+                out.insert(
+                    "required".into(),
+                    json!(distinct_names(req.into_iter().chain(common).collect())),
+                );
             }
         }
         out
@@ -243,7 +271,9 @@ fn schema_type_of(m: &Map<String, Value>) -> &str {
 fn one_says(members: &[Value]) -> Option<&Map<String, Value>> {
     let mut one: Option<&Map<String, Value>> = None;
     for m in members {
-        let Some(s) = m.as_object().filter(|s| !s.is_empty()) else { continue };
+        let Some(s) = m.as_object().filter(|s| !s.is_empty()) else {
+            continue;
+        };
         if let Some(previous) = one {
             if previous != s {
                 return None;
@@ -254,7 +284,13 @@ fn one_says(members: &[Value]) -> Option<&Map<String, Value>> {
     one
 }
 
-fn walk(v: &Value, depth: usize, path: &str, schema: &Schema<'_>, expanding: &mut HashSet<String>) -> Value {
+fn walk(
+    v: &Value,
+    depth: usize,
+    path: &str,
+    schema: &Schema<'_>,
+    expanding: &mut HashSet<String>,
+) -> Value {
     match v {
         // 布尔 schema：true = 任意值（`{}`），false = 没有值（nil，持有它的地方
         // 把它留掉）。Google 的 Schema 只有对象，布尔整个请求被拒（:1211）。
@@ -265,7 +301,11 @@ fn walk(v: &Value, depth: usize, path: &str, schema: &Schema<'_>, expanding: &mu
                 Value::Null
             }
         }
-        Value::Array(x) => Value::Array(x.iter().map(|e| walk(e, depth, path, schema, expanding)).collect()),
+        Value::Array(x) => Value::Array(
+            x.iter()
+                .map(|e| walk(e, depth, path, schema, expanding))
+                .collect(),
+        ),
         Value::Object(x) => walk_object(x, depth, path, schema, expanding),
         _ => v.clone(),
     }
@@ -303,15 +343,23 @@ fn walk_object(
         for e in all {
             // 成员的 required 在走它之前读：只写了 required 的成员走完就没有
             // properties 留住这些名字了
-            required.extend(required_names(schema.resolve(Some(e)).as_ref().and_then(|m| m.get("required"))));
-            if let Some(m) = walk(e, depth + 1, &format!("{path}/allOf"), schema, expanding).as_object() {
+            required.extend(required_names(
+                schema
+                    .resolve(Some(e))
+                    .as_ref()
+                    .and_then(|m| m.get("required")),
+            ));
+            if let Some(m) =
+                walk(e, depth + 1, &format!("{path}/allOf"), schema, expanding).as_object()
+            {
                 for (k, v) in m {
                     if k == "required" {
                         continue;
                     }
                     if k == "properties" {
                         let props = merged.entry("properties").or_insert_with(|| json!({}));
-                        if let (Some(target), Some(source)) = (props.as_object_mut(), v.as_object()) {
+                        if let (Some(target), Some(source)) = (props.as_object_mut(), v.as_object())
+                        {
                             for (pk, pv) in source {
                                 target.insert(pk.clone(), pv.clone());
                             }
@@ -329,7 +377,13 @@ fn walk_object(
     }
     // 自己有形状、旁边还有 anyOf / oneOf：自己的留下，联合并进去（:1290）
     if (is_set(x.get("anyOf")) || is_set(x.get("oneOf"))) && own_shape(x) {
-                return walk(&Value::Object(schema.fold_union(x)), depth + 1, path, schema, expanding);
+        return walk(
+            &Value::Object(schema.fold_union(x)),
+            depth + 1,
+            path,
+            schema,
+            expanding,
+        );
     }
     // 光有 anyOf / oneOf：第一个不是 null 的成员，可空（:1302）
     for k in ["anyOf", "oneOf"] {
@@ -370,8 +424,9 @@ fn walk_object(
     let mut out: Map<String, Value> = Map::new();
     for (k, v) in x {
         match k.as_str() {
-            "description" | "nullable" | "required" | "pattern" | "minimum" | "maximum" | "minLength" | "maxLength"
-            | "minItems" | "maxItems" | "minProperties" | "maxProperties" | "propertyOrdering" => {
+            "description" | "nullable" | "required" | "pattern" | "minimum" | "maximum"
+            | "minLength" | "maxLength" | "minItems" | "maxItems" | "minProperties"
+            | "maxProperties" | "propertyOrdering" => {
                 out.insert(k.clone(), v.clone());
             }
             // 只按包含端点收的界（draft 6 起是数字）（:1338）
@@ -396,7 +451,9 @@ fn walk_object(
                     // 一个节点一个类型：列表里取 items / properties 对应的那个
                     for t in ts {
                         let t = t.as_str().unwrap_or("");
-                        if (t == "array" && is_set(x.get("items"))) || (t == "object" && is_set(x.get("properties"))) {
+                        if (t == "array" && is_set(x.get("items")))
+                            || (t == "object" && is_set(x.get("properties")))
+                        {
                             out.insert("type".into(), json!(t));
                             break;
                         }
@@ -416,7 +473,13 @@ fn walk_object(
                         // schema 为 false 的属性是调用不可以有的：留掉，required
                         // 里它的名字也留掉
                         let at = pk.replace('~', "~0").replace('/', "~1");
-                        let w = walk(pv, depth + 1, &format!("{path}/properties/{at}"), schema, expanding);
+                        let w = walk(
+                            pv,
+                            depth + 1,
+                            &format!("{path}/properties/{at}"),
+                            schema,
+                            expanding,
+                        );
                         if !w.is_null() {
                             props.insert(pk.clone(), w);
                         }
@@ -472,7 +535,9 @@ fn walk_object(
             // 数组上的 enum 是它成员的值；Google 的 enum 在字符串上
             out.remove("enum");
             if let Some(it) = out.get_mut("items").and_then(Value::as_object_mut) {
-                let plain = !is_set(it.get("enum")) && (!is_set(it.get("type")) || it.get("type").and_then(Value::as_str) == Some("string"));
+                let plain = !is_set(it.get("enum"))
+                    && (!is_set(it.get("type"))
+                        || it.get("type").and_then(Value::as_str) == Some("string"));
                 if plain {
                     it.insert("type".into(), json!("string"));
                     it.insert("enum".into(), es);
@@ -490,12 +555,28 @@ fn walk_object(
     if out.get("type").and_then(Value::as_str) == Some("array") {
         // 元组（draft 07 的 items 数组）当成一个 schema：成员一样就说一次
         if let Some(t) = out.get("items").and_then(Value::as_array) {
-            let said = one_says(t).map(|m| Value::Object(m.clone())).unwrap_or(Value::Null);
+            let said = one_says(t)
+                .map(|m| Value::Object(m.clone()))
+                .unwrap_or(Value::Null);
             out.insert("items".into(), said);
         }
         if !is_set(out.get("items")) {
-            if let Some(one) = x.get("prefixItems").and_then(Value::as_array).filter(|p| !p.is_empty()).and_then(|p| one_says(p)) {
-                out.insert("items".into(), walk(&Value::Object(one.clone()), depth + 1, &format!("{path}/items"), schema, expanding));
+            if let Some(one) = x
+                .get("prefixItems")
+                .and_then(Value::as_array)
+                .filter(|p| !p.is_empty())
+                .and_then(|p| one_says(p))
+            {
+                out.insert(
+                    "items".into(),
+                    walk(
+                        &Value::Object(one.clone()),
+                        depth + 1,
+                        &format!("{path}/items"),
+                        schema,
+                        expanding,
+                    ),
+                );
             }
             if !is_set(out.get("items")) {
                 // 数组不说成员是什么，Google 就拒整个请求（#2826）；任意成员
@@ -526,7 +607,10 @@ fn walk_object(
         let props = out.get("properties").and_then(Value::as_object);
         let keep: Vec<Value> = req
             .into_iter()
-            .filter(|n| n.as_str().is_some_and(|s| props.and_then(|p| p.get(s)).is_some_and(|v| !v.is_null())))
+            .filter(|n| {
+                n.as_str()
+                    .is_some_and(|s| props.and_then(|p| p.get(s)).is_some_and(|v| !v.is_null()))
+            })
             .collect();
         if keep.is_empty() {
             out.remove("required");
@@ -552,7 +636,13 @@ fn own_shape(x: &Map<String, Value>) -> bool {
 
 /// required 列表里的字符串（requiredNames，:1603）。
 fn required_names(v: Option<&Value>) -> Vec<String> {
-    v.and_then(Value::as_array).map(|l| l.iter().filter_map(|e| e.as_str().map(String::from)).collect()).unwrap_or_default()
+    v.and_then(Value::as_array)
+        .map(|l| {
+            l.iter()
+                .filter_map(|e| e.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 去重保序（distinctNames，:1615）。
@@ -616,9 +706,17 @@ fn static_re(src: &str) -> Regex {
 fn line_re(line: &str) -> Regex {
     let words: Vec<String> = line
         .split(' ')
-        .map(|w| w.chars().map(|c| regex::escape(&c.to_string())).collect::<Vec<_>>().join(&format!("{AG_INVISIBLE}*")))
+        .map(|w| {
+            w.chars()
+                .map(|c| regex::escape(&c.to_string()))
+                .collect::<Vec<_>>()
+                .join(&format!("{AG_INVISIBLE}*"))
+        })
         .collect();
-    let mut src = format!("(?i){}", words.join(&format!("{AG_INVISIBLE}*{AG_SPACE}{AG_INVISIBLE}*")));
+    let mut src = format!(
+        "(?i){}",
+        words.join(&format!("{AG_INVISIBLE}*{AG_SPACE}{AG_INVISIBLE}*"))
+    );
     if line == BILLING_LINE {
         src.push_str(r"[^\n]*\n?");
     }
@@ -648,9 +746,15 @@ fn said_as(index: usize, matched: &str) -> String {
     let c = cloak();
     match index {
         0 => String::new(),
-        1 => c.sdk_said_as.replace_all(matched, "${1}the${2}${3} by Anthropic").into_owned(),
+        1 => c
+            .sdk_said_as
+            .replace_all(matched, "${1}the${2}${3} by Anthropic")
+            .into_owned(),
         2 | 3 => c.based_on.replace_all(matched, "built${1}on").into_owned(),
-        4 => c.created_by.replace_all(matched, "built${1}by").into_owned(),
+        4 => c
+            .created_by
+            .replace_all(matched, "built${1}by")
+            .into_owned(),
         5 => c.rfc_said_as.replace_all(matched, "$1 $2").into_owned(),
         6 | 7 | 8 => c.you_are.replace_all(matched, "${1}'re").into_owned(),
         _ => c.inside.replace_all(matched, "within").into_owned(),
@@ -696,7 +800,10 @@ fn cloak_lines(system: &str, only: Option<&[bool]>) -> String {
 /// 用户的话里也会被拒的行（agUserTurnedAway，:290）：11-14 起只有 Codex 的
 /// GPT-5 那两条；别的行在用户的话里原样能过。
 fn user_turned_away() -> Vec<bool> {
-    TURNED_AWAY.iter().map(|line| line.starts_with("you are codex, ")).collect()
+    TURNED_AWAY
+        .iter()
+        .map(|line| line.starts_with("you are codex, "))
+        .collect()
 }
 
 /// 发给 Antigravity 账号的系统提示词（antigravityCloak，:276）：被拒的行换成
@@ -738,16 +845,21 @@ const REWORDED: [(&str, &str); 1] = [(
 )];
 
 pub(crate) fn reword(system: &str) -> String {
-    REWORDED.iter().fold(system.to_string(), |s, (from, to)| s.replace(from, to))
+    REWORDED
+        .iter()
+        .fold(system.to_string(), |s, (from, to)| s.replace(from, to))
 }
 
 fn ag_says(system: &str, line: &str) -> bool {
-    let Some(index) = TURNED_AWAY.iter().position(|l| *l == line) else { return false };
+    let Some(index) = TURNED_AWAY.iter().position(|l| *l == line) else {
+        return false;
+    };
     cloak().lines[index].is_match(system)
 }
 
 fn turns_codex_away(system: &str) -> bool {
-    ag_says(system, "you are codex, an agent based on gpt-5") || ag_says(system, "you are codex, a coding agent based on gpt-5")
+    ag_says(system, "you are codex, an agent based on gpt-5")
+        || ag_says(system, "you are codex, a coding agent based on gpt-5")
 }
 
 /// 被拒时附在 Antigravity 原话后面的提示（antigravityHint，:444）：说的是哪一
@@ -759,7 +871,12 @@ pub(crate) fn turned_away_hint(system: &str) -> &'static str {
     if ag_says(system, "you are a coding agent running in the codex cli") {
         return "Antigravity answers this 429 to Codex's prompt for a model it has none of its own for (\"You are a coding agent running in the Codex CLI\") whatever quota is left, so it is not a quota and waiting won't help; Marionette sends that line as \"You're …\", which goes through, so use another provider for these chats, or put one after Antigravity in a routing group";
     }
-    if ag_says(system, "you are hermes agent") || ag_says(system, "an intelligent ai assistant created by nous research") {
+    if ag_says(system, "you are hermes agent")
+        || ag_says(
+            system,
+            "an intelligent ai assistant created by nous research",
+        )
+    {
         return "Antigravity answers this 429 to Hermes Agent's default persona (\"You are Hermes Agent, …\" in its SOUL.md), the current one and the earlier one alike, whatever quota is left, so it is not a quota and waiting won't help; Marionette sends it as \"You're Hermes Agent, …\", which goes through, so start SOUL.md another way, or use another provider for these chats";
     }
     if ag_says(system, "you are opencode") {
@@ -796,8 +913,16 @@ pub(crate) struct Blob {
 pub(crate) enum Part {
     Text(String),
     File(Blob),
-    ToolCall { id: String, name: String, args: Value },
-    ToolResult { call_id: String, text: String, images: Vec<Blob> },
+    ToolCall {
+        id: String,
+        name: String,
+        args: Value,
+    },
+    ToolResult {
+        call_id: String,
+        text: String,
+        images: Vec<Blob>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -857,7 +982,12 @@ fn string_or_text(v: Option<&Value>) -> String {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Array(blocks)) => blocks
             .iter()
-            .filter(|b| matches!(b.get("type").and_then(Value::as_str), Some("text" | "input_text" | "output_text")))
+            .filter(|b| {
+                matches!(
+                    b.get("type").and_then(Value::as_str),
+                    Some("text" | "input_text" | "output_text")
+                )
+            })
             .filter_map(|b| b.get("text").and_then(Value::as_str))
             .collect(),
         _ => String::new(),
@@ -868,10 +998,18 @@ fn string_or_text(v: Option<&Value>) -> String {
 fn image_part(url: &str) -> Blob {
     if let Some(rest) = url.strip_prefix("data:") {
         if let Some((meta, data)) = rest.split_once(',') {
-            return Blob { media_type: meta.trim_end_matches(";base64").to_string(), data: data.to_string(), url: String::new() };
+            return Blob {
+                media_type: meta.trim_end_matches(";base64").to_string(),
+                data: data.to_string(),
+                url: String::new(),
+            };
         }
     }
-    Blob { media_type: String::new(), data: String::new(), url: url.to_string() }
+    Blob {
+        media_type: String::new(),
+        data: String::new(),
+        url: url.to_string(),
+    }
 }
 
 /// 用户消息的 content（chatParts，chat.go:237）：字符串或部件数组里的文字和图。
@@ -887,16 +1025,38 @@ fn chat_parts(v: Option<&Value>) -> Vec<Part> {
         Some(Value::Array(items)) => items
             .iter()
             .filter_map(|it| match it.get("type").and_then(Value::as_str)? {
-                "text" => Some(Part::Text(it.get("text").and_then(Value::as_str)?.to_string())),
-                "image_url" => Some(Part::File(image_part(it.pointer("/image_url/url").and_then(Value::as_str)?))),
+                "text" => Some(Part::Text(
+                    it.get("text").and_then(Value::as_str)?.to_string(),
+                )),
+                "image_url" => Some(Part::File(image_part(
+                    it.pointer("/image_url/url").and_then(Value::as_str)?,
+                ))),
                 "file" => {
-                    let data = it.pointer("/file/file_data").and_then(Value::as_str).unwrap_or("");
-                    let id = it.pointer("/file/file_id").and_then(Value::as_str).unwrap_or("");
+                    let data = it
+                        .pointer("/file/file_data")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let id = it
+                        .pointer("/file/file_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
                     if !data.is_empty() {
                         let p = image_part(data);
-                        Some(Part::File(Blob { media_type: if p.data.is_empty() { String::new() } else { p.media_type }, data: p.data, url: String::new() }))
+                        Some(Part::File(Blob {
+                            media_type: if p.data.is_empty() {
+                                String::new()
+                            } else {
+                                p.media_type
+                            },
+                            data: p.data,
+                            url: String::new(),
+                        }))
                     } else if !id.is_empty() {
-                        Some(Part::File(Blob { media_type: String::new(), data: String::new(), url: id.to_string() }))
+                        Some(Part::File(Blob {
+                            media_type: String::new(),
+                            data: String::new(),
+                            url: id.to_string(),
+                        }))
                     } else {
                         None
                     }
@@ -918,14 +1078,37 @@ fn tool_output(v: Option<&Value>) -> (String, Vec<Blob>) {
                 // 工具给的一张图（source 里是内联数据或地址）
                 Some("image") => {
                     let source = b.get("source");
-                    if let Some(data) = source.and_then(|s| s.get("data")).and_then(Value::as_str).filter(|d| !d.is_empty()) {
-                        images.push(Blob { media_type: source.and_then(|s| s.get("media_type")).and_then(Value::as_str).unwrap_or("").to_string(), data: data.to_string(), url: String::new() });
-                    } else if let Some(url) = source.and_then(|s| s.get("url")).and_then(Value::as_str).filter(|u| !u.is_empty()) {
-                        images.push(Blob { media_type: String::new(), data: String::new(), url: url.to_string() });
+                    if let Some(data) = source
+                        .and_then(|s| s.get("data"))
+                        .and_then(Value::as_str)
+                        .filter(|d| !d.is_empty())
+                    {
+                        images.push(Blob {
+                            media_type: source
+                                .and_then(|s| s.get("media_type"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string(),
+                            data: data.to_string(),
+                            url: String::new(),
+                        });
+                    } else if let Some(url) = source
+                        .and_then(|s| s.get("url"))
+                        .and_then(Value::as_str)
+                        .filter(|u| !u.is_empty())
+                    {
+                        images.push(Blob {
+                            media_type: String::new(),
+                            data: String::new(),
+                            url: url.to_string(),
+                        });
                     }
                 }
                 Some("input_image") | Some("image_url") => {
-                    let url = b.pointer("/image_url/url").and_then(Value::as_str).unwrap_or("");
+                    let url = b
+                        .pointer("/image_url/url")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
                     if !url.is_empty() {
                         images.push(image_part(url));
                     }
@@ -942,32 +1125,67 @@ pub(crate) fn read_chat(body: &Value) -> Ir {
     let mut sys: Vec<String> = Vec::new();
     let mut messages: Vec<Msg> = Vec::new();
     let empty = Vec::new();
-    for m in body.get("messages").and_then(Value::as_array).unwrap_or(&empty) {
+    for m in body
+        .get("messages")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty)
+    {
         match m.get("role").and_then(Value::as_str).unwrap_or("") {
             "system" | "developer" => sys.push(string_or_text(m.get("content"))),
             "user" => {
                 let parts = chat_parts(m.get("content"));
                 if !parts.is_empty() {
-                    messages.push(Msg { assistant: false, parts });
+                    messages.push(Msg {
+                        assistant: false,
+                        parts,
+                    });
                 }
             }
             "assistant" => {
                 let mut parts = chat_parts(m.get("content"));
-                for tc in m.get("tool_calls").and_then(Value::as_array).into_iter().flatten() {
+                for tc in m
+                    .get("tool_calls")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
                     let function = tc.get("function");
                     parts.push(Part::ToolCall {
-                        id: tc.get("id").and_then(Value::as_str).unwrap_or("").to_string(),
-                        name: function.and_then(|f| f.get("name")).and_then(Value::as_str).unwrap_or("").to_string(),
-                        args: parse_args(function.and_then(|f| f.get("arguments")).unwrap_or(&Value::Null)),
+                        id: tc
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        name: function
+                            .and_then(|f| f.get("name"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        args: parse_args(
+                            function
+                                .and_then(|f| f.get("arguments"))
+                                .unwrap_or(&Value::Null),
+                        ),
                     });
                 }
-                messages.push(Msg { assistant: true, parts });
+                messages.push(Msg {
+                    assistant: true,
+                    parts,
+                });
             }
             "tool" => {
                 let (text, images) = tool_output(m.get("content"));
                 messages.push(Msg {
                     assistant: false,
-                    parts: vec![Part::ToolResult { call_id: m.get("tool_call_id").and_then(Value::as_str).unwrap_or("").to_string(), text, images }],
+                    parts: vec![Part::ToolResult {
+                        call_id: m
+                            .get("tool_call_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        text,
+                        images,
+                    }],
                 });
             }
             _ => {}
@@ -975,7 +1193,12 @@ pub(crate) fn read_chat(body: &Value) -> Ir {
     }
     let mut tools = Vec::new();
     let mut web_search = body.get("web_search_options").is_some_and(|o| !o.is_null());
-    for t in body.get("tools").and_then(Value::as_array).into_iter().flatten() {
+    for t in body
+        .get("tools")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let kind = t.get("type").and_then(Value::as_str).unwrap_or("");
         if kind.starts_with("web_search") {
             web_search = true;
@@ -990,25 +1213,43 @@ pub(crate) fn read_chat(body: &Value) -> Ir {
         }
         tools.push(Tool {
             name: name.to_string(),
-            description: function.get("description").and_then(Value::as_str).unwrap_or("").to_string(),
+            description: function
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
             schema: function.get("parameters").cloned().unwrap_or(Value::Null),
         });
     }
     let tool_choice = match body.get("tool_choice") {
         Some(Value::String(s)) => s.clone(),
-        Some(Value::Object(o)) => match o.get("function").and_then(|f| f.get("name")).and_then(Value::as_str) {
+        Some(Value::Object(o)) => match o
+            .get("function")
+            .and_then(|f| f.get("name"))
+            .and_then(Value::as_str)
+        {
             Some(name) if !name.is_empty() => format!("name:{name}"),
             _ => String::new(),
         },
         _ => String::new(),
     };
-    let reasoning_effort = body.get("reasoning_effort").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let reasoning_effort = body
+        .get("reasoning_effort")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
     // chatEffort（chat.go:88）：reasoning_effort；没说时看中转/客户端放强度的
     // 别的地方。
     let mut effort = effort_of(&reasoning_effort);
     if effort.is_empty() && reasoning_effort.is_empty() {
         for pointer in ["/reasoning/effort", "/output_config/effort"] {
-            if let Some(e) = body.pointer(pointer).and_then(Value::as_str).map(effort_of).filter(|e| !e.is_empty()) {
+            if let Some(e) = body
+                .pointer(pointer)
+                .and_then(Value::as_str)
+                .map(effort_of)
+                .filter(|e| !e.is_empty())
+            {
                 effort = e;
                 break;
             }
@@ -1030,7 +1271,10 @@ pub(crate) fn read_chat(body: &Value) -> Ir {
     }
     let stop = match body.get("stop") {
         Some(Value::String(s)) if !s.is_empty() => vec![s.clone()],
-        Some(Value::Array(a)) => a.iter().filter_map(|s| s.as_str().map(String::from)).collect(),
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|s| s.as_str().map(String::from))
+            .collect(),
         _ => Vec::new(),
     };
     let format = match body.get("response_format") {
@@ -1038,7 +1282,10 @@ pub(crate) fn read_chat(body: &Value) -> Ir {
             Some("json_object") => Some(Format::JsonObject),
             Some("json_schema") => {
                 let js = f.get("json_schema");
-                let schema = js.and_then(|j| j.get("schema")).cloned().unwrap_or(Value::Null);
+                let schema = js
+                    .and_then(|j| j.get("schema"))
+                    .cloned()
+                    .unwrap_or(Value::Null);
                 if schema.is_null() {
                     // 没有形状的 schema 就是任意 JSON 对象
                     Some(Format::JsonObject)
@@ -1056,7 +1303,12 @@ pub(crate) fn read_chat(body: &Value) -> Ir {
         tools,
         tool_choice,
         web_search,
-        max_tokens: body.get("max_completion_tokens").and_then(Value::as_u64).filter(|n| *n > 0).or_else(|| body.get("max_tokens").and_then(Value::as_u64)).unwrap_or(0),
+        max_tokens: body
+            .get("max_completion_tokens")
+            .and_then(Value::as_u64)
+            .filter(|n| *n > 0)
+            .or_else(|| body.get("max_tokens").and_then(Value::as_u64))
+            .unwrap_or(0),
         temperature: body.get("temperature").and_then(Value::as_f64),
         top_p: body.get("top_p").and_then(Value::as_f64),
         stop,
@@ -1070,7 +1322,11 @@ pub(crate) fn read_chat(body: &Value) -> Ir {
 /// `{"input": …}`，什么都不丢。
 fn parse_args(raw: &Value) -> Value {
     let Value::String(s) = raw else {
-        return if raw.is_object() { raw.clone() } else { json!({}) };
+        return if raw.is_object() {
+            raw.clone()
+        } else {
+            json!({})
+        };
     };
     let s = s.trim();
     if s.is_empty() {
@@ -1115,7 +1371,9 @@ pub(crate) fn split_antigravity_id(id: &str) -> (&str, &str) {
 /// 不是 Gemini = 0。
 fn gemini_generation(model: &str) -> u64 {
     let re = static_re(r"(?:^|/)gemini-(\d+)");
-    re.captures(model).and_then(|c| c[1].parse().ok()).unwrap_or(0)
+    re.captures(model)
+        .and_then(|c| c[1].parse().ok())
+        .unwrap_or(0)
 }
 
 /// 画图的模型（catalog.DrawsID 的子集：id 里带 image / imagen）。
@@ -1154,7 +1412,14 @@ fn budget_of(effort: &str) -> u64 {
 /// 模型想多久（thinkingConfig，:1006）：Gemini 3 起说档位，更早的说预算；不
 /// 思考的模型不说；id 自己就带档位的（gemini-3.7-flash-low）只说那一档。
 #[allow(clippy::too_many_arguments)]
-fn thinking_config(effort: &str, think_off: bool, max_tokens: u64, model: &str, claude: bool, at: &str) -> Option<Value> {
+fn thinking_config(
+    effort: &str,
+    think_off: bool,
+    max_tokens: u64,
+    model: &str,
+    claude: bool,
+    at: &str,
+) -> Option<Value> {
     let m = model.to_lowercase();
     if m.starts_with("gpt-oss") || (claude && !m.contains("thinking")) {
         return None;
@@ -1265,7 +1530,8 @@ fn model_last_ask(system: &str, messages: &[Msg]) -> &'static str {
 }
 
 /// 一个调用没人答时给它的合成结果（interruptedToolNote，:911）。
-const INTERRUPTED_TOOL_NOTE: &str = "[The result of this tool call is unavailable: the turn was interrupted.]";
+const INTERRUPTED_TOOL_NOTE: &str =
+    "[The result of this tool call is unavailable: the turn was interrupted.]";
 
 /// 同一个调用被答了两次时只留第一个（dropSecondAnswers，:867）：Google 在
 /// functionResponse 数量和 functionCall 数量对不上时拒掉调用回合。
@@ -1298,7 +1564,10 @@ fn drop_second_answers(messages: &[Msg]) -> Vec<Msg> {
             if parts.is_empty() {
                 continue;
             }
-            out.push(Msg { assistant: m.assistant, parts });
+            out.push(Msg {
+                assistant: m.assistant,
+                parts,
+            });
             continue;
         }
         out.push(m.clone());
@@ -1307,11 +1576,16 @@ fn drop_second_answers(messages: &[Msg]) -> Vec<Msg> {
 }
 
 fn parts_of(c: &Value) -> &[Value] {
-    c.get("parts").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])
+    c.get("parts")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
 }
 
 fn has_response(parts: &[Value]) -> bool {
-    parts.iter().any(|p| p.get("functionResponse").is_some_and(|f| !f.is_null()))
+    parts
+        .iter()
+        .any(|p| p.get("functionResponse").is_some_and(|f| !f.is_null()))
 }
 
 /// Gemini 读历史的要求：一个调用回合里的每个调用，紧跟着的回合里都有它的
@@ -1325,14 +1599,25 @@ fn pair_function_turns(input: &[Value], ag_claude: bool) -> Vec<Value> {
     let mut answered_name: HashSet<String> = HashSet::new();
     for c in input {
         for p in parts_of(c) {
-            let Some(fr) = p.get("functionResponse") else { continue };
-            match fr.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()) {
+            let Some(fr) = p.get("functionResponse") else {
+                continue;
+            };
+            match fr
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+            {
                 Some(id) => {
                     answered.insert(id.to_string());
                 }
                 None => {
                     // 没有 id 的调用，由一个同样没有 id、同名的应答算答过
-                    answered_name.insert(fr.get("name").and_then(Value::as_str).unwrap_or("").to_string());
+                    answered_name.insert(
+                        fr.get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                    );
                 }
             }
         }
@@ -1346,10 +1631,14 @@ fn pair_function_turns(input: &[Value], ag_claude: bool) -> Vec<Value> {
         }
         let mut synth: Vec<Value> = Vec::new();
         for p in parts_of(&contents[i]) {
-            let Some(fc) = p.get("functionCall") else { continue };
+            let Some(fc) = p.get("functionCall") else {
+                continue;
+            };
             let id = fc.get("id").and_then(Value::as_str).unwrap_or("");
             let name = fc.get("name").and_then(Value::as_str).unwrap_or("");
-            if (!id.is_empty() && answered.contains(id)) || (id.is_empty() && answered_name.contains(name)) {
+            if (!id.is_empty() && answered.contains(id))
+                || (id.is_empty() && answered_name.contains(name))
+            {
                 continue;
             }
             let mut res = json!({ "name": name, "response": { "result": INTERRUPTED_TOOL_NOTE } });
@@ -1385,7 +1674,13 @@ fn pair_function_turns(input: &[Value], ag_claude: bool) -> Vec<Value> {
 /// Gemini 读的图片类型（Antigravity 给 Gemini 4 列的 supportedMimeTypes）。别的
 /// 图片类型让整个调用被「Request contains an invalid argument.」拒掉，而历史
 /// 里留着那张图，后面每一轮都被拒。
-const GEMINI_IMAGE_TYPES: [&str; 5] = ["image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"];
+const GEMINI_IMAGE_TYPES: [&str; 5] = [
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/heic",
+    "image/heif",
+];
 
 /// 按开头几个字节认图片类型（http.DetectContentType 的图片那几行）。
 fn sniff_image_type(data: &str) -> String {
@@ -1429,7 +1724,11 @@ fn gemini_inline(media_type: &str, data: &str) -> Value {
         }
     }
     if !mt.starts_with("image/") || GEMINI_IMAGE_TYPES.contains(&mt.as_str()) {
-        let mime = if mt.is_empty() { media_type } else { mt.as_str() };
+        let mime = if mt.is_empty() {
+            media_type
+        } else {
+            mt.as_str()
+        };
         return json!({ "inlineData": { "mimeType": mime, "data": data } });
     }
     json!({ "text": format!("[An image of type {mt} was left out: Gemini reads PNG, JPEG, WebP, HEIC and HEIF.]") })
@@ -1483,7 +1782,11 @@ pub(crate) fn build_request(ir: &Ir, sent: &str) -> Value {
                     // 思考签名不回传，一律带「别校验」（见头注差距）
                     parts.push(json!({ "functionCall": call, "thoughtSignature": SKIP_SIGNATURE }));
                 }
-                Part::ToolResult { call_id, text, images } => {
+                Part::ToolResult {
+                    call_id,
+                    text,
+                    images,
+                } => {
                     // 调用不在历史里的应答，名字记作 tool
                     let name = names
                         .get(call_id)
@@ -1557,9 +1860,16 @@ pub(crate) fn build_request(ir: &Ir, sent: &str) -> Value {
             }
             if let Some(last) = contents.last_mut() {
                 let same_role = last.get("role").and_then(Value::as_str) == Some(role);
-                let last_parts = last.get("parts").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+                let last_parts = last
+                    .get("parts")
+                    .and_then(Value::as_array)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
                 if same_role && (role != "user" || has_response(last_parts) == has_response(&ps)) {
-                    last["parts"].as_array_mut().expect("parts is an array").extend(ps);
+                    last["parts"]
+                        .as_array_mut()
+                        .expect("parts is an array")
+                        .extend(ps);
                     continue;
                 }
             }
@@ -1570,12 +1880,22 @@ pub(crate) fn build_request(ir: &Ir, sent: &str) -> Value {
     let mut contents: Vec<Value> = paired;
     // 以模型的话开头的历史被 Gemini 拒（agent 的压缩会留下这种）：前面放一个
     // 用户回合（Gemini CLI 的 hardenHistory 也这么做）
-    if contents.first().and_then(|c| c.get("role")).and_then(Value::as_str) == Some("model") {
+    if contents
+        .first()
+        .and_then(|c| c.get("role"))
+        .and_then(Value::as_str)
+        == Some("model")
+    {
         contents.insert(0, json!({ "role": "user", "parts": [{ "text": "[Continuing from previous AI thoughts...]" }] }));
     }
     // 以模型的话收尾的也不行（Code Assist、Vertex AI、Antigravity 都一样）：后面
     // 补一个用户回合
-    if contents.last().and_then(|c| c.get("role")).and_then(Value::as_str) == Some("model") {
+    if contents
+        .last()
+        .and_then(|c| c.get("role"))
+        .and_then(Value::as_str)
+        == Some("model")
+    {
         contents.push(json!({ "role": "user", "parts": [{ "text": model_last_ask(&ir.system, &ir.messages) }] }));
     }
     let mut req = json!({ "contents": contents });
@@ -1594,7 +1914,11 @@ pub(crate) fn build_request(ir: &Ir, sent: &str) -> Value {
                 }
                 // Antigravity 的函数声明收精简过的 schema（plainSchema）；没有
                 // 参数的给个空对象
-                let schema = if t.schema.is_null() { json!({ "type": "object", "properties": {} }) } else { t.schema.clone() };
+                let schema = if t.schema.is_null() {
+                    json!({ "type": "object", "properties": {} })
+                } else {
+                    t.schema.clone()
+                };
                 d["parameters"] = plain_schema(&schema);
                 d
             })
@@ -1604,7 +1928,10 @@ pub(crate) fn build_request(ir: &Ir, sent: &str) -> Value {
         let mode = if ir.tool_choice == "required" {
             "ANY"
         } else if let Some(name) = ir.tool_choice.strip_prefix("name:") {
-            function_calling.insert("allowedFunctionNames".into(), json!([gemini_func_name(name)]));
+            function_calling.insert(
+                "allowedFunctionNames".into(),
+                json!([gemini_func_name(name)]),
+            );
             "ANY"
         } else if claude {
             // Antigravity 上的 Claude 要它的调用按 schema 校验
@@ -1669,7 +1996,10 @@ fn args_of(args: &Value) -> Value {
 
 fn random_token(n: usize) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     let mut hasher = Sha256::new();
     hasher.update(b"marionette-antigravity");
     hasher.update(nanos.to_le_bytes());
@@ -1688,7 +2018,11 @@ pub(crate) fn antigravity_session(request: &Value) -> String {
             }
             if let Some(parts) = c.get("parts").and_then(Value::as_array) {
                 for p in parts {
-                    if let Some(t) = p.get("text").and_then(Value::as_str).filter(|t| !t.is_empty()) {
+                    if let Some(t) = p
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .filter(|t| !t.is_empty())
+                    {
                         first = t.to_string();
                         break;
                     }
@@ -1701,7 +2035,8 @@ pub(crate) fn antigravity_session(request: &Value) -> String {
         first = random_token(16);
     }
     let sum = Sha256::digest(first.as_bytes());
-    let n = u64::from_be_bytes(sum[..8].try_into().expect("sha256 has 8 bytes")) & 0x7fff_ffff_ffff_ffff;
+    let n = u64::from_be_bytes(sum[..8].try_into().expect("sha256 has 8 bytes"))
+        & 0x7fff_ffff_ffff_ffff;
     format!("-{n}")
 }
 
@@ -1768,7 +2103,10 @@ fn close_brace(s: &[u8], i: usize) -> isize {
     let mut depth = 0isize;
     while i < s.len() {
         if s[i..].starts_with(CTRL46.as_bytes()) {
-            let Some(k) = s[i + CTRL46.len()..].windows(CTRL46.len()).position(|w| w == CTRL46.as_bytes()) else {
+            let Some(k) = s[i + CTRL46.len()..]
+                .windows(CTRL46.len())
+                .position(|w| w == CTRL46.as_bytes())
+            else {
                 return -1;
             };
             i += 2 * CTRL46.len() + k;
@@ -1831,7 +2169,11 @@ pub(crate) fn text_args(body: &str) -> Option<String> {
         } else {
             let e = next_key(body);
             let v = body[..e].trim();
-            val = if serde_json::from_str::<Value>(v).is_ok() { v.to_string() } else { serde_json::to_string(v).ok()? };
+            val = if serde_json::from_str::<Value>(v).is_ok() {
+                v.to_string()
+            } else {
+                serde_json::to_string(v).ok()?
+            };
             body = &body[e..];
             if !body.is_empty() {
                 body = body[1..].trim_start_matches(' ');

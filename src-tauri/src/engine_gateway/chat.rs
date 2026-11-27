@@ -76,7 +76,13 @@ impl Outbound {
         bare_model: String,
         url: String,
     ) -> Outbound {
-        Outbound { provider_id, key, headers, bare_model, url }
+        Outbound {
+            provider_id,
+            key,
+            headers,
+            bare_model,
+            url,
+        }
     }
 }
 
@@ -93,7 +99,11 @@ pub(crate) fn outbound_for(gw: &super::Gateway, cand: &Candidate) -> Result<Outb
     Ok(Outbound {
         provider_id: provider.id.clone(),
         key: provider.key.clone(),
-        headers: provider.headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        headers: provider
+            .headers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
         bare_model: cand.model.clone(),
         url: format!("{}/chat/completions", base),
     })
@@ -158,7 +168,11 @@ pub(crate) fn host_of(url: &str) -> String {
     let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     let authority = rest.split('/').next().unwrap_or("");
     let authority = authority.rsplit('@').next().unwrap_or(authority);
-    authority.split(':').next().unwrap_or("").to_ascii_lowercase()
+    authority
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
 }
 
 /// Go `OpenAIHost`：api.openai.com 自家（不是 Azure、不是中转）。
@@ -173,7 +187,8 @@ fn replays_reasoning(host: &str, model: &str) -> bool {
 }
 
 /// 进程内记住的「这个来源要哪个回复长度字段」（Go LearnTokenField 的内存版）。
-fn learned_token_fields() -> &'static std::sync::Mutex<std::collections::HashMap<String, &'static str>> {
+fn learned_token_fields(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, &'static str>> {
     static MAP: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<String, &'static str>>,
     > = std::sync::OnceLock::new();
@@ -259,11 +274,19 @@ pub(crate) fn fit_for_vendor(
     model: &str,
     token_field: Option<&str>,
 ) -> Vec<u8> {
-    let Ok(mut v) = serde_json::from_slice::<Value>(body) else { return body.to_vec() };
-    let Some(map) = v.as_object_mut() else { return body.to_vec() };
+    let Ok(mut v) = serde_json::from_slice::<Value>(body) else {
+        return body.to_vec();
+    };
+    let Some(map) = v.as_object_mut() else {
+        return body.to_vec();
+    };
     let mut changed = false;
     if let Some(want) = token_field {
-        let from = if want == MAX_TOKENS { MAX_COMPLETION_TOKENS } else { MAX_TOKENS };
+        let from = if want == MAX_TOKENS {
+            MAX_COMPLETION_TOKENS
+        } else {
+            MAX_TOKENS
+        };
         if let Some(value) = map.remove(from) {
             map.entry(want.to_string()).or_insert(value);
             changed = true;
@@ -273,8 +296,14 @@ pub(crate) fn fit_for_vendor(
     if let Some(msgs) = map.get_mut("messages").and_then(|m| m.as_array_mut()) {
         let mut after_tool = false;
         for msg in msgs.iter_mut() {
-            let Some(m) = msg.as_object_mut() else { continue };
-            let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("").to_string();
+            let Some(m) = msg.as_object_mut() else {
+                continue;
+            };
+            let role = m
+                .get("role")
+                .and_then(|r| r.as_str())
+                .unwrap_or("")
+                .to_string();
             if role == "developer" {
                 m.insert("role".into(), Value::String("system".into()));
                 changed = true;
@@ -293,9 +322,12 @@ pub(crate) fn fit_for_vendor(
                     }
                     if replay {
                         let said = |v: Option<&Value>| {
-                            v.and_then(|x| x.as_str()).filter(|s| !s.trim().is_empty()).map(String::from)
+                            v.and_then(|x| x.as_str())
+                                .filter(|s| !s.trim().is_empty())
+                                .map(String::from)
                         };
-                        let think = said(hidden.as_ref()).or_else(|| said(m.get("reasoning_content")));
+                        let think =
+                            said(hidden.as_ref()).or_else(|| said(m.get("reasoning_content")));
                         let has_calls = m
                             .get("tool_calls")
                             .and_then(|c| c.as_array())
@@ -306,7 +338,9 @@ pub(crate) fn fit_for_vendor(
                             None => None,
                         };
                         if let Some(t) = target {
-                            if m.get("reasoning_content").and_then(|x| x.as_str()) != Some(t.as_str()) {
+                            if m.get("reasoning_content").and_then(|x| x.as_str())
+                                != Some(t.as_str())
+                            {
                                 m.insert("reasoning_content".into(), Value::String(t));
                                 changed = true;
                             }
@@ -392,7 +426,10 @@ pub(crate) fn attempt(
                     reader: Box::new(response.into_reader()),
                 });
             }
-            return Attempt::Done(Reply::Json { status, body: read_all(response.into_reader()) });
+            return Attempt::Done(Reply::Json {
+                status,
+                body: read_all(response.into_reader()),
+            });
         }
         let vendor_body = read_all(response.into_reader());
         // 回复长度字段：400 明说要另一个名字 → 改名重发一次并记住。
@@ -414,8 +451,15 @@ pub(crate) fn attempt(
             return Attempt::Done(reply);
         }
         let retry = groups::retryable(status, &vendor_body);
-        let reply = Reply::Json { status, body: vendor_body };
-        return if retry { Attempt::Retry(reply) } else { Attempt::Done(reply) };
+        let reply = Reply::Json {
+            status,
+            body: vendor_body,
+        };
+        return if retry {
+            Attempt::Retry(reply)
+        } else {
+            Attempt::Done(reply)
+        };
     }
 }
 
@@ -490,7 +534,8 @@ fn resting(provider_id: &str, model: &str) -> bool {
 /// 额度联动）复用这张表。
 pub(crate) fn rest_left(provider_id: &str) -> Option<Duration> {
     let map = rests().lock().ok()?;
-    map.get(provider_id).map(|until| until.saturating_duration_since(Instant::now()))
+    map.get(provider_id)
+        .map(|until| until.saturating_duration_since(Instant::now()))
 }
 
 /// 测试隔离：routing_tests 的沙箱起手清表（并行测试互不串休息）。
@@ -502,7 +547,10 @@ fn clear_rests_for_tests() {
 /// 扣流首的结果。
 enum HeadHold {
     /// 上游吐出了第一条完整 SSE 行（流活着）：扣住的字节 + 余下 reader。
-    Live { head: Vec<u8>, rest: Box<dyn Read + Send> },
+    Live {
+        head: Vec<u8>,
+        rest: Box<dyn Read + Send>,
+    },
     /// 上游在第一条完整行之前就 EOF/读错误（一条完整行都没给）——可以静默
     /// 换下一个候选重发整轮（客户端一个字节都还没收到）。
     Dead,
@@ -645,7 +693,11 @@ struct ClosingReader {
 }
 
 impl ClosingReader {
-    fn new(provider: String, inner: Box<dyn Read + Send>, note: Arc<Mutex<Option<String>>>) -> ClosingReader {
+    fn new(
+        provider: String,
+        inner: Box<dyn Read + Send>,
+        note: Arc<Mutex<Option<String>>>,
+    ) -> ClosingReader {
         ClosingReader {
             provider,
             inner,
@@ -667,7 +719,9 @@ impl ClosingReader {
                 .lock()
                 .ok()
                 .and_then(|g| g.clone())
-                .unwrap_or_else(|| format!("{} stream ended without its terminator", self.provider));
+                .unwrap_or_else(|| {
+                    format!("{} stream ended without its terminator", self.provider)
+                });
             let frame = format!(
                 "data: {{\"error\":{{\"message\":\"{}\",\"type\":\"engine_error\",\"code\":null}}}}\n\ndata: [DONE]\n\n",
                 note
@@ -767,8 +821,7 @@ fn chat_prefill(host: &str, model: &str) -> &'static str {
     let h = h.split(':').next().unwrap_or(&h).trim_matches(['[', ']']);
     let local = h == "localhost"
         || h.ends_with(".local")
-        || h
-            .parse::<std::net::IpAddr>()
+        || h.parse::<std::net::IpAddr>()
             .map(|ip| match ip {
                 std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private(),
                 std::net::IpAddr::V6(v6) => v6.is_loopback(),
@@ -877,11 +930,20 @@ fn chat_usage_buckets(u: &Value) -> UsageBuckets {
     let g = |k: &str| u.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
     let prompt = g("prompt_tokens");
     let details = u.get("prompt_tokens_details").and_then(|d| d.as_object());
-    let dn = |k: &str| details.and_then(|d| d.get(k)).and_then(|v| v.as_u64()).unwrap_or(0);
+    let dn = |k: &str| {
+        details
+            .and_then(|d| d.get(k))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    };
     let mut read = dn("cached_tokens");
     let mut write = dn("cache_write_tokens");
     if read == 0 {
-        for k in ["prompt_cache_hit_tokens", "cached_tokens", "num_cached_tokens"] {
+        for k in [
+            "prompt_cache_hit_tokens",
+            "cached_tokens",
+            "num_cached_tokens",
+        ] {
             let n = g(k);
             if n != 0 {
                 read = n;
@@ -895,9 +957,18 @@ fn chat_usage_buckets(u: &Value) -> UsageBuckets {
         write = g("cache_creation_input_tokens");
         whole = prompt >= read + write;
     }
-    let input = if whole { prompt.saturating_sub(read + write) } else { prompt };
+    let input = if whole {
+        prompt.saturating_sub(read + write)
+    } else {
+        prompt
+    };
     let opt = |n: u64| (n > 0).then_some(n);
-    [opt(input), opt(g("completion_tokens")), opt(read), opt(write)]
+    [
+        opt(input),
+        opt(g("completion_tokens")),
+        opt(read),
+        opt(write),
+    ]
 }
 
 /// 续答的常量配置（链构建时定死；reader 是 'static + Send，拿不住 &Gateway）。
@@ -1040,7 +1111,10 @@ impl ContinuationReader {
     fn continuation_out(&self) -> Outbound {
         let mut out = self.cfg.out.clone();
         if self.cfg.mode == "prefix" {
-            let base = out.url.strip_suffix("/chat/completions").unwrap_or(&out.url);
+            let base = out
+                .url
+                .strip_suffix("/chat/completions")
+                .unwrap_or(&out.url);
             let base = base.strip_suffix("/v1").unwrap_or(base);
             out.url = format!("{base}/beta/chat/completions");
         }
@@ -1203,7 +1277,10 @@ impl ContinuationReader {
     /// 一条完整 SSE 行：观察（两态都要）+ 续答 try 的改写。解析不了的行
     /// 原样放行（keepalive 注释、[DONE]、坏行）。
     fn line(&mut self, line: &[u8]) -> Vec<u8> {
-        let body_len = line.iter().rposition(|&b| b != b'\n' && b != b'\r').map_or(0, |i| i + 1);
+        let body_len = line
+            .iter()
+            .rposition(|&b| b != b'\n' && b != b'\r')
+            .map_or(0, |i| i + 1);
         let (body, tail) = line.split_at(body_len);
         let Some(data) = strip_data_prefix(body) else {
             return line.to_vec();
@@ -1262,8 +1339,7 @@ impl ContinuationReader {
                     if self.resume {
                         delta.remove("reasoning_content");
                         changed = true;
-                    } else if let Some(s) =
-                        delta.get("reasoning_content").and_then(|r| r.as_str())
+                    } else if let Some(s) = delta.get("reasoning_content").and_then(|r| r.as_str())
                     {
                         if !s.is_empty() {
                             self.think.push_str(s);
@@ -1311,9 +1387,15 @@ impl ContinuationReader {
 /// 行里有没有本层要观察的东西（预筛，chattidy.rs line_carries 同款思路）：
 /// delta（正文/思考/调用）、usage、finish_reason、error 之外的原样放行。
 fn line_interesting(line: &[u8]) -> bool {
-    const NEEDLES: [&[u8]; 4] =
-        [b"\"delta\"", b"\"usage\"", b"\"finish_reason\"", b"\"error\""];
-    NEEDLES.iter().any(|needle| line.windows(needle.len()).any(|w| w == *needle))
+    const NEEDLES: [&[u8]; 4] = [
+        b"\"delta\"",
+        b"\"usage\"",
+        b"\"finish_reason\"",
+        b"\"error\"",
+    ];
+    NEEDLES
+        .iter()
+        .any(|needle| line.windows(needle.len()).any(|w| w == *needle))
 }
 
 /// `data:` 前缀剥掉（允许 `data:` 与 JSON 之间的空白）；不是 data 行返回
@@ -1381,7 +1463,9 @@ impl Read for ContinuationReader {
                     }
                 }
                 Phase::Relay => {
-                    let Some(inner) = self.inner.as_mut() else { return Ok(0) };
+                    let Some(inner) = self.inner.as_mut() else {
+                        return Ok(0);
+                    };
                     let mut chunk = [0u8; 16 * 1024];
                     match inner.read(&mut chunk) {
                         Ok(0) => {
@@ -1458,7 +1542,11 @@ fn note_answered(
     if let Some(sk) = &sk {
         gw.affinity.answered(sk, &cand.provider, &cand.model);
     }
-    let asked = parsed.get("model").and_then(|m| m.as_str()).unwrap_or_default().to_string();
+    let asked = parsed
+        .get("model")
+        .and_then(|m| m.as_str())
+        .unwrap_or_default()
+        .to_string();
     (sk, asked)
 }
 
@@ -1473,13 +1561,37 @@ pub fn forward(gw: &super::Gateway, headers: &[(String, String)], body: &[u8]) -
         return Reply::error(404, &format!("no provider for model: {model}"));
     }
     let live: Vec<Candidate> = {
-        let awake: Vec<&Candidate> = cands.iter().filter(|c| !resting(&c.provider, &c.model)).collect();
-        let base: Vec<&Candidate> = if awake.is_empty() { cands.iter().collect() } else { awake };
+        let awake: Vec<&Candidate> = cands
+            .iter()
+            .filter(|c| !resting(&c.provider, &c.model))
+            .collect();
+        let base: Vec<&Candidate> = if awake.is_empty() {
+            cands.iter().collect()
+        } else {
+            awake
+        };
         // 会话粘性（affinity.rs）：有种子时曾答账号浮最前（Go affine 最小版）
         let owned: Vec<Candidate> = base.into_iter().cloned().collect();
-        match super::affinity::stick_key(headers, &serde_json::from_slice::<serde_json::Value>(body).unwrap_or(serde_json::Value::Null)) {
-            Some(sk) => gw.affinity.affine(&sk, &owned.iter().map(|c| (c.provider.clone(), c.model.clone())).collect::<Vec<_>>())
-                .into_iter().filter_map(|(pid, m)| owned.iter().find(|c| c.provider == pid && c.model == m).cloned())
+        match super::affinity::stick_key(
+            headers,
+            &serde_json::from_slice::<serde_json::Value>(body).unwrap_or(serde_json::Value::Null),
+        ) {
+            Some(sk) => gw
+                .affinity
+                .affine(
+                    &sk,
+                    &owned
+                        .iter()
+                        .map(|c| (c.provider.clone(), c.model.clone()))
+                        .collect::<Vec<_>>(),
+                )
+                .into_iter()
+                .filter_map(|(pid, m)| {
+                    owned
+                        .iter()
+                        .find(|c| c.provider == pid && c.model == m)
+                        .cloned()
+                })
                 .collect(),
             None => owned,
         }
@@ -1493,14 +1605,23 @@ pub fn forward(gw: &super::Gateway, headers: &[(String, String)], body: &[u8]) -
         let body = groups::body_for(gw, super::effort::Proto::Chat, cand, body);
         match attempt(gw, cand, &body, &oc) {
             Attempt::Done(reply) => match reply {
-                Reply::Stream { status, content_type, reader } => match hold_head(reader) {
+                Reply::Stream {
+                    status,
+                    content_type,
+                    reader,
+                } => match hold_head(reader) {
                     HeadHold::Live { head, rest } => {
                         wake(&cand.provider, &cand.model);
                         let (session, asked) = note_answered(gw, headers, &body, cand);
                         // usage 捕获（Go usageSniffer 的 relay 拷贝路径）：包在
                         // 链最外层，流尾收口落账——SSE 尾帧 usage 四桶、断流
                         // 照落（已发字节算已服务）。
-                        let log = super::usage_ledger::TurnLog::new("chat", &asked, session.clone(), began);
+                        let log = super::usage_ledger::TurnLog::new(
+                            "chat",
+                            &asked,
+                            session.clone(),
+                            began,
+                        );
                         let tap = log.tap(
                             gw.usage.clone(),
                             super::usage_ledger::Dialect::Chat,
@@ -1509,8 +1630,8 @@ pub fn forward(gw: &super::Gateway, headers: &[(String, String)], body: &[u8]) -
                         );
                         // 续答底稿：attempt 刚用同一套准备段把这份体发了出去
                         //（重算字节相同）；拿不到就按无续答能力纯直通过。
-                        let (out, sent_body) = prepare_outbound(gw, cand, &body, &oc).unwrap_or_else(
-                            |_| {
+                        let (out, sent_body) = prepare_outbound(gw, cand, &body, &oc)
+                            .unwrap_or_else(|_| {
                                 (
                                     Outbound::new(
                                         cand.provider.clone(),
@@ -1521,8 +1642,7 @@ pub fn forward(gw: &super::Gateway, headers: &[(String, String)], body: &[u8]) -
                                     ),
                                     Vec::new(),
                                 )
-                            },
-                        );
+                            });
                         // prefill 模式（Go continuation.go:458-462）：模型此前
                         // 拒过 prefill 的不再问（unfit 记忆）。
                         let mode = if prefill_refused_before(&cand.provider, &cand.model) {
@@ -1558,7 +1678,11 @@ pub fn forward(gw: &super::Gateway, headers: &[(String, String)], body: &[u8]) -
                             )),
                             terminal,
                         );
-                        return Reply::Stream { status, content_type, reader: Box::new(relay) };
+                        return Reply::Stream {
+                            status,
+                            content_type,
+                            reader: Box::new(relay),
+                        };
                     }
                     HeadHold::Dead => {
                         rest_provider(&cand.provider);
@@ -1569,7 +1693,10 @@ pub fn forward(gw: &super::Gateway, headers: &[(String, String)], body: &[u8]) -
                         continue;
                     }
                 },
-                Reply::Json { status, body: vendor_body } if status < 400 => {
+                Reply::Json {
+                    status,
+                    body: vendor_body,
+                } if status < 400 => {
                     // 非流式的合法收尾 = 整块 JSON 解析成功（D7）；顺手过
                     // chattidy 的整块修补（D10 非流式半边）。usage 整块提桶
                     // 在修补**前**的原始厂商体上做（别名桶提取序自带）；
@@ -1579,8 +1706,17 @@ pub fn forward(gw: &super::Gateway, headers: &[(String, String)], body: &[u8]) -
                         wake(&cand.provider, &cand.model);
                         let (session, asked) = note_answered(gw, headers, &body, cand);
                         let log = super::usage_ledger::TurnLog::new("chat", &asked, session, began);
-                        log.whole(&gw.usage, super::usage_ledger::Dialect::Chat, &cand.provider, status, &vendor_body);
-                        return Reply::Json { status, body: chattidy::mend_whole_reply(&vendor_body) };
+                        log.whole(
+                            &gw.usage,
+                            super::usage_ledger::Dialect::Chat,
+                            &cand.provider,
+                            status,
+                            &vendor_body,
+                        );
+                        return Reply::Json {
+                            status,
+                            body: chattidy::mend_whole_reply(&vendor_body),
+                        };
                     }
                     rest_provider(&cand.provider);
                     last = Some(Reply::error(
@@ -1598,8 +1734,13 @@ pub fn forward(gw: &super::Gateway, headers: &[(String, String)], body: &[u8]) -
                     // 从 restKey 换成 restID——只 rest 该 `<model>-Trial` 条目，
                     // 账号其它模型不动）。判不中回落原有行为：429/5xx 整
                     // provider，400 不 rest。
-                    if super::zcode_account::trial_refused_for(&cand.provider, &cand.model, *status, body)
-                        .is_some()
+                    if super::zcode_account::trial_refused_for(
+                        &cand.provider,
+                        &cand.model,
+                        *status,
+                        body,
+                    )
+                    .is_some()
                     {
                         rest_entry(&cand.provider, &cand.model);
                     } else if *status == 429 || *status >= 500 {
@@ -1677,7 +1818,10 @@ pub fn forward(gw: &super::Gateway, headers: &[(String, String)], body: &[u8]) -
 /// 同一序号空间。
 pub(crate) fn text_call_id() -> String {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    format!("call_text_{}", SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1)
+    format!(
+        "call_text_{}",
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+    )
 }
 
 /// 非流式整块应答里的正文书调用（Go wholeTextCalls，textcalls.go:990-1039）：
@@ -1720,10 +1864,19 @@ pub(crate) fn whole_text_calls(chat_reply: &mut Value, mut scout: super::textcal
             return;
         };
         if full != text {
-            msg.insert("content".into(), if full.is_empty() { Value::Null } else { json!(full) });
+            msg.insert(
+                "content".into(),
+                if full.is_empty() {
+                    Value::Null
+                } else {
+                    json!(full)
+                },
+            );
         }
         if made_calls {
-            let calls = msg.entry("tool_calls".to_string()).or_insert_with(|| json!([]));
+            let calls = msg
+                .entry("tool_calls".to_string())
+                .or_insert_with(|| json!([]));
             if let Some(arr) = calls.as_array_mut() {
                 for (name, args) in fin.calls {
                     arr.push(json!({
@@ -1738,7 +1891,10 @@ pub(crate) fn whole_text_calls(chat_reply: &mut Value, mut scout: super::textcal
         // 回合作为调过工具的回合结束（Go chatWhole.flush：`called` →
         // finish_reason="tool_calls"；responses 方言 status 不变，anthropic
         // 方言 stop_reason → tool_use）。
-        if let Some(choice) = chat_reply.pointer_mut("/choices/0").and_then(|c| c.as_object_mut()) {
+        if let Some(choice) = chat_reply
+            .pointer_mut("/choices/0")
+            .and_then(|c| c.as_object_mut())
+        {
             choice.insert("finish_reason".into(), json!("tool_calls"));
         }
     }
@@ -1783,25 +1939,47 @@ mod fit_tests {
 
     #[test]
     fn token_field_follows_host_and_vendor_words() {
-        assert_eq!(token_field_for("p", "api.openai.com"), Some(MAX_COMPLETION_TOKENS));
+        assert_eq!(
+            token_field_for("p", "api.openai.com"),
+            Some(MAX_COMPLETION_TOKENS)
+        );
         assert_eq!(token_field_for("p-none", "api.deepseek.com"), None);
         assert_eq!(token_field_for("p", "myco.openai.azure.com"), None);
-        let v = run(json!({"max_tokens": 10, "messages": []}), "api.openai.com", "m", Some(MAX_COMPLETION_TOKENS));
+        let v = run(
+            json!({"max_tokens": 10, "messages": []}),
+            "api.openai.com",
+            "m",
+            Some(MAX_COMPLETION_TOKENS),
+        );
         assert_eq!(v["max_completion_tokens"], 10);
         assert!(v.get("max_tokens").is_none());
         // 两个都有：保留目标字段的值。
-        let v = run(json!({"max_tokens": 1, "max_completion_tokens": 2, "messages": []}), "h", "m", Some(MAX_COMPLETION_TOKENS));
+        let v = run(
+            json!({"max_tokens": 1, "max_completion_tokens": 2, "messages": []}),
+            "h",
+            "m",
+            Some(MAX_COMPLETION_TOKENS),
+        );
         assert_eq!(v["max_completion_tokens"], 2);
         assert!(v.get("max_tokens").is_none());
         assert_eq!(
             token_field_wanted(b"Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead."),
             Some(MAX_COMPLETION_TOKENS)
         );
-        assert_eq!(token_field_wanted(b"please use max_tokens instead"), Some(MAX_TOKENS));
-        // 上限超了不是名字错
-        assert_eq!(token_field_wanted(b"max_tokens must be at most 32768"), None);
         assert_eq!(
-            String::from_utf8(with_token_field(br#"{"max_tokens":5}"#, MAX_COMPLETION_TOKENS).unwrap()).unwrap(),
+            token_field_wanted(b"please use max_tokens instead"),
+            Some(MAX_TOKENS)
+        );
+        // 上限超了不是名字错
+        assert_eq!(
+            token_field_wanted(b"max_tokens must be at most 32768"),
+            None
+        );
+        assert_eq!(
+            String::from_utf8(
+                with_token_field(br#"{"max_tokens":5}"#, MAX_COMPLETION_TOKENS).unwrap()
+            )
+            .unwrap(),
             r#"{"max_completion_tokens":5}"#
         );
     }
@@ -1835,7 +2013,10 @@ mod fit_tests {
 
     #[test]
     fn host_parsing() {
-        assert_eq!(host_of("https://API.openai.com/v1/chat/completions"), "api.openai.com");
+        assert_eq!(
+            host_of("https://API.openai.com/v1/chat/completions"),
+            "api.openai.com"
+        );
         assert_eq!(host_of("http://127.0.0.1:8080/v1"), "127.0.0.1");
         assert_eq!(host_of("https://u:p@h.example.com:443/x"), "h.example.com");
     }
@@ -1874,7 +2055,9 @@ mod routing_tests {
     }
 
     fn sandbox(providers_json: &str) -> (Gateway, Sandbox) {
-        let lock = super::super::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let lock = super::super::TEST_SANDBOX_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         // 休息表与 prefill 拒答记忆都是进程级的：沙箱起手清掉，串行测试之间
         // 不串状态；续答停顿钉成 1ms（生产默认 1s，Go retryPause）。
         clear_rests_for_tests();
@@ -1888,11 +2071,19 @@ mod routing_tests {
             DIR_SEQ.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(dir.join("magpie")).expect("temp config dir");
-        std::fs::write(dir.join("magpie").join("providers.json"), providers_json).expect("providers.json");
+        std::fs::write(dir.join("magpie").join("providers.json"), providers_json)
+            .expect("providers.json");
         let prior_xdg = std::env::var("XDG_CONFIG_HOME").ok();
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         let gateway = Gateway::open().expect("gateway");
-        (gateway, Sandbox { dir, prior_xdg, lock })
+        (
+            gateway,
+            Sandbox {
+                dir,
+                prior_xdg,
+                lock,
+            },
+        )
     }
 
     struct Seen {
@@ -1969,7 +2160,11 @@ mod routing_tests {
                 let _ = stream.flush();
             }
         });
-        Fake { base: format!("http://127.0.0.1:{port}"), hits, seen }
+        Fake {
+            base: format!("http://127.0.0.1:{port}"),
+            hits,
+            seen,
+        }
     }
 
     fn ok_chat(text: &str) -> Vec<u8> {
@@ -1981,7 +2176,8 @@ mod routing_tests {
         .unwrap()
     }
 
-    const SSE: &str = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n";
+    const SSE: &str =
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n";
 
     fn json_body(v: Value) -> Vec<u8> {
         serde_json::to_vec(&v).unwrap()
@@ -2017,12 +2213,20 @@ mod routing_tests {
     }
 
     fn chat_request(model: &str, stream: bool) -> Vec<u8> {
-        json_body(json!({"model": model, "stream": stream, "messages": [{"role": "user", "content": "hi"}]}))
+        json_body(
+            json!({"model": model, "stream": stream, "messages": [{"role": "user", "content": "hi"}]}),
+        )
     }
 
     #[test]
     fn chat_group_fails_over_on_5xx() {
-        let a = fake(Box::new(|_| (503, "application/json", b"{\"error\":\"overloaded\"}".to_vec())));
+        let a = fake(Box::new(|_| {
+            (
+                503,
+                "application/json",
+                b"{\"error\":\"overloaded\"}".to_vec(),
+            )
+        }));
         let b = fake(Box::new(|_| (200, "application/json", ok_chat("from b"))));
         let (gw, _sb) = sandbox(&two_member_world(&a, &b, "order"));
         let reply = forward(&gw, &[], &chat_request("g", false));
@@ -2055,15 +2259,29 @@ mod routing_tests {
 
     #[test]
     fn request_errors_stay_put_and_total_outage_returns_the_last_error() {
-        let a = fake(Box::new(|_| (400, "application/json", b"{\"error\":{\"message\":\"bad parameter\"}}".to_vec())));
+        let a = fake(Box::new(|_| {
+            (
+                400,
+                "application/json",
+                b"{\"error\":{\"message\":\"bad parameter\"}}".to_vec(),
+            )
+        }));
         let b = fake(Box::new(|_| (200, "application/json", ok_chat("never"))));
         let (gw, sb) = sandbox(&two_member_world(&a, &b, "order"));
         let reply = forward(&gw, &[], &chat_request("g", false));
         assert_eq!(status_of(&reply), 400);
-        assert_eq!(b.hits.load(Ordering::SeqCst), 0, "request errors must not move to the next member");
+        assert_eq!(
+            b.hits.load(Ordering::SeqCst),
+            0,
+            "request errors must not move to the next member"
+        );
         drop(sb);
-        let a = fake(Box::new(|_| (503, "application/json", b"{\"error\":\"a down\"}".to_vec())));
-        let b = fake(Box::new(|_| (502, "application/json", b"{\"error\":\"b down\"}".to_vec())));
+        let a = fake(Box::new(|_| {
+            (503, "application/json", b"{\"error\":\"a down\"}".to_vec())
+        }));
+        let b = fake(Box::new(|_| {
+            (502, "application/json", b"{\"error\":\"b down\"}".to_vec())
+        }));
         let (gw, _sb) = sandbox(&two_member_world(&a, &b, "order"));
         let reply = forward(&gw, &[], &chat_request("g", false));
         assert_eq!(status_of(&reply), 502);
@@ -2073,15 +2291,21 @@ mod routing_tests {
     #[test]
     fn streaming_failover_only_before_bytes_and_stream_is_final() {
         // A 在应答头阶段就 503：换成员，B 的流照常透传。
-        let a = fake(Box::new(|_| (503, "application/json", b"{\"error\":\"down\"}".to_vec())));
-        let b = fake(Box::new(|_| (200, "text/event-stream", SSE.as_bytes().to_vec())));
+        let a = fake(Box::new(|_| {
+            (503, "application/json", b"{\"error\":\"down\"}".to_vec())
+        }));
+        let b = fake(Box::new(|_| {
+            (200, "text/event-stream", SSE.as_bytes().to_vec())
+        }));
         let (gw, sb) = sandbox(&two_member_world(&a, &b, "order"));
         let reply = forward(&gw, &[], &chat_request("g", true));
         assert!(matches!(reply, Reply::Stream { status: 200, .. }));
         assert!(text_of(reply).contains("[DONE]"));
         drop(sb);
         // A 已经开流（2xx）：流就是终局，B 一次都不碰。
-        let a = fake(Box::new(|_| (200, "text/event-stream", SSE.as_bytes().to_vec())));
+        let a = fake(Box::new(|_| {
+            (200, "text/event-stream", SSE.as_bytes().to_vec())
+        }));
         let b = fake(Box::new(|_| (200, "application/json", ok_chat("never"))));
         let (gw, _sb) = sandbox(&two_member_world(&a, &b, "order"));
         let reply = forward(&gw, &[], &chat_request("g", true));
@@ -2098,13 +2322,18 @@ mod routing_tests {
         // 体里还带图就 413；丢掉最老图后流式 200。
         let v = fake(Box::new(|seen| {
             if String::from_utf8_lossy(&seen.body).contains("AAAAAAAA") {
-                (413, "application/json", b"{\"error\":\"request body too large\"}".to_vec())
+                (
+                    413,
+                    "application/json",
+                    b"{\"error\":\"request body too large\"}".to_vec(),
+                )
             } else {
                 (200, "text/event-stream", SSE.as_bytes().to_vec())
             }
         }));
         let (gw, _sb) = sandbox(
-            &json!({"providers": [{"id": "pv", "name": "V", "chat": format!("{}/v1", v.base)}]}).to_string(),
+            &json!({"providers": [{"id": "pv", "name": "V", "chat": format!("{}/v1", v.base)}]})
+                .to_string(),
         );
         let body = json_body(json!({
             "model": "pv/m", "stream": true,
@@ -2115,7 +2344,10 @@ mod routing_tests {
             ]
         }));
         let reply = forward(&gw, &[], &body);
-        assert!(matches!(reply, Reply::Stream { status: 200, .. }), "refit should return the stream");
+        assert!(
+            matches!(reply, Reply::Stream { status: 200, .. }),
+            "refit should return the stream"
+        );
         let bodies = v.bodies();
         assert_eq!(bodies.len(), 2);
         let second = bodies[1].to_string();
@@ -2129,7 +2361,11 @@ mod routing_tests {
     fn responses_passthrough_refits_input_image_bodies() {
         let v = fake(Box::new(|seen| {
             if String::from_utf8_lossy(&seen.body).contains("AAAAAAAA") {
-                (413, "application/json", b"{\"error\":{\"message\":\"Request body is too large\"}}".to_vec())
+                (
+                    413,
+                    "application/json",
+                    b"{\"error\":{\"message\":\"Request body is too large\"}}".to_vec(),
+                )
             } else {
                 (200, "application/json", b"{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"completed\",\"output\":[]}".to_vec())
             }
@@ -2148,17 +2384,28 @@ mod routing_tests {
             ]
         }));
         let reply = super::super::responses::handle(&gw, &body);
-        assert_eq!(status_of(&reply), 200, "refit should have rescued the request");
+        assert_eq!(
+            status_of(&reply),
+            200,
+            "refit should have rescued the request"
+        );
         let bodies = v.bodies();
         assert_eq!(bodies.len(), 2);
         assert!(!bodies[1].to_string().contains("AAAAAAAA"));
         assert_eq!(bodies[1]["input"][0]["content"][0]["type"], "input_text");
-        assert!(bodies[1]["input"][0]["content"][0]["text"].as_str().unwrap().contains("image left out"));
+        assert!(bodies[1]["input"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("image left out"));
         // 学到的 cap 让后续同厂商请求先合身再发（不再吃一次拒答）。
         let before = v.hits.load(Ordering::SeqCst);
         let again = super::super::responses::handle(&gw, &body);
         assert_eq!(status_of(&again), 200);
-        assert_eq!(v.hits.load(Ordering::SeqCst) - before, 1, "prefit should avoid the refusal");
+        assert_eq!(
+            v.hits.load(Ordering::SeqCst) - before,
+            1,
+            "prefit should avoid the refusal"
+        );
     }
 
     #[test]
@@ -2171,7 +2418,8 @@ mod routing_tests {
             }
         }));
         let (gw, _sb) = sandbox(
-            &json!({"providers": [{"id": "pv", "name": "V", "anthropic": v.base.clone()}]}).to_string(),
+            &json!({"providers": [{"id": "pv", "name": "V", "anthropic": v.base.clone()}]})
+                .to_string(),
         );
         let img = |data: String| json!({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}});
         let body = json_body(json!({
@@ -2212,7 +2460,8 @@ mod routing_tests {
         };
         let v = fake(Box::new(|_| (200, "application/json", ok_chat("ok"))));
         let (gw, _sb) = sandbox(
-            &json!({"providers": [{"id": "pv", "name": "V", "chat": format!("{}/v1", v.base)}]}).to_string(),
+            &json!({"providers": [{"id": "pv", "name": "V", "chat": format!("{}/v1", v.base)}]})
+                .to_string(),
         );
         let reply = super::super::responses::handle(&gw, &make("pv/deepseek-v4"));
         assert_eq!(status_of(&reply), 200);
@@ -2249,7 +2498,9 @@ mod routing_tests {
         let (gw, _sb) = sandbox(
             &json!({"providers": [{"id": "pv-tokfield", "name": "V", "chat": format!("{}/v1", v.base)}]}).to_string(),
         );
-        let body = json_body(json!({"model": "pv-tokfield/m", "max_tokens": 5, "messages": [{"role": "user", "content": "hi"}]}));
+        let body = json_body(
+            json!({"model": "pv-tokfield/m", "max_tokens": 5, "messages": [{"role": "user", "content": "hi"}]}),
+        );
         assert_eq!(status_of(&forward(&gw, &[], &body)), 200);
         assert_eq!(v.hits.load(Ordering::SeqCst), 2);
         assert_eq!(v.bodies()[1]["max_completion_tokens"], 5);
@@ -2273,7 +2524,10 @@ mod routing_tests {
         .to_string();
         let (gw, _sb) = sandbox(&world);
         for _ in 0..8 {
-            assert_eq!(status_of(&forward(&gw, &[], &chat_request("w-route", false))), 200);
+            assert_eq!(
+                status_of(&forward(&gw, &[], &chat_request("w-route", false))),
+                200
+            );
         }
         assert_eq!(a.hits.load(Ordering::SeqCst), 6);
         assert_eq!(b.hits.load(Ordering::SeqCst), 2);
@@ -2282,7 +2536,9 @@ mod routing_tests {
     #[test]
     fn member_effort_is_applied_per_candidate_on_failover() {
         // 成员 A 固定 low、成员 B 固定 max：A 挂了转 B 时请求带的是 B 自己的强度。
-        let a = fake(Box::new(|_| (503, "application/json", b"{\"error\":\"down\"}".to_vec())));
+        let a = fake(Box::new(|_| {
+            (503, "application/json", b"{\"error\":\"down\"}".to_vec())
+        }));
         let b = fake(Box::new(|_| (200, "application/json", ok_chat("ok"))));
         let world = json!({
             "providers": [
@@ -2293,7 +2549,9 @@ mod routing_tests {
         })
         .to_string();
         let (gw, _sb) = sandbox(&world);
-        let body = json_body(json!({"model": "g", "reasoning_effort": "high", "messages": [{"role": "user", "content": "hi"}]}));
+        let body = json_body(
+            json!({"model": "g", "reasoning_effort": "high", "messages": [{"role": "user", "content": "hi"}]}),
+        );
         assert_eq!(status_of(&forward(&gw, &[], &body)), 200);
         assert_eq!(a.bodies()[0]["reasoning_effort"], "low");
         assert_eq!(b.bodies()[0]["reasoning_effort"], "max");
@@ -2382,7 +2640,11 @@ mod routing_tests {
                 drop(stream); // 掐
             }
         });
-        Fake { base: format!("http://127.0.0.1:{port}"), hits, seen }
+        Fake {
+            base: format!("http://127.0.0.1:{port}"),
+            hits,
+            seen,
+        }
     }
 
     /// 流被掐在第一条完整行之前：扣流首生效——客户端一个字节都没收到，
@@ -2390,13 +2652,21 @@ mod routing_tests {
     #[test]
     fn stream_cut_before_first_line_fails_over_to_next_member() {
         let a = cut_fake(CutAt::Before);
-        let b = fake(Box::new(|_| (200, "text/event-stream", SSE.as_bytes().to_vec())));
+        let b = fake(Box::new(|_| {
+            (200, "text/event-stream", SSE.as_bytes().to_vec())
+        }));
         let (gw, _sb) = sandbox(&two_member_world(&a, &b, "order"));
         let reply = forward(&gw, &[], &chat_request("g", true));
-        assert!(matches!(reply, Reply::Stream { status: 200, .. }), "cut head must fail over to a stream");
+        assert!(
+            matches!(reply, Reply::Stream { status: 200, .. }),
+            "cut head must fail over to a stream"
+        );
         let text = text_of(reply);
         assert!(text.contains("hi"), "failover stream lost content: {text}");
-        assert!(text.contains("[DONE]"), "failover stream must end properly: {text}");
+        assert!(
+            text.contains("[DONE]"),
+            "failover stream must end properly: {text}"
+        );
         assert_eq!(a.hits.load(Ordering::SeqCst), 1);
         assert_eq!(b.hits.load(Ordering::SeqCst), 1);
     }
@@ -2407,14 +2677,21 @@ mod routing_tests {
     fn stream_cut_after_start_ends_with_explicit_error_and_done() {
         let a = cut_fake(CutAt::After);
         let (gw, _sb) = sandbox(
-            &json!({"providers": [{"id": "pa", "name": "A", "chat": format!("{}/v1", a.base)}]}).to_string(),
+            &json!({"providers": [{"id": "pa", "name": "A", "chat": format!("{}/v1", a.base)}]})
+                .to_string(),
         );
         let reply = forward(&gw, &[], &chat_request("pa/ma", true));
         assert!(matches!(reply, Reply::Stream { status: 200, .. }));
         let text = text_of(reply);
         assert!(text.contains("partial-"), "forwarded events lost: {text}");
-        assert!(text.contains("\"error\""), "cut stream must end with an error frame: {text}");
-        assert!(text.ends_with("data: [DONE]\n\n"), "error ending must close with [DONE]: {text}");
+        assert!(
+            text.contains("\"error\""),
+            "cut stream must end with an error frame: {text}"
+        );
+        assert!(
+            text.ends_with("data: [DONE]\n\n"),
+            "error ending must close with [DONE]: {text}"
+        );
     }
 
     /// 死在流首之前且没有候选：502 可判定错误（不是把客户端挂着等 EOF）。
@@ -2422,7 +2699,8 @@ mod routing_tests {
     fn stream_dead_before_first_line_with_no_candidate_is_a_502() {
         let a = cut_fake(CutAt::Before);
         let (gw, _sb) = sandbox(
-            &json!({"providers": [{"id": "pa", "name": "A", "chat": format!("{}/v1", a.base)}]}).to_string(),
+            &json!({"providers": [{"id": "pa", "name": "A", "chat": format!("{}/v1", a.base)}]})
+                .to_string(),
         );
         let reply = forward(&gw, &[], &chat_request("pa/ma", true));
         assert_eq!(status_of(&reply), 502);
@@ -2433,7 +2711,9 @@ mod routing_tests {
     #[test]
     fn non_stream_truncated_json_fails_over_then_errors() {
         let truncated = b"{\"id\":\"x\",\"choices\":[{\"index\":0,".to_vec();
-        let a = fake(Box::new(move |_| (200, "application/json", truncated.clone())));
+        let a = fake(Box::new(move |_| {
+            (200, "application/json", truncated.clone())
+        }));
         let b = fake(Box::new(|_| (200, "application/json", ok_chat("from b"))));
         let (gw, sb) = sandbox(&two_member_world(&a, &b, "order"));
         let reply = forward(&gw, &[], &chat_request("g", false));
@@ -2442,9 +2722,12 @@ mod routing_tests {
         assert_eq!(a.hits.load(Ordering::SeqCst), 1);
         assert_eq!(b.hits.load(Ordering::SeqCst), 1);
         drop(sb);
-        let a = fake(Box::new(|_| (200, "application/json", b"{\"partial".to_vec())));
+        let a = fake(Box::new(|_| {
+            (200, "application/json", b"{\"partial".to_vec())
+        }));
         let (gw, _sb) = sandbox(
-            &json!({"providers": [{"id": "pa", "name": "A", "chat": format!("{}/v1", a.base)}]}).to_string(),
+            &json!({"providers": [{"id": "pa", "name": "A", "chat": format!("{}/v1", a.base)}]})
+                .to_string(),
         );
         let reply = forward(&gw, &[], &chat_request("pa/ma", false));
         assert_eq!(status_of(&reply), 502);
@@ -2460,15 +2743,27 @@ mod routing_tests {
             "data: {\"id\":\"c\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"ris\\\",\\\"yield_ms\\\":2500.0}\"}}]}}]}\n\n",
             "data: [DONE]\n\n",
         );
-        let v = fake(Box::new(|_| (200, "text/event-stream", tool_sse.as_bytes().to_vec())));
+        let v = fake(Box::new(|_| {
+            (200, "text/event-stream", tool_sse.as_bytes().to_vec())
+        }));
         let (gw, _sb) = sandbox(
-            &json!({"providers": [{"id": "pv", "name": "V", "chat": format!("{}/v1", v.base)}]}).to_string(),
+            &json!({"providers": [{"id": "pv", "name": "V", "chat": format!("{}/v1", v.base)}]})
+                .to_string(),
         );
         let reply = forward(&gw, &[], &chat_request("pv/m", true));
         let text = text_of(reply);
-        assert!(text.contains("\\\"yield_ms\\\":2500}"), "streamed fraction must be shed: {text}");
-        assert!(!text.contains("2500.0"), "streamed fraction must not survive: {text}");
-        assert!(text.ends_with("data: [DONE]\n\n"), "clean stream keeps its own ending: {text}");
+        assert!(
+            text.contains("\\\"yield_ms\\\":2500}"),
+            "streamed fraction must be shed: {text}"
+        );
+        assert!(
+            !text.contains("2500.0"),
+            "streamed fraction must not survive: {text}"
+        );
+        assert!(
+            text.ends_with("data: [DONE]\n\n"),
+            "clean stream keeps its own ending: {text}"
+        );
     }
 
     /// D10 非流式半边：整块 JSON 应答的零分数丢弃。
@@ -2485,18 +2780,27 @@ mod routing_tests {
         .unwrap();
         let v = fake(Box::new(move |_| (200, "application/json", whole.clone())));
         let (gw, _sb) = sandbox(
-            &json!({"providers": [{"id": "pv", "name": "V", "chat": format!("{}/v1", v.base)}]}).to_string(),
+            &json!({"providers": [{"id": "pv", "name": "V", "chat": format!("{}/v1", v.base)}]})
+                .to_string(),
         );
         let reply = forward(&gw, &[], &chat_request("pv/m", false));
         let text = text_of(reply);
-        assert!(text.contains("\\\"yield_ms\\\":2500"), "whole-reply fraction must be shed: {text}");
-        assert!(!text.contains("2500.0"), "whole-reply fraction must not survive: {text}");
+        assert!(
+            text.contains("\\\"yield_ms\\\":2500"),
+            "whole-reply fraction must be shed: {text}"
+        );
+        assert!(
+            !text.contains("2500.0"),
+            "whole-reply fraction must not survive: {text}"
+        );
     }
 
     /// 休息记忆：5xx 的成员 60s 内被跳过；全在休息则无视（照发）。
     #[test]
     fn resting_member_is_skipped_until_all_rest() {
-        let a = fake(Box::new(|_| (503, "application/json", b"{\"error\":\"down\"}".to_vec())));
+        let a = fake(Box::new(|_| {
+            (503, "application/json", b"{\"error\":\"down\"}".to_vec())
+        }));
         let b = fake(Box::new(|_| (200, "application/json", ok_chat("from b"))));
         let world = json!({
             "providers": [
@@ -2511,16 +2815,33 @@ mod routing_tests {
         .to_string();
         let (gw, _sb) = sandbox(&world);
         // 第 1 发：a 503 → 转 b；a 进休息。
-        assert_eq!(status_of(&forward(&gw, &[], &chat_request("g", false))), 200);
+        assert_eq!(
+            status_of(&forward(&gw, &[], &chat_request("g", false))),
+            200
+        );
         assert_eq!(a.hits.load(Ordering::SeqCst), 1);
         // 第 2 发：a 在休息 → 直接打 b，a 不再挨打。
-        assert_eq!(status_of(&forward(&gw, &[], &chat_request("g", false))), 200);
-        assert_eq!(a.hits.load(Ordering::SeqCst), 1, "resting member must be skipped");
+        assert_eq!(
+            status_of(&forward(&gw, &[], &chat_request("g", false))),
+            200
+        );
+        assert_eq!(
+            a.hits.load(Ordering::SeqCst),
+            1,
+            "resting member must be skipped"
+        );
         assert!(rest_left("pa").is_some());
         assert_eq!(rest_left("pb"), None, "the member that answered is awake");
         // 第 3 发：单成员组只剩休息中的 a → 全在休息，无视照发。
-        assert_eq!(status_of(&forward(&gw, &[], &chat_request("solo", false))), 503);
-        assert_eq!(a.hits.load(Ordering::SeqCst), 2, "all-resting must ignore the rest");
+        assert_eq!(
+            status_of(&forward(&gw, &[], &chat_request("solo", false))),
+            503
+        );
+        assert_eq!(
+            a.hits.load(Ordering::SeqCst),
+            2,
+            "all-resting must ignore the rest"
+        );
     }
 
     /// zcode trial 拒答的 rest 分级（Go zcode_trial.go:33 + routing.go:1834）：
@@ -2556,21 +2877,38 @@ mod routing_tests {
         .to_string();
         let (gw, _sb) = sandbox(&world);
         // 第 1 发（trial）：zcode 拒 → 转 b。只 trial 条目休息，账号不休息。
-        assert_eq!(status_of(&forward(&gw, &[], &chat_request("t", false))), 200);
+        assert_eq!(
+            status_of(&forward(&gw, &[], &chat_request("t", false))),
+            200
+        );
         assert_eq!(z.hits.load(Ordering::SeqCst), 1);
         assert_eq!(b.hits.load(Ordering::SeqCst), 1);
-        assert!(rest_left("zcode::GLM-5.3-Trial").is_some(), "the trial entry rests");
+        assert!(
+            rest_left("zcode::GLM-5.3-Trial").is_some(),
+            "the trial entry rests"
+        );
         assert_eq!(rest_left("zcode"), None, "the account itself must not rest");
         // 第 2 发（plain 模型）：zcode 没在休息 → 它自己答（Go：the account's
         // GLM-5.3 still served by it）。
-        assert_eq!(status_of(&forward(&gw, &[], &chat_request("s", false))), 200);
-        assert_eq!(z.hits.load(Ordering::SeqCst), 2, "the plain model must still ask zcode");
+        assert_eq!(
+            status_of(&forward(&gw, &[], &chat_request("s", false))),
+            200
+        );
+        assert_eq!(
+            z.hits.load(Ordering::SeqCst),
+            2,
+            "the plain model must still ask zcode"
+        );
         assert_eq!(b.hits.load(Ordering::SeqCst), 1);
         // 第 3 发（trial 再来）：条目在休息 → 跳过 zcode，直接 b。
         let reply = forward(&gw, &[], &chat_request("t", false));
         assert_eq!(status_of(&reply), 200);
         assert!(text_of(reply).contains("from b"));
-        assert_eq!(z.hits.load(Ordering::SeqCst), 2, "the resting entry must be skipped");
+        assert_eq!(
+            z.hits.load(Ordering::SeqCst),
+            2,
+            "the resting entry must be skipped"
+        );
     }
 
     /// 判不中的组合照旧整 provider rest（Go zcode_trial_test.go:57-62「account
@@ -2596,16 +2934,34 @@ mod routing_tests {
         })
         .to_string();
         let (gw, _sb) = sandbox(&world);
-        assert_eq!(status_of(&forward(&gw, &[], &chat_request("t", false))), 200);
-        assert!(rest_left("zcode").is_some(), "a spent 429 naming another model rests the account");
+        assert_eq!(
+            status_of(&forward(&gw, &[], &chat_request("t", false))),
+            200
+        );
+        assert!(
+            rest_left("zcode").is_some(),
+            "a spent 429 naming another model rests the account"
+        );
         // plain 模型跟着被跳过（账号在休息）。
-        assert_eq!(status_of(&forward(&gw, &[], &chat_request("s", false))), 200);
-        assert_eq!(z.hits.load(Ordering::SeqCst), 1, "the rested account must be skipped");
+        assert_eq!(
+            status_of(&forward(&gw, &[], &chat_request("s", false))),
+            200
+        );
+        assert_eq!(
+            z.hits.load(Ordering::SeqCst),
+            1,
+            "the rested account must be skipped"
+        );
         drop(_sb);
 
         // 账号级 429（普通 quota 词，不是 trial 词）照旧整 provider rest。
         let z2 = fake(Box::new(|_| {
-            (429, "application/json", b"{\"error\":{\"type\":\"rate_limit_error\",\"message\":\"quota exhausted\"}}".to_vec())
+            (
+                429,
+                "application/json",
+                b"{\"error\":{\"type\":\"rate_limit_error\",\"message\":\"quota exhausted\"}}"
+                    .to_vec(),
+            )
         }));
         let b2 = fake(Box::new(|_| (200, "application/json", ok_chat("from b"))));
         let world2 = json!({
@@ -2620,11 +2976,28 @@ mod routing_tests {
         })
         .to_string();
         let (gw, _sb) = sandbox(&world2);
-        assert_eq!(status_of(&forward(&gw, &[], &chat_request("t", false))), 200);
-        assert!(rest_left("zcode").is_some(), "an account-level 429 rests the account");
-        assert_eq!(rest_left("zcode::GLM-5.3-Trial"), None, "no model-level entry for account refusals");
-        assert_eq!(status_of(&forward(&gw, &[], &chat_request("s", false))), 200);
-        assert_eq!(z2.hits.load(Ordering::SeqCst), 1, "the rested account must be skipped");
+        assert_eq!(
+            status_of(&forward(&gw, &[], &chat_request("t", false))),
+            200
+        );
+        assert!(
+            rest_left("zcode").is_some(),
+            "an account-level 429 rests the account"
+        );
+        assert_eq!(
+            rest_left("zcode::GLM-5.3-Trial"),
+            None,
+            "no model-level entry for account refusals"
+        );
+        assert_eq!(
+            status_of(&forward(&gw, &[], &chat_request("s", false))),
+            200
+        );
+        assert_eq!(
+            z2.hits.load(Ordering::SeqCst),
+            1,
+            "the rested account must be skipped"
+        );
         drop(_sb);
 
         // 400 ended 词点名另一个 trial（候选 Flash-Trial）：判不中 → 不 rest
@@ -2654,11 +3027,30 @@ mod routing_tests {
         })
         .to_string();
         let (gw, _sb) = sandbox(&world3);
-        assert_eq!(status_of(&forward(&gw, &[], &chat_request("t", false))), 200, "400 quota words fail over to b");
-        assert_eq!(rest_left("zcode"), None, "an unmatched 400 does not rest the provider in Rust");
-        assert_eq!(rest_left("zcode::GLM-5.3-Flash-Trial"), None, "nor does it grade to the entry");
-        assert_eq!(status_of(&forward(&gw, &[], &chat_request("s", false))), 200);
-        assert_eq!(z3.hits.load(Ordering::SeqCst), 2, "zcode is still asked for its plain model");
+        assert_eq!(
+            status_of(&forward(&gw, &[], &chat_request("t", false))),
+            200,
+            "400 quota words fail over to b"
+        );
+        assert_eq!(
+            rest_left("zcode"),
+            None,
+            "an unmatched 400 does not rest the provider in Rust"
+        );
+        assert_eq!(
+            rest_left("zcode::GLM-5.3-Flash-Trial"),
+            None,
+            "nor does it grade to the entry"
+        );
+        assert_eq!(
+            status_of(&forward(&gw, &[], &chat_request("s", false))),
+            200
+        );
+        assert_eq!(
+            z3.hits.load(Ordering::SeqCst),
+            2,
+            "zcode is still asked for its plain model"
+        );
     }
 
     /// [DONE] 匹配器：行首锚定、容忍空格与 \r、行中/后缀垃圾不算。
@@ -2682,7 +3074,13 @@ mod routing_tests {
                 }
             }
         }
-        for line in ["data: {\"x\":1}\n", "data: [DONE]x\n", "xxdata: [DONE]\n", "my data: [DONE]\n", "\n"] {
+        for line in [
+            "data: {\"x\":1}\n",
+            "data: [DONE]x\n",
+            "xxdata: [DONE]\n",
+            "my data: [DONE]\n",
+            "\n",
+        ] {
             let mut m = DoneMatcher::default();
             for b in line.as_bytes() {
                 if *b == b'\n' {
@@ -2713,9 +3111,12 @@ mod routing_tests {
             "data: {\"id\":\"c\",\"choices\":[],\"usage\":{\"prompt_tokens\":1000,\"completion_tokens\":40,\"total_tokens\":1040,\"prompt_tokens_details\":{\"cached_tokens\":300,\"cache_write_tokens\":100}}}\n\n",
             "data: [DONE]\n\n",
         );
-        let v = fake(Box::new(|_| (200, "text/event-stream", sse.as_bytes().to_vec())));
+        let v = fake(Box::new(|_| {
+            (200, "text/event-stream", sse.as_bytes().to_vec())
+        }));
         let (gw, _sb) = sandbox(
-            &json!({"providers": [{"id": "pv", "name": "V", "chat": format!("{}/v1", v.base)}]}).to_string(),
+            &json!({"providers": [{"id": "pv", "name": "V", "chat": format!("{}/v1", v.base)}]})
+                .to_string(),
         );
         let reply = forward(&gw, &[], &keyed_request("pv/m", true));
         let text = text_of(reply); // 排干流 → tap 在 EOF 收口落账
@@ -2728,12 +3129,24 @@ mod routing_tests {
         assert_eq!(r.model, "pv/m", "asked 串（含 provider/ 前缀）");
         assert_eq!(r.status, 200);
         assert_eq!(r.kind, "turn");
-        assert_eq!(r.session.as_deref(), Some("sess-42"), "affinity 同源种子随行");
-        assert_eq!(r.in_tokens, Some(600), "OpenAI 口径：prompt 1000 − 300 − 100");
+        assert_eq!(
+            r.session.as_deref(),
+            Some("sess-42"),
+            "affinity 同源种子随行"
+        );
+        assert_eq!(
+            r.in_tokens,
+            Some(600),
+            "OpenAI 口径：prompt 1000 − 300 − 100"
+        );
         assert_eq!(r.out_tokens, Some(40));
         assert_eq!(r.cache_read, Some(300));
         assert_eq!(r.cache_write, Some(100));
-        assert!(r.millis > 0, "真实 millis（请求入口→流尾），got {}", r.millis);
+        assert!(
+            r.millis > 0,
+            "真实 millis（请求入口→流尾），got {}",
+            r.millis
+        );
     }
 
     /// 断流也落账：usage 帧已过、[DONE] 没来（ClosingReader 补显式收尾）——
@@ -2742,7 +3155,8 @@ mod routing_tests {
     fn cut_stream_still_records_seen_usage() {
         let a = cut_fake(CutAt::AfterUsage);
         let (gw, _sb) = sandbox(
-            &json!({"providers": [{"id": "pa", "name": "A", "chat": format!("{}/v1", a.base)}]}).to_string(),
+            &json!({"providers": [{"id": "pa", "name": "A", "chat": format!("{}/v1", a.base)}]})
+                .to_string(),
         );
         let reply = forward(&gw, &[], &chat_request("pa/ma", true));
         let text = text_of(reply);
@@ -2770,7 +3184,8 @@ mod routing_tests {
         .unwrap();
         let v = fake(Box::new(move |_| (200, "application/json", whole.clone())));
         let (gw, _sb) = sandbox(
-            &json!({"providers": [{"id": "pv", "name": "V", "chat": format!("{}/v1", v.base)}]}).to_string(),
+            &json!({"providers": [{"id": "pv", "name": "V", "chat": format!("{}/v1", v.base)}]})
+                .to_string(),
         );
         let reply = forward(&gw, &[], &keyed_request("pv/m", false));
         assert_eq!(status_of(&reply), 200);
@@ -2779,7 +3194,11 @@ mod routing_tests {
         let r = &rows[0];
         assert_eq!(r.model, "pv/m", "asked（不是厂商裸名 mb）");
         assert_eq!(r.session.as_deref(), Some("sess-42"));
-        assert_eq!(r.in_tokens, Some(200), "DeepSeek 名字：900 含缓存 → 900 − 700");
+        assert_eq!(
+            r.in_tokens,
+            Some(200),
+            "DeepSeek 名字：900 含缓存 → 900 − 700"
+        );
         assert_eq!(r.out_tokens, Some(25));
         assert_eq!(r.cache_read, Some(700), "prompt_cache_hit_tokens 别名桶");
         assert!(r.millis > 0);
@@ -2875,7 +3294,14 @@ mod routing_tests {
                 }
             }
         });
-        (Fake { base: format!("http://127.0.0.1:{port}"), hits, seen }, paths)
+        (
+            Fake {
+                base: format!("http://127.0.0.1:{port}"),
+                hits,
+                seen,
+            },
+            paths,
+        )
     }
 
     fn ev_text(s: &str) -> Vec<u8> {
@@ -2914,9 +3340,16 @@ mod routing_tests {
     fn relay_text(stream: &str) -> String {
         let mut out = String::new();
         for line in stream.lines() {
-            let Some(data) = line.trim_start().strip_prefix("data: ") else { continue };
-            let Ok(v) = serde_json::from_str::<Value>(data.trim()) else { continue };
-            if let Some(s) = v.pointer("/choices/0/delta/content").and_then(|c| c.as_str()) {
+            let Some(data) = line.trim_start().strip_prefix("data: ") else {
+                continue;
+            };
+            let Ok(v) = serde_json::from_str::<Value>(data.trim()) else {
+                continue;
+            };
+            if let Some(s) = v
+                .pointer("/choices/0/delta/content")
+                .and_then(|c| c.as_str())
+            {
                 out.push_str(s);
             }
         }
@@ -2927,9 +3360,16 @@ mod routing_tests {
     fn relay_think(stream: &str) -> String {
         let mut out = String::new();
         for line in stream.lines() {
-            let Some(data) = line.trim_start().strip_prefix("data: ") else { continue };
-            let Ok(v) = serde_json::from_str::<Value>(data.trim()) else { continue };
-            if let Some(s) = v.pointer("/choices/0/delta/reasoning_content").and_then(|c| c.as_str()) {
+            let Some(data) = line.trim_start().strip_prefix("data: ") else {
+                continue;
+            };
+            let Ok(v) = serde_json::from_str::<Value>(data.trim()) else {
+                continue;
+            };
+            if let Some(s) = v
+                .pointer("/choices/0/delta/reasoning_content")
+                .and_then(|c| c.as_str())
+            {
                 out.push_str(s);
             }
         }
@@ -2940,8 +3380,12 @@ mod routing_tests {
     fn relay_last_usage(stream: &str) -> Option<Value> {
         let mut out = None;
         for line in stream.lines() {
-            let Some(data) = line.trim_start().strip_prefix("data: ") else { continue };
-            let Ok(v) = serde_json::from_str::<Value>(data.trim()) else { continue };
+            let Some(data) = line.trim_start().strip_prefix("data: ") else {
+                continue;
+            };
+            let Ok(v) = serde_json::from_str::<Value>(data.trim()) else {
+                continue;
+            };
             if v.get("usage").is_some() {
                 out = Some(v["usage"].clone());
             }
@@ -2999,14 +3443,15 @@ mod routing_tests {
     /// 一次都不再问（Go TestStreamCutAfterToolCallEndsAsBefore）。
     #[test]
     fn cut_after_tool_call_ends_as_before() {
-        let (a, _) = scripted_fake(vec![Call::Cut(
-            [ev_text("hel"), ev_tool_call()].concat(),
-        )]);
+        let (a, _) = scripted_fake(vec![Call::Cut([ev_text("hel"), ev_tool_call()].concat())]);
         let (gw, _sb) = sandbox(&json!({"providers": [{"id": "pa", "name": "A", "key": "k", "chat": format!("{}/v1", a.base)}]}).to_string());
         let text = text_of(ask(&gw, "pa/kimi-k3"));
         assert_eq!(a.hits.load(Ordering::SeqCst), 1, "有调用开始的回复不再问");
         assert!(text.contains("\"error\""), "以错误收尾: {text}");
-        assert!(text.contains("connection lost mid-reply"), "Go cutMidReply 的口径: {text}");
+        assert!(
+            text.contains("connection lost mid-reply"),
+            "Go cutMidReply 的口径: {text}"
+        );
         assert!(text.ends_with("data: [DONE]\n\n"));
     }
 
@@ -3038,7 +3483,10 @@ mod routing_tests {
         let text = text_of(ask(&gw, "pa/gpt-x"));
         assert_eq!(a.hits.load(Ordering::SeqCst), 1, "从头重答的上游不被问续答");
         assert!(text.contains("\"error\""));
-        assert_eq!(relay_text(&text), "Go's garbage collector is a concurrent, tri-color");
+        assert_eq!(
+            relay_text(&text),
+            "Go's garbage collector is a concurrent, tri-color"
+        );
     }
 
     /// 断在纯思考里也续：prefill 带思考回放（空正文），续答的思考不重放
@@ -3059,21 +3507,25 @@ mod routing_tests {
         let last = bodies[1]["messages"].as_array().unwrap().last().unwrap();
         assert_eq!(last["reasoning_content"], "think-1");
         assert_eq!(last["partial"], true);
-        assert_eq!(last["content"], "", "纯思考断流的 prefill 是空正文 + 思考回放");
+        assert_eq!(
+            last["content"], "",
+            "纯思考断流的 prefill 是空正文 + 思考回放"
+        );
     }
 
     /// DeepSeek 的 prefix 模式走 /beta 路径、消息带 prefix 标记（Go
     /// TestStreamCutContinuesWithDeepSeekPrefix + gateway.go:8664）。
     #[test]
     fn deepseek_prefix_continuation_uses_beta_path() {
-        let (a, paths) = scripted_fake(vec![
-            Call::Cut(ev_text("hel")),
-            Call::Whole(ev_text("lo")),
-        ]);
+        let (a, paths) = scripted_fake(vec![Call::Cut(ev_text("hel")), Call::Whole(ev_text("lo"))]);
         let (gw, _sb) = sandbox(&json!({"providers": [{"id": "pa", "name": "A", "key": "k", "chat": format!("{}/v1", a.base)}]}).to_string());
         let text = text_of(ask(&gw, "pa/deepseek-chat"));
         assert_eq!(a.hits.load(Ordering::SeqCst), 2);
-        assert_eq!(paths.lock().unwrap()[1], "/beta/chat/completions", "prefix 模式的续答走 /beta");
+        assert_eq!(
+            paths.lock().unwrap()[1],
+            "/beta/chat/completions",
+            "prefix 模式的续答走 /beta"
+        );
         assert_eq!(relay_text(&text), "hello");
         let bodies = a.bodies();
         let last = bodies[1]["messages"].as_array().unwrap().last().unwrap();
@@ -3096,12 +3548,22 @@ mod routing_tests {
         let (gw, _sb) = sandbox(&json!({"providers": [{"id": "pa", "name": "A", "key": "k", "chat": format!("{}/v1", a.base)}]}).to_string());
         let text = text_of(ask(&gw, "pa/kimi-k3"));
         assert_eq!(a.hits.load(Ordering::SeqCst), 2, "拒答前续答问过一次");
-        assert!(text.contains("connection lost mid-reply"), "收尾说的是断流: {text}");
-        assert!(!text.contains("does not support"), "拒答正文不进客户端的流: {text}");
+        assert!(
+            text.contains("connection lost mid-reply"),
+            "收尾说的是断流: {text}"
+        );
+        assert!(
+            !text.contains("does not support"),
+            "拒答正文不进客户端的流: {text}"
+        );
         assert_eq!(relay_text(&text), "hel");
         // 记住了：下一个断流不再问（第二发一次出站调用就到头）。
         let text = text_of(ask(&gw, "pa/kimi-k3"));
-        assert_eq!(a.hits.load(Ordering::SeqCst), 3, "拒过的模型不再被问续答（2+1）");
+        assert_eq!(
+            a.hits.load(Ordering::SeqCst),
+            3,
+            "拒过的模型不再被问续答（2+1）"
+        );
         assert!(text.contains("\"error\""));
         assert_eq!(relay_text(&text), "hel");
     }
@@ -3157,7 +3619,10 @@ mod routing_tests {
         // 单来源（没有下一个候选可换）→ 502 可判定错误，续答不触发
         //（流首之前客户端一个字节都没拿到，没有可 prefill 的东西）。
         let a = cut_fake(CutAt::Before);
-        let (gw, _sb) = sandbox(&json!({"providers": [{"id": "pa", "name": "A", "chat": format!("{}/v1", a.base)}]}).to_string());
+        let (gw, _sb) = sandbox(
+            &json!({"providers": [{"id": "pa", "name": "A", "chat": format!("{}/v1", a.base)}]})
+                .to_string(),
+        );
         let reply = ask(&gw, "pa/kimi-k3");
         assert_eq!(status_of(&reply), 502, "流首之前死仍是换人/502 语义");
         assert!(text_of(reply).contains("before its first line"));
@@ -3181,7 +3646,11 @@ mod routing_tests {
             ("192.168.1.5", "kimi-k3", "partial"),
             ("127.0.0.1", "gpt-5", ""),
         ] {
-            assert_eq!(chat_prefill(host, model), want, "chat_prefill({host}, {model})");
+            assert_eq!(
+                chat_prefill(host, model),
+                want,
+                "chat_prefill({host}, {model})"
+            );
         }
     }
 
@@ -3189,16 +3658,19 @@ mod routing_tests {
     #[test]
     fn unecho_matches_go_table() {
         for (echo, chunks, want) in [
-            ("hel", vec!["lo"], "lo"),                 // 普通续答
-            ("hel", vec!["hel", "lo"], "lo"),          // 先回声再续
-            ("hel", vec!["h", "e", "llo"], "lo"),      // 回声分片
-            ("hel", vec!["he", "lp"], "p"),            // 前缀即回声
-            ("hel", vec!["x", "yz"], "xyz"),           // 不像的整段放行
-            ("hel", vec!["hel"], ""),                  // 只有回声
-            ("hel", vec!["he"], ""),                   // 可能还是回声的持住
-            ("", vec!["hel"], "hel"),                  // 没预填就不剔
+            ("hel", vec!["lo"], "lo"),            // 普通续答
+            ("hel", vec!["hel", "lo"], "lo"),     // 先回声再续
+            ("hel", vec!["h", "e", "llo"], "lo"), // 回声分片
+            ("hel", vec!["he", "lp"], "p"),       // 前缀即回声
+            ("hel", vec!["x", "yz"], "xyz"),      // 不像的整段放行
+            ("hel", vec!["hel"], ""),             // 只有回声
+            ("hel", vec!["he"], ""),              // 可能还是回声的持住
+            ("", vec!["hel"], "hel"),             // 没预填就不剔
         ] {
-            let mut u = Unecho { echo: echo.to_string(), seen: String::new() };
+            let mut u = Unecho {
+                echo: echo.to_string(),
+                seen: String::new(),
+            };
             let mut out = String::new();
             for ch in &chunks {
                 out.push_str(&u.strip(ch));
@@ -3211,11 +3683,23 @@ mod routing_tests {
     ///（badRequest 门 = 400/422）。
     #[test]
     fn refuses_prefill_matches_go_words() {
-        assert!(refuses_prefill(400, b"This model does not support assistant message prefill."));
+        assert!(refuses_prefill(
+            400,
+            b"This model does not support assistant message prefill."
+        ));
         assert!(refuses_prefill(422, b"The last message cannot be from the assistant for a model that does not support prefill"));
-        assert!(refuses_prefill(400, b"Requests ending with a model turn are not supported"));
+        assert!(refuses_prefill(
+            400,
+            b"Requests ending with a model turn are not supported"
+        ));
         assert!(!refuses_prefill(400, b"unrelated bad request"));
-        assert!(!refuses_prefill(500, b"does not support prefill"), "只有 400/422 算拒 prefill");
-        assert!(!refuses_prefill(404, b"requests ending with a model turn are not supported"));
+        assert!(
+            !refuses_prefill(500, b"does not support prefill"),
+            "只有 400/422 算拒 prefill"
+        );
+        assert!(!refuses_prefill(
+            404,
+            b"requests ending with a model turn are not supported"
+        ));
     }
 }

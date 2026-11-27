@@ -39,9 +39,7 @@ static ROOT_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 #[cfg(test)]
 pub(crate) fn set_root_override_for_tests(path: Option<PathBuf>) {
-    *ROOT_OVERRIDE
-        .lock()
-        .unwrap_or_else(|p| p.into_inner()) = path;
+    *ROOT_OVERRIDE.lock().unwrap_or_else(|p| p.into_inner()) = path;
 }
 
 /// Directory holding the cache file. Under `cfg!(test)` the real

@@ -164,7 +164,10 @@ fn key_rows(providers: &[Provider]) -> Vec<Value> {
 fn merge_same_key_rows(rows: Vec<Value>, providers: &[Provider]) -> Vec<Value> {
     type Identity = (String, String, Vec<String>, String);
     let field = |row: &Value, name: &str| {
-        row.get(name).and_then(Value::as_str).unwrap_or("").to_string()
+        row.get(name)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
     };
     let identity = |row: &Value| -> Option<Identity> {
         if !field(row, "user").is_empty() {
@@ -189,7 +192,10 @@ fn merge_same_key_rows(rows: Vec<Value>, providers: &[Provider]) -> Vec<Value> {
     let mut groups: Vec<(Option<Identity>, Vec<Value>)> = Vec::new();
     for row in rows {
         let id = identity(&row);
-        match groups.iter_mut().find(|(seen, _)| id.is_some() && *seen == id) {
+        match groups
+            .iter_mut()
+            .find(|(seen, _)| id.is_some() && *seen == id)
+        {
             Some((_, members)) => members.push(row),
             None => groups.push((id, vec![row])),
         }
@@ -254,34 +260,48 @@ fn balance_source(provider: &Provider) -> Option<(String, BalanceKind)> {
                 return Some((DEEPSEEK_BALANCE_URL.to_string(), BalanceKind::DeepSeek))
             }
             // Go balance.go:67-70：两个 host 各自的端点与货币符号。
-            "api.moonshot.cn" => return Some((
-                "https://api.moonshot.cn/v1/users/me/balance".to_string(),
-                BalanceKind::Moonshot { sign: "¥" },
-            )),
-            "api.moonshot.ai" => return Some((
-                "https://api.moonshot.ai/v1/users/me/balance".to_string(),
-                BalanceKind::Moonshot { sign: "$" },
-            )),
-            "openrouter.ai" => return Some((
-                "https://openrouter.ai/api/v1/credits".to_string(),
-                BalanceKind::OpenRouter,
-            )),
-            "api.siliconflow.cn" => return Some((
-                "https://api.siliconflow.cn/v1/user/info".to_string(),
-                BalanceKind::SiliconFlow { sign: "¥" },
-            )),
-            "api.siliconflow.com" => return Some((
-                "https://api.siliconflow.com/v1/user/info".to_string(),
-                BalanceKind::SiliconFlow { sign: "$" },
-            )),
-            "api.stepfun.com" => return Some((
-                "https://api.stepfun.com/v1/accounts".to_string(),
-                BalanceKind::StepFun { sign: "¥" },
-            )),
-            "api.stepfun.ai" => return Some((
-                "https://api.stepfun.ai/v1/accounts".to_string(),
-                BalanceKind::StepFun { sign: "$" },
-            )),
+            "api.moonshot.cn" => {
+                return Some((
+                    "https://api.moonshot.cn/v1/users/me/balance".to_string(),
+                    BalanceKind::Moonshot { sign: "¥" },
+                ))
+            }
+            "api.moonshot.ai" => {
+                return Some((
+                    "https://api.moonshot.ai/v1/users/me/balance".to_string(),
+                    BalanceKind::Moonshot { sign: "$" },
+                ))
+            }
+            "openrouter.ai" => {
+                return Some((
+                    "https://openrouter.ai/api/v1/credits".to_string(),
+                    BalanceKind::OpenRouter,
+                ))
+            }
+            "api.siliconflow.cn" => {
+                return Some((
+                    "https://api.siliconflow.cn/v1/user/info".to_string(),
+                    BalanceKind::SiliconFlow { sign: "¥" },
+                ))
+            }
+            "api.siliconflow.com" => {
+                return Some((
+                    "https://api.siliconflow.com/v1/user/info".to_string(),
+                    BalanceKind::SiliconFlow { sign: "$" },
+                ))
+            }
+            "api.stepfun.com" => {
+                return Some((
+                    "https://api.stepfun.com/v1/accounts".to_string(),
+                    BalanceKind::StepFun { sign: "¥" },
+                ))
+            }
+            "api.stepfun.ai" => {
+                return Some((
+                    "https://api.stepfun.ai/v1/accounts".to_string(),
+                    BalanceKind::StepFun { sign: "$" },
+                ))
+            }
             _ => {}
         }
     }
@@ -522,7 +542,11 @@ fn zhipu_refusal(value: &Value) -> bool {
         Some(Value::String(s)) => s.parse::<i64>().unwrap_or(0),
         _ => 0,
     };
-    let msg = value.get("msg").and_then(Value::as_str).unwrap_or("").trim();
+    let msg = value
+        .get("msg")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     code != 0 || !msg.is_empty()
 }
 
@@ -752,7 +776,11 @@ mod tests {
         // 60s 缓存（?kept=1 语义）：不打网络——计数器不涨。
         let cached = quota_entries(&gateway, false);
         assert_eq!(cached, rows);
-        assert_eq!(vendor.hits.load(Ordering::SeqCst), 1, "缓存命中不该再打网络");
+        assert_eq!(
+            vendor.hits.load(Ordering::SeqCst),
+            1,
+            "缓存命中不该再打网络"
+        );
 
         // force（面板点刷新 / 无参直连）跳过缓存。
         let again = quota_entries(&gateway, true);
@@ -815,7 +843,10 @@ mod tests {
         let rows = quota_entries(&gateway, true);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["provider"], "openrouter");
-        assert_eq!(rows[0]["balance"], "$16.50", "credits − usage（Go readOpenRouter）");
+        assert_eq!(
+            rows[0]["balance"], "$16.50",
+            "credits − usage（Go readOpenRouter）"
+        );
         {
             let requests = vendor.requests.lock().unwrap_or_else(|p| p.into_inner());
             assert_eq!(
@@ -926,11 +957,13 @@ mod tests {
         {
             let requests = bigmodel.requests.lock().unwrap_or_else(|p| p.into_inner());
             assert_eq!(
-                requests[0].0,
-                "GET /api/biz/account/query-customer-account-report HTTP/1.1",
+                requests[0].0, "GET /api/biz/account/query-customer-account-report HTTP/1.1",
                 "Zhipu 账号报告路径（Go zhipuAccountReport）"
             );
-            assert_eq!(requests[0].1, "Bearer sk-zp", "key 作 Bearer（Go 注释实锤）");
+            assert_eq!(
+                requests[0].1, "Bearer sk-zp",
+                "key 作 Bearer（Go 注释实锤）"
+            );
         }
     }
 
@@ -1021,10 +1054,7 @@ mod tests {
         );
         // 字符串 code 不算下线（Go Code int 解析失败保持 0）→ 照常读。
         assert_eq!(
-            format_siliconflow_balance(
-                r#"{"code":"20092","data":{"totalBalance":"5.00"}}"#,
-                "¥"
-            ),
+            format_siliconflow_balance(r#"{"code":"20092","data":{"totalBalance":"5.00"}}"#, "¥"),
             Some("¥5.00".to_string())
         );
     }
@@ -1041,7 +1071,11 @@ mod tests {
             None
         );
         assert_eq!(
-            format_zhipu_balance(r#"{"code":1113,"msg":"余额不足或无可用资源包","success":false}"#, "$", false),
+            format_zhipu_balance(
+                r#"{"code":1113,"msg":"余额不足或无可用资源包","success":false}"#,
+                "$",
+                false
+            ),
             None
         );
         // 非按量端点上的全零账号 → 无卡（Go errNoBalance）。
@@ -1100,11 +1134,18 @@ mod tests {
 
         let rows: Vec<Value> = quota_entries(&gateway, true)
             .into_iter()
-            .filter(|row| row["provider"].as_str().is_some_and(|id| id.starts_with("source-") || id == "opencode-go"))
+            .filter(|row| {
+                row["provider"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with("source-") || id == "opencode-go")
+            })
             .collect();
         assert_eq!(rows.len(), 2, "同钥匙一行、另一把钥匙一行: {rows:?}");
         assert_eq!(rows[0]["provider"], "opencode-go", "留预设的名字");
-        assert_eq!(rows[0]["aliases"], serde_json::json!(["source-a", "source-b"]));
+        assert_eq!(
+            rows[0]["aliases"],
+            serde_json::json!(["source-a", "source-b"])
+        );
         assert_eq!(rows[1]["provider"], "source-other");
         assert!(rows[1].get("aliases").is_none());
     }

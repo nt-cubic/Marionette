@@ -18,10 +18,18 @@ fn opencode_db_path() -> Option<PathBuf> {
         env_dir("OPENCODE_DATA_DIR")
             .unwrap_or_else(|| home.join(".local").join("share").join("opencode"))
             .join("opencode.db"),
-        home.join(".local").join("share").join("opencode").join("opencode.db"),
+        home.join(".local")
+            .join("share")
+            .join("opencode")
+            .join("opencode.db"),
         home.join(".config").join("opencode").join("opencode.db"),
-        home.join("AppData").join("Local").join("opencode").join("opencode.db"),
-        home_join(".opencode").unwrap_or_default().join("opencode.db"),
+        home.join("AppData")
+            .join("Local")
+            .join("opencode")
+            .join("opencode.db"),
+        home_join(".opencode")
+            .unwrap_or_default()
+            .join("opencode.db"),
     ])
 }
 

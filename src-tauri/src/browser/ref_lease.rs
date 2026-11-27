@@ -161,7 +161,13 @@ fn env_enables(raw: Option<&str>) -> bool {
 /// no annotations). Read once per process.
 pub fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| env_enables(std::env::var("MARIONETTE_BROWSER_REF_LEASE").ok().as_deref()))
+    *ENABLED.get_or_init(|| {
+        env_enables(
+            std::env::var("MARIONETTE_BROWSER_REF_LEASE")
+                .ok()
+                .as_deref(),
+        )
+    })
 }
 
 /// Answer a known-dead generation without touching CDP. The payload mirrors
@@ -193,7 +199,10 @@ pub fn note_action(lease: &RefCell<Option<RefLease>>, token: &str, answer: &mut 
     if !enabled() {
         return;
     }
-    let error = answer.get("error").and_then(Value::as_str).map(str::to_string);
+    let error = answer
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let ok = answer.get("ok").and_then(Value::as_bool).unwrap_or(false);
     if error.as_deref() == Some("stale") {
         if let Some(lease) = lease.borrow_mut().as_mut() {
@@ -218,7 +227,13 @@ mod tests {
     use super::*;
 
     fn lease(token: &str) -> RefLease {
-        RefLease::adopt(token.to_string(), 3, 1000, LeaseDeath::SupersededBySnapshot, None)
+        RefLease::adopt(
+            token.to_string(),
+            3,
+            1000,
+            LeaseDeath::SupersededBySnapshot,
+            None,
+        )
     }
 
     #[test]
@@ -234,7 +249,10 @@ mod tests {
     fn a_marked_death_answers_for_the_current_token() {
         let mut lease = lease("G.1.4.2");
         lease.invalidate(LeaseDeath::DocumentNavigation);
-        assert_eq!(lease.stale_reason_for("G.1.4.2"), Some(LeaseDeath::DocumentNavigation));
+        assert_eq!(
+            lease.stale_reason_for("G.1.4.2"),
+            Some(LeaseDeath::DocumentNavigation)
+        );
         // Other tokens are still not the lease's business.
         assert_eq!(lease.stale_reason_for("G.2.5.2"), None);
     }
@@ -244,20 +262,41 @@ mod tests {
         let mut lease = lease("G.1.4.2");
         lease.invalidate(LeaseDeath::DocumentNavigation);
         lease.invalidate(LeaseDeath::StaleAnswer);
-        assert_eq!(lease.stale_reason_for("G.1.4.2"), Some(LeaseDeath::DocumentNavigation));
+        assert_eq!(
+            lease.stale_reason_for("G.1.4.2"),
+            Some(LeaseDeath::DocumentNavigation)
+        );
     }
 
     #[test]
     fn adopt_remember_why_the_previous_token_died() {
         let old = lease("G.1.4.2");
         // The common path: a plain newer snapshot replaces an alive lease.
-        let replaced = RefLease::adopt("G.2.5.2".to_string(), 3, 2000, LeaseDeath::SupersededBySnapshot, Some(&old));
-        assert_eq!(replaced.stale_reason_for("G.1.4.2"), Some(LeaseDeath::SupersededBySnapshot));
+        let replaced = RefLease::adopt(
+            "G.2.5.2".to_string(),
+            3,
+            2000,
+            LeaseDeath::SupersededBySnapshot,
+            Some(&old),
+        );
+        assert_eq!(
+            replaced.stale_reason_for("G.1.4.2"),
+            Some(LeaseDeath::SupersededBySnapshot)
+        );
         assert_eq!(replaced.stale_reason_for("G.2.5.2"), None);
 
         // The annotate path: pick_resolve adopts with the user-annotation cause.
-        let annotated = RefLease::adopt("G.3.6.2".to_string(), 4, 3000, LeaseDeath::UserAnnotation, Some(&replaced));
-        assert_eq!(annotated.stale_reason_for("G.2.5.2"), Some(LeaseDeath::UserAnnotation));
+        let annotated = RefLease::adopt(
+            "G.3.6.2".to_string(),
+            4,
+            3000,
+            LeaseDeath::UserAnnotation,
+            Some(&replaced),
+        );
+        assert_eq!(
+            annotated.stale_reason_for("G.2.5.2"),
+            Some(LeaseDeath::UserAnnotation)
+        );
         // Memory is one predecessor deep: a grandparent token is the page's
         // business again — its generic stale prose is enough that far back.
         assert_eq!(annotated.stale_reason_for("G.1.4.2"), None);
@@ -265,14 +304,29 @@ mod tests {
         // A lease that was already dead keeps its earlier, truer cause.
         let mut dead = lease("G.4.7.2");
         dead.invalidate(LeaseDeath::RouteNavigation);
-        let after = RefLease::adopt("G.5.8.2".to_string(), 5, 4000, LeaseDeath::SupersededBySnapshot, Some(&dead));
-        assert_eq!(after.stale_reason_for("G.4.7.2"), Some(LeaseDeath::RouteNavigation));
+        let after = RefLease::adopt(
+            "G.5.8.2".to_string(),
+            5,
+            4000,
+            LeaseDeath::SupersededBySnapshot,
+            Some(&dead),
+        );
+        assert_eq!(
+            after.stale_reason_for("G.4.7.2"),
+            Some(LeaseDeath::RouteNavigation)
+        );
     }
 
     #[test]
     fn adopting_the_same_token_records_no_predecessor() {
         let old = lease("G.1.4.2");
-        let re = RefLease::adopt("G.1.4.2".to_string(), 3, 2000, LeaseDeath::SupersededBySnapshot, Some(&old));
+        let re = RefLease::adopt(
+            "G.1.4.2".to_string(),
+            3,
+            2000,
+            LeaseDeath::SupersededBySnapshot,
+            Some(&old),
+        );
         assert!(re.superseded.is_none());
     }
 
@@ -306,7 +360,8 @@ mod tests {
     #[test]
     fn note_action_kills_the_lease_on_stale_and_stamps_successes() {
         let cell = RefCell::new(Some(lease("G.1.4.2")));
-        let mut stale = json!({ "ok": false, "url": "https://x.test/", "error": "stale", "detail": "…" });
+        let mut stale =
+            json!({ "ok": false, "url": "https://x.test/", "error": "stale", "detail": "…" });
         note_action(&cell, "G.1.4.2", &mut stale, 9000);
         assert_eq!(
             cell.borrow().as_ref().unwrap().stale_reason_for("G.1.4.2"),
@@ -323,9 +378,13 @@ mod tests {
         // Failures that are not stale (disabled, unsupported, …) leave the
         // lease and the answer alone — the refs are still current.
         let cell = RefCell::new(Some(lease("G.3.6.2")));
-        let mut disabled = json!({ "ok": false, "url": "https://x.test/", "error": "disabled", "detail": "…" });
+        let mut disabled =
+            json!({ "ok": false, "url": "https://x.test/", "error": "disabled", "detail": "…" });
         note_action(&cell, "G.3.6.2", &mut disabled, 9600);
-        assert_eq!(cell.borrow().as_ref().unwrap().stale_reason_for("G.3.6.2"), None);
+        assert_eq!(
+            cell.borrow().as_ref().unwrap().stale_reason_for("G.3.6.2"),
+            None
+        );
         assert!(disabled.get("generationStillValid").is_none());
     }
 

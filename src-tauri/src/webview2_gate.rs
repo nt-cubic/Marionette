@@ -4,8 +4,7 @@
 //! download link so the user stays in control.
 
 /// Evergreen Bootstrapper (≈2 MB). Opens the Microsoft download when missing.
-const WEBVIEW2_BOOTSTRAPPER_URL: &str =
-    "https://go.microsoft.com/fwlink/p/?LinkId=2124703";
+const WEBVIEW2_BOOTSTRAPPER_URL: &str = "https://go.microsoft.com/fwlink/p/?LinkId=2124703";
 
 /// Call before `tauri::Builder`. Exits the process if WebView2 is unavailable.
 pub fn ensure_or_exit() {
@@ -74,15 +73,7 @@ mod windows {
 
     fn key_exists(root: HKEY, path: &str) -> bool {
         let mut hkey: HKEY = std::ptr::null_mut();
-        let status = unsafe {
-            RegOpenKeyExW(
-                root,
-                wide(path).as_ptr(),
-                0,
-                KEY_READ,
-                &mut hkey,
-            )
-        };
+        let status = unsafe { RegOpenKeyExW(root, wide(path).as_ptr(), 0, KEY_READ, &mut hkey) };
         if status == ERROR_SUCCESS {
             unsafe {
                 RegCloseKey(hkey);
@@ -96,15 +87,7 @@ mod windows {
     /// Prefer keys that have a non-empty `pv` (product version) value.
     fn key_has_pv(root: HKEY, path: &str) -> bool {
         let mut hkey: HKEY = std::ptr::null_mut();
-        let status = unsafe {
-            RegOpenKeyExW(
-                root,
-                wide(path).as_ptr(),
-                0,
-                KEY_READ,
-                &mut hkey,
-            )
-        };
+        let status = unsafe { RegOpenKeyExW(root, wide(path).as_ptr(), 0, KEY_READ, &mut hkey) };
         if status != ERROR_SUCCESS {
             return false;
         }

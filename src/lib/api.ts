@@ -1985,6 +1985,15 @@ export interface ChiefTask {
   bridgeModel?: string | null;
   /** bridgeModel when present, otherwise model. */
   displayModel?: string | null;
+  /** Billing/authentication source resolved from the engine provider record. */
+  displayProvider?: string | null;
+  /** Model portion of displayModel, without the provider routing segment. */
+  displayModelName?: string | null;
+  /** Explicit delegated reasoning tier; absent means the agent default. */
+  displayEffort?: string | null;
+  preferredEffort?: string | null;
+  /** Raw persisted bridge binding from Task; list endpoints may expose it. */
+  bridge?: { entryId: string; modelId: string } | null;
   status: "proposed" | "starting" | "running" | "waiting_user" | "completed" | "failed" | "cancelled" | "interrupted";
   waitingReason?: "permission" | "question" | "plan_approval" | "user_input" | "user_interrupt" | "auto_retry" | null;
   turnCount?: number;

@@ -111,7 +111,10 @@ mod tests {
         let root = r"D:\Projects\AgentsShell";
         assert!(cwd_matches_project(r"\\?\D:\Projects\AgentsShell", root));
         assert!(cwd_matches_project(r"D:/Projects/AgentsShell/", root));
-        assert!(cwd_matches_project(r"D:\Projects\AgentsShell\fortest", root));
+        assert!(cwd_matches_project(
+            r"D:\Projects\AgentsShell\fortest",
+            root
+        ));
         assert!(!cwd_matches_project(r"D:\Projects\Other", root));
         assert!(!cwd_matches_project(r"D:\Projects\AgentsShellX", root));
     }

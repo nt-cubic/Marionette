@@ -294,9 +294,7 @@ fn resolve_npm_via_node_cli() -> Option<ResolvedCommand> {
     if !cli.is_file() {
         return None;
     }
-    let cli_str = strip_extended_prefix(
-        &cli.canonicalize().unwrap_or(cli).to_string_lossy(),
-    );
+    let cli_str = strip_extended_prefix(&cli.canonicalize().unwrap_or(cli).to_string_lossy());
     Some(ResolvedCommand {
         program: node,
         prefix_args: vec![cli_str.clone()],
@@ -314,7 +312,10 @@ fn resolve_node_program() -> Option<String> {
     for candidate in node_install_candidates() {
         if candidate.is_file() {
             return Some(strip_extended_prefix(
-                &candidate.canonicalize().unwrap_or(candidate).to_string_lossy(),
+                &candidate
+                    .canonicalize()
+                    .unwrap_or(candidate)
+                    .to_string_lossy(),
             ));
         }
     }
@@ -337,9 +338,25 @@ fn node_install_candidates() -> Vec<PathBuf> {
     }
     if let Ok(home) = env::var("USERPROFILE") {
         let home = PathBuf::from(home);
-        push_node(home.join("scoop").join("apps").join("nodejs").join("current"));
-        push_node(home.join("scoop").join("apps").join("nodejs-lts").join("current"));
-        push_node(home.join("AppData").join("Roaming").join("fnm").join("aliases").join("default"));
+        push_node(
+            home.join("scoop")
+                .join("apps")
+                .join("nodejs")
+                .join("current"),
+        );
+        push_node(
+            home.join("scoop")
+                .join("apps")
+                .join("nodejs-lts")
+                .join("current"),
+        );
+        push_node(
+            home.join("AppData")
+                .join("Roaming")
+                .join("fnm")
+                .join("aliases")
+                .join("default"),
+        );
     }
     if let Ok(volta) = env::var("VOLTA_HOME") {
         push_node(PathBuf::from(volta).join("bin"));
@@ -478,9 +495,7 @@ fn rank_candidate(path: &Path) -> i32 {
 }
 
 fn finalize_path(path: PathBuf) -> Result<ResolvedCommand, String> {
-    let path = path
-        .canonicalize()
-        .unwrap_or(path);
+    let path = path.canonicalize().unwrap_or(path);
     let path_str = path.to_string_lossy().to_string();
     // Strip Windows \\?\ prefix for friendlier command lines
     let path_str = path_str
@@ -590,7 +605,12 @@ fn windows_extra_candidates(command: &str) -> Vec<PathBuf> {
     }
     // User profile npm
     if let Some(home) = env::var_os("USERPROFILE") {
-        dirs.push(PathBuf::from(&home).join("AppData").join("Roaming").join("npm"));
+        dirs.push(
+            PathBuf::from(&home)
+                .join("AppData")
+                .join("Roaming")
+                .join("npm"),
+        );
     }
     // Node install dirs (GUI apps often miss these when User PATH is stale).
     for candidate in node_install_candidates() {
@@ -657,9 +677,8 @@ fn unwrap_npm_cmd_to_node(cmd_path: &Path) -> Option<ResolvedCommand> {
     });
 
     let js_path = js_hits.into_iter().next()?;
-    let js_str = strip_extended_prefix(
-        &js_path.canonicalize().unwrap_or(js_path).to_string_lossy(),
-    );
+    let js_str =
+        strip_extended_prefix(&js_path.canonicalize().unwrap_or(js_path).to_string_lossy());
 
     let node = resolve_node_program()?;
     Some(ResolvedCommand {
@@ -691,17 +710,14 @@ fn resolve_batch_relative_path(cmd_path: &Path, token: &str) -> Option<PathBuf> 
 
     let mut stripped = token.as_str();
     for prefix in ["~dp0", "dp0", ".\\", "./"] {
-        if let Some(rest) = stripped
-            .strip_prefix(prefix)
-            .or_else(|| {
-                let lower = stripped.to_ascii_lowercase();
-                if lower.starts_with(&prefix.to_ascii_lowercase()) {
-                    Some(&stripped[prefix.len()..])
-                } else {
-                    None
-                }
-            })
-        {
+        if let Some(rest) = stripped.strip_prefix(prefix).or_else(|| {
+            let lower = stripped.to_ascii_lowercase();
+            if lower.starts_with(&prefix.to_ascii_lowercase()) {
+                Some(&stripped[prefix.len()..])
+            } else {
+                None
+            }
+        }) {
             stripped = rest;
             break;
         }
@@ -760,9 +776,9 @@ fn unwrap_npm_shim_dir_to_exe(shim_path: &Path) -> Option<String> {
     // %APPDATA%\npm\node_modules\<pkg>\bin\<stem>.exe
     // Try a few known package folder names for popular agents
     let package_guesses = [
-        format!("{stem}-ai"),     // opencode-ai
-        stem.to_string(),         // opencode
-        format!("{stem}-code"),   // claude-code style
+        format!("{stem}-ai"),   // opencode-ai
+        stem.to_string(),       // opencode
+        format!("{stem}-code"), // claude-code style
         format!("@agentclientprotocol/{stem}-acp"),
     ];
 
@@ -882,7 +898,11 @@ pub fn output_with_kill_timeout(
     };
     let stdout = stdout_reader.join().unwrap_or_default();
     let stderr = stderr_reader.join().unwrap_or_default();
-    Ok(std::process::Output { status, stdout, stderr })
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 // ─── 每会话 kill-on-close Job Object（2026-11-06 内存压制批）─────────────────
@@ -1051,7 +1071,11 @@ pub(crate) fn trim_working_set(pid: u32) -> bool {
     };
     // SAFETY: handle opened and closed within this function.
     unsafe {
-        let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        let process = OpenProcess(
+            PROCESS_SET_QUOTA | PROCESS_QUERY_LIMITED_INFORMATION,
+            0,
+            pid,
+        );
         if process.is_null() {
             return false;
         }
@@ -1089,7 +1113,8 @@ mod tests {
         );
         assert!(en.contains("Tip:"), "expected actionable tip, got {en}");
 
-        let eperm = humanize_install_error("Error: EPERM: operation not permitted, unlink 'claude.exe'");
+        let eperm =
+            humanize_install_error("Error: EPERM: operation not permitted, unlink 'claude.exe'");
         assert!(eperm.to_ascii_lowercase().contains("locked") || eperm.contains("Tip:"));
     }
 
@@ -1114,10 +1139,8 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn batch_relative_path_expands_dp0_tokens() {
-        let dir = std::env::temp_dir().join(format!(
-            "marionette-batch-test-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("marionette-batch-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("node_modules").join("pkg")).unwrap();
         let js = dir.join("node_modules").join("pkg").join("index.js");
@@ -1126,11 +1149,8 @@ mod tests {
         std::fs::write(&cmd, "@echo off\n").unwrap();
 
         // After `%` split: `~dp0\node_modules\pkg\index.js`
-        let hit = resolve_batch_relative_path(
-            &cmd,
-            r"~dp0\node_modules\pkg\index.js",
-        )
-        .expect("expand ~dp0");
+        let hit = resolve_batch_relative_path(&cmd, r"~dp0\node_modules\pkg\index.js")
+            .expect("expand ~dp0");
         assert!(hit.ends_with(Path::new("index.js")));
 
         // After `%` split of `%dp0%\node_modules\...` → `\node_modules\...`

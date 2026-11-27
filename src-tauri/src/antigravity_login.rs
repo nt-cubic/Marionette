@@ -160,8 +160,8 @@ fn send_jsonrpc(
     let payload = serde_json::json!({
         "jsonrpc": "2.0", "id": id, "method": method, "params": params
     });
-    let mut line = serde_json::to_string(&payload)
-        .map_err(|e| format!("serialize {method}: {e}"))?;
+    let mut line =
+        serde_json::to_string(&payload).map_err(|e| format!("serialize {method}: {e}"))?;
     line.push('\n');
     stdin
         .write_all(line.as_bytes())
@@ -207,13 +207,7 @@ fn run_handshake(stdin: &mut ChildStdin, lines: mpsc::Receiver<String>) -> Resul
         Some(&mut scrape),
     )?;
     if let Some(url) = auth_url {
-        crate::debug_log::append(
-            "auth",
-            "info",
-            "",
-            "antigravity consent url",
-            Some(&url),
-        );
+        crate::debug_log::append("auth", "info", "", "antigravity consent url", Some(&url));
     }
     Ok(())
 }
@@ -276,16 +270,15 @@ mod tests {
         wait_response(&rx, 1, deadline, None).expect("id=1 response");
 
         // Wrong id must be skipped; error shape must surface the reason.
-        tx.send(r#"{"jsonrpc":"2.0","id":9,"result":{}}"#.to_string()).unwrap();
+        tx.send(r#"{"jsonrpc":"2.0","id":9,"result":{}}"#.to_string())
+            .unwrap();
         tx.send(r#"{"jsonrpc":"2.0","id":2,"error":{"message":"auth failed"}}"#.to_string())
             .unwrap();
-        let err = wait_response(&rx, 2, Instant::now() + Duration::from_secs(2), None)
-            .unwrap_err();
+        let err = wait_response(&rx, 2, Instant::now() + Duration::from_secs(2), None).unwrap_err();
         assert!(err.contains("auth failed"), "{err}");
 
         // Deadline already passed → immediate timeout, no panic.
-        let err =
-            wait_response(&rx, 3, Instant::now() - Duration::from_secs(1), None).unwrap_err();
+        let err = wait_response(&rx, 3, Instant::now() - Duration::from_secs(1), None).unwrap_err();
         assert!(err.contains("timed out"), "{err}");
     }
 
@@ -313,7 +306,8 @@ mod tests {
             crate::antigravity_support::AUTH_URL_MARKER
         ))
         .unwrap();
-        tx.send(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#.to_string()).unwrap();
+        tx.send(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#.to_string())
+            .unwrap();
         let seen = std::cell::RefCell::new(None::<String>);
         let mut hook = |line: &str| {
             if let Some(url) = crate::antigravity_support::extract_auth_url(line) {

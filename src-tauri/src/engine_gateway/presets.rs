@@ -99,7 +99,9 @@ pub fn lookup(model_id: &str) -> Option<Preset> {
             return Some(preset.clone());
         }
         for pid in &index.provider_ids {
-            let Some(rest) = bare.strip_prefix(pid.as_str()) else { continue };
+            let Some(rest) = bare.strip_prefix(pid.as_str()) else {
+                continue;
+            };
             // `/` 分隔在 bare_id（取最后一段）时已经剥过，这里只剩 `-`/`:`。
             let Some(rest) = rest.strip_prefix('-').or_else(|| rest.strip_prefix(':')) else {
                 continue;
@@ -193,9 +195,17 @@ fn next_retry(was: Duration) -> Duration {
 /// 缓存是否过期（Go catalog.go `Stale` 同语义）：没有缓存文件，或 mtime
 /// 距今超过 [`STALE_AFTER`]。时钟异常（mtime 在未来）按过期处理。
 fn cache_stale() -> bool {
-    let Some(path) = cache_path() else { return true };
-    let Ok(meta) = std::fs::metadata(&path) else { return true };
-    meta.modified().ok().and_then(|mtime| mtime.elapsed().ok()).map(|age| age >= STALE_AFTER).unwrap_or(true)
+    let Some(path) = cache_path() else {
+        return true;
+    };
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return true;
+    };
+    meta.modified()
+        .ok()
+        .and_then(|mtime| mtime.elapsed().ok())
+        .map(|age| age >= STALE_AFTER)
+        .unwrap_or(true)
 }
 
 /// 目录保鲜：缓存缺失/过期时后台补抓一次（单飞），**绝不阻塞调用线程**
@@ -226,16 +236,18 @@ pub fn ensure_fresh() {
         return;
     }
     // 起不了线程就等下一轮目录读取再试：目录照旧服务，绝不致命。
-    let _ = std::thread::Builder::new().name("modelsdev-fresh".into()).spawn(|| {
-        let ok = refresh(&super::outbound_agent()).is_ok();
-        let mut fresh = fresh_cell().lock().unwrap_or_else(|p| p.into_inner());
-        fresh.in_flight = false;
-        if ok {
-            fresh.backoff = Duration::ZERO;
-        } else {
-            fresh.backoff = next_retry(fresh.backoff);
-        }
-    });
+    let _ = std::thread::Builder::new()
+        .name("modelsdev-fresh".into())
+        .spawn(|| {
+            let ok = refresh(&super::outbound_agent()).is_ok();
+            let mut fresh = fresh_cell().lock().unwrap_or_else(|p| p.into_inner());
+            fresh.in_flight = false;
+            if ok {
+                fresh.backoff = Duration::ZERO;
+            } else {
+                fresh.backoff = next_retry(fresh.backoff);
+            }
+        });
 }
 
 /// 只读访问索引；第一次访问时从磁盘缓存懒加载（没有/读失败 → 空索引，
@@ -365,7 +377,11 @@ fn window_of(model: &Value) -> u64 {
     let input = floor(limit("input"));
     let context = floor(limit("context"));
     if input > 0 {
-        return if context > 0 && context < input { context } else { input };
+        return if context > 0 && context < input {
+            context
+        } else {
+            input
+        };
     }
     if context > 0 {
         return context;
@@ -467,7 +483,9 @@ mod tests {
     }
 
     fn sandbox() -> Sandbox {
-        let lock = crate::engine_gateway::TEST_SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let lock = crate::engine_gateway::TEST_SANDBOX_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         reset_for_tests();
         if let Ok(mut guard) = TEST_MODELS_DEV_URL.lock() {
             *guard = None;
@@ -480,7 +498,11 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("temp config dir");
         let prior_xdg = std::env::var("XDG_CONFIG_HOME").ok();
         std::env::set_var("XDG_CONFIG_HOME", &dir);
-        Sandbox { dir, prior_xdg, lock }
+        Sandbox {
+            dir,
+            prior_xdg,
+            lock,
+        }
     }
 
     /// 本地假目录服务（std TcpListener 手写 HTTP，零新依赖）：`/ok` 路径
@@ -772,7 +794,10 @@ mod tests {
     fn next_retry_doubles_then_caps() {
         assert_eq!(next_retry(Duration::ZERO), RETRY_FIRST);
         assert_eq!(next_retry(RETRY_FIRST), Duration::from_secs(4 * 60));
-        assert_eq!(next_retry(Duration::from_secs(8 * 60)), Duration::from_secs(16 * 60));
+        assert_eq!(
+            next_retry(Duration::from_secs(8 * 60)),
+            Duration::from_secs(16 * 60)
+        );
         // 2min→4→8→16→32→64 封顶到 60min。
         assert_eq!(next_retry(Duration::from_secs(32 * 60)), RETRY_MAX);
     }
@@ -810,14 +835,26 @@ mod tests {
         let _sandbox = sandbox();
         let (ok_url, _fail_url, hits) = fake_catalog(API);
         set_test_url(&ok_url);
-        assert!(cache_path().map(|p| !p.exists()).unwrap_or(true), "沙箱里没有缓存文件");
+        assert!(
+            cache_path().map(|p| !p.exists()).unwrap_or(true),
+            "沙箱里没有缓存文件"
+        );
         ensure_fresh();
-        assert!(wait_for(|| lookup("glm-5.3").is_some(), 5000), "后台补抓应把目录装进索引");
-        assert!(cache_path().expect("sandbox cache path").exists(), "补抓后缓存文件应存在");
-        assert!(wait_for(
-            || fresh_cell().lock().map(|f| !f.in_flight).unwrap_or(false),
-            2000
-        ), "单飞标志应清掉");
+        assert!(
+            wait_for(|| lookup("glm-5.3").is_some(), 5000),
+            "后台补抓应把目录装进索引"
+        );
+        assert!(
+            cache_path().expect("sandbox cache path").exists(),
+            "补抓后缓存文件应存在"
+        );
+        assert!(
+            wait_for(
+                || fresh_cell().lock().map(|f| !f.in_flight).unwrap_or(false),
+                2000
+            ),
+            "单飞标志应清掉"
+        );
         let fresh = fresh_cell().lock().unwrap();
         assert_eq!(fresh.backoff, Duration::ZERO, "成功清退避");
         assert!(fresh.last_attempt.is_some());
@@ -832,11 +869,17 @@ mod tests {
         let (_ok_url, fail_url, hits) = fake_catalog(API);
         set_test_url(&fail_url);
         ensure_fresh();
-        assert!(wait_for(|| hits.load(Ordering::Relaxed) >= 1, 5000), "缓存缺失时应发起补抓");
-        assert!(wait_for(
-            || fresh_cell().lock().map(|f| !f.in_flight).unwrap_or(false),
-            2000
-        ), "单飞标志应清掉");
+        assert!(
+            wait_for(|| hits.load(Ordering::Relaxed) >= 1, 5000),
+            "缓存缺失时应发起补抓"
+        );
+        assert!(
+            wait_for(
+                || fresh_cell().lock().map(|f| !f.in_flight).unwrap_or(false),
+                2000
+            ),
+            "单飞标志应清掉"
+        );
         {
             let fresh = fresh_cell().lock().unwrap();
             assert_eq!(fresh.backoff, RETRY_FIRST, "失败后进首试退避");
@@ -852,7 +895,10 @@ mod tests {
             fresh.last_attempt = Some(Instant::now() - Duration::from_secs(180));
         }
         ensure_fresh();
-        assert!(wait_for(|| hits.load(Ordering::Relaxed) >= 2, 5000), "退避到期后应再次补抓");
+        assert!(
+            wait_for(|| hits.load(Ordering::Relaxed) >= 2, 5000),
+            "退避到期后应再次补抓"
+        );
     }
 
     /// 缓存新鲜：ensure_fresh 是空操作（一次请求都不发，fail 服务零命中）。

@@ -137,8 +137,10 @@ pub fn project_status_with_report(
         let Some(state) = display_state_for(task.status) else {
             continue;
         };
-        if matches!(state, StaffDisplayState::Failed | StaffDisplayState::Interrupted)
-            && task_last_event > 0
+        if matches!(
+            state,
+            StaffDisplayState::Failed | StaffDisplayState::Interrupted
+        ) && task_last_event > 0
             && now.saturating_sub(task_last_event) >= TERMINAL_RETENTION_MS
         {
             continue;

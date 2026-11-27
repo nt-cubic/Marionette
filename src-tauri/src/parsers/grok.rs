@@ -14,7 +14,11 @@ use std::path::{Path, PathBuf};
 pub struct GrokParser;
 
 fn grok_sessions_root() -> Option<PathBuf> {
-    Some(env_dir("GROK_HOME").or_else(|| home_join(".grok"))?.join("sessions"))
+    Some(
+        env_dir("GROK_HOME")
+            .or_else(|| home_join(".grok"))?
+            .join("sessions"),
+    )
 }
 
 fn summary_title(v: &Value) -> String {
@@ -81,7 +85,9 @@ pub fn list_from(
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown");
-            let native_id = pointer_str(&summary, "/info/id").unwrap_or(dir_name).to_string();
+            let native_id = pointer_str(&summary, "/info/id")
+                .unwrap_or(dir_name)
+                .to_string();
             out.push(ExternalConversation {
                 id: format!("grok:{native_id}"),
                 source: "grok".into(),
@@ -104,10 +110,7 @@ fn load_from(dir: &Path, agent_id: &str) -> Result<Vec<Value>, String> {
     if !dir.is_dir() {
         return Err(format!("Grok session dir not found: {}", dir.display()));
     }
-    let session_id = dir
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("grok");
+    let session_id = dir.file_name().and_then(|s| s.to_str()).unwrap_or("grok");
     let updates = dir.join("updates.jsonl");
     if updates.is_file() {
         return load_updates_jsonl(&updates, session_id, agent_id);
@@ -324,10 +327,7 @@ mod tests {
             r#"{"info":{"id":"01sub","cwd":"D:\\Projects\\Marionette"},"session_kind":"subagent","num_messages":3}"#,
         )
         .unwrap();
-        let other = tmp
-            .join("sessions")
-            .join("D%3A%5Ctmp")
-            .join("01bbb");
+        let other = tmp.join("sessions").join("D%3A%5Ctmp").join("01bbb");
         fs::create_dir_all(&other).unwrap();
         fs::write(
             other.join("summary.json"),

@@ -72,7 +72,8 @@ fn page_over_size(status: u16, err_body: &[u8], sent: usize) -> bool {
     if sent < PAGE_CAP_LEAST {
         return false;
     }
-    let page_status = matches!(status, 413 | 500 | 502 | 503 | 504) || (520..=524).contains(&status);
+    let page_status =
+        matches!(status, 413 | 500 | 502 | 503 | 504) || (520..=524).contains(&status);
     if !page_status {
         return false;
     }
@@ -169,7 +170,18 @@ fn too_long(status: u16, m: &str) -> bool {
 /// Go paceWords：限速/限量词（不是一条提示词的大小）。
 fn pace_words_match(m: &str) -> bool {
     const CN: [&str; 12] = [
-        "速率", "频繁", "频率", "限流", "并发", "每秒", "每分钟", "每小时", "每天", "每日", "稍后再试", "稍后重试",
+        "速率",
+        "频繁",
+        "频率",
+        "限流",
+        "并发",
+        "每秒",
+        "每分钟",
+        "每小时",
+        "每天",
+        "每日",
+        "稍后再试",
+        "稍后重试",
     ];
     if CN.iter().any(|w| m.contains(w)) {
         return true;
@@ -257,7 +269,17 @@ fn too_long_words(m: &str) -> bool {
         }
     }
     // (内容|输入|文本|提示词?|prompt|问题|对话|消息)(内容|文本)?(长度)?\s*(太长|过长|超长)
-    for s in ["内容", "输入", "文本", "提示词", "提示", "prompt", "问题", "对话", "消息"] {
+    for s in [
+        "内容",
+        "输入",
+        "文本",
+        "提示词",
+        "提示",
+        "prompt",
+        "问题",
+        "对话",
+        "消息",
+    ] {
         for mid in ["", "内容", "文本"] {
             for l in ["", "长度"] {
                 for ws in ["", " ", "\t"] {
@@ -343,7 +365,17 @@ fn too_long_words(m: &str) -> bool {
         }
     }
     // (内容|输入|文本|提示词?|prompt|问题|对话|消息)[^，。,.;；!！]{0,12}超(过|出)[^，。,.;；!！]{0,12}(长度|token|令牌|字数)
-    for s in ["内容", "输入", "文本", "提示词", "提示", "prompt", "问题", "对话", "消息"] {
+    for s in [
+        "内容",
+        "输入",
+        "文本",
+        "提示词",
+        "提示",
+        "prompt",
+        "问题",
+        "对话",
+        "消息",
+    ] {
         for v in ["过", "出"] {
             for unit in ["长度", "token", "令牌", "字数"] {
                 if bounded_chain(m, s, 12, &format!("超{v}"), 12, unit) {
@@ -397,7 +429,14 @@ fn body_cap_words_match(m: &str) -> bool {
         }
     }
     // 分支 1：request[ _]<noun>( size)?( is| was)? <verb>
-    const VERBS: [&str; 6] = ["too large", "too big", "over", "larger than", "exceeds", "exceed"];
+    const VERBS: [&str; 6] = [
+        "too large",
+        "too big",
+        "over",
+        "larger than",
+        "exceeds",
+        "exceed",
+    ];
     for sep in [' ', '_'] {
         for noun in ["body", "entity", "payload"] {
             let head = format!("request{sep}{noun}");
@@ -434,7 +473,11 @@ fn body_cap_words_match(m: &str) -> bool {
     while let Some(pos) = m[from..].find("request body is ") {
         let at = from + pos + "request body is ".len();
         let mut cursor = at;
-        while m.as_bytes().get(cursor).is_some_and(|b| b.is_ascii_digit() || *b == b'.') {
+        while m
+            .as_bytes()
+            .get(cursor)
+            .is_some_and(|b| b.is_ascii_digit() || *b == b'.')
+        {
             cursor += 1;
         }
         if cursor > at {
@@ -538,9 +581,15 @@ fn word_bounded(m: &str, w: &str) -> bool {
     let mut from = 0;
     while let Some(pos) = m[from..].find(w) {
         let at = from + pos;
-        let before = m[..at].chars().next_back().is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
+        let before = m[..at]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
         let end = at + w.len();
-        let after = m[end..].chars().next().is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
+        let after = m[end..]
+            .chars()
+            .next()
+            .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
         if before && after {
             return true;
         }
@@ -554,7 +603,10 @@ fn word_ends_at_boundary(m: &str, pat: &str) -> bool {
     let mut from = 0;
     while let Some(pos) = m[from..].find(pat) {
         let end = from + pos + pat.len();
-        let after = m[end..].chars().next().is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
+        let after = m[end..]
+            .chars()
+            .next()
+            .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
         if after {
             return true;
         }
@@ -582,7 +634,11 @@ fn digits_commas_then(m: &str, head: &str, tail: &str) -> bool {
     while let Some(pos) = m[from..].find(head) {
         let at = from + pos + head.len();
         let mut cursor = at;
-        while m.as_bytes().get(cursor).is_some_and(|b| b.is_ascii_digit() || *b == b',') {
+        while m
+            .as_bytes()
+            .get(cursor)
+            .is_some_and(|b| b.is_ascii_digit() || *b == b',')
+        {
             cursor += 1;
         }
         if cursor > at && m[cursor..].starts_with(tail) {
@@ -767,7 +823,9 @@ fn page_cap(caps: &Caps, provider_id: &str, guessed: usize) -> usize {
 
 /// 序列化后的字节数。
 fn size_of(value: &Value) -> usize {
-    serde_json::to_vec(value).map(|b| b.len()).unwrap_or(usize::MAX)
+    serde_json::to_vec(value)
+        .map(|b| b.len())
+        .unwrap_or(usize::MAX)
 }
 
 /// 请求体的形状（决定历史在哪个字段、图块长什么样、占位文本块用什么 type）。
@@ -804,7 +862,11 @@ impl Shape {
     /// content 数组会被厂商 400，旧实现就是这个坑）。
     fn placeholder(self) -> Value {
         const NOTE: &str = "[image left out: the request was over the provider's byte cap]";
-        let ty = if self == Shape::Responses { "input_text" } else { "text" };
+        let ty = if self == Shape::Responses {
+            "input_text"
+        } else {
+            "text"
+        };
         serde_json::json!({ "type": ty, "text": NOTE })
     }
 }
@@ -942,9 +1004,15 @@ pub fn maybe_refit(
     status: u16,
     err_body: &[u8],
 ) -> Option<Reply> {
-    maybe_refit_with(gw, &out.provider_id, Shape::Chat, sent, status, err_body, &|b| {
-        super::chat::send(out, b)
-    })
+    maybe_refit_with(
+        gw,
+        &out.provider_id,
+        Shape::Chat,
+        sent,
+        status,
+        err_body,
+        &|b| super::chat::send(out, b),
+    )
 }
 
 /// 三种体形状共用的 refit 回路：`send` 把（丢图后的）体按**同一目标、同一
@@ -989,7 +1057,10 @@ pub fn maybe_refit_with(
                     .ok()
                     .and_then(|v| v.get("stream").and_then(|s| s.as_bool()))
                     .unwrap_or(false);
-                if restatus < 400 && wants_stream && response.content_type().contains("event-stream") {
+                if restatus < 400
+                    && wants_stream
+                    && response.content_type().contains("event-stream")
+                {
                     return Some(Reply::Stream {
                         status: restatus,
                         content_type: response.content_type().to_string(),
@@ -1013,7 +1084,10 @@ pub fn maybe_refit_with(
                     current = fitted;
                     continue;
                 }
-                return Some(Reply::Json { status: restatus, body: vendor_body });
+                return Some(Reply::Json {
+                    status: restatus,
+                    body: vendor_body,
+                });
             }
         }
     }
@@ -1100,34 +1174,53 @@ mod tests {
         // 限速词把窗口词也压下去（Bedrock 的 "Too many tokens, please wait"）
         assert!(!is_cap_refusal(400, b"too many tokens, please wait", big));
         // max_tokens 族是回复上限，不算窗口满也不算字节上限——原样透传
-        assert!(!is_cap_refusal(400, b"maximum context length with max_tokens", big));
+        assert!(!is_cap_refusal(
+            400,
+            b"maximum context length with max_tokens",
+            big
+        ));
     }
 
     #[test]
     fn proxy_page_on_big_request_is_cap() {
-        let page = b"<html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>nginx</body></html>";
+        let page =
+            b"<html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>nginx</body></html>";
         // 大请求 + 代理页（chenxiang0010 中转回归：502 九连发）
         assert!(is_cap_refusal(502, page, 8 << 20));
         assert!(is_cap_refusal(504, b"", 8 << 20));
-        assert!(is_cap_refusal(521, b"<!doctype html><html>error</html>", 8 << 20));
+        assert!(is_cap_refusal(
+            521,
+            b"<!doctype html><html>error</html>",
+            8 << 20
+        ));
         // 小请求的页是代理自己的毛病，维持原样
         assert!(!is_cap_refusal(502, page, 1024));
         // 有话说的 5xx 不是页
-        assert!(!is_cap_refusal(502, br#"{"error":"upstream connect error"}"#, 8 << 20));
+        assert!(!is_cap_refusal(
+            502,
+            br#"{"error":"upstream connect error"}"#,
+            8 << 20
+        ));
         // 页判定的状态面外（501/505）不算
         assert!(!is_cap_refusal(501, b"", 8 << 20));
     }
 
     #[test]
     fn stated_cap_picks_smallest_named_size() {
-        assert_eq!(stated_cap(COMMAND_CODE.as_bytes(), 42_100_000), Some(33554432));
+        assert_eq!(
+            stated_cap(COMMAND_CODE.as_bytes(), 42_100_000),
+            Some(33554432)
+        );
         assert_eq!(stated_cap(b"no numbers here", 1000), None);
         // 比发送量还大的尺寸不算 cap（那是正文自报的请求大小）
         assert_eq!(stated_cap(b"maximum 40.1 MB allowed", 1000), None);
         // 1 KiB 以下不是 cap
         assert_eq!(stated_cap(b"over 500 bytes", 10_000), None);
         // MiB 按 2^20
-        assert_eq!(stated_cap(b"limit is 32MiB please", 100_000_000), Some(32 << 20));
+        assert_eq!(
+            stated_cap(b"limit is 32MiB please", 100_000_000),
+            Some(32 << 20)
+        );
     }
 
     #[test]
@@ -1166,7 +1259,10 @@ mod tests {
             "提示词的长度超过了最大值",
         ] {
             assert!(too_long(400, text), "should be too long: {text}");
-            assert!(!is_cap_refusal(400, text.as_bytes(), 40 << 20), "not a byte cap: {text}");
+            assert!(
+                !is_cap_refusal(400, text.as_bytes(), 40 << 20),
+                "not a byte cap: {text}"
+            );
         }
     }
 
@@ -1194,7 +1290,8 @@ mod shape_tests {
 
     fn shed(shape: Shape, v: Value, target: usize) -> Option<Value> {
         let body = serde_json::to_vec(&v).unwrap();
-        without_oldest_images(shape, &body, target).map(|(b, _)| serde_json::from_slice(&b).unwrap())
+        without_oldest_images(shape, &body, target)
+            .map(|(b, _)| serde_json::from_slice(&b).unwrap())
     }
 
     #[test]
@@ -1235,7 +1332,10 @@ mod shape_tests {
         let items = v["messages"].as_array().unwrap().clone();
         assert_eq!(latest_user(Shape::Anthropic, &items), Some(0));
         let out = shed(Shape::Anthropic, v, 7000).unwrap();
-        assert_eq!(out["messages"][2]["content"][0]["content"][0]["type"], "text");
+        assert_eq!(
+            out["messages"][2]["content"][0]["content"][0]["type"],
+            "text"
+        );
         assert_eq!(out["messages"][0]["content"][0]["type"], "image");
     }
 

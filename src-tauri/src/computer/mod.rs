@@ -8,10 +8,10 @@
 //! in tools_mcp and calls the SAME grant checks — never a second set.
 
 pub mod driver;
-pub mod keys;
-pub mod protocol;
 #[cfg(target_os = "windows")]
 pub mod helper;
+pub mod keys;
+pub mod protocol;
 #[cfg(target_os = "windows")]
 pub mod win;
 
@@ -30,8 +30,15 @@ const GRANT_TTL: Duration = Duration::from_secs(30 * 60);
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
 #[allow(dead_code)] // App scope is the protocol's full shape; sharing UI grows into it.
 pub enum TargetKey {
-    Window { pid: u32, started_at_ms: u64, window_id: u64 },
-    App { pid: u32, started_at_ms: u64 },
+    Window {
+        pid: u32,
+        started_at_ms: u64,
+        window_id: u64,
+    },
+    App {
+        pid: u32,
+        started_at_ms: u64,
+    },
     Screen,
 }
 
@@ -89,7 +96,10 @@ static STATE: Mutex<Option<State>> = Mutex::new(None);
 
 fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
     let mut guard = STATE.lock().expect("computer state poisoned");
-    let state = guard.get_or_insert_with(|| State { grants: HashMap::new(), helper: None });
+    let state = guard.get_or_insert_with(|| State {
+        grants: HashMap::new(),
+        helper: None,
+    });
     f(state)
 }
 
@@ -153,7 +163,12 @@ impl HelperProc {
                                 break;
                             }
                         }
-                        Ok(protocol::Frame::Reply { id, ok, result, error }) => {
+                        Ok(protocol::Frame::Reply {
+                            id,
+                            ok,
+                            result,
+                            error,
+                        }) => {
                             if let Ok(mut io) = io_for_reader.lock() {
                                 if let Some(sender) = io.pending.remove(&id) {
                                     let answer = if ok {
@@ -200,7 +215,11 @@ impl HelperProc {
             let id = io.next_id;
             io.next_id += 1;
             io.pending.insert(id, tx);
-            protocol::Frame::Request { id, op: op.to_string(), params }
+            protocol::Frame::Request {
+                id,
+                op: op.to_string(),
+                params,
+            }
         };
         {
             let mut io = self
@@ -218,7 +237,12 @@ impl HelperProc {
 }
 
 /// One helper round trip, spawning/restarting the helper when needed.
-fn helper_request(app: &AppHandle, op: &str, params: Value, timeout: Duration) -> Result<Value, String> {
+fn helper_request(
+    app: &AppHandle,
+    op: &str,
+    params: Value,
+    timeout: Duration,
+) -> Result<Value, String> {
     if !driver::is_installed() {
         return Err("driver-not-installed".to_string());
     }
@@ -290,7 +314,14 @@ fn set_grant(key: TargetKey, level: Level, label: String) {
             state.grants.remove(&key);
         }
         _ => {
-            state.grants.insert(key, Grant { level, label, last_used: Instant::now() });
+            state.grants.insert(
+                key,
+                Grant {
+                    level,
+                    label,
+                    last_used: Instant::now(),
+                },
+            );
         }
     });
 }
@@ -340,7 +371,13 @@ fn read_refusal(target: Value) -> Value {
 
 /// Read-level gate with the agent-initiated card: unshared target → the user
 /// answers (allow once / share it read / deny); denial returns the refusal.
-fn ensure_read(app: &AppHandle, session_id: &str, key: &TargetKey, label: &str, target: Value) -> Result<Value, String> {
+fn ensure_read(
+    app: &AppHandle,
+    session_id: &str,
+    key: &TargetKey,
+    label: &str,
+    target: Value,
+) -> Result<Value, String> {
     if grant_for(key).unwrap_or(Level::None).allows(Level::Read) {
         return Ok(json!({"ok": true}));
     }
@@ -377,14 +414,8 @@ fn ensure_control(
     if crate::browser::session_auto_approves(session_id) {
         return Ok(json!({"ok": true, "once": true}));
     }
-    let allowed = crate::browser::request_permission(
-        app,
-        session_id,
-        "computer",
-        "",
-        label,
-        action_summary,
-    );
+    let allowed =
+        crate::browser::request_permission(app, session_id, "computer", "", label, action_summary);
     if allowed {
         return Ok(json!({"ok": true, "once": true}));
     }
@@ -400,7 +431,12 @@ fn ensure_control(
 // ---------------------------------------------------------------------------
 
 pub fn tool_list_windows(app: &AppHandle) -> Result<Value, String> {
-    helper_request(app, protocol::OP_LIST_WINDOWS, json!({}), Duration::from_secs(30))
+    helper_request(
+        app,
+        protocol::OP_LIST_WINDOWS,
+        json!({}),
+        Duration::from_secs(30),
+    )
 }
 
 /// Window identity: (pid, started_at, driver window id). `started_at` comes
@@ -411,23 +447,35 @@ fn window_key_of(window: &Value) -> Option<TargetKey> {
         .get("windowId")
         .and_then(Value::as_u64)
         .or_else(|| window.get("window_id").and_then(Value::as_u64))?;
-    let started_at_ms = window.get("processStartedAtMs").and_then(Value::as_u64).unwrap_or(0);
-    Some(TargetKey::Window { pid, started_at_ms, window_id })
+    let started_at_ms = window
+        .get("processStartedAtMs")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    Some(TargetKey::Window {
+        pid,
+        started_at_ms,
+        window_id,
+    })
 }
 
-pub fn tool_capture(
-    app: &AppHandle,
-    session_id: &str,
-    params: &Value,
-) -> Result<Value, String> {
-    let listing = helper_request(app, protocol::OP_LIST_WINDOWS, json!({}), Duration::from_secs(30))?;
+pub fn tool_capture(app: &AppHandle, session_id: &str, params: &Value) -> Result<Value, String> {
+    let listing = helper_request(
+        app,
+        protocol::OP_LIST_WINDOWS,
+        json!({}),
+        Duration::from_secs(30),
+    )?;
     let Some(row) = find_window_row(&listing, params) else {
         return Ok(json!({"error": "computer_no_such_target"}));
     };
     let Some(key) = window_key_of(&row) else {
         return Ok(json!({"error": "computer_no_such_target"}));
     };
-    let label = row.get("title").and_then(Value::as_str).unwrap_or("window").to_string();
+    let label = row
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("window")
+        .to_string();
     let target = json!({"pid": params.get("pid"), "windowId": params.get("windowId")});
     let gate = ensure_read(app, session_id, &key, &label, target.clone())?;
     if gate.get("ok").is_none() {
@@ -440,22 +488,32 @@ pub fn tool_capture(
     if let Some(max_width) = params.get("maxWidth") {
         call_params["maxWidth"] = max_width.clone();
     }
-    helper_request(app, protocol::OP_CAPTURE, call_params, Duration::from_secs(90))
+    helper_request(
+        app,
+        protocol::OP_CAPTURE,
+        call_params,
+        Duration::from_secs(90),
+    )
 }
 
-pub fn tool_snapshot(
-    app: &AppHandle,
-    session_id: &str,
-    params: &Value,
-) -> Result<Value, String> {
-    let listing = helper_request(app, protocol::OP_LIST_WINDOWS, json!({}), Duration::from_secs(30))?;
+pub fn tool_snapshot(app: &AppHandle, session_id: &str, params: &Value) -> Result<Value, String> {
+    let listing = helper_request(
+        app,
+        protocol::OP_LIST_WINDOWS,
+        json!({}),
+        Duration::from_secs(30),
+    )?;
     let Some(row) = find_window_row(&listing, params) else {
         return Ok(json!({"error": "computer_no_such_target"}));
     };
     let Some(key) = window_key_of(&row) else {
         return Ok(json!({"error": "computer_no_such_target"}));
     };
-    let label = row.get("title").and_then(Value::as_str).unwrap_or("window").to_string();
+    let label = row
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("window")
+        .to_string();
     let target = json!({"pid": params.get("pid"), "windowId": params.get("windowId")});
     let gate = ensure_read(app, session_id, &key, &label, target.clone())?;
     if gate.get("ok").is_none() {
@@ -475,14 +533,23 @@ pub fn tool_snapshot(
 }
 
 pub fn tool_act(app: &AppHandle, session_id: &str, params: &Value) -> Result<Value, String> {
-    let listing = helper_request(app, protocol::OP_LIST_WINDOWS, json!({}), Duration::from_secs(30))?;
+    let listing = helper_request(
+        app,
+        protocol::OP_LIST_WINDOWS,
+        json!({}),
+        Duration::from_secs(30),
+    )?;
     let Some(row) = find_window_row(&listing, params) else {
         return Ok(json!({"error": "computer_no_such_target"}));
     };
     let Some(key) = window_key_of(&row) else {
         return Ok(json!({"error": "computer_no_such_target"}));
     };
-    let label = row.get("title").and_then(Value::as_str).unwrap_or("window").to_string();
+    let label = row
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("window")
+        .to_string();
     let action: protocol::WindowAction =
         serde_json::from_value(params.get("action").cloned().unwrap_or(Value::Null))
             .map_err(|e| format!("bad action: {e}"))?;
@@ -501,7 +568,12 @@ pub fn tool_act(app: &AppHandle, session_id: &str, params: &Value) -> Result<Val
     Ok(acted)
 }
 
-pub fn tool_clipboard(app: &AppHandle, session_id: &str, write: bool, params: &Value) -> Result<Value, String> {
+pub fn tool_clipboard(
+    app: &AppHandle,
+    session_id: &str,
+    write: bool,
+    params: &Value,
+) -> Result<Value, String> {
     // The clipboard is the user's: both directions need an active grant
     // somewhere (a shared session in flight), not just any session.
     let active = with_state(|state| {
@@ -517,7 +589,10 @@ pub fn tool_clipboard(app: &AppHandle, session_id: &str, write: bool, params: &V
         }));
     }
     let (op, call) = if write {
-        (protocol::OP_CLIPBOARD_WRITE, json!({"text": params.get("text")}))
+        (
+            protocol::OP_CLIPBOARD_WRITE,
+            json!({"text": params.get("text")}),
+        )
     } else {
         (protocol::OP_CLIPBOARD_READ, json!({}))
     };
@@ -571,7 +646,12 @@ pub fn computer_list_shareable(app: AppHandle) -> Result<Value, String> {
     // button right after a successful install (2026-11-01). Degrade to an
     // empty list + the reason.
     let (listing, helper_error) = if driver::is_installed() {
-        match helper_request(&app, protocol::OP_LIST_WINDOWS, json!({}), Duration::from_secs(30)) {
+        match helper_request(
+            &app,
+            protocol::OP_LIST_WINDOWS,
+            json!({}),
+            Duration::from_secs(30),
+        ) {
             Ok(listing) => (listing, None),
             Err(error) => (json!({"windows": []}), Some(error)),
         }
@@ -632,7 +712,12 @@ pub fn computer_share(app: AppHandle, target: Value, level: String) -> Result<Va
     // Own app and blocklisted processes never become shareable, by hand or
     // otherwise — the listing marks them; the share itself re-checks.
     if let TargetKey::Window { pid, window_id, .. } = &key {
-        let listing = helper_request(&app, protocol::OP_LIST_WINDOWS, json!({}), Duration::from_secs(30))?;
+        let listing = helper_request(
+            &app,
+            protocol::OP_LIST_WINDOWS,
+            json!({}),
+            Duration::from_secs(30),
+        )?;
         let row = listing
             .get("windows")
             .and_then(Value::as_array)
@@ -680,7 +765,13 @@ pub fn computer_revoke_all(app: AppHandle) -> Result<Value, String> {
 pub fn stop_shortcut_pressed(app: &AppHandle) {
     revoke_all();
     let _ = app.emit("marionette-computer-state", json!({"stopped": true}));
-    crate::debug_log::append("computer", "info", "", "stop shortcut: all shares revoked", None);
+    crate::debug_log::append(
+        "computer",
+        "info",
+        "",
+        "stop shortcut: all shares revoked",
+        None,
+    );
 }
 
 #[cfg(test)]
@@ -700,9 +791,16 @@ mod tests {
         }));
         assert_eq!(
             key,
-            Some(TargetKey::Window { pid: 8, started_at_ms: 99, window_id: 4242 })
+            Some(TargetKey::Window {
+                pid: 8,
+                started_at_ms: 99,
+                window_id: 4242
+            })
         );
-        assert_eq!(TargetKey::from_params(&json!({"kind": "screen"})), Some(TargetKey::Screen));
+        assert_eq!(
+            TargetKey::from_params(&json!({"kind": "screen"})),
+            Some(TargetKey::Screen)
+        );
         assert_eq!(TargetKey::from_params(&json!({"kind": "nope"})), None);
     }
 }

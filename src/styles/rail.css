@@ -340,6 +340,78 @@
   color: var(--red);
 }
 
+/* ----- delegated agents ----- */
+.rail-agents {
+  margin: 1px 0 2px;
+}
+.rail-agent-row {
+  min-height: 34px;
+  padding-right: 10px;
+  gap: 4px;
+}
+.rail-agent__main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.rail-agent__icon {
+  color: var(--text-faint);
+}
+.rail-agent__copy {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+.rail-agent__title,
+.rail-agent__detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rail-agent__title {
+  color: var(--text);
+  font-size: 12px;
+}
+.rail-agent__detail {
+  color: var(--text-faint);
+  font-size: 10.5px;
+}
+.rail-agent__state {
+  color: var(--text-muted);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.rail-agent-row.is-attention .rail-agent__state {
+  color: var(--yellow);
+}
+.rail-agent-row.is-failed .rail-agent__state {
+  color: var(--red);
+}
+.rail-agent-row.is-queued .rail-agent__state,
+.rail-agent-row.is-done .rail-agent__state,
+.rail-agent-row.is-stopped .rail-agent__state {
+  color: var(--text-faint);
+}
+.rail-agent__stop {
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-standard);
+}
+.rail-agent-row:hover .rail-agent__stop,
+.rail-agent-row:focus-within .rail-agent__stop {
+  opacity: 1;
+}
+
 /* ----- changed files ----- */
 .rail-file__main {
   flex: 1;

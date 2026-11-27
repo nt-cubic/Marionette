@@ -60,8 +60,7 @@ fn engine_base() -> Result<String, String> {
     }
     crate::engine::wake_if_installed();
     crate::engine::ensure_bridge_ready(std::time::Duration::from_secs(30));
-    crate::engine::engine_v1_url()
-        .ok_or_else(|| "translation engine is not running".to_string())
+    crate::engine::engine_v1_url().ok_or_else(|| "translation engine is not running".to_string())
 }
 
 fn handle(mut request: tiny_http::Request) {
@@ -78,14 +77,26 @@ fn handle(mut request: tiny_http::Request) {
     if method == Method::Post {
         if let Some((model, stream)) = model_from_path(&path) {
             let mut raw = String::new();
-            if let Err(error) = request.as_reader().take(MAX_BODY as u64).read_to_string(&mut raw) {
-                respond_json(request, 400, gemini_error(400, &format!("read body: {error}")));
+            if let Err(error) = request
+                .as_reader()
+                .take(MAX_BODY as u64)
+                .read_to_string(&mut raw)
+            {
+                respond_json(
+                    request,
+                    400,
+                    gemini_error(400, &format!("read body: {error}")),
+                );
                 return;
             }
             let body: Value = match serde_json::from_str(&raw) {
                 Ok(body) => body,
                 Err(error) => {
-                    respond_json(request, 400, gemini_error(400, &format!("invalid JSON: {error}")));
+                    respond_json(
+                        request,
+                        400,
+                        gemini_error(400, &format!("invalid JSON: {error}")),
+                    );
                     return;
                 }
             };
@@ -191,7 +202,11 @@ fn handle_generate(request: tiny_http::Request, model: &str, stream: bool, body:
             return;
         }
         Err(error) => {
-            respond_json(request, 502, gemini_error(502, &format!("upstream: {error}")));
+            respond_json(
+                request,
+                502,
+                gemini_error(502, &format!("upstream: {error}")),
+            );
             return;
         }
     };
@@ -212,7 +227,11 @@ fn handle_generate(request: tiny_http::Request, model: &str, stream: bool, body:
     };
     match body {
         Ok(value) => respond_json(request, 200, openai_to_gemini(&value)),
-        Err(error) => respond_json(request, 502, gemini_error(502, &format!("bad upstream JSON: {error}"))),
+        Err(error) => respond_json(
+            request,
+            502,
+            gemini_error(502, &format!("bad upstream JSON: {error}")),
+        ),
     }
 }
 
@@ -414,7 +433,10 @@ fn openai_to_gemini(value: &Value) -> Value {
     let choice = value.get("choices").and_then(|choices| choices.get(0));
     let message = choice.and_then(|choice| choice.get("message"));
     let mut parts = Vec::new();
-    if let Some(text) = message.and_then(|message| message.get("content")).and_then(Value::as_str) {
+    if let Some(text) = message
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+    {
         if !text.is_empty() {
             parts.push(json!({ "text": text }));
         }
@@ -656,7 +678,10 @@ mod tests {
             "usage": { "prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7 }
         });
         let gemini = openai_to_gemini(&response);
-        assert_eq!(gemini["candidates"][0]["content"]["parts"][1]["functionCall"]["name"], "read");
+        assert_eq!(
+            gemini["candidates"][0]["content"]["parts"][1]["functionCall"]["name"],
+            "read"
+        );
         assert_eq!(gemini["usageMetadata"]["totalTokenCount"], 7);
 
         let path = "/v1beta/models/opencode-go%2Fdeepseek-v4.1-flash:generateContent";

@@ -52,7 +52,11 @@ pub fn briefing_prompt(spec: &CouncilSpec, chair: &MemberSpec) -> (String, Strin
 
 /// Phase A:独立提案。输入刻意只有任务与本人角色——隔离测试断言
 /// 输出不含其他成员的任何文本。
-pub fn proposal_prompt(spec: &CouncilSpec, member: &MemberSpec, briefing: Option<&CouncilMessage>) -> (String, String) {
+pub fn proposal_prompt(
+    spec: &CouncilSpec,
+    member: &MemberSpec,
+    briefing: Option<&CouncilMessage>,
+) -> (String, String) {
     let system = format!(
         "{}你是提案人。本轮你的提案**不会**被其他成员看到,直到所有提案完成;他们同样独立提案,你看不到他们的。{}",
         role_header(spec, member),
@@ -90,7 +94,10 @@ pub fn critique_prompt(
     };
     let mut proposals = String::new();
     for m in others {
-        proposals.push_str(&format!("\n---\n### 来自 `{}` 的方案(第 {} 轮)\n{}\n", m.from, m.round, m.content));
+        proposals.push_str(&format!(
+            "\n---\n### 来自 `{}` 的方案(第 {} 轮)\n{}\n",
+            m.from, m.round, m.content
+        ));
     }
     let user = format!(
         "第 {round} 轮评审。以下是其他成员的当前方案,请逐份质询(每份至少一条,除非真的无懈可击——那种情况明确说「未发现实质缺陷」并给出你检查过的角度):\n{proposals}\
@@ -128,7 +135,11 @@ pub fn revision_prompt(
 }
 
 /// Phase D:主席综合。输入 = 全部审议消息(署名流)。
-pub fn synthesis_prompt(spec: &CouncilSpec, chair: &MemberSpec, all: &[CouncilMessage]) -> (String, String) {
+pub fn synthesis_prompt(
+    spec: &CouncilSpec,
+    chair: &MemberSpec,
+    all: &[CouncilMessage],
+) -> (String, String) {
     let system = format!(
         "{}你是主席,现在做最终综合(Synthesis)。职责:\n- 采信**有依据**的发现(谁的方案在证据上站得住,就采谁,与人气无关)。\n- 逐项裁决分歧:每个分歧给出裁决与理由;裁决靠证据,不靠投票。\n- 证据不足的分歧**不许强行统一**:归入 open questions,并给出针对性的实验/测试建议。\n- 明确列出仍然成立的风险。{}",
         role_header(spec, chair),
@@ -136,35 +147,46 @@ pub fn synthesis_prompt(spec: &CouncilSpec, chair: &MemberSpec, all: &[CouncilMe
     );
     // 分层背书状态(M5):contributor 的提案/修订附 lead 判定计数;
     // 采信规则同步写进任务指令(见下方"分层规则")。
-    let tier_of = |id: &str| spec.members.iter().find(|m| m.id == id).map(|m| m.tier).unwrap_or(MemberTier::Lead);
-    let endorsement_state = |author: &str, round: u32, kind: &MessageKind| -> Option<(usize, usize)> {
-        if tier_of(author) != MemberTier::Contributor {
-            return None;
-        }
-        if !matches!(kind, MessageKind::Proposal | MessageKind::Revision) {
-            return None;
-        }
-        let mut endorsed = 0;
-        let mut rejected = 0;
-        for e in all.iter().filter(|m| m.kind == MessageKind::Endorsement) {
-            let meta = match &e.meta { Some(v) => v, None => continue };
-            let targets_author = meta.get("targetAuthor").and_then(|v| v.as_str()) == Some(author);
-            let same_round = e.round == round;
-            let same_kind = meta
-                .get("targetKind")
-                .and_then(|v| v.as_str())
-                .map(|k| k == format!("{:?}", kind))
-                .unwrap_or(true);
-            if targets_author && same_round && same_kind {
-                if meta.get("verdict").and_then(|v| v.as_str()) == Some("endorse") {
-                    endorsed += 1;
-                } else {
-                    rejected += 1;
+    let tier_of = |id: &str| {
+        spec.members
+            .iter()
+            .find(|m| m.id == id)
+            .map(|m| m.tier)
+            .unwrap_or(MemberTier::Lead)
+    };
+    let endorsement_state =
+        |author: &str, round: u32, kind: &MessageKind| -> Option<(usize, usize)> {
+            if tier_of(author) != MemberTier::Contributor {
+                return None;
+            }
+            if !matches!(kind, MessageKind::Proposal | MessageKind::Revision) {
+                return None;
+            }
+            let mut endorsed = 0;
+            let mut rejected = 0;
+            for e in all.iter().filter(|m| m.kind == MessageKind::Endorsement) {
+                let meta = match &e.meta {
+                    Some(v) => v,
+                    None => continue,
+                };
+                let targets_author =
+                    meta.get("targetAuthor").and_then(|v| v.as_str()) == Some(author);
+                let same_round = e.round == round;
+                let same_kind = meta
+                    .get("targetKind")
+                    .and_then(|v| v.as_str())
+                    .map(|k| k == format!("{:?}", kind))
+                    .unwrap_or(true);
+                if targets_author && same_round && same_kind {
+                    if meta.get("verdict").and_then(|v| v.as_str()) == Some("endorse") {
+                        endorsed += 1;
+                    } else {
+                        rejected += 1;
+                    }
                 }
             }
-        }
-        Some((endorsed, rejected))
-    };
+            Some((endorsed, rejected))
+        };
     let mut flow = String::new();
     for m in all {
         let mut label = match m.kind {
@@ -179,7 +201,13 @@ pub fn synthesis_prompt(spec: &CouncilSpec, chair: &MemberSpec, all: &[CouncilMe
         if let Some((endorsed, rejected)) = endorsement_state(&m.from, m.round, &m.kind) {
             label.push_str(&format!("〔lead 背书:认可 {endorsed} / 否决 {rejected}〕"));
         }
-        flow.push_str(&format!("\n---\n#### {} · {} · `{}`\n{}\n", label, kind_name(m.kind), m.from, m.content));
+        flow.push_str(&format!(
+            "\n---\n#### {} · {} · `{}`\n{}\n",
+            label,
+            kind_name(m.kind),
+            m.from,
+            m.content
+        ));
     }
     let user = format!(
         "以下是全部审议记录,请输出综合:\n{flow}\n## 任务原文\n{}\n\n\
@@ -190,7 +218,11 @@ pub fn synthesis_prompt(spec: &CouncilSpec, chair: &MemberSpec, all: &[CouncilMe
 }
 
 /// Phase E:结构化计划。输入 = synthesis 产出,要求输出 PlanDoc JSON。
-pub fn plan_prompt(spec: &CouncilSpec, chair: &MemberSpec, synthesis: &CouncilMessage) -> (String, String) {
+pub fn plan_prompt(
+    spec: &CouncilSpec,
+    chair: &MemberSpec,
+    synthesis: &CouncilMessage,
+) -> (String, String) {
     let system = format!(
         "{}你是主席,现在把综合结论结构化为实施计划(Plan)。计划将由真实的 coding agent 执行,必须自足、可验证、依赖关系明确。{}",
         role_header(spec, chair),
@@ -211,7 +243,6 @@ pub fn plan_repair_prompt(chair: &MemberSpec, broken: &str, error: &str) -> (Str
     let user = format!("解析错误:{error}\n\n你上一轮的输出:\n```\n{broken}\n```\n\n请输出修复后的完整 JSON(保持约定 schema,只输出 ```json 围栏)。");
     (system, user)
 }
-
 
 /// 修复轮(§4.3 targeted revision):验证失败后,主席根据失败证据修订
 /// 计划。要求:只改有问题的步骤(未受影响的保持原 id 原样输出,使已
@@ -252,7 +283,11 @@ pub fn repair_round_prompt(
 
 /// 自动组队(组队 agent = 候选池中画像分最高者)。输出 FormationPlan
 /// JSON;经 parse_formation 校验、用户 UI 审阅后才生效(人在环)。
-pub fn formation_prompt(task: &str, profiles: &[crate::council::formation::ModelProfile], organizer: &str) -> (String, String) {
+pub fn formation_prompt(
+    task: &str,
+    profiles: &[crate::council::formation::ModelProfile],
+    organizer: &str,
+) -> (String, String) {
     let system = "你是软件工程团队的组建顾问(Team Formation Agent)。根据任务需要与各模型的**能力画像**配置一个多模型审议团。画像分数只是建议(注意其证据来源:启发式未经实测、探针是单次小样本、历史统计最可信),你要结合任务特征做判断,不要机械按分数排序。".to_string();
     let mut roster = String::from("## 候选模型(画像分 0-10,附证据)\n");
     for p in profiles {
@@ -260,7 +295,11 @@ pub fn formation_prompt(task: &str, profiles: &[crate::council::formation::Model
             "- `{}` — 建议 {} 分\n  - {}\n",
             p.model,
             p.score,
-            p.evidence.iter().map(|e| format!("·{e}")).collect::<Vec<_>>().join(" ")
+            p.evidence
+                .iter()
+                .map(|e| format!("·{e}"))
+                .collect::<Vec<_>>()
+                .join(" ")
         ));
     }
     let user = format!(
@@ -296,12 +335,24 @@ pub fn endorsement_prompt(
 pub fn parse_endorsement(raw: &str) -> Result<(bool, String), String> {
     let fence = raw
         .find("```json")
-        .and_then(|start| raw[start + 7..].find("```").map(|end| &raw[start + 7..start + 7 + end]))
+        .and_then(|start| {
+            raw[start + 7..]
+                .find("```")
+                .map(|end| &raw[start + 7..start + 7 + end])
+        })
         .map(|s| s.trim())
         .unwrap_or(raw.trim());
-    let v: serde_json::Value = serde_json::from_str(fence).map_err(|e| format!("背书 JSON 解析失败:{e}"))?;
-    let verdict = v.get("verdict").and_then(|x| x.as_str()).ok_or("背书缺 verdict")?;
-    let reason = v.get("reason").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let v: serde_json::Value =
+        serde_json::from_str(fence).map_err(|e| format!("背书 JSON 解析失败:{e}"))?;
+    let verdict = v
+        .get("verdict")
+        .and_then(|x| x.as_str())
+        .ok_or("背书缺 verdict")?;
+    let reason = v
+        .get("reason")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
     match verdict {
         "endorse" => Ok((true, reason)),
         "reject" => Ok((false, reason)),
@@ -333,11 +384,17 @@ pub fn kind_name(kind: MessageKind) -> &'static str {
 
 /// Phase B 的输入:其他成员**最近一轮**的方案(round 内先看 Revision,
 /// 没有则 Proposal)。
-pub fn latest_positions_for_review(messages: &[CouncilMessage], reviewer: &str, round: u32) -> Vec<CouncilMessage> {
+pub fn latest_positions_for_review(
+    messages: &[CouncilMessage],
+    reviewer: &str,
+    round: u32,
+) -> Vec<CouncilMessage> {
     let mut out = Vec::new();
     let authors: std::collections::HashSet<&str> = messages
         .iter()
-        .filter(|m| matches!(m.kind, MessageKind::Proposal | MessageKind::Revision) && m.from != reviewer)
+        .filter(|m| {
+            matches!(m.kind, MessageKind::Proposal | MessageKind::Revision) && m.from != reviewer
+        })
         .map(|m| m.from.as_str())
         .collect();
     for author in authors {
@@ -361,10 +418,23 @@ pub fn latest_positions_for_review(messages: &[CouncilMessage], reviewer: &str, 
 /// 一条质询的目标作者集合:`meta.targetAuthors`(数组,编排器写入)
 /// → `meta.targetAuthor`(单数,兼容手写)→ `to`。
 pub fn critique_targets(m: &CouncilMessage) -> Vec<String> {
-    if let Some(arr) = m.meta.as_ref().and_then(|v| v.get("targetAuthors")).and_then(|v| v.as_array()) {
-        return arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect();
+    if let Some(arr) = m
+        .meta
+        .as_ref()
+        .and_then(|v| v.get("targetAuthors"))
+        .and_then(|v| v.as_array())
+    {
+        return arr
+            .iter()
+            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+            .collect();
     }
-    if let Some(single) = m.meta.as_ref().and_then(|v| v.get("targetAuthor")).and_then(|v| v.as_str()) {
+    if let Some(single) = m
+        .meta
+        .as_ref()
+        .and_then(|v| v.get("targetAuthor"))
+        .and_then(|v| v.as_str())
+    {
         return vec![single.to_string()];
     }
     if m.to == "all" || m.to == "chair" {
@@ -375,7 +445,11 @@ pub fn critique_targets(m: &CouncilMessage) -> Vec<String> {
 
 /// Phase C 的输入:针对某作者、某轮评审后尚未回应的全部质询。
 /// 「尚未回应」= 该作者在**之后**没有对应 round 的 Revision。
-pub fn pending_critiques_for(messages: &[CouncilMessage], author: &str, round: u32) -> Vec<CouncilMessage> {
+pub fn pending_critiques_for(
+    messages: &[CouncilMessage],
+    author: &str,
+    round: u32,
+) -> Vec<CouncilMessage> {
     let has_revision = messages
         .iter()
         .any(|m| m.kind == MessageKind::Revision && m.from == author && m.round >= round);
@@ -384,7 +458,11 @@ pub fn pending_critiques_for(messages: &[CouncilMessage], author: &str, round: u
     }
     messages
         .iter()
-        .filter(|m| m.kind == MessageKind::Critique && m.round == round && critique_targets(m).iter().any(|t| t == author))
+        .filter(|m| {
+            m.kind == MessageKind::Critique
+                && m.round == round
+                && critique_targets(m).iter().any(|t| t == author)
+        })
         .cloned()
         .collect()
 }
@@ -392,7 +470,10 @@ pub fn pending_critiques_for(messages: &[CouncilMessage], author: &str, round: u
 /// Phase C 需要修订的作者集合(有未回应质询的人)。
 pub fn authors_needing_revision(messages: &[CouncilMessage], round: u32) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for m in messages.iter().filter(|m| m.kind == MessageKind::Critique && m.round == round) {
+    for m in messages
+        .iter()
+        .filter(|m| m.kind == MessageKind::Critique && m.round == round)
+    {
         for target in critique_targets(m) {
             if !out.contains(&target) {
                 out.push(target);
@@ -407,7 +488,9 @@ pub fn authors_needing_revision(messages: &[CouncilMessage], round: u32) -> Vec<
 pub fn latest_own_position(messages: &[CouncilMessage], author: &str) -> Option<CouncilMessage> {
     messages
         .iter()
-        .filter(|m| m.from == author && matches!(m.kind, MessageKind::Proposal | MessageKind::Revision))
+        .filter(|m| {
+            m.from == author && matches!(m.kind, MessageKind::Proposal | MessageKind::Revision)
+        })
         .max_by_key(|m| (m.round, m.timestamp))
         .cloned()
 }
@@ -437,7 +520,10 @@ mod tests {
     fn proposal_prompt_isolated_from_other_proposals() {
         let spec = sample_spec();
         let member = &spec.members[0];
-        let secret_texts = ["GPT 的秘密提案内容 UNIQUE_MARKER_ALPHA", "DeepSeek 的秘密提案 UNIQUE_MARKER_BETA"];
+        let secret_texts = [
+            "GPT 的秘密提案内容 UNIQUE_MARKER_ALPHA",
+            "DeepSeek 的秘密提案 UNIQUE_MARKER_BETA",
+        ];
         let others = vec![
             msg("gpt-reviewer", MessageKind::Proposal, 1, secret_texts[0]),
             msg("ds-math", MessageKind::Proposal, 1, secret_texts[1]),
@@ -466,10 +552,22 @@ mod tests {
         assert!(bs.contains(marker));
         let (ps, _) = proposal_prompt(&spec, &spec.members[0], None);
         assert!(ps.contains(marker));
-        let (cs, _) = critique_prompt(&spec, &spec.members[1], 1, None, &[msg("a", MessageKind::Proposal, 1, "x")]);
+        let (cs, _) = critique_prompt(
+            &spec,
+            &spec.members[1],
+            1,
+            None,
+            &[msg("a", MessageKind::Proposal, 1, "x")],
+        );
         assert!(cs.contains(marker));
         let own = msg("a", MessageKind::Proposal, 1, "a v1");
-        let (rs, _) = revision_prompt(&spec, &spec.members[0], 1, &own, &[msg("b", MessageKind::Critique, 1, "q")]);
+        let (rs, _) = revision_prompt(
+            &spec,
+            &spec.members[0],
+            1,
+            &own,
+            &[msg("b", MessageKind::Critique, 1, "q")],
+        );
         assert!(rs.contains(marker));
         let all = vec![own.clone(), msg("b", MessageKind::Proposal, 1, "b v1")];
         let (ss, _) = synthesis_prompt(&spec, &spec.members[0], &all);
@@ -497,7 +595,10 @@ mod tests {
         c.to = "a".into();
         let messages = vec![c.clone()];
         assert_eq!(pending_critiques_for(&messages, "a", 1).len(), 1);
-        assert_eq!(authors_needing_revision(&messages, 1), vec!["a".to_string()]);
+        assert_eq!(
+            authors_needing_revision(&messages, 1),
+            vec!["a".to_string()]
+        );
         let rev = msg("a", MessageKind::Revision, 1, "修订");
         let messages2 = vec![c, rev];
         assert!(pending_critiques_for(&messages2, "a", 1).is_empty());
@@ -506,10 +607,13 @@ mod tests {
 
     #[test]
     fn parse_endorsement_verdicts() {
-        let (ok, reason) = parse_endorsement("```json\n{\"verdict\":\"endorse\",\"reason\":\"依据充分\"}\n```").unwrap();
+        let (ok, reason) =
+            parse_endorsement("```json\n{\"verdict\":\"endorse\",\"reason\":\"依据充分\"}\n```")
+                .unwrap();
         assert!(ok);
         assert_eq!(reason, "依据充分");
-        let (bad, _) = parse_endorsement("{\"verdict\":\"reject\",\"reason\":\"缺边界分析\"}").unwrap();
+        let (bad, _) =
+            parse_endorsement("{\"verdict\":\"reject\",\"reason\":\"缺边界分析\"}").unwrap();
         assert!(!bad);
         assert!(parse_endorsement("{\"verdict\":\"maybe\"}").is_err());
         assert!(parse_endorsement("认可").is_err());

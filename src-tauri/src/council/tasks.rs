@@ -14,8 +14,12 @@ pub enum TaskStatus {
     Pending,
     Running,
     Completed,
-    Failed { reason: String },
-    Skipped { reason: String },
+    Failed {
+        reason: String,
+    },
+    Skipped {
+        reason: String,
+    },
     /// worktree 里的工作完成,等待合并回主工作区。
     Staged,
     Merged,
@@ -114,13 +118,16 @@ pub fn ready_steps<'a>(plan: &'a PlanDoc, tasks: &'a [TaskProgress]) -> Vec<&'a 
     plan.steps
         .iter()
         .filter(|step| {
-            let Some(prog) = tasks.iter().find(|t| t.step_id == step.id) else { return false };
+            let Some(prog) = tasks.iter().find(|t| t.step_id == step.id) else {
+                return false;
+            };
             prog.status == TaskStatus::Pending
         })
         .filter(|step| {
             step.depends_on.iter().all(|d| {
                 tasks.iter().any(|t| {
-                    t.step_id == *d && matches!(t.status, TaskStatus::Completed | TaskStatus::Merged)
+                    t.step_id == *d
+                        && matches!(t.status, TaskStatus::Completed | TaskStatus::Merged)
                 })
             })
         })
@@ -139,13 +146,19 @@ pub fn finalize_skipped(plan: &PlanDoc, tasks: &mut [TaskProgress]) {
                     return true; // 图外依赖:永不满足
                 }
                 tasks.iter().any(|t| {
-                    t.step_id == *d && matches!(t.status, TaskStatus::Failed { .. } | TaskStatus::Skipped { .. })
+                    t.step_id == *d
+                        && matches!(
+                            t.status,
+                            TaskStatus::Failed { .. } | TaskStatus::Skipped { .. }
+                        )
                 })
             };
             if step.depends_on.iter().any(|d| dep_blocked(d)) {
                 if let Some(t) = tasks.iter_mut().find(|t| t.step_id == step.id) {
                     if t.status == TaskStatus::Pending {
-                        t.status = TaskStatus::Skipped { reason: "上游任务失败或依赖缺失".into() };
+                        t.status = TaskStatus::Skipped {
+                            reason: "上游任务失败或依赖缺失".into(),
+                        };
                         changed = true;
                     }
                 }
@@ -185,11 +198,22 @@ mod tests {
     }
 
     fn doc(steps: Vec<PlanStep>) -> PlanDoc {
-        PlanDoc { summary: "s".into(), steps, open_questions: vec![], acceptance: vec![], verification: vec![] }
+        PlanDoc {
+            summary: "s".into(),
+            steps,
+            open_questions: vec![],
+            acceptance: vec![],
+            verification: vec![],
+        }
     }
 
     fn status_of(tasks: &[TaskProgress], id: &str) -> TaskStatus {
-        tasks.iter().find(|t| t.step_id == id).unwrap().status.clone()
+        tasks
+            .iter()
+            .find(|t| t.step_id == id)
+            .unwrap()
+            .status
+            .clone()
     }
 
     #[test]
@@ -203,33 +227,58 @@ mod tests {
 
     #[test]
     fn frontier_unlocks_only_when_deps_complete() {
-        let plan = doc(vec![step("s1", vec![]), step("s2", vec!["s1"]), step("s3", vec![])]);
+        let plan = doc(vec![
+            step("s1", vec![]),
+            step("s2", vec!["s1"]),
+            step("s3", vec![]),
+        ]);
         let mut tasks = build_task_progress(&plan).unwrap();
         // 初始:s1、s3 就绪;s2 被 s1 挡。
-        let ready: Vec<&str> = ready_steps(&plan, &tasks).iter().map(|s| s.id.as_str()).collect();
+        let ready: Vec<&str> = ready_steps(&plan, &tasks)
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect();
         assert_eq!(ready, vec!["s1", "s3"]);
         // s1 完成 → s2 解锁。
         tasks[0].status = TaskStatus::Completed;
-        let ready2: Vec<&str> = ready_steps(&plan, &tasks).iter().map(|s| s.id.as_str()).collect();
+        let ready2: Vec<&str> = ready_steps(&plan, &tasks)
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect();
         assert_eq!(ready2, vec!["s2", "s3"]);
         // s1 运行中不阻塞判定自身,但 s2 仍等 completed。
         tasks[0].status = TaskStatus::Running;
-        let ready3: Vec<&str> = ready_steps(&plan, &tasks).iter().map(|s| s.id.as_str()).collect();
+        let ready3: Vec<&str> = ready_steps(&plan, &tasks)
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect();
         assert_eq!(ready3, vec!["s3"]);
     }
 
     #[test]
     fn failure_does_not_cascade_but_finalizes_skipped() {
-        let plan = doc(vec![step("s1", vec![]), step("s2", vec!["s1"]), step("s3", vec![])]);
+        let plan = doc(vec![
+            step("s1", vec![]),
+            step("s2", vec!["s1"]),
+            step("s3", vec![]),
+        ]);
         let mut tasks = build_task_progress(&plan).unwrap();
-        tasks[0].status = TaskStatus::Failed { reason: "boom".into() };
+        tasks[0].status = TaskStatus::Failed {
+            reason: "boom".into(),
+        };
         // 失败不级联:s3 仍可跑(还在飞时 s2 不提前判死)。
-        let ready: Vec<&str> = ready_steps(&plan, &tasks).iter().map(|s| s.id.as_str()).collect();
+        let ready: Vec<&str> = ready_steps(&plan, &tasks)
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect();
         assert_eq!(ready, vec!["s3"]);
         // 全部停当后,s2 收为 skipped。
         tasks[2].status = TaskStatus::Completed;
         finalize_skipped(&plan, &mut tasks);
-        assert!(matches!(status_of(&tasks, "s2"), TaskStatus::Skipped { .. }));
+        assert!(matches!(
+            status_of(&tasks, "s2"),
+            TaskStatus::Skipped { .. }
+        ));
         assert_eq!(status_of(&tasks, "s3"), TaskStatus::Completed);
         assert!(!work_remaining(&plan, &tasks));
     }

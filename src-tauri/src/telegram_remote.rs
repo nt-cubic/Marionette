@@ -296,16 +296,33 @@ fn load_settings_at(path: &Path) -> TelegramSettings {
 
 fn save_settings_at(path: &Path, settings: &TelegramSettings) -> Result<(), String> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| crate::ts!("创建 .marionette 目录失败: {e}", "Failed to create the .marionette directory: {e}"))?;
+        std::fs::create_dir_all(dir).map_err(|e| {
+            crate::ts!(
+                "创建 .marionette 目录失败: {e}",
+                "Failed to create the .marionette directory: {e}"
+            )
+        })?;
     }
-    let body = serde_json::to_string_pretty(settings)
-        .map_err(|e| crate::ts!("序列化 telegram.json 失败: {e}", "Failed to serialize telegram.json: {e}"))?;
+    let body = serde_json::to_string_pretty(settings).map_err(|e| {
+        crate::ts!(
+            "序列化 telegram.json 失败: {e}",
+            "Failed to serialize telegram.json: {e}"
+        )
+    })?;
     // 临时兄弟文件 + rename 原子写（同凭据库模式）。
     let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, format!("{body}\n")).map_err(|e| crate::ts!("写入临时文件失败: {e}", "Failed to write the temp file: {e}"))?;
+    std::fs::write(&tmp, format!("{body}\n")).map_err(|e| {
+        crate::ts!(
+            "写入临时文件失败: {e}",
+            "Failed to write the temp file: {e}"
+        )
+    })?;
     if let Err(error) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
-        return Err(crate::ts!("重命名临时文件失败: {error}", "Failed to rename the temp file: {error}"));
+        return Err(crate::ts!(
+            "重命名临时文件失败: {error}",
+            "Failed to rename the temp file: {error}"
+        ));
     }
     Ok(())
 }
@@ -581,20 +598,11 @@ enum CallbackAction {
         decision_label: String,
     },
     /// 总控面板：把裸文本的默认去向切到这个会话。
-    BindSession {
-        session_id: String,
-        label: String,
-    },
+    BindSession { session_id: String, label: String },
     /// 总控面板：打断该会话当前回合（与 UI 停止键同一条 cancel 路径）。
-    StopTurn {
-        session_id: String,
-        label: String,
-    },
+    StopTurn { session_id: String, label: String },
     /// 总控面板：置顶消息原地切换到该会话的详情视图。
-    ViewSession {
-        session_id: String,
-        label: String,
-    },
+    ViewSession { session_id: String, label: String },
     /// 详情视图：返回总控清单。
     PanelBack,
     /// 总控面板：手动刷新面板文本。
@@ -618,20 +626,14 @@ enum CallbackAction {
         model_label: String,
     },
     /// /new 第 4 步：选编辑模式（mode_id 空 = 不指定）。
-    NewMode {
-        mode_id: String,
-        mode_label: String,
-    },
+    NewMode { mode_id: String, mode_label: String },
     /// /new 任意步骤：取消。
     NewCancel,
     // ─── 模型菜单（/model 与 /new 第 3 步共用）──────────────────────────
     /// /new 第 3 步模型清单翻页（菜单原地重画）。
     WizardModelPage { offset: usize },
     /// /model 菜单翻页（菜单原地重画）。
-    ModelPage {
-        session_id: String,
-        offset: usize,
-    },
+    ModelPage { session_id: String, offset: usize },
     /// /model：把这个会话切到该模型。
     SetModel {
         session_id: String,
@@ -639,10 +641,7 @@ enum CallbackAction {
         model_label: String,
     },
     /// /resume：把这个会话设为裸文本绑定，继续聊。
-    ResumeSession {
-        session_id: String,
-        label: String,
-    },
+    ResumeSession { session_id: String, label: String },
     /// /resume 清单翻页（菜单原地重画）。
     ResumePage { offset: usize },
     /// 菜单类消息的「关闭」：只摘按钮，无事发生。
@@ -772,7 +771,11 @@ impl Inner {
     }
 
     fn remember_route(&mut self, message_id: i64, session_id: &str) {
-        if self.routes.insert(message_id, session_id.to_string()).is_none() {
+        if self
+            .routes
+            .insert(message_id, session_id.to_string())
+            .is_none()
+        {
             self.route_order.push_back(message_id);
         }
         while self.routes.len() > MAX_ROUTES {
@@ -897,19 +900,20 @@ fn log(level: &str, summary: &str, detail: Option<&str>) {
 /// 第一条消息，否则配对流程死锁。线程在开关关闭时自动休眠。
 pub fn start(app: AppHandle, acp: AcpService) {
     let settings = load_settings();
-    let token = settings.token_cipher.as_deref().and_then(|cipher| {
-        match crate::credentials::decrypt_secret(cipher) {
-            Ok(token) => Some(token),
-            Err(error) => {
-                log(
-                    "warn",
-                    "bot token decrypt failed — telegram remote stays off",
-                    Some(&error),
-                );
-                None
-            }
-        }
-    });
+    let token =
+        settings.token_cipher.as_deref().and_then(
+            |cipher| match crate::credentials::decrypt_secret(cipher) {
+                Ok(token) => Some(token),
+                Err(error) => {
+                    log(
+                        "warn",
+                        "bot token decrypt failed — telegram remote stays off",
+                        Some(&error),
+                    );
+                    None
+                }
+            },
+        );
     let live = LiveConfig {
         enabled: settings.enabled && token.is_some(),
         token,
@@ -1109,7 +1113,13 @@ pub fn observe_ui_event(session_id: &str, kind: &str, method: Option<&str>, data
                     .and_then(Value::as_str)
                     .map(str::to_string)
                     .unwrap_or_else(|| crate::ts!("agent 进程退出", "agent process exited"));
-                push_simple(&live, session_id, "💀", &crate::ts!("agent 进程退出", "agent process exited"), Some(&message));
+                push_simple(
+                    &live,
+                    session_id,
+                    "💀",
+                    &crate::ts!("agent 进程退出", "agent process exited"),
+                    Some(&message),
+                );
             }
             schedule_dashboard(slot);
         }
@@ -1140,7 +1150,9 @@ fn is_wait_cleanup(method: &str) -> bool {
 /// 摘掉一条挂起请求：pending 表 + 该会话的 waiting 计数，然后刷面板。
 fn observe_wait_cleanup(slot: &'static Telegram, method: &str, request_id: &str) {
     let owner_session = {
-        let Ok(mut inner) = slot.inner.lock() else { return };
+        let Ok(mut inner) = slot.inner.lock() else {
+            return;
+        };
         let session_id = match method.split('/').next() {
             Some("permission") => inner
                 .pending_permissions
@@ -1174,7 +1186,9 @@ fn observe_session_update(slot: &'static Telegram, session_id: &str, data: &Valu
     // 新回合开始（或等待解除后继续跑）是面板可见的状态变化。
     let mut turn_started_now = false;
     {
-        let Ok(mut inner) = slot.inner.lock() else { return };
+        let Ok(mut inner) = slot.inner.lock() else {
+            return;
+        };
 
         if kind.contains("user_message") {
             inner.last_user_session = Some(session_id.to_string());
@@ -1214,8 +1228,10 @@ fn observe_session_update(slot: &'static Telegram, session_id: &str, data: &Valu
                             // Web bridges can revise the complete HTML/Markdown reply.
                             // Keep one current reply for forwarding.
                             if update.pointer("/_meta/marionette.webReply").is_some()
-                                || update.pointer("/_meta/marionette.textSnapshot")
-                                    .and_then(Value::as_bool) == Some(true)
+                                || update
+                                    .pointer("/_meta/marionette.textSnapshot")
+                                    .and_then(Value::as_bool)
+                                    == Some(true)
                             {
                                 track.text.current.clear();
                             }
@@ -1286,12 +1302,7 @@ fn observe_turn_complete(
             if !probe && !tail.trim().is_empty() {
                 track.last_reply = clip(tail.trim(), LAST_REPLY_CHARS);
             }
-            Some((
-                started.map(|t| t.elapsed()),
-                tail,
-                turn_images,
-                probe,
-            ))
+            Some((started.map(|t| t.elapsed()), tail, turn_images, probe))
         })
         .unwrap_or((None, String::new(), Vec::new(), false));
     // 回合结束 = 总控面板的可见状态变化（含 cancelled：推送降噪，面板照刷）。
@@ -1309,7 +1320,11 @@ fn observe_turn_complete(
         return;
     }
     // Probe turns must not consume a staff cooldown/hourly slot.
-    let gate_kind = if kind == "error" { "task.failed" } else { "completed" };
+    let gate_kind = if kind == "error" {
+        "task.failed"
+    } else {
+        "completed"
+    };
     if !crate::chief::staff_commands::telegram_notification_allowed(session_id, gate_kind) {
         return;
     }
@@ -1325,8 +1340,14 @@ fn observe_turn_complete(
                         .and_then(Value::as_str)
                         .map(str::to_string)
                         .unwrap_or_else(|| crate::ts!("回合报错", "Turn failed with an error"))
-                 });
-            push_simple(live, session_id, "⚠️", &crate::ts!("回合出错", "Turn error"), Some(&clip(&message, 600)));
+                });
+            push_simple(
+                live,
+                session_id,
+                "⚠️",
+                &crate::ts!("回合出错", "Turn error"),
+                Some(&clip(&message, 600)),
+            );
         }
         return;
     }
@@ -1341,7 +1362,10 @@ fn observe_turn_complete(
         Some(elapsed) => format!("[{label}] {icon} {head} · {}", format_duration(elapsed)),
         None => format!("[{label}] {icon} {head}"),
     };
-    let footer = &crate::ts!("💬 直接回复这条消息 = 继续这个会话", "💬 Reply directly to this message = continue this session");
+    let footer = &crate::ts!(
+        "💬 直接回复这条消息 = 继续这个会话",
+        "💬 Reply directly to this message = continue this session"
+    );
     let body = tail.trim();
     if live.prefs.content_preview && !body.is_empty() {
         enqueue_reply_push(live, &header, body, footer, session_id);
@@ -1387,13 +1411,7 @@ fn enqueue_turn_photos(session_id: &str, label: &str, mut images: Vec<TurnImage>
 /// 回合回复推送：整段正文交给发送线程——优先官方 Rich Messages 直投
 /// （`sendRichMessage`，单条 32K 字符、全文不截断），失败再退 MarkdownV2
 /// 分片老路。见 `deliver_turn_reply`。
-fn enqueue_reply_push(
-    live: &LiveConfig,
-    header: &str,
-    body: &str,
-    footer: &str,
-    session_id: &str,
-) {
+fn enqueue_reply_push(live: &LiveConfig, header: &str, body: &str, footer: &str, session_id: &str) {
     let _ = live;
     let Some(slot) = TELEGRAM.get() else { return };
     let _ = slot.outbound.send(Outbound::TurnReply {
@@ -1415,7 +1433,9 @@ fn observe_permission_prompt(
     };
     // 状态追踪与推送偏好解耦：面板上的 ⏸ 不受 notify_wait 影响。
     {
-        let Ok(mut inner) = slot.inner.lock() else { return };
+        let Ok(mut inner) = slot.inner.lock() else {
+            return;
+        };
         let track = inner.track(session_id);
         track.waiting += 1;
         inner.pending_permissions.insert(
@@ -1440,7 +1460,10 @@ fn observe_permission_prompt(
     let detail = data.get("detail").and_then(Value::as_str);
 
     let label = session_label(session_id);
-    let mut text = crate::ts!("[{label}] ⏸ 等你批准：{title}", "[{label}] ⏸ Waiting on your approval: {title}");
+    let mut text = crate::ts!(
+        "[{label}] ⏸ 等你批准：{title}",
+        "[{label}] ⏸ Waiting on your approval: {title}"
+    );
     if let Some(detail) = detail.filter(|d| !d.trim().is_empty()) {
         text.push_str("\n");
         text.push_str(&clip(&render_tool_detail(detail), 800));
@@ -1523,7 +1546,9 @@ fn observe_question_prompt(
         return;
     };
     {
-        let Ok(mut inner) = slot.inner.lock() else { return };
+        let Ok(mut inner) = slot.inner.lock() else {
+            return;
+        };
         inner.track(session_id).waiting += 1;
         inner
             .pending_questions
@@ -1541,7 +1566,10 @@ fn observe_question_prompt(
 
     match question_push_plan(questions.as_ref()) {
         QuestionPush::Buttons { question, options } => {
-            let text = crate::ts!("[{label}] ❓ agent 问你：{question}", "[{label}] ❓ The agent asks you: {question}");
+            let text = crate::ts!(
+                "[{label}] ❓ agent 问你：{question}",
+                "[{label}] ❓ The agent asks you: {question}"
+            );
             let mut buttons = Vec::new();
             for option_label in options.iter().take(8) {
                 let (button, callback_id, action) = make_button(
@@ -1588,7 +1616,9 @@ fn observe_plan_prompt(slot: &'static Telegram, session_id: &str, data: &Value, 
         return;
     };
     {
-        let Ok(mut inner) = slot.inner.lock() else { return };
+        let Ok(mut inner) = slot.inner.lock() else {
+            return;
+        };
         inner.track(session_id).waiting += 1;
         inner
             .pending_plans
@@ -1619,7 +1649,13 @@ fn observe_plan_prompt(slot: &'static Telegram, session_id: &str, data: &Value, 
         plain.push_str(&body);
     }
     let mut buttons = Vec::new();
-    for (button_text, decision) in [(crate::ts!("✅ 批准", "✅ Approve"), "approve"), (crate::ts!("✏️ 继续改", "✏️ Request changes"), "request_changes")] {
+    for (button_text, decision) in [
+        (crate::ts!("✅ 批准", "✅ Approve"), "approve"),
+        (
+            crate::ts!("✏️ 继续改", "✏️ Request changes"),
+            "request_changes",
+        ),
+    ] {
         let (button, callback_id, action) = make_button(
             slot,
             CallbackAction::Plan {
@@ -1635,14 +1671,7 @@ fn observe_plan_prompt(slot: &'static Telegram, session_id: &str, data: &Value, 
             inner.remember_callback(callback_id, action);
         }
     }
-    enqueue_send_md_with_plain(
-        live,
-        md,
-        plain,
-        buttons,
-        Some(session_id.to_string()),
-        None,
-    );
+    enqueue_send_md_with_plain(live, md, plain, buttons, Some(session_id.to_string()), None);
 }
 
 // ─── 总控面板（置顶 dashboard）─────────────────────────────────────────────
@@ -1670,8 +1699,14 @@ struct DashRow {
 
 /// 纯渲染：面板文本。行序 = Running → Waiting → 绑定。
 fn render_dashboard(rows: &[DashRow], idle_count: usize) -> String {
-    let running = rows.iter().filter(|r| r.state == DashState::Running).count();
-    let waiting = rows.iter().filter(|r| r.state == DashState::Waiting).count();
+    let running = rows
+        .iter()
+        .filter(|r| r.state == DashState::Running)
+        .count();
+    let waiting = rows
+        .iter()
+        .filter(|r| r.state == DashState::Waiting)
+        .count();
     let mut head = crate::ts!("📌 Marionette 总控", "📌 Marionette Dashboard");
     if running + waiting > 0 {
         head.push_str(&format!(" · ▶{running} ⏸{waiting}"));
@@ -1695,7 +1730,11 @@ fn render_dashboard(rows: &[DashRow], idle_count: usize) -> String {
                     .unwrap_or_else(|| "…".to_string());
                 format!("{marker}▶ [{}]{agent} · {dur}", row.label)
             }
-            DashState::Waiting => crate::ts!("{marker}⏸ [{}] · 等你", "{marker}⏸ [{}] · Waiting on you", row.label),
+            DashState::Waiting => crate::ts!(
+                "{marker}⏸ [{}] · 等你",
+                "{marker}⏸ [{}] · Waiting on you",
+                row.label
+            ),
             DashState::Idle => crate::ts!(
                 "{marker}💤 [{}] · {}前有动静",
                 "{marker}💤 [{}] · Active {} ago",
@@ -1712,15 +1751,26 @@ fn render_dashboard(rows: &[DashRow], idle_count: usize) -> String {
         out.push('\n');
     }
     if idle_count > 0 {
-        out.push_str(&crate::ts!("\n💤 其余 {idle_count} 个会话空闲", "\n💤 {idle_count} other sessions idle"));
+        out.push_str(&crate::ts!(
+            "\n💤 其余 {idle_count} 个会话空闲",
+            "\n💤 {idle_count} other sessions idle"
+        ));
     }
-    out.push_str(&crate::ts!("\n💡 点会话名 = 切换绑定 · 📄 = 会话详情 · /status 看全部", "\n💡 Tap a session name = rebind · 📄 = session details · /status for all"));
+    out.push_str(&crate::ts!(
+        "\n💡 点会话名 = 切换绑定 · 📄 = 会话详情 · /status 看全部",
+        "\n💡 Tap a session name = rebind · 📄 = session details · /status for all"
+    ));
     out
 }
 
 /// 纯渲染：/status 全量清单文本。
 fn render_status(rows: &[DashRow], total: usize) -> String {
-    let mut out = crate::ts!("📋 会话清单（{}/{}）\n\n", "📋 Sessions ({}/{})\n\n", rows.len(), total);
+    let mut out = crate::ts!(
+        "📋 会话清单（{}/{}）\n\n",
+        "📋 Sessions ({}/{})\n\n",
+        rows.len(),
+        total
+    );
     let lines: Vec<String> = rows
         .iter()
         .map(|row| {
@@ -1729,17 +1779,30 @@ fn render_status(rows: &[DashRow], total: usize) -> String {
                 DashState::Running => crate::ts!(
                     "跑了 {}",
                     "Running for {}",
-                    row.elapsed_secs.map(format_duration_secs).unwrap_or_default()
+                    row.elapsed_secs
+                        .map(format_duration_secs)
+                        .unwrap_or_default()
                 ),
-                DashState::Waiting => crate::ts!("等你批准/回答", "Waiting on you to approve/answer"),
-                DashState::Idle => crate::ts!("{}前有动静", "Active {} ago", format_age_short(row.idle_secs)),
+                DashState::Waiting => {
+                    crate::ts!("等你批准/回答", "Waiting on you to approve/answer")
+                }
+                DashState::Idle => crate::ts!(
+                    "{}前有动静",
+                    "Active {} ago",
+                    format_age_short(row.idle_secs)
+                ),
             };
             let agent = if row.agent.is_empty() {
                 String::new()
             } else {
                 format!(" · {}", row.agent)
             };
-            format!("{}{} [{}]{agent} · {tail}", marker, row.state.icon(), row.label)
+            format!(
+                "{}{} [{}]{agent} · {tail}",
+                marker,
+                row.state.icon(),
+                row.label
+            )
         })
         .collect();
     out.push_str(&lines.join("\n"));
@@ -1769,7 +1832,11 @@ fn schedule_dashboard(slot: &'static Telegram) {
         _ => dashboard_parts(slot),
     };
 
-    let _ = slot.outbound.send(Outbound::Dashboard { text, keyboard, rich });
+    let _ = slot.outbound.send(Outbound::Dashboard {
+        text,
+        keyboard,
+        rich,
+    });
 }
 
 /// 总控面板的文本与键盘（会话行 = [名字, 📄, ⏹]，末行 = [🔄]）。
@@ -1813,8 +1880,11 @@ fn dashboard_parts(slot: &'static Telegram) -> (String, Vec<Vec<TgButton>>, bool
         }
         keyboard.push(line);
     }
-    let (refresh_btn, refresh_id, refresh_action) =
-        make_button(slot, CallbackAction::RefreshDashboard, &crate::ts!("🔄 刷新", "🔄 Refresh"));
+    let (refresh_btn, refresh_id, refresh_action) = make_button(
+        slot,
+        CallbackAction::RefreshDashboard,
+        &crate::ts!("🔄 刷新", "🔄 Refresh"),
+    );
     actions.push((refresh_btn.clone(), refresh_id, refresh_action));
     keyboard.push(vec![refresh_btn]);
     if let Ok(mut inner) = slot.inner.lock() {
@@ -1847,13 +1917,21 @@ fn session_detail_parts(
         .unwrap_or_default();
     let text = render_session_detail(
         &row,
-        if include_body { last_reply.as_str() } else { "" },
+        if include_body {
+            last_reply.as_str()
+        } else {
+            ""
+        },
         include_body,
     );
 
     let mut actions: Vec<(TgButton, u64, CallbackAction)> = Vec::new();
     let mut keyboard: Vec<Vec<TgButton>> = Vec::new();
-    let (back_btn, back_id, back_action) = make_button(slot, CallbackAction::PanelBack, &crate::ts!("⬅ 返回总控", "⬅ Back to dashboard"));
+    let (back_btn, back_id, back_action) = make_button(
+        slot,
+        CallbackAction::PanelBack,
+        &crate::ts!("⬅ 返回总控", "⬅ Back to dashboard"),
+    );
     actions.push((back_btn.clone(), back_id, back_action));
     let mut line = vec![back_btn];
     if row.state != DashState::Idle {
@@ -1933,17 +2011,30 @@ fn render_session_detail(row: &DashRow, body: &str, body_allowed: bool) -> Strin
                 .unwrap_or_else(|| "…".to_string())
         ),
         DashState::Waiting => crate::ts!("⏸ 等你批准/回答", "⏸ Waiting on you to approve/answer"),
-        DashState::Idle => crate::ts!("💤 {}前有动静", "💤 Active {} ago", format_age_short(row.idle_secs)),
+        DashState::Idle => crate::ts!(
+            "💤 {}前有动静",
+            "💤 Active {} ago",
+            format_age_short(row.idle_secs)
+        ),
     };
     let mut out = format!("📄 {marker}[{}]{agent} · {state_line}\n\n", row.label);
     if !body_allowed {
-        out.push_str(&crate::ts!("🔒 内容预览已关闭——正文不出本机（设置里可开）", "🔒 Content preview is off — message bodies stay on this computer (enable in settings)"));
+        out.push_str(&crate::ts!(
+            "🔒 内容预览已关闭——正文不出本机（设置里可开）",
+            "🔒 Content preview is off — message bodies stay on this computer (enable in settings)"
+        ));
     } else if body.trim().is_empty() {
-        out.push_str(&crate::ts!("（最近一条回复为空——回合还没跑完，或 agent 没有输出文本）", "(last reply is empty — the turn isn't finished, or the agent produced no text)"));
+        out.push_str(&crate::ts!(
+            "（最近一条回复为空——回合还没跑完，或 agent 没有输出文本）",
+            "(last reply is empty — the turn isn't finished, or the agent produced no text)"
+        ));
     } else {
         out.push_str(body.trim());
     }
-    out.push_str(&crate::ts!("\n\n💡 回复任意一条通知 = 定向继续这个会话", "\n\n💡 Reply to any notice = continue that session directly"));
+    out.push_str(&crate::ts!(
+        "\n\n💡 回复任意一条通知 = 定向继续这个会话",
+        "\n\n💡 Reply to any notice = continue that session directly"
+    ));
     out
 }
 
@@ -1972,7 +2063,9 @@ fn dashboard_snapshot(
             inner.last_user_session.clone(),
         )
     });
-    let Some((raw_rows, bound)) = raw else { return (Vec::new(), 0) };
+    let Some((raw_rows, bound)) = raw else {
+        return (Vec::new(), 0);
+    };
 
     let idle_count = raw_rows
         .iter()
@@ -2188,7 +2281,10 @@ fn sender_loop(slot: &'static Telegram, rx: std::sync::mpsc::Receiver<Outbound>)
                 reply_to: reply,
             } => {
                 job_text = if ok {
-                    crate::ts!("✓ 已送进 [{session_label}]", "✓ Delivered to [{session_label}]")
+                    crate::ts!(
+                        "✓ 已送进 [{session_label}]",
+                        "✓ Delivered to [{session_label}]"
+                    )
                 } else {
                     crate::ts!(
                         "⚠️ 没送进去（{session_label}）：{}",
@@ -2243,7 +2339,11 @@ fn sender_loop(slot: &'static Telegram, rx: std::sync::mpsc::Receiver<Outbound>)
                 }
             }
             Err(error) => {
-                log("warn", "sendMessage failed — queue keeps draining", Some(&error));
+                log(
+                    "warn",
+                    "sendMessage failed — queue keeps draining",
+                    Some(&error),
+                );
                 if let Ok(mut inner) = slot.inner.lock() {
                     inner.last_error = Some(error);
                 }
@@ -2313,12 +2413,18 @@ fn deliver_turn_reply(
             plain.push_str("\n\n");
             plain.push_str(footer);
             if truncated {
-                let note = crate::ts!("\n…（正文太长已截断，回电脑看全文）", "\n…(body truncated — see the full text on the computer)");
+                let note = crate::ts!(
+                    "\n…（正文太长已截断，回电脑看全文）",
+                    "\n…(body truncated — see the full text on the computer)"
+                );
                 md.push_str(&md_escape(&note));
                 plain.push_str(&note);
             }
         } else {
-            md.push_str(&md_escape(&crate::ts!("…（接下条）", "…(continued next message)")));
+            md.push_str(&md_escape(&crate::ts!(
+                "…（接下条）",
+                "…(continued next message)"
+            )));
             plain.push_str(&crate::ts!("\n…（接下条）", "\n…(continued next message)"));
         }
         match send_message(live, &md, &[], None, Some("MarkdownV2"), Some(&plain)) {
@@ -2345,9 +2451,8 @@ fn deliver_turn_photos(
 ) {
     // 相对路径按会话 cwd 补全；只在真有相对路径时才去读一次 storage
     // （锁序红线：这里没有持有 inner 锁）。
-    let is_relative = |image: &TurnImage| {
-        matches!(image, TurnImage::Local(path) if path.is_relative())
-    };
+    let is_relative =
+        |image: &TurnImage| matches!(image, TurnImage::Local(path) if path.is_relative());
     let cwd = if images.iter().any(is_relative) {
         session_cwd(session_id)
     } else {
@@ -2461,8 +2566,8 @@ fn send_image(live: &LiveConfig, image: &TurnImage, caption: &str) -> Result<Opt
             if metadata.len() > IMAGE_MAX_BYTES {
                 return Err(too_large(metadata.len()));
             }
-            let data = std::fs::read(path)
-                .map_err(|error| format!("{}: {error}", path.display()))?;
+            let data =
+                std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
             upload_image(
                 token,
                 chat_id,
@@ -2534,7 +2639,10 @@ fn upload_image(
 /// image 块的 base64 → 字节。先按长度估解码后大小，超限的不解码
 /// （别为一张发不出去的图白占内存）。
 fn decode_base64_image(data: &str) -> Result<Vec<u8>, String> {
-    use base64::{engine::general_purpose::STANDARD as B64, engine::general_purpose::STANDARD_NO_PAD as B64_NO_PAD, Engine};
+    use base64::{
+        engine::general_purpose::STANDARD as B64,
+        engine::general_purpose::STANDARD_NO_PAD as B64_NO_PAD, Engine,
+    };
     let compact: String = data.chars().filter(|c| !c.is_whitespace()).collect();
     let estimated = compact.len().saturating_mul(3) / 4;
     if estimated as u64 > IMAGE_MAX_BYTES {
@@ -2547,7 +2655,10 @@ fn decode_base64_image(data: &str) -> Result<Vec<u8>, String> {
 
 fn too_large(bytes: u64) -> String {
     let mb = bytes as f64 / (1024.0 * 1024.0);
-    format!("image is {mb:.1} MB, over the {} MB limit", IMAGE_MAX_BYTES / 1024 / 1024)
+    format!(
+        "image is {mb:.1} MB, over the {} MB limit",
+        IMAGE_MAX_BYTES / 1024 / 1024
+    )
 }
 
 /// 上传用的文件名：只取文件名部分，去掉会让 Content-Disposition 头断行的字符。
@@ -2718,7 +2829,11 @@ fn send_message(
 ) -> Result<Option<i64>, String> {
     match send_message_inner(live, text, keyboard, reply_to, parse_mode) {
         Err(ref error) if parse_mode.is_some() => {
-            log("warn", "MarkdownV2 send failed — resending as plain text", Some(error));
+            log(
+                "warn",
+                "MarkdownV2 send failed — resending as plain text",
+                Some(error),
+            );
             let fallback = plain_fallback.unwrap_or(text);
             send_message_inner(live, fallback, keyboard, reply_to, None)
         }
@@ -2875,7 +2990,11 @@ fn poller_loop(slot: &'static Telegram) {
 
         let bot_id = bot_id_of(&token);
         if cursor_bot.as_deref() != Some(bot_id.as_str()) {
-            offset = if cursor_bot.is_none() { load_cursor(&bot_id) } else { 0 };
+            offset = if cursor_bot.is_none() {
+                load_cursor(&bot_id)
+            } else {
+                0
+            };
             cursor_bot = Some(bot_id.clone());
         }
         let base = api_base();
@@ -2895,8 +3014,7 @@ fn poller_loop(slot: &'static Telegram) {
                     .map_err(|e| format!("read getUpdates body: {e}"))
             })
             .and_then(|text| {
-                serde_json::from_str::<Value>(&text)
-                    .map_err(|e| format!("parse getUpdates: {e}"))
+                serde_json::from_str::<Value>(&text).map_err(|e| format!("parse getUpdates: {e}"))
             });
 
         match response {
@@ -3089,7 +3207,8 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
                 return;
             }
             if command == "/resume" {
-                match crate::chief::staff_commands::chief_staff_set_paused(slot.app.clone(), false) {
+                match crate::chief::staff_commands::chief_staff_set_paused(slot.app.clone(), false)
+                {
                     Ok(count) => {
                         enqueue_send(
                             live,
@@ -3224,7 +3343,13 @@ fn handle_incoming_message(slot: &'static Telegram, live: &LiveConfig, message: 
                             "⏳ Chief 正在处理上一条，你的消息已排队。"
                         }
                     };
-                    enqueue_send(live, note.to_string(), Vec::new(), target_staff_session, message_id);
+                    enqueue_send(
+                        live,
+                        note.to_string(),
+                        Vec::new(),
+                        target_staff_session,
+                        message_id,
+                    );
                 }
                 Err(error) => {
                     enqueue_send(
@@ -3387,7 +3512,10 @@ fn start_new_session_wizard(slot: &'static Telegram, live: &LiveConfig, reply_to
     let total = projects.len();
     let projects: Vec<_> = projects.into_iter().take(WIZARD_MAX_PROJECTS).collect();
 
-    let mut rows: Vec<Vec<(CallbackAction, String)>> = vec![vec![(CallbackAction::NewDestChat, crate::ts!("💬 聊天", "💬 Chat"))]];
+    let mut rows: Vec<Vec<(CallbackAction, String)>> = vec![vec![(
+        CallbackAction::NewDestChat,
+        crate::ts!("💬 聊天", "💬 Chat"),
+    )]];
     for (id, name) in &projects {
         rows.push(vec![(
             CallbackAction::NewDestProject {
@@ -3397,7 +3525,10 @@ fn start_new_session_wizard(slot: &'static Telegram, live: &LiveConfig, reply_to
             format!("📁 {}", clip(name, 40)),
         )]);
     }
-    rows.push(vec![(CallbackAction::NewCancel, crate::ts!("✖ 取消", "✖ Cancel"))]);
+    rows.push(vec![(
+        CallbackAction::NewCancel,
+        crate::ts!("✖ 取消", "✖ Cancel"),
+    )]);
     let (keyboard, pending) = assemble_keyboard(slot, rows);
 
     // 新 /new 覆盖旧向导（旧按钮按下时按过期处理）。
@@ -3419,7 +3550,10 @@ fn start_new_session_wizard(slot: &'static Telegram, live: &LiveConfig, reply_to
     } else {
         String::new()
     };
-    let text = crate::ts!("🆕 新建对话 · 1/4 在哪建？{note}", "🆕 New conversation · 1/4 Where? {note}");
+    let text = crate::ts!(
+        "🆕 新建对话 · 1/4 在哪建？{note}",
+        "🆕 New conversation · 1/4 Where? {note}"
+    );
     let _ = send_message(live, &text, &keyboard, reply_to, None, None);
 }
 
@@ -3441,15 +3575,32 @@ fn send_wizard_agent_step(slot: &'static Telegram, live: &LiveConfig, reply_to: 
             clip(label, 48),
         )]);
     }
-    rows.push(vec![(CallbackAction::NewCancel, crate::ts!("✖ 取消", "✖ Cancel"))]);
+    rows.push(vec![(
+        CallbackAction::NewCancel,
+        crate::ts!("✖ 取消", "✖ Cancel"),
+    )]);
     let (keyboard, pending) = assemble_keyboard(slot, rows);
     register_callbacks(slot, pending);
-    let _ = send_message(live, &crate::ts!("🆕 新建对话 · 2/4 用哪个 agent？", "🆕 New conversation · 2/4 Which agent?"), &keyboard, reply_to, None, None);
+    let _ = send_message(
+        live,
+        &crate::ts!(
+            "🆕 新建对话 · 2/4 用哪个 agent？",
+            "🆕 New conversation · 2/4 Which agent?"
+        ),
+        &keyboard,
+        reply_to,
+        None,
+        None,
+    );
 }
 
 /// 当前向导快照（dest + agent 都已就绪才返回）。
 fn wizard_ready(slot: &'static Telegram) -> Option<(WizardDest, String, String)> {
-    let wizard = slot.inner.lock().ok().and_then(|inner| inner.wizard.clone())?;
+    let wizard = slot
+        .inner
+        .lock()
+        .ok()
+        .and_then(|inner| inner.wizard.clone())?;
     let dest = wizard.dest?;
     if wizard.agent_id.is_empty() {
         return None;
@@ -3460,7 +3611,17 @@ fn wizard_ready(slot: &'static Telegram) -> Option<(WizardDest, String, String)>
 /// /new 第 3 步：模型清单（agent 任一活跃会话的 caps；没有就跳过）。
 fn send_wizard_model_step(slot: &'static Telegram, live: &LiveConfig, reply_to: Option<i64>) {
     let Some((_dest, agent_id, agent_label)) = wizard_ready(slot) else {
-        let _ = send_message(live, &crate::ts!("向导已过期——重新发 /new 开始。", "The wizard expired — send /new to start over."), &[], reply_to, None, None);
+        let _ = send_message(
+            live,
+            &crate::ts!(
+                "向导已过期——重新发 /new 开始。",
+                "The wizard expired — send /new to start over."
+            ),
+            &[],
+            reply_to,
+            None,
+            None,
+        );
         return;
     };
     let caps = slot.acp.agent_capability_snapshot(&agent_id);
@@ -3494,7 +3655,10 @@ fn send_wizard_model_page(
     host_message: Option<i64>,
 ) {
     let (text, range) = model_page_parts(
-        &crate::ts!("🆕 新建对话 · 3/4 {agent_label} 用哪个模型？", "🆕 New conversation · 3/4 Which model for {agent_label}?"),
+        &crate::ts!(
+            "🆕 新建对话 · 3/4 {agent_label} 用哪个模型？",
+            "🆕 New conversation · 3/4 Which model for {agent_label}?"
+        ),
         &caps.models,
         offset,
     );
@@ -3506,17 +3670,38 @@ fn send_wizard_model_page(
                 model_id: model.id.clone(),
                 model_label: model.label.clone(),
             },
-            format!("{}{}", if caps.current_model.as_deref() == Some(model.id.as_str()) { "● " } else { "" }, clip(&model.label, 48)),
+            format!(
+                "{}{}",
+                if caps.current_model.as_deref() == Some(model.id.as_str()) {
+                    "● "
+                } else {
+                    ""
+                },
+                clip(&model.label, 48)
+            ),
         )]);
     }
-    let (prev, next) = page_nav(range.end < caps.models.len(), offset > 0, CallbackAction::WizardModelPage { offset: offset.saturating_sub(MODEL_PAGE_SIZE) }, CallbackAction::WizardModelPage { offset: range.end });
+    let (prev, next) = page_nav(
+        range.end < caps.models.len(),
+        offset > 0,
+        CallbackAction::WizardModelPage {
+            offset: offset.saturating_sub(MODEL_PAGE_SIZE),
+        },
+        CallbackAction::WizardModelPage { offset: range.end },
+    );
     match (prev, next) {
         (Some(prev), Some(next)) => rows.push(vec![(prev.0, prev.1), (next.0, next.1)]),
         (Some(nav), None) | (None, Some(nav)) => rows.push(vec![nav]),
         (None, None) => {}
     }
     rows.push(vec![
-        (CallbackAction::NewModel { model_id: String::new(), model_label: crate::ts!("默认", "Default") }, crate::ts!("↩ 默认（沿用最近）", "↩ Default (keep recent)")),
+        (
+            CallbackAction::NewModel {
+                model_id: String::new(),
+                model_label: crate::ts!("默认", "Default"),
+            },
+            crate::ts!("↩ 默认（沿用最近）", "↩ Default (keep recent)"),
+        ),
         (CallbackAction::NewCancel, crate::ts!("✖ 取消", "✖ Cancel")),
     ]);
     let (keyboard, pending) = assemble_keyboard(slot, rows);
@@ -3532,7 +3717,17 @@ fn send_wizard_mode_step(
     model: Option<(String, String)>,
 ) {
     let Some((_, agent_id, agent_label)) = wizard_ready(slot) else {
-        let _ = send_message(live, &crate::ts!("向导已过期——重新发 /new 开始。", "The wizard expired — send /new to start over."), &[], reply_to, None, None);
+        let _ = send_message(
+            live,
+            &crate::ts!(
+                "向导已过期——重新发 /new 开始。",
+                "The wizard expired — send /new to start over."
+            ),
+            &[],
+            reply_to,
+            None,
+            None,
+        );
         return;
     };
     // 把模型选择记进向导。
@@ -3558,14 +3753,23 @@ fn send_wizard_mode_step(
         )]);
     }
     rows.push(vec![
-        (CallbackAction::NewMode { mode_id: String::new(), mode_label: crate::ts!("默认", "Default") }, crate::ts!("↩ 不指定", "↩ Unspecified")),
+        (
+            CallbackAction::NewMode {
+                mode_id: String::new(),
+                mode_label: crate::ts!("默认", "Default"),
+            },
+            crate::ts!("↩ 不指定", "↩ Unspecified"),
+        ),
         (CallbackAction::NewCancel, crate::ts!("✖ 取消", "✖ Cancel")),
     ]);
     let (keyboard, pending) = assemble_keyboard(slot, rows);
     register_callbacks(slot, pending);
     let _ = send_message(
         live,
-        &crate::ts!("🆕 新建对话 · 4/4 {agent_label} 用什么编辑模式？", "🆕 New conversation · 4/4 Which edit mode for {agent_label}?"),
+        &crate::ts!(
+            "🆕 新建对话 · 4/4 {agent_label} 用什么编辑模式？",
+            "🆕 New conversation · 4/4 Which edit mode for {agent_label}?"
+        ),
         &keyboard,
         reply_to,
         None,
@@ -3586,15 +3790,45 @@ fn wizard_finalize(
         .ok()
         .and_then(|mut inner| inner.wizard.take());
     let Some(wizard) = wizard else {
-        let _ = send_message(live, &crate::ts!("向导已过期——重新发 /new 开始。", "The wizard expired — send /new to start over."), &[], reply_to, None, None);
+        let _ = send_message(
+            live,
+            &crate::ts!(
+                "向导已过期——重新发 /new 开始。",
+                "The wizard expired — send /new to start over."
+            ),
+            &[],
+            reply_to,
+            None,
+            None,
+        );
         return;
     };
     let Some(dest) = wizard.dest else {
-        let _ = send_message(live, &crate::ts!("向导状态不完整——重新发 /new 开始。", "The wizard state is incomplete — send /new to start over."), &[], reply_to, None, None);
+        let _ = send_message(
+            live,
+            &crate::ts!(
+                "向导状态不完整——重新发 /new 开始。",
+                "The wizard state is incomplete — send /new to start over."
+            ),
+            &[],
+            reply_to,
+            None,
+            None,
+        );
         return;
     };
     if wizard.agent_id.is_empty() {
-        let _ = send_message(live, &crate::ts!("向导状态不完整——重新发 /new 开始。", "The wizard state is incomplete — send /new to start over."), &[], reply_to, None, None);
+        let _ = send_message(
+            live,
+            &crate::ts!(
+                "向导状态不完整——重新发 /new 开始。",
+                "The wizard state is incomplete — send /new to start over."
+            ),
+            &[],
+            reply_to,
+            None,
+            None,
+        );
         return;
     }
     let (chat, project_id) = match &dest {
@@ -3610,8 +3844,13 @@ fn wizard_finalize(
             WizardDest::Project { name, .. } => name.clone(),
         },
         wizard.agent_label,
-        model.as_ref().map(|(_, label)| label.clone())        .unwrap_or_else(|| crate::ts!("默认", "Default")),
-        mode.as_ref().map(|(_, label)| label.clone())        .unwrap_or_else(|| crate::ts!("默认", "Default")),
+        model
+            .as_ref()
+            .map(|(_, label)| label.clone())
+            .unwrap_or_else(|| crate::ts!("默认", "Default")),
+        mode.as_ref()
+            .map(|(_, label)| label.clone())
+            .unwrap_or_else(|| crate::ts!("默认", "Default")),
     );
     let _ = send_message(live, &summary, &[], reply_to, None, None);
     let payload_model_id = model.as_ref().map(|(id, _)| id.clone());
@@ -3646,7 +3885,10 @@ fn model_page_parts(
     let end = (start + MODEL_PAGE_SIZE).min(total);
     let page_no = start / MODEL_PAGE_SIZE + 1;
     let pages = total.div_ceil(MODEL_PAGE_SIZE);
-    let text = crate::ts!("{title}\n第 {page_no}/{pages} 页 · 共 {total} 个", "{title}\nPage {page_no}/{pages} · {total} total");
+    let text = crate::ts!(
+        "{title}\n第 {page_no}/{pages} 页 · 共 {total} 个",
+        "{title}\nPage {page_no}/{pages} · {total} total"
+    );
     (text, start..end)
 }
 
@@ -3696,7 +3938,11 @@ fn send_model_menu(
         return;
     };
     let (text, range) = model_page_parts(
-        &crate::ts!("🔀 [{}] 切到哪个模型？", "🔀 Which model for [{}]?", meta.label),
+        &crate::ts!(
+            "🔀 [{}] 切到哪个模型？",
+            "🔀 Which model for [{}]?",
+            meta.label
+        ),
         &caps.models,
         offset,
     );
@@ -3711,7 +3957,11 @@ fn send_model_menu(
             },
             format!(
                 "{}{}",
-                if caps.current_model.as_deref() == Some(model.id.as_str()) { "● " } else { "" },
+                if caps.current_model.as_deref() == Some(model.id.as_str()) {
+                    "● "
+                } else {
+                    ""
+                },
                 clip(&model.label, 48)
             ),
         )]);
@@ -3733,7 +3983,10 @@ fn send_model_menu(
     } else if let Some(nav) = prev.or(next) {
         rows.push(vec![nav]);
     }
-    rows.push(vec![(CallbackAction::DismissMenu, crate::ts!("✖ 关闭", "✖ Close"))]);
+    rows.push(vec![(
+        CallbackAction::DismissMenu,
+        crate::ts!("✖ 关闭", "✖ Close"),
+    )]);
     let (keyboard, pending) = assemble_keyboard(slot, rows);
     register_callbacks(slot, pending);
     deliver_menu(live, &text, &keyboard, reply_to, host_message);
@@ -3806,7 +4059,10 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
         .ok()
         .and_then(|mut inner| inner.callbacks.remove(&id))
     else {
-        answer(&crate::ts!("这条已处理或已过期", "Already handled or expired"));
+        answer(&crate::ts!(
+            "这条已处理或已过期",
+            "Already handled or expired"
+        ));
         return;
     };
 
@@ -3816,13 +4072,10 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
             request_id,
             option_id,
             option_label,
-        } => slot
-            .acp
-            .respond_permission(request_id, option_id)
-            .map(|_| {
-                emit_resolved(slot, session_id, "permission/resolved", request_id);
-                crate::ts!("已选：{option_label}", "Chosen: {option_label}")
-            }),
+        } => slot.acp.respond_permission(request_id, option_id).map(|_| {
+            emit_resolved(slot, session_id, "permission/resolved", request_id);
+            crate::ts!("已选：{option_label}", "Chosen: {option_label}")
+        }),
         CallbackAction::Question {
             session_id,
             request_id,
@@ -3864,7 +4117,10 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
                 inner.last_user_session = Some(session_id.clone());
             }
             schedule_dashboard(slot);
-            Ok(crate::ts!("⏎ 裸发文字将送进 [{label}]", "⏎ Plain text will go to [{label}]"))
+            Ok(crate::ts!(
+                "⏎ 裸发文字将送进 [{label}]",
+                "⏎ Plain text will go to [{label}]"
+            ))
         }
         CallbackAction::StopTurn { session_id, label } => slot
             .acp
@@ -3890,26 +4146,36 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
         }
         // ─── /new 向导 ───────────────────────────────────────────────
         CallbackAction::NewDestChat => {
-            let fresh = slot.inner.lock().map(|mut inner| {
-                match inner.wizard.as_mut() {
+            let fresh = slot
+                .inner
+                .lock()
+                .map(|mut inner| match inner.wizard.as_mut() {
                     Some(wizard) if wizard.dest.is_none() => {
                         wizard.dest = Some(WizardDest::Chat);
                         true
                     }
                     _ => false,
-                }
-            });
+                });
             match fresh {
                 Ok(true) => {
                     send_wizard_agent_step(slot, live, None);
                     Ok(crate::ts!("目的地：聊天", "Destination: chat"))
                 }
-                _ => Err(crate::ts!("已过期——重新发 /new 开始", "Expired — send /new to start over").into()),
+                _ => Err(crate::ts!(
+                    "已过期——重新发 /new 开始",
+                    "Expired — send /new to start over"
+                )
+                .into()),
             }
         }
-        CallbackAction::NewDestProject { project_id, project_name } => {
-            let fresh = slot.inner.lock().map(|mut inner| {
-                match inner.wizard.as_mut() {
+        CallbackAction::NewDestProject {
+            project_id,
+            project_name,
+        } => {
+            let fresh = slot
+                .inner
+                .lock()
+                .map(|mut inner| match inner.wizard.as_mut() {
                     Some(wizard) if wizard.dest.is_none() => {
                         wizard.dest = Some(WizardDest::Project {
                             id: project_id.clone(),
@@ -3918,19 +4184,30 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
                         true
                     }
                     _ => false,
-                }
-            });
+                });
             match fresh {
                 Ok(true) => {
                     send_wizard_agent_step(slot, live, None);
-                    Ok(crate::ts!("目的地：{project_name}", "Destination: {project_name}"))
+                    Ok(crate::ts!(
+                        "目的地：{project_name}",
+                        "Destination: {project_name}"
+                    ))
                 }
-                _ => Err(crate::ts!("已过期——重新发 /new 开始", "Expired — send /new to start over").into()),
+                _ => Err(crate::ts!(
+                    "已过期——重新发 /new 开始",
+                    "Expired — send /new to start over"
+                )
+                .into()),
             }
         }
-        CallbackAction::NewAgent { agent_id, agent_label } => {
-            let fresh = slot.inner.lock().map(|mut inner| {
-                match inner.wizard.as_mut() {
+        CallbackAction::NewAgent {
+            agent_id,
+            agent_label,
+        } => {
+            let fresh = slot
+                .inner
+                .lock()
+                .map(|mut inner| match inner.wizard.as_mut() {
                     Some(wizard) if wizard.dest.is_some() && wizard.agent_id.is_empty() => {
                         wizard.agent_id = agent_id.clone();
                         wizard.agent_label = agent_label.clone();
@@ -3938,17 +4215,23 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
                         true
                     }
                     _ => false,
-                }
-            });
+                });
             match fresh {
                 Ok(true) => {
                     send_wizard_model_step(slot, live, None);
                     Ok(crate::ts!("agent：{agent_label}", "agent: {agent_label}"))
                 }
-                _ => Err(crate::ts!("已过期——重新发 /new 开始", "Expired — send /new to start over").into()),
+                _ => Err(crate::ts!(
+                    "已过期——重新发 /new 开始",
+                    "Expired — send /new to start over"
+                )
+                .into()),
             }
         }
-        CallbackAction::NewModel { model_id, model_label } => {
+        CallbackAction::NewModel {
+            model_id,
+            model_label,
+        } => {
             let fresh = slot.inner.lock().map(|inner| {
                 matches!(
                     inner.wizard.as_ref(),
@@ -3969,10 +4252,17 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
                         Ok(crate::ts!("模型：{model_label}", "Model: {model_label}"))
                     }
                 }
-                _ => Err(crate::ts!("已过期——重新发 /new 开始", "Expired — send /new to start over").into()),
+                _ => Err(crate::ts!(
+                    "已过期——重新发 /new 开始",
+                    "Expired — send /new to start over"
+                )
+                .into()),
             }
         }
-        CallbackAction::NewMode { mode_id, mode_label } => {
+        CallbackAction::NewMode {
+            mode_id,
+            mode_label,
+        } => {
             let fresh = slot.inner.lock().map(|inner| inner.wizard.is_some());
             match fresh {
                 Ok(true) => {
@@ -3983,12 +4273,22 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
                     };
                     wizard_finalize(slot, live, None, pick);
                     if mode_id.is_empty() {
-                        Ok(crate::ts!("模式：默认 · 正在创建…", "Mode: default · creating…"))
+                        Ok(crate::ts!(
+                            "模式：默认 · 正在创建…",
+                            "Mode: default · creating…"
+                        ))
                     } else {
-                        Ok(crate::ts!("模式：{mode_label} · 正在创建…", "Mode: {mode_label} · creating…"))
+                        Ok(crate::ts!(
+                            "模式：{mode_label} · 正在创建…",
+                            "Mode: {mode_label} · creating…"
+                        ))
                     }
                 }
-                _ => Err(crate::ts!("已过期——重新发 /new 开始", "Expired — send /new to start over").into()),
+                _ => Err(crate::ts!(
+                    "已过期——重新发 /new 开始",
+                    "Expired — send /new to start over"
+                )
+                .into()),
             }
         }
         CallbackAction::NewCancel => {
@@ -4007,21 +4307,38 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
                         .filter(|caps| !caps.models.is_empty());
                     match caps {
                         Some(caps) => {
-                            let host =
-                                callback.pointer("/message/message_id").and_then(Value::as_i64);
+                            let host = callback
+                                .pointer("/message/message_id")
+                                .and_then(Value::as_i64);
                             send_wizard_model_page(
-                                slot, live, &agent_label, &caps, *offset, None, host,
+                                slot,
+                                live,
+                                &agent_label,
+                                &caps,
+                                *offset,
+                                None,
+                                host,
                             );
                             Ok(crate::ts!("第 {} 项起", "From item {}", offset + 1))
                         }
-                        None => Err(crate::ts!("模型清单已不可用——重新发 /new 开始", "Model list is no longer available — send /new to start over").into()),
+                        None => Err(crate::ts!(
+                            "模型清单已不可用——重新发 /new 开始",
+                            "Model list is no longer available — send /new to start over"
+                        )
+                        .into()),
                     }
                 }
-                None => Err(crate::ts!("已过期——重新发 /new 开始", "Expired — send /new to start over").into()),
+                None => Err(crate::ts!(
+                    "已过期——重新发 /new 开始",
+                    "Expired — send /new to start over"
+                )
+                .into()),
             }
         }
         CallbackAction::ModelPage { session_id, offset } => {
-            let host = callback.pointer("/message/message_id").and_then(Value::as_i64);
+            let host = callback
+                .pointer("/message/message_id")
+                .and_then(Value::as_i64);
             send_model_menu(slot, live, &session_id, *offset, None, host);
             Ok(crate::ts!("第 {} 项起", "From item {}", offset + 1))
         }
@@ -4030,14 +4347,23 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
                 inner.last_user_session = Some(session_id.clone());
             }
             schedule_dashboard(slot);
-            Ok(crate::ts!("⏎ 已接上 [{label}]，直接发文字继续聊", "⏎ Attached to [{label}] — send text to keep chatting"))
+            Ok(crate::ts!(
+                "⏎ 已接上 [{label}]，直接发文字继续聊",
+                "⏎ Attached to [{label}] — send text to keep chatting"
+            ))
         }
         CallbackAction::ResumePage { offset } => {
-            let host = callback.pointer("/message/message_id").and_then(Value::as_i64);
+            let host = callback
+                .pointer("/message/message_id")
+                .and_then(Value::as_i64);
             send_resume_menu(slot, live, *offset, None, host);
             Ok(crate::ts!("第 {} 项起", "From item {}", offset + 1))
         }
-        CallbackAction::SetModel { session_id, model_id, model_label } => {
+        CallbackAction::SetModel {
+            session_id,
+            model_id,
+            model_label,
+        } => {
             let _ = slot.app.emit_to(
                 "main",
                 COMMAND_EVENT,
@@ -4048,7 +4374,10 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
                     "modelLabel": model_label,
                 }),
             );
-            Ok(crate::ts!("已请求切换 → {model_label}", "Switch requested → {model_label}"))
+            Ok(crate::ts!(
+                "已请求切换 → {model_label}",
+                "Switch requested → {model_label}"
+            ))
         }
         CallbackAction::DismissMenu => Ok(crate::ts!("已关闭", "Closed")),
     };
@@ -4070,7 +4399,9 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
                 .lock()
                 .ok()
                 .and_then(|inner| inner.dashboard.map(|handle| handle.message_id));
-            let pressed_message = callback.pointer("/message/message_id").and_then(Value::as_i64);
+            let pressed_message = callback
+                .pointer("/message/message_id")
+                .and_then(Value::as_i64);
             if !is_page_action {
                 if let Some(message_id) = pressed_message {
                     if Some(message_id) != dashboard_message {
@@ -4098,7 +4429,11 @@ fn handle_callback_query(slot: &'static Telegram, live: &LiveConfig, callback: V
             );
         }
         Err(error) => {
-            answer(&crate::ts!("没成：{}", "Didn't work: {}", clip(&error, 160)));
+            answer(&crate::ts!(
+                "没成：{}",
+                "Didn't work: {}",
+                clip(&error, 160)
+            ));
             log(
                 "warn",
                 "remote resolve failed",
@@ -4294,7 +4629,12 @@ fn verify_token(token: &str) -> Result<String, String> {
         .pointer("/result/username")
         .and_then(Value::as_str)
         .map(str::to_string)
-        .ok_or_else(|| crate::ts!("getMe 响应里没有 username", "getMe response has no username"))
+        .ok_or_else(|| {
+            crate::ts!(
+                "getMe 响应里没有 username",
+                "getMe response has no username"
+            )
+        })
 }
 
 // ─── 纯函数（组消息 / 路由决策 / 解析）─────────────────────────────────────
@@ -4340,7 +4680,12 @@ fn text_of_value(value: &Value) -> String {
             let is_text = block.get("type").and_then(Value::as_str) != Some("image")
                 && block.contains_key("text");
             is_text
-                .then(|| block.get("text").and_then(Value::as_str).map(str::to_string))
+                .then(|| {
+                    block
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
                 .flatten()
                 .unwrap_or_default()
         }
@@ -4351,7 +4696,10 @@ fn text_of_value(value: &Value) -> String {
                 if block.get("type").and_then(Value::as_str) == Some("text")
                     || !block.contains_key("type")
                 {
-                    block.get("text").and_then(Value::as_str).map(str::to_string)
+                    block
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
                 } else {
                     None
                 }
@@ -4377,7 +4725,10 @@ enum QuestionPush {
 fn question_push_plan(questions: Option<&Vec<Value>>) -> QuestionPush {
     let Some(questions) = questions else {
         return QuestionPush::TextOnly {
-            body: crate::ts!("（问题内容没能解析）", "(could not parse the question content)"),
+            body: crate::ts!(
+                "（问题内容没能解析）",
+                "(could not parse the question content)"
+            ),
         };
     };
     let mut any_multi = false;
@@ -4415,7 +4766,10 @@ fn question_push_plan(questions: Option<&Vec<Value>>) -> QuestionPush {
         }
         // 单问题但没有选项：开放式问题，提示用文字回复。
         return QuestionPush::TextOnly {
-            body: crate::ts!("{question}\n（开放式问题：直接回复文字即可送进会话）", "{question}\n(open question: reply with text to send it into the session)"),
+            body: crate::ts!(
+                "{question}\n（开放式问题：直接回复文字即可送进会话）",
+                "{question}\n(open question: reply with text to send it into the session)"
+            ),
         };
     }
     let body = parsed
@@ -4650,10 +5004,7 @@ fn resolve_tool_image_path(path: &str, cwd: Option<&str>) -> String {
     } else {
         rest.replace('\\', "/")
     };
-    format!(
-        "{}{separator}{rest}",
-        base.trim_end_matches(['\\', '/'])
-    )
+    format!("{}{separator}{rest}", base.trim_end_matches(['\\', '/']))
 }
 
 /// 一个图片引用 → 可发送的图。`require_image_ext`：本地路径必须带图片
@@ -4827,7 +5178,8 @@ fn path_from_raw_input(raw: &Value) -> Option<String> {
                 let parsed = serde_json::from_str::<Value>(trimmed).ok()?;
                 return path_from_raw_input(&parsed);
             }
-            let looks_like_path = trimmed.contains('/') || trimmed.contains('\\')
+            let looks_like_path = trimmed.contains('/')
+                || trimmed.contains('\\')
                 || (!trimmed.contains(char::is_whitespace) && has_file_extension(trimmed));
             looks_like_path.then(|| trimmed.to_string())
         }
@@ -4853,11 +5205,7 @@ fn has_file_extension(text: &str) -> bool {
         return false;
     };
     let ext = &text[dot + 1..];
-    !ext.is_empty()
-        && ext.len() <= 8
-        && ext
-            .chars()
-            .all(|ch| ch.is_alphanumeric() || ch == '_')
+    !ext.is_empty() && ext.len() <= 8 && ext.chars().all(|ch| ch.is_alphanumeric() || ch == '_')
 }
 
 /// 回复正文里 markdown 图片的地址（`![alt](src)`），按出现顺序、不查重。
@@ -4872,7 +5220,9 @@ fn markdown_image_srcs(text: &str) -> Vec<String> {
             (Some((marker, run)), None) => fence = Some((marker, run)),
             // 闭合：同一种字符、不短于开栏、后面不带 info string。
             (Some((marker, run)), Some((open_char, open_len)))
-                if marker == open_char && run >= open_len && line.trim_start()[run..].trim().is_empty() =>
+                if marker == open_char
+                    && run >= open_len
+                    && line.trim_start()[run..].trim().is_empty() =>
             {
                 fence = None;
             }
@@ -5063,8 +5413,24 @@ fn md_escape(text: &str) -> String {
     for ch in text.chars() {
         if matches!(
             ch,
-            '_' | '*' | '[' | ']' | '(' | ')' | '~' | '`' | '>' | '#' | '+' | '-' | '=' | '|'
-                | '{' | '}' | '.' | '!' | '\\'
+            '_' | '*'
+                | '['
+                | ']'
+                | '('
+                | ')'
+                | '~'
+                | '`'
+                | '>'
+                | '#'
+                | '+'
+                | '-'
+                | '='
+                | '|'
+                | '{'
+                | '}'
+                | '.'
+                | '!'
+                | '\\'
         ) {
             out.push('\\');
         }
@@ -5136,14 +5502,12 @@ fn md_inline_chars(chars: &[char]) -> String {
         }
         if ch == '*' && chars.get(i + 1) == Some(&'*') {
             // 闭合也找成对的 **（单个 * 是斜体/字面量，不能吞）。
-            if let Some(end) = (i + 2..chars.len().saturating_sub(1)).find(|&p| {
-                chars[p] == '*' && chars.get(p + 1) == Some(&'*')
-            }) {
+            if let Some(end) = (i + 2..chars.len().saturating_sub(1))
+                .find(|&p| chars[p] == '*' && chars.get(p + 1) == Some(&'*'))
+            {
                 if end > i + 2 {
                     out.push('*');
-                    out.push_str(&md_escape(
-                        &chars[i + 2..end].iter().collect::<String>(),
-                    ));
+                    out.push_str(&md_escape(&chars[i + 2..end].iter().collect::<String>()));
                     out.push('*');
                     i = end + 2;
                     continue;
@@ -5499,16 +5863,32 @@ fn send_resume_menu(
 ) {
     let sessions = historical_sessions(slot);
     if sessions.is_empty() {
-        let _ = send_message(live, &crate::ts!("还没有任何历史会话。", "No past sessions yet."), &[], reply_to, None, None);
+        let _ = send_message(
+            live,
+            &crate::ts!("还没有任何历史会话。", "No past sessions yet."),
+            &[],
+            reply_to,
+            None,
+            None,
+        );
         return;
     }
     let offset = offset.min(sessions.len().saturating_sub(1) / RESUME_PAGE_SIZE * RESUME_PAGE_SIZE);
     let end = (offset + RESUME_PAGE_SIZE).min(sessions.len());
     let range = offset..end;
     let total = sessions.len();
-    let mut header = crate::ts!("📂 继续哪个会话？({} 个，按最近活跃排序)", "📂 Which session to continue? ({}, most recently active first)", total);
+    let mut header = crate::ts!(
+        "📂 继续哪个会话？({} 个，按最近活跃排序)",
+        "📂 Which session to continue? ({}, most recently active first)",
+        total
+    );
     if total > RESUME_PAGE_SIZE {
-        header.push_str(&crate::ts!("\n第 {}–{} 项", "\nItems {}–{}", offset + 1, end));
+        header.push_str(&crate::ts!(
+            "\n第 {}–{} 项",
+            "\nItems {}–{}",
+            offset + 1,
+            end
+        ));
     }
     let mut rows: Vec<Vec<(CallbackAction, String)>> = Vec::new();
     for row in &sessions[range.clone()] {
@@ -5537,7 +5917,10 @@ fn send_resume_menu(
     } else if let Some(nav) = prev.or(next) {
         rows.push(vec![nav]);
     }
-    rows.push(vec![(CallbackAction::DismissMenu, crate::ts!("✖ 关闭", "✖ Close"))]);
+    rows.push(vec![(
+        CallbackAction::DismissMenu,
+        crate::ts!("✖ 关闭", "✖ Close"),
+    )]);
     let (keyboard, pending) = assemble_keyboard(slot, rows);
     register_callbacks(slot, pending);
     deliver_menu(live, &header, &keyboard, reply_to, host_message);
@@ -5587,8 +5970,7 @@ pub fn status() -> TelegramStatus {
         let live_enabled = slot.live.lock().ok().map(|l| l.enabled).unwrap_or(false);
         (pending, last_error, live_enabled)
     });
-    let (pending, last_error, live_enabled) =
-        runtime.unwrap_or((None, None, false));
+    let (pending, last_error, live_enabled) = runtime.unwrap_or((None, None, false));
 
     TelegramStatus {
         configured: settings.token_cipher.is_some(),
@@ -5635,7 +6017,10 @@ pub fn save(patch: TelegramSave) -> Result<TelegramStatus, String> {
     match patch.enabled {
         Some(true) => {
             if settings.token_cipher.is_none() {
-                return Err(crate::ts!("还没有填 bot token", "No bot token filled in yet"));
+                return Err(crate::ts!(
+                    "还没有填 bot token",
+                    "No bot token filled in yet"
+                ));
             }
             if settings.chat_id.is_none() {
                 return Err(
@@ -5674,7 +6059,10 @@ pub fn accept_pairing() -> Result<TelegramStatus, String> {
         .and_then(|slot| slot.inner.lock().ok())
         .and_then(|mut inner| inner.pending_pairing.take())
         .ok_or_else(|| {
-            crate::ts!("当前没有待确认的配对请求（给 bot 发条消息，等它出现在这里）", "No pairing request waiting (message the bot and let it show up here)")
+            crate::ts!(
+                "当前没有待确认的配对请求（给 bot 发条消息，等它出现在这里）",
+                "No pairing request waiting (message the bot and let it show up here)"
+            )
         })?;
 
     settings.chat_id = Some(request.chat_id);
@@ -5779,7 +6167,9 @@ fn apply_live(settings: &TelegramSettings) {
         .as_deref()
         .and_then(|cipher| crate::credentials::decrypt_secret(cipher).ok());
     {
-        let Ok(mut live) = slot.live.lock() else { return };
+        let Ok(mut live) = slot.live.lock() else {
+            return;
+        };
         live.enabled = settings.enabled && token.is_some();
         live.token = token.clone();
         live.chat_id = settings.chat_id;
@@ -5872,7 +6262,10 @@ mod tests {
             "https://api.telegram.org/bot{token}/getMe: status code 302 (redirected from https://api.telegram.org/bot{token}/login)"
         );
         let cleaned = sanitize_error("getMe", &redirected);
-        assert!(!cleaned.contains(token), "token must not survive: {cleaned}");
+        assert!(
+            !cleaned.contains(token),
+            "token must not survive: {cleaned}"
+        );
         assert_eq!(cleaned.matches("<redacted>").count(), 2);
         // 无 URL 的错误原样透传（只加方法名前缀）。
         assert_eq!(sanitize_error("getMe", "no token"), "getMe: no token");
@@ -5980,10 +6373,19 @@ mod tests {
     #[test]
     fn stop_reason_head_maps_known_reasons() {
         assert_eq!(stop_reason_head("end_turn"), ("✅", "跑完".to_string()));
-        assert_eq!(stop_reason_head("max_tokens"), ("✂️", "到达长度上限".to_string()));
+        assert_eq!(
+            stop_reason_head("max_tokens"),
+            ("✂️", "到达长度上限".to_string())
+        );
         assert_eq!(stop_reason_head("refusal"), ("⚠️", "模型拒答".to_string()));
-        assert_eq!(stop_reason_head("max_turn_requests"), ("⏹", "达到回合上限".to_string()));
-        assert_eq!(stop_reason_head("anything-else"), ("✅", "跑完".to_string()));
+        assert_eq!(
+            stop_reason_head("max_turn_requests"),
+            ("⏹", "达到回合上限".to_string())
+        );
+        assert_eq!(
+            stop_reason_head("anything-else"),
+            ("✅", "跑完".to_string())
+        );
     }
 
     #[test]
@@ -6017,7 +6419,8 @@ mod tests {
 
     #[test]
     fn unreadable_settings_stay_on_disk_and_newer_versions_archive() {
-        let dir = std::env::temp_dir().join(format!("marionette_tg_corrupt_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("marionette_tg_corrupt_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("telegram.json");
@@ -6030,7 +6433,11 @@ mod tests {
         let archived = std::fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .any(|e| e.file_name().to_string_lossy().starts_with("telegram.corrupt-"));
+            .any(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("telegram.corrupt-")
+            });
         assert!(!archived, "parse failure must not archive the file");
 
         // 未来版本：留档后从默认重来。
@@ -6040,8 +6447,15 @@ mod tests {
         let archived = std::fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .any(|e| e.file_name().to_string_lossy().starts_with("telegram.corrupt-"));
-        assert!(archived, "newer-version telegram.json must be archived, not wiped");
+            .any(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("telegram.corrupt-")
+            });
+        assert!(
+            archived,
+            "newer-version telegram.json must be archived, not wiped"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -6088,7 +6502,14 @@ mod tests {
     #[test]
     fn render_dashboard_lists_counts_bound_and_idle_overflow() {
         let rows = vec![
-            dash_row("主线", "Claude Code", DashState::Running, Some(125), 0, false),
+            dash_row(
+                "主线",
+                "Claude Code",
+                DashState::Running,
+                Some(125),
+                0,
+                false,
+            ),
             dash_row("NAS 脚本", "DSH", DashState::Waiting, None, 30, false),
             dash_row("调研", "", DashState::Idle, None, 240, true),
         ];
@@ -6117,9 +6538,15 @@ mod tests {
         ];
         let text = render_status(&rows, 5);
         assert!(text.contains("会话清单（3/5）"), "{text}");
-        assert!(text.contains("⏎ ▶ [跑着的] · Grok · 跑了 1分00秒"), "{text}");
+        assert!(
+            text.contains("⏎ ▶ [跑着的] · Grok · 跑了 1分00秒"),
+            "{text}"
+        );
         assert!(text.contains("⏸ [等着的] · 等你批准/回答"), "{text}");
-        assert!(text.contains("💤 [闲着的] · Codex · 15分钟前有动静"), "{text}");
+        assert!(
+            text.contains("💤 [闲着的] · Codex · 15分钟前有动静"),
+            "{text}"
+        );
         assert!(text.contains("⏎ 标记的会话"), "{text}");
     }
 
@@ -6209,7 +6636,10 @@ mod tests {
         );
         // 围栏块内空行不切块。
         let fenced = "```\na\n\nb\n```";
-        assert_eq!(split_markdown_paragraphs(fenced, 100), vec![fenced.to_string()]);
+        assert_eq!(
+            split_markdown_paragraphs(fenced, 100),
+            vec![fenced.to_string()]
+        );
         // 单块超限硬切（换行优先、多字节安全）。
         let long = "很长的段落".repeat(50);
         for chunk in split_markdown_paragraphs(&long, 40) {
@@ -6237,13 +6667,28 @@ mod tests {
 
     #[test]
     fn page_nav_bounds() {
-        let (prev, next) = page_nav(true, false, CallbackAction::NewCancel, CallbackAction::NewCancel);
+        let (prev, next) = page_nav(
+            true,
+            false,
+            CallbackAction::NewCancel,
+            CallbackAction::NewCancel,
+        );
         assert!(prev.is_none());
         assert!(next.is_some());
-        let (prev, next) = page_nav(false, true, CallbackAction::NewCancel, CallbackAction::NewCancel);
+        let (prev, next) = page_nav(
+            false,
+            true,
+            CallbackAction::NewCancel,
+            CallbackAction::NewCancel,
+        );
         assert!(prev.is_some());
         assert!(next.is_none());
-        let (prev, next) = page_nav(false, false, CallbackAction::NewCancel, CallbackAction::NewCancel);
+        let (prev, next) = page_nav(
+            false,
+            false,
+            CallbackAction::NewCancel,
+            CallbackAction::NewCancel,
+        );
         assert!(prev.is_none() && next.is_none());
     }
 
@@ -6254,10 +6699,19 @@ mod tests {
         // 曾导致总控面板一条都发不出去。
         let keyboard = vec![
             vec![
-                TgButton { text: "⏹ [NAS 脚本]".into(), callback_id: 42 },
-                TgButton { text: "名".into(), callback_id: 7 },
+                TgButton {
+                    text: "⏹ [NAS 脚本]".into(),
+                    callback_id: 42,
+                },
+                TgButton {
+                    text: "名".into(),
+                    callback_id: 7,
+                },
             ],
-            vec![TgButton { text: "🔄 刷新".into(), callback_id: 9 }],
+            vec![TgButton {
+                text: "🔄 刷新".into(),
+                callback_id: 9,
+            }],
         ];
         let value = reply_markup(&keyboard);
         assert!(
@@ -6355,7 +6809,14 @@ mod tests {
 
     #[test]
     fn render_session_detail_shows_state_body_and_privacy_gate() {
-        let row = dash_row("主线", "Claude Code", DashState::Running, Some(125), 0, true);
+        let row = dash_row(
+            "主线",
+            "Claude Code",
+            DashState::Running,
+            Some(125),
+            0,
+            true,
+        );
         let text = render_session_detail(&row, "改完了，测试全绿", true);
         assert!(text.contains("📄 ⏎ [主线] · Claude Code"), "{text}");
         assert!(text.contains("跑了 2分05秒"), "{text}");
@@ -6385,7 +6846,10 @@ mod tests {
         assert_eq!(strip_file_uri("file:///D:/a b.png"), "D:/a b.png");
         assert_eq!(strip_file_uri("file://localhost/C:/x.png"), "C:/x.png");
         // UNC 主机保留成 //host/…。
-        assert_eq!(strip_file_uri("file://server/share/x.png"), "//server/share/x.png");
+        assert_eq!(
+            strip_file_uri("file://server/share/x.png"),
+            "//server/share/x.png"
+        );
         // `file://D:/x`：两斜杠 + 盘符（非标准但常见）。
         assert_eq!(strip_file_uri("file://D:/x.png"), "D:/x.png");
         // 百分号解码。
@@ -6416,7 +6880,10 @@ mod tests {
         // 绝对路径与没 cwd 的原样返回。
         assert_eq!(resolve_tool_image_path("D:/abs.png", None), "D:/abs.png");
         assert_eq!(resolve_tool_image_path("rel.png", None), "rel.png");
-        assert_eq!(resolve_tool_image_path("/nix/abs.png", None), "/nix/abs.png");
+        assert_eq!(
+            resolve_tool_image_path("/nix/abs.png", None),
+            "/nix/abs.png"
+        );
     }
 
     #[test]
@@ -6438,9 +6905,15 @@ mod tests {
             vec![
                 local("D:/shots/a.png"),
                 TurnImage::Remote("https://example.com/b.png?x=1".to_string()),
-                TurnImage::Bytes { data: "aGVsbG8=".to_string(), mime: "image/png".to_string() },
+                TurnImage::Bytes {
+                    data: "aGVsbG8=".to_string(),
+                    mime: "image/png".to_string()
+                },
                 // 没有 mimeType 时补默认 image/png。
-                TurnImage::Bytes { data: "d29ybGQ=".to_string(), mime: "image/png".to_string() },
+                TurnImage::Bytes {
+                    data: "d29ybGQ=".to_string(),
+                    mime: "image/png".to_string()
+                },
             ]
         );
 
@@ -6450,7 +6923,10 @@ mod tests {
             "content": [{ "type": "tool_call", "title": "write_image" }],
             "locations": [{ "path": "D:/work/out/chart.png" }],
         });
-        assert_eq!(extract_update_images(&update), vec![local("D:/work/out/chart.png")]);
+        assert_eq!(
+            extract_update_images(&update),
+            vec![local("D:/work/out/chart.png")]
+        );
         // 非图片扩展名的 location 不收。
         let update = json!({
             "sessionUpdate": "tool_call",
@@ -6465,7 +6941,10 @@ mod tests {
             "content": [{ "type": "tool_call" }],
             "rawInput": "{ \"path\": \"renders\\\\shot.webp\" }",
         });
-        assert_eq!(extract_update_images(&update), vec![local("renders\\shot.webp")]);
+        assert_eq!(
+            extract_update_images(&update),
+            vec![local("renders\\shot.webp")]
+        );
         let update = json!({
             "sessionUpdate": "tool_call",
             "content": [{ "type": "tool_call" }],
@@ -6482,7 +6961,10 @@ mod tests {
                 ]}
             ]
         });
-        assert_eq!(extract_update_images(&update), vec![local("D:/cache/frame0001.bmp")]);
+        assert_eq!(
+            extract_update_images(&update),
+            vec![local("D:/cache/frame0001.bmp")]
+        );
 
         // 同一张图在同一 update 里只收一次（D:\ 与 D:/ 同键）。
         let update = json!({
@@ -6518,9 +7000,15 @@ mod tests {
         assert_eq!(turn_image_from_src("data:image/png,%%%", true), None);
         // 引用式（require_image_ext=true）：非图片扩展名不收。
         assert_eq!(turn_image_from_src("D:/x/main.rs", true), None);
-        assert_eq!(turn_image_from_src("D:/x/a.png", true), Some(local("D:/x/a.png")));
+        assert_eq!(
+            turn_image_from_src("D:/x/a.png", true),
+            Some(local("D:/x/a.png"))
+        );
         // image 块自述是图（false）：没有扩展名也收。
-        assert_eq!(turn_image_from_src("D:/temp/IMG_2048", false), Some(local("D:/temp/IMG_2048")));
+        assert_eq!(
+            turn_image_from_src("D:/temp/IMG_2048", false),
+            Some(local("D:/temp/IMG_2048"))
+        );
         // 体量闸：注定超限的 base64 直接不收（留足余量，别贴着整数除法边界）。
         let huge = "A".repeat(IMAGE_MAX_BYTES as usize * 2);
         assert_eq!(
@@ -6554,14 +7042,20 @@ mod tests {
         let taken = track.take_images();
         let keys: Vec<String> = taken.iter().map(TurnImage::key).collect();
         assert_eq!(taken.len(), 4, "{keys:?}");
-        assert!(!keys.contains(&local("D:/gen/a1.png").key()), "oldest dropped");
+        assert!(
+            !keys.contains(&local("D:/gen/a1.png").key()),
+            "oldest dropped"
+        );
         assert!(keys.contains(&local("D:/gen/a2.png").key()));
         assert!(keys.contains(&local("D:/gen/a5.png").key()));
         // 用户自带的图即使被 agent 原样引用也不推回。
         track.push_images(vec![local("D:/mine/from-user.png"), user_bytes.clone()]);
         let taken = track.take_images();
         let keys: Vec<String> = taken.iter().map(TurnImage::key).collect();
-        assert!(!keys.contains(&local("D:/mine/from-user.png").key()), "{keys:?}");
+        assert!(
+            !keys.contains(&local("D:/mine/from-user.png").key()),
+            "{keys:?}"
+        );
         assert!(!keys.contains(&user_bytes.key()), "{keys:?}");
         // 取完即清。
         assert!(track.take_images().is_empty());
@@ -6580,10 +7074,14 @@ mod tests {
         let text = "结果：\n\n![a](out/chart.png)\n正文 ![b <x>](https://e.com/b.jpg)\n";
         assert_eq!(
             markdown_image_srcs(text),
-            vec!["out/chart.png".to_string(), "https://e.com/b.jpg".to_string()]
+            vec![
+                "out/chart.png".to_string(),
+                "https://e.com/b.jpg".to_string()
+            ]
         );
         // 围栏代码块里的图片语法不收；行内代码里的也不收。
-        let text = "```\n![no](fenced.png)\n```\n行内 `![no](inline.png)` 之后 ![yes](D:/ok.webp)\n";
+        let text =
+            "```\n![no](fenced.png)\n```\n行内 `![no](inline.png)` 之后 ![yes](D:/ok.webp)\n";
         assert_eq!(markdown_image_srcs(text), vec!["D:/ok.webp".to_string()]);
         // ~~~ 围栏、info string 的 ```rs 围栏同样跳过。
         let text = "~~~\n![no](t.png)\n~~~\n```rs\nlet x = 1;\n```\n![yes](t2.png)\n";
@@ -6607,10 +7105,7 @@ mod tests {
         // 认不出来先按照片试（会被拒，然后退成文件）。
         assert_eq!(send_method_for(None), SEND_PHOTO);
         // 按图本体挑发法。
-        assert_eq!(
-            TurnImage::send_as(&local("D:/x/anim.gif")),
-            SEND_ANIMATION
-        );
+        assert_eq!(TurnImage::send_as(&local("D:/x/anim.gif")), SEND_ANIMATION);
         assert_eq!(
             TurnImage::send_as(&TurnImage::Remote("https://e.com/a.bogus".to_string())),
             SEND_PHOTO
@@ -6627,7 +7122,10 @@ mod tests {
         };
         let body = multipart_body(
             "marionette-boundary",
-            &[("chat_id", "12345".to_string()), ("caption", "你好".to_string())],
+            &[
+                ("chat_id", "12345".to_string()),
+                ("caption", "你好".to_string()),
+            ],
             &file,
         );
         let text = String::from_utf8_lossy(&body);
@@ -6657,8 +7155,14 @@ mod tests {
 
     #[test]
     fn tg_error_status_and_rejected_recognize_bot_api_rejections() {
-        assert_eq!(tg_error_status("HTTP 400 · sendPhoto: BAD PHOTO"), Some(400));
-        assert_eq!(tg_error_status("HTTP 429 · sendPhoto: Too Many Requests"), Some(429));
+        assert_eq!(
+            tg_error_status("HTTP 400 · sendPhoto: BAD PHOTO"),
+            Some(400)
+        );
+        assert_eq!(
+            tg_error_status("HTTP 429 · sendPhoto: Too Many Requests"),
+            Some(429)
+        );
         assert!(tg_error_status("sendPhoto: Dns: whois failed").is_none());
         assert!(rejected("HTTP 400 · sendPhoto: BAD PHOTO"));
         // 429 是限流不是拒收；传输层错误两个都不是。
@@ -6713,7 +7217,9 @@ mod tests {
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
                 payload.len()
             );
-            stream.write_all(response.as_bytes()).expect("write response");
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
             (headers, body)
         });
 
@@ -6729,7 +7235,10 @@ mod tests {
             &format!("http://127.0.0.1:{port}"),
             "secret-token",
             "sendPhoto",
-            &[("chat_id", "12345".to_string()), ("caption", "图".to_string())],
+            &[
+                ("chat_id", "12345".to_string()),
+                ("caption", "图".to_string()),
+            ],
             &file,
             Duration::from_secs(5),
         )
@@ -6737,15 +7246,32 @@ mod tests {
         assert_eq!(message_id_of(&value), Some(4242));
 
         let (headers, body) = server.join().expect("server thread");
-        assert!(headers.contains("POST /botsecret-token/sendPhoto"), "{headers}");
-        assert!(headers.to_ascii_lowercase().contains("multipart/form-data; boundary="));
+        assert!(
+            headers.contains("POST /botsecret-token/sendPhoto"),
+            "{headers}"
+        );
+        assert!(headers
+            .to_ascii_lowercase()
+            .contains("multipart/form-data; boundary="));
         let body_text = String::from_utf8_lossy(&body);
-        assert!(body_text.contains("name=\"chat_id\"\r\n\r\n12345\r\n"), "{body_text}");
-        assert!(body_text.contains("name=\"caption\"\r\n\r\n图\r\n"), "{body_text}");
-        assert!(body_text.contains("name=\"photo\"; filename=\"chart 绘图.png\"\r\nContent-Type: image/png\r\n\r\n"), "{body_text}");
+        assert!(
+            body_text.contains("name=\"chat_id\"\r\n\r\n12345\r\n"),
+            "{body_text}"
+        );
+        assert!(
+            body_text.contains("name=\"caption\"\r\n\r\n图\r\n"),
+            "{body_text}"
+        );
+        assert!(
+            body_text.contains(
+                "name=\"photo\"; filename=\"chart 绘图.png\"\r\nContent-Type: image/png\r\n\r\n"
+            ),
+            "{body_text}"
+        );
         // PNG 魔数按字节落位（没被任何编码弄脏）。
         assert!(
-            body.windows(8).any(|w| w == [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+            body.windows(8)
+                .any(|w| w == [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
             "png magic bytes must ride intact"
         );
         // 结尾边界收口。

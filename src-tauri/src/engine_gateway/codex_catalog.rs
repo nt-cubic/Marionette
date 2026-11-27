@@ -35,7 +35,10 @@ const CODEX_EFFORTS: [&str; 6] = ["none", "minimal", "low", "medium", "high", "x
 pub fn reads_whole_catalog(client_version: &str) -> bool {
     let mut parts = client_version.trim().split('.');
     let major = parts.next().and_then(|p| p.parse::<u64>().ok());
-    let minor = parts.next().and_then(|p| p.split(['-', '+']).next()).and_then(|p| p.parse::<u64>().ok());
+    let minor = parts
+        .next()
+        .and_then(|p| p.split(['-', '+']).next())
+        .and_then(|p| p.parse::<u64>().ok());
     match (major, minor) {
         (Some(major), Some(minor)) => major > 0 || minor >= 166,
         _ => false,
@@ -53,13 +56,22 @@ fn entry(provider_id: &str, row: &VendorRow, priority: usize) -> Value {
         .unwrap_or(&row.id)
         .to_string();
     let mut efforts: Vec<String> = Vec::new();
-    for key in ["reasoning_levels", "supported_reasoning_levels", "reasoning_efforts", "efforts"] {
+    for key in [
+        "reasoning_levels",
+        "supported_reasoning_levels",
+        "reasoning_efforts",
+        "efforts",
+    ] {
         if let Some(list) = row.raw.get(key).and_then(|v| v.as_array()) {
             for item in list {
                 let word = item
                     .as_str()
                     .map(String::from)
-                    .or_else(|| item.get("effort").and_then(|x| x.as_str()).map(String::from))
+                    .or_else(|| {
+                        item.get("effort")
+                            .and_then(|x| x.as_str())
+                            .map(String::from)
+                    })
                     .or_else(|| item.get("id").and_then(|x| x.as_str()).map(String::from));
                 if let Some(w) = word {
                     let w = w.to_ascii_lowercase();
@@ -76,7 +88,10 @@ fn entry(provider_id: &str, row: &VendorRow, priority: usize) -> Value {
     let default_effort = if efforts.iter().any(|e| e == "medium") {
         Value::String("medium".into())
     } else {
-        efforts.first().map(|e| Value::String(e.clone())).unwrap_or(Value::Null)
+        efforts
+            .first()
+            .map(|e| Value::String(e.clone()))
+            .unwrap_or(Value::Null)
     };
     let mut modalities = vec!["text"];
     let description = if row.images {
@@ -121,7 +136,11 @@ fn entry(provider_id: &str, row: &VendorRow, priority: usize) -> Value {
 
 /// 整张目录应答体 + 被丢的条目数。`rows` = (来源 id, 目录行)，按给定顺序出。
 pub fn build(rows: &[(String, VendorRow)], client_version: &str) -> (Vec<u8>, usize) {
-    let most = if reads_whole_catalog(client_version) { usize::MAX } else { CATALOG_MOST };
+    let most = if reads_whole_catalog(client_version) {
+        usize::MAX
+    } else {
+        CATALOG_MOST
+    };
     let head = b"{\"models\":[";
     let tail = b"]}\n";
     let mut body: Vec<u8> = head.to_vec();
@@ -147,7 +166,13 @@ mod tests {
     use super::*;
 
     fn row(id: &str, window: u64, images: bool, raw: Value) -> VendorRow {
-        VendorRow { id: id.into(), context_window: window, max_output: 0, images, raw }
+        VendorRow {
+            id: id.into(),
+            context_window: window,
+            max_output: 0,
+            images,
+            raw,
+        }
     }
 
     #[test]
@@ -181,9 +206,16 @@ mod tests {
         assert!(e["description"].as_str().unwrap().contains("text only"));
         assert!(e["base_instructions"].as_str().unwrap().len() > 1000);
         for key in [
-            "shell_type", "visibility", "supported_in_api", "apply_patch_tool_type",
-            "truncation_policy", "experimental_supported_tools", "service_tiers",
-            "supports_search_tool", "supports_parallel_tool_calls", "support_verbosity",
+            "shell_type",
+            "visibility",
+            "supported_in_api",
+            "apply_patch_tool_type",
+            "truncation_policy",
+            "experimental_supported_tools",
+            "service_tiers",
+            "supports_search_tool",
+            "supports_parallel_tool_calls",
+            "support_verbosity",
             "effective_context_window_percent",
         ] {
             assert!(e.get(key).is_some(), "missing {key}");
@@ -200,7 +232,12 @@ mod tests {
     #[test]
     fn old_codex_gets_a_catalog_under_1mib_and_new_codex_gets_all() {
         let rows: Vec<(String, VendorRow)> = (0..80)
-            .map(|i| ("p".to_string(), row(&format!("m{i}"), 128_000, true, json!({}))))
+            .map(|i| {
+                (
+                    "p".to_string(),
+                    row(&format!("m{i}"), 128_000, true, json!({})),
+                )
+            })
             .collect();
         // 每条带 ~21KB prompt：80 条 > 1MiB
         let (old, left) = build(&rows, "0.150.0");
