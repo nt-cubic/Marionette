@@ -12201,7 +12201,11 @@ function AppMain() {
             if (decision === "remember" && request.tabId !== "computer") {
               void browserShareTab(request.tabId, "control");
             }
-            void browserPermissionRespond(request.requestId, decision !== "deny");
+            void browserPermissionRespond(
+              request.requestId,
+              decision !== "deny",
+              decision === "remember",
+            );
           }}
         />
       )}

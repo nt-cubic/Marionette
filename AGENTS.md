@@ -1242,11 +1242,11 @@ Dock 仍用整页浏览器，detached 会话窗不进入。改这块先记红线
   agent 换文件。升级 driver = 改 `computer/driver.rs` 的 pin 常量重审。
   **zip 是 6 文件整包**（UIA provider/SDK dll/node runtime 必需），解压用系统 tar。
 - **grant 检查只有一处**：`computer/mod.rs` 的 `ensure_read`/`ensure_control`（读/
-  操作各一道，agent 请求走对话内权限卡、always-approve 自动放行）；MCP dispatch
-  只调它们，**别写第二套**。
+  操作各一道；always-approve、Codex `agent-full-access`、Claude `bypassPermissions`/
+  `dontAsk` 自动放行；卡内「记住」由 Rust 回调写 exact target；MCP dispatch 只调它们，**别写第二套**。
 - **自己的窗口/黑名单永不共享**：`win.rs::is_own_image`（镜像路径 + marionette.exe
   名兜底防 dev/正式版并装）+ `keys.rs::DEFAULT_BLOCKLIST`（系统设置/凭据 UI/密码
-  管理器族），list 与 share 两处都过。
+  管理器族），list 与 share 两处都过；全权模式可自动放行单次操作，但不为它们写持久 grant，权限卡也不显示 remember。
 - **按键白名单在 `keys.rs`**（表驱动测试）：粘贴拒绝 + 「agent 自写剪贴板且序列号
   未变」例外（`GetClipboardSequenceNumber`）；桌面和弦（Win*/Alt+Tab/Ctrl+Esc/
   Ctrl+Alt+*）App 级不放；Win+L/Win+Tab/Ctrl+Alt+Del 任何级不放。

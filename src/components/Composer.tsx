@@ -18,6 +18,7 @@ import {
   mergeAcpCapabilities,
   modelAssertForEffortRefresh,
   normalizeAgentModeId,
+  permissionLevelAutoApproves,
 } from "../lib/acpSupplements";
 import { formatThrownAcpError } from "../lib/errors";
 import { setSessionApproval } from "../lib/browserTabs";
@@ -747,14 +748,20 @@ export function Composer({
       setAlwaysApprove(sessionPrefs.preferredAlwaysApprove);
     }
   }, [sessionPrefs?.preferredAlwaysApprove]);
-  // Mirror the mode to the Rust tool channel (browser Control requests):
-  // always-approve sessions skip the permission card, like they skip tool
-  // prompts. The lib keeps a global map so unmounted composers stay known.
-  useEffect(() => {
-    void setSessionApproval(sessionId, alwaysApprove);
-  }, [sessionId, alwaysApprove]);
   /** True once caps came from a live agent — cached caps must not act as live. */
+  // Mirror the trust decision to the Rust tool channel (browser + Computer
+  // Use). Codex full access and Claude bypass are app-wide autonomy just like
+  // Grok always-approve. Live caps gate the mode reading so an optimistic chip
+  // cannot claim full access before the harness accepted it.
   const [capsLive, setCapsLive] = useState(false);
+  const autoApprovesToolPrompts =
+    alwaysApprove ||
+    (capsLive &&
+      (permissionLevelAutoApproves(currentMode) ||
+        permissionLevelAutoApproves(currentPermission)));
+  useEffect(() => {
+    void setSessionApproval(sessionId, autoApprovesToolPrompts);
+  }, [sessionId, autoApprovesToolPrompts]);
   const [menu, setMenu] = useState<
     "mode" | "model" | "effort" | "permission" | "agent" | "send" | "hub" | "info" | null
   >(null);

@@ -22,6 +22,12 @@ export const zh = {
   "computer.stopShortcutHint": "全局停止键 Ctrl+Alt+Shift+S 随时撤销全部共享",
   "palette.computerShare": "共享窗口给 agent（Computer Use）",
 
+  "computer.permissionTitle": "agent 请求操作窗口",
+  "computer.permissionBody": "agent 请求：{action}",
+  "computer.permissionAllow": "允许这一次",
+  "computer.permissionRemember": "允许并记住此窗口（30 分钟）",
+  "computer.permissionDeny": "拒绝",
+
   // P1-10 capture keys (generated)
   "capture.title": "将窗口截取到草稿中",
   "capture.hint": "选择一个窗口。截图和可访问性摘要将成为对话中的草稿附件。",

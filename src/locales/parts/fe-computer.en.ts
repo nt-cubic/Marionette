@@ -22,6 +22,12 @@ export const en = {
   "computer.stopShortcutHint": "Global stop Ctrl+Alt+Shift+S revokes every share at any time",
   "palette.computerShare": "Share a window with agents (Computer Use)",
 
+  "computer.permissionTitle": "Agent wants to operate a window",
+  "computer.permissionBody": "The agent wants to: {action}",
+  "computer.permissionAllow": "Allow once",
+  "computer.permissionRemember": "Allow and remember this window (30 min)",
+  "computer.permissionDeny": "Deny",
+
   // P1-10 capture keys (generated)
   "capture.title": "Capture window into draft",
   "capture.hint": "Choose a window. The screenshot and accessibility summary become a draft attachment in the conversation.",

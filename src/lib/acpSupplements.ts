@@ -146,6 +146,25 @@ export function getAcpSupplement(agentId: string): AcpSupplement | null {
 }
 
 /**
+ * Modes that already mean "do not ask before acting".  Marionette's browser
+ * and Computer Use gates mirror this into their session approval table; a
+ * Codex full-access turn must not show a second app-level permission card for
+ * the same trust decision.  `acceptEdits` is deliberately absent: it accepts
+ * file edits, not shell/browser/desktop actions.
+ */
+export function permissionLevelAutoApproves(
+  value: string | null | undefined,
+): boolean {
+  const key = (value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return (
+    key.includes("fullaccess") ||
+    key.includes("bypass") ||
+    key.includes("yolo") ||
+    key === "dontask"
+  );
+}
+
+/**
  * Map legacy / display mode ids onto the wire ids each harness accepts.
  * Codex once advertised approval-only labels (suggest/full-auto); live
  * codex-acp uses read-only | agent | agent-full-access.

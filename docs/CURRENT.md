@@ -362,9 +362,10 @@ agent 可以看/操作**其它 Windows 应用**的窗口（浏览器之外的原
   复验**。
 - **入口**：Ctrl K →「共享窗口给 agent」面板（引擎安装、窗口列表、每窗 只读/可操作、
   全部停止）；**全局停止键 Ctrl+Alt+Shift+S** 一键撤销全部共享。
-- **授权**：agent 读未共享窗口 → 对话内权限卡（同浏览器 Control）；操作（点击/
-  输入）同样走卡；会话 always-approve 自动放行；面板手动给的是长期授权（30 分钟
-  不用自动失效）。自己的窗口与密码管理器黑名单**永不共享**。
+- **授权**：agent 读未共享窗口 → 对话内「窗口」权限卡（同浏览器 Control）；操作（点击/
+  输入）同样走卡；会话 always-approve 与明确的全权模式（Codex `agent-full-access`、Claude
+  `bypassPermissions` / `dontAsk`）自动放行，不再叠第二张卡；「允许并记住此窗口」按 pid + 启动时间 +
+  windowId 建 30 分钟免问授权（按最后使用滚动）。Marionette 自身与密码管理器不提供「记住」，仍只能逐次授权；全权模式不会为它们落持久 grant。
 - **工具**（与浏览器同一 localhost MCP）：12 个 `computer_*`——list_windows /
   screenshot / snapshot（元素树 + element_token）/ click / drag / scroll / type /
   press_key（**按键白名单**：桌面和弦不放、粘贴只在剪贴板仍是 agent 自己写的内容

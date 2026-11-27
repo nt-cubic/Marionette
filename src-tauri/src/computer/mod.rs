@@ -327,6 +327,9 @@ fn set_grant(key: TargetKey, level: Level, label: String) {
 }
 
 pub fn revoke_all() {
+    // A permission card still open when the Stop shortcut fires must not be
+    // able to re-create a grant after the user revoked everything.
+    let _ = crate::browser::cancel_permissions_for_tab("computer");
     // Halt the driver too: an in-flight capture dies with it.
     let _ = helper_request_global(protocol::OP_HALT, json!({}));
     with_state(|state| state.grants.clear());
@@ -377,6 +380,7 @@ fn ensure_read(
     key: &TargetKey,
     label: &str,
     target: Value,
+    rememberable: bool,
 ) -> Result<Value, String> {
     if grant_for(key).unwrap_or(Level::None).allows(Level::Read) {
         return Ok(json!({"ok": true}));
@@ -384,13 +388,20 @@ fn ensure_read(
     if crate::browser::session_auto_approves(session_id) {
         return Ok(json!({"ok": true, "once": true}));
     }
-    let allowed = crate::browser::request_permission(
+    let remember_key = key.clone();
+    let remember_label = label.to_string();
+    let remember = rememberable.then(|| {
+        Box::new(move || set_grant(remember_key, Level::Read, remember_label))
+            as Box<dyn FnOnce() + Send>
+    });
+    let allowed = crate::browser::request_permission_with_remember(
         app,
         session_id,
         "computer",
         "",
         label,
         &format!("read this window ({label})"),
+        remember,
     );
     if allowed {
         return Ok(json!({"ok": true, "once": true}));
@@ -407,6 +418,7 @@ fn ensure_control(
     label: &str,
     target: Value,
     action_summary: &str,
+    rememberable: bool,
 ) -> Result<Value, String> {
     if grant_for(key).unwrap_or(Level::None).allows(Level::Control) {
         return Ok(json!({"ok": true}));
@@ -414,8 +426,21 @@ fn ensure_control(
     if crate::browser::session_auto_approves(session_id) {
         return Ok(json!({"ok": true, "once": true}));
     }
-    let allowed =
-        crate::browser::request_permission(app, session_id, "computer", "", label, action_summary);
+    let remember_key = key.clone();
+    let remember_label = label.to_string();
+    let remember = rememberable.then(|| {
+        Box::new(move || set_grant(remember_key, Level::Control, remember_label))
+            as Box<dyn FnOnce() + Send>
+    });
+    let allowed = crate::browser::request_permission_with_remember(
+        app,
+        session_id,
+        "computer",
+        "",
+        label,
+        action_summary,
+        remember,
+    );
     if allowed {
         return Ok(json!({"ok": true, "once": true}));
     }
@@ -476,8 +501,12 @@ pub fn tool_capture(app: &AppHandle, session_id: &str, params: &Value) -> Result
         .and_then(Value::as_str)
         .unwrap_or("window")
         .to_string();
+    let rememberable = row
+        .get("grantable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let target = json!({"pid": params.get("pid"), "windowId": params.get("windowId")});
-    let gate = ensure_read(app, session_id, &key, &label, target.clone())?;
+    let gate = ensure_read(app, session_id, &key, &label, target.clone(), rememberable)?;
     if gate.get("ok").is_none() {
         return Ok(gate);
     }
@@ -514,8 +543,12 @@ pub fn tool_snapshot(app: &AppHandle, session_id: &str, params: &Value) -> Resul
         .and_then(Value::as_str)
         .unwrap_or("window")
         .to_string();
+    let rememberable = row
+        .get("grantable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let target = json!({"pid": params.get("pid"), "windowId": params.get("windowId")});
-    let gate = ensure_read(app, session_id, &key, &label, target.clone())?;
+    let gate = ensure_read(app, session_id, &key, &label, target.clone(), rememberable)?;
     if gate.get("ok").is_none() {
         return Ok(gate);
     }
@@ -550,12 +583,24 @@ pub fn tool_act(app: &AppHandle, session_id: &str, params: &Value) -> Result<Val
         .and_then(Value::as_str)
         .unwrap_or("window")
         .to_string();
+    let rememberable = row
+        .get("grantable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let action: protocol::WindowAction =
         serde_json::from_value(params.get("action").cloned().unwrap_or(Value::Null))
             .map_err(|e| format!("bad action: {e}"))?;
     let target = json!({"pid": params.get("pid"), "windowId": params.get("windowId")});
     let summary = format!("{} on window \"{}\"", action.summary(), label);
-    let gate = ensure_control(app, session_id, &key, &label, target.clone(), &summary)?;
+    let gate = ensure_control(
+        app,
+        session_id,
+        &key,
+        &label,
+        target.clone(),
+        &summary,
+        rememberable,
+    )?;
     if gate.get("ok").is_none() {
         return Ok(gate);
     }

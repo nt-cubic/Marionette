@@ -1404,24 +1404,39 @@ export function BrowserPermissionDialog({
   onClose: (decision: "allow" | "remember" | "deny") => void;
 }) {
   const t = useT();
+  const isComputer = request.tabId === "computer";
   return (
     <div className="project-dialog-backdrop" role="presentation">
       <div className="browser-permission" role="dialog" aria-modal>
-        <div className="browser-permission__title">{t("browser.permissionTitle")}</div>
+        <div className="browser-permission__title">
+          {isComputer ? t("computer.permissionTitle") : t("browser.permissionTitle")}
+        </div>
         {sessionLabel && <div className="browser-permission__session">{sessionLabel}</div>}
         <div className="browser-permission__body">
-          {t("browser.permissionBody", { origin: request.origin, action: request.summary })}
+          {isComputer
+            ? t("computer.permissionBody", {
+                origin: request.origin,
+                action: request.summary,
+              })
+            : t("browser.permissionBody", {
+                origin: request.origin,
+                action: request.summary,
+              })}
         </div>
         <div className="browser-permission__actions">
           <button type="button" className="project-dialog__cancel" onClick={() => onClose("deny")}>
-            {t("browser.permissionDeny")}
+            {isComputer ? t("computer.permissionDeny") : t("browser.permissionDeny")}
           </button>
           <button type="button" className="project-dialog__submit" onClick={() => onClose("allow")}>
-            {t("browser.permissionAllow")}
+            {isComputer ? t("computer.permissionAllow") : t("browser.permissionAllow")}
           </button>
-          <button type="button" className="project-dialog__submit" onClick={() => onClose("remember")}>
-            {t("browser.permissionRemember")}
-          </button>
+          {request.canRemember && (
+            <button type="button" className="project-dialog__submit" onClick={() => onClose("remember")}>
+              {isComputer
+                ? t("computer.permissionRemember")
+                : t("browser.permissionRemember")}
+            </button>
+          )}
         </div>
       </div>
     </div>

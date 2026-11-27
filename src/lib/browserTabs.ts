@@ -29,6 +29,7 @@ export type BrowserPermissionRequest = {
   url: string;
   origin: string;
   summary: string;
+  canRemember: boolean;
 };
 
 export type BrowserHandoffRequest = {
@@ -145,9 +146,13 @@ export async function browserShareTab(tabId: string, level: "none" | "read" | "c
   await invoke("browser_share_tab", { tabId, level });
 }
 
-export async function browserPermissionRespond(requestId: string, allow: boolean): Promise<void> {
+export async function browserPermissionRespond(
+  requestId: string,
+  allow: boolean,
+  remember = false,
+): Promise<void> {
   if (!isTauriRuntime()) return;
-  await invoke("browser_permission_respond", { requestId, allow });
+  await invoke("browser_permission_respond", { requestId, allow, remember });
 }
 
 export async function browserHandoffRespond(

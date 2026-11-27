@@ -16,6 +16,7 @@ import {
   mergeAcpCapabilities,
   modelAssertForEffortRefresh,
   normalizeAgentModeId,
+  permissionLevelAutoApproves,
 } from "../src/lib/acpSupplements.ts";
 import {
   groupModelsByProvider,
@@ -223,6 +224,16 @@ check("and no list is invented when they advertise none", () => {
 });
 
 console.log("\ncodex (empty catalog: effort lives in model[effort])");
+
+check("Codex full access and bypass modes auto-approve app tools", () => {
+  assert.equal(permissionLevelAutoApproves("agent-full-access"), true);
+  assert.equal(permissionLevelAutoApproves("danger-full-access"), true);
+  assert.equal(permissionLevelAutoApproves("bypassPermissions"), true);
+  assert.equal(permissionLevelAutoApproves("Don't Ask"), true);
+  assert.equal(permissionLevelAutoApproves("acceptEdits"), false);
+  assert.equal(permissionLevelAutoApproves("agent"), false);
+  assert.equal(permissionLevelAutoApproves(null), false);
+});
 
 check("effort chip is reconstructed when live advertised none", () => {
   const caps = mergeAcpCapabilities(

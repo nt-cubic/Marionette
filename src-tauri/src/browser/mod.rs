@@ -132,6 +132,10 @@ mod imp {
     struct PendingPermission {
         tab_id: String,
         tx: mpsc::Sender<bool>,
+        /// Run only when the user explicitly chooses "remember". Browser
+        /// callers use None (the frontend grants the tab itself); Computer Use
+        /// supplies an exact target so its remembered grant survives the card.
+        on_remember: Option<Box<dyn FnOnce() + Send>>,
     }
 
     static PENDING_PERMISSIONS: Mutex<Option<HashMap<String, PendingPermission>>> =
@@ -146,6 +150,7 @@ mod imp {
         pub url: String,
         pub origin: String,
         pub summary: String,
+        pub can_remember: bool,
     }
 
     /// Ask the user, through the frontend, for one Control-level action.
@@ -157,6 +162,42 @@ mod imp {
         url: &str,
         origin: &str,
         summary: &str,
+    ) -> bool {
+        request_permission_impl(app, session_id, tab_id, url, origin, summary, None, true)
+    }
+
+    pub fn request_permission_with_remember(
+        app: &AppHandle,
+        session_id: &str,
+        tab_id: &str,
+        url: &str,
+        origin: &str,
+        summary: &str,
+        on_remember: Option<Box<dyn FnOnce() + Send>>,
+    ) -> bool {
+        let can_remember = on_remember.is_some();
+        request_permission_impl(
+            app,
+            session_id,
+            tab_id,
+            url,
+            origin,
+            summary,
+            on_remember,
+            can_remember,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn request_permission_impl(
+        app: &AppHandle,
+        session_id: &str,
+        tab_id: &str,
+        url: &str,
+        origin: &str,
+        summary: &str,
+        on_remember: Option<Box<dyn FnOnce() + Send>>,
+        can_remember: bool,
     ) -> bool {
         let request_id = format!(
             "bp{}",
@@ -172,6 +213,7 @@ mod imp {
                 PendingPermission {
                     tab_id: tab_id.to_string(),
                     tx,
+                    on_remember,
                 },
             );
         } else {
@@ -184,6 +226,7 @@ mod imp {
             url: url.to_string(),
             origin: origin.to_string(),
             summary: summary.to_string(),
+            can_remember,
         };
         let _ = set_tab_status(app, tab_id, "waiting_user");
         let _ = app.emit("marionette-browser-permission", &request);
@@ -199,13 +242,23 @@ mod imp {
 
     /// The user answered a card. `allow` false covers the explicit deny and
     /// the dismiss; the timeout path never reaches here.
-    pub fn resolve_permission(request_id: &str, allow: bool) -> bool {
+    pub fn resolve_permission(request_id: &str, allow: bool, remember: bool) -> bool {
         let sender = PENDING_PERMISSIONS
             .lock()
             .ok()
             .and_then(|mut guard| guard.as_mut().and_then(|map| map.remove(request_id)));
         match sender {
-            Some(pending) => pending.tx.send(allow).is_ok(),
+            Some(pending) => {
+                let PendingPermission {
+                    tx, on_remember, ..
+                } = pending;
+                if allow && remember {
+                    if let Some(remember) = on_remember {
+                        remember();
+                    }
+                }
+                tx.send(allow).is_ok()
+            }
             None => false,
         }
     }
@@ -864,7 +917,12 @@ mod imp {
         case_sensitive: Option<bool>,
     ) -> Result<Value, String> {
         surface::with_surface(&app, &tab_id, move |s| {
-            surface::find(s, &action, query.as_deref(), case_sensitive.unwrap_or(false))
+            surface::find(
+                s,
+                &action,
+                query.as_deref(),
+                case_sensitive.unwrap_or(false),
+            )
         })?
     }
 
@@ -1032,8 +1090,16 @@ mod imp {
     }
 
     #[tauri::command(async)]
-    pub fn browser_permission_respond(request_id: String, allow: bool) -> Result<bool, String> {
-        Ok(resolve_permission(&request_id, allow))
+    pub fn browser_permission_respond(
+        request_id: String,
+        allow: bool,
+        remember: Option<bool>,
+    ) -> Result<bool, String> {
+        Ok(resolve_permission(
+            &request_id,
+            allow,
+            remember.unwrap_or(false),
+        ))
     }
 
     #[tauri::command(async)]
@@ -1055,6 +1121,76 @@ mod imp {
                 .insert(session_id, always_approve);
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod permission_tests {
+        use super::*;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        #[test]
+        fn remember_decision_runs_the_exact_grant_callback_once() {
+            let request_id = format!(
+                "remember-test-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            );
+            let remembered = Arc::new(AtomicBool::new(false));
+            let remembered_in_callback = Arc::clone(&remembered);
+            let (tx, _rx) = mpsc::channel();
+            PENDING_PERMISSIONS
+                .lock()
+                .unwrap()
+                .get_or_insert_with(HashMap::new)
+                .insert(
+                    request_id.clone(),
+                    PendingPermission {
+                        tab_id: "computer".to_string(),
+                        tx,
+                        on_remember: Some(Box::new(move || {
+                            remembered_in_callback.store(true, Ordering::Release)
+                        })),
+                    },
+                );
+
+            assert!(resolve_permission(&request_id, true, true));
+            assert!(remembered.load(Ordering::Acquire));
+            assert!(!resolve_permission(&request_id, true, true));
+        }
+
+        #[test]
+        fn allow_once_does_not_run_the_remember_callback() {
+            let request_id = format!(
+                "once-test-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            );
+            let remembered = Arc::new(AtomicBool::new(false));
+            let remembered_in_callback = Arc::clone(&remembered);
+            let (tx, _rx) = mpsc::channel();
+            PENDING_PERMISSIONS
+                .lock()
+                .unwrap()
+                .get_or_insert_with(HashMap::new)
+                .insert(
+                    request_id.clone(),
+                    PendingPermission {
+                        tab_id: "computer".to_string(),
+                        tx,
+                        on_remember: Some(Box::new(move || {
+                            remembered_in_callback.store(true, Ordering::Release)
+                        })),
+                    },
+                );
+
+            assert!(resolve_permission(&request_id, true, false));
+            assert!(!remembered.load(Ordering::Acquire));
+        }
     }
 }
 
@@ -1189,6 +1325,17 @@ mod imp {
         _url: &str,
         _origin: &str,
         _summary: &str,
+    ) -> bool {
+        false
+    }
+    pub fn request_permission_with_remember(
+        _app: &AppHandle,
+        _session_id: &str,
+        _tab_id: &str,
+        _url: &str,
+        _origin: &str,
+        _summary: &str,
+        _on_remember: Option<Box<dyn FnOnce() + Send>>,
     ) -> bool {
         false
     }
@@ -1340,7 +1487,11 @@ mod imp {
         unavailable()
     }
     #[tauri::command(async)]
-    pub fn browser_permission_respond(_request_id: String, _allow: bool) -> Result<bool, String> {
+    pub fn browser_permission_respond(
+        _request_id: String,
+        _allow: bool,
+        _remember: Option<bool>,
+    ) -> Result<bool, String> {
         Ok(false)
     }
     #[tauri::command(async)]
