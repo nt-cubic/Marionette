@@ -99,7 +99,12 @@ pub fn refresh_marionette_route() -> Result<Option<PathBuf>, String> {
         .ok_or_else(|| crate::ts!("无法定位用户目录", "Could not locate the user directory"))?;
     match crate::engine::status() {
         crate::engine::EngineStatus::Running { port, .. } => {
-            let models = crate::engine::catalog_direct_entries();
+            // Start-up discovery can be empty for a short window after the
+            // gateway reports Running. Use the same last-good catalogue fallback
+            // as the OpenCode/Pi bridges so a worker spawned in that window gets
+            // its `--bundle` instead of silently starting on a stale ambient
+            // route that cannot set the requested model.
+            let models = crate::engine::catalog_direct_or_cached_entries().0;
             if models.is_empty() {
                 return Ok(None);
             }

@@ -47,7 +47,7 @@ export const AgentsSection = memo(function AgentsSection({
         <span>{t("agents.title")}</span>
         {summary && <span className="rail-sh__meta">{summary}</span>}
       </div>
-      <ul className="rail-list rail-agents">
+      <ul className="rail-list rail-agents custom-scrollbar scrollbar-autohide">
         {tasks.map((row) => {
           const label = stateLabel(row, t);
           const canStop =

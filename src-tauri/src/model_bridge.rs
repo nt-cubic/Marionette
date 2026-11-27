@@ -305,17 +305,13 @@ pub fn classify_agent(agent_id: &str) -> BridgeAgent {
 
 /// 引擎目录里是否存在这个模型：接受裸 id，也接受各 agent 的桥接前缀
 /// （`marionette/`、`marionette::`、`marionette\`）。返回目录里的规范 id。
+/// Stable provider aliases such as `opencode-go/*` resolve through engine
+/// provider metadata to the current dynamic `source-*` catalogue id.
 pub fn engine_model_id_of(input: &str) -> Option<String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return None;
     }
-    let candidates = [
-        Some(trimmed),
-        trimmed.strip_prefix("marionette::"),
-        trimmed.strip_prefix("marionette\\"),
-        trimmed.strip_prefix("marionette/"),
-    ];
     let (live, _from_cache) = crate::engine::catalog_direct_or_cached();
     let mut catalog: Vec<String> = live;
     if catalog.is_empty() {
@@ -324,9 +320,98 @@ pub fn engine_model_id_of(input: &str) -> Option<String> {
             .map(|row| row.id)
             .collect();
     }
+    let providers = catalog_provider_records();
+    resolve_engine_model_id(trimmed, &catalog, &providers)
+}
+
+fn resolve_engine_model_id(
+    input: &str,
+    catalog: &[String],
+    providers: &[serde_json::Value],
+) -> Option<String> {
+    let candidates = [
+        Some(input),
+        input.strip_prefix("marionette::"),
+        input.strip_prefix("marionette\\"),
+        input.strip_prefix("marionette/"),
+    ];
     for candidate in candidates.into_iter().flatten() {
         if catalog.iter().any(|id| id == candidate) {
             return Some(candidate.to_string());
+        }
+    }
+    for candidate in candidates.into_iter().flatten() {
+        if let Some(id) = resolve_catalog_model_alias(candidate, catalog, providers) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+/// Engine provider records contain credentials. Keep the file read private to
+/// this module and expose only the metadata needed to translate a stable
+/// provider alias such as `opencode-go/deepseek-v4.1-flash` to the dynamic
+/// `source-*` id currently advertised by the engine.
+fn catalog_provider_records() -> Vec<serde_json::Value> {
+    let Ok(dir) = crate::engine::engine_dir() else {
+        return Vec::new();
+    };
+    fs::read(dir.join("data").join("providers.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|root| {
+            root.get("providers")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+        })
+        .unwrap_or_default()
+}
+
+/// Resolve a provider alias through the engine's provider records. Exact
+/// catalog ids are handled before this function. A provider may expose the
+/// same logical account under several dynamic `source-*` ids, so preserving the
+/// provider-file order is deliberate: it matches the engine's own precedence.
+fn resolve_catalog_model_alias(
+    input: &str,
+    catalog: &[String],
+    providers: &[serde_json::Value],
+) -> Option<String> {
+    let (requested_provider, requested_model) = input.split_once('/')?;
+    let requested_provider = requested_provider.trim();
+    let requested_model = requested_model.trim();
+    if requested_provider.is_empty() || requested_model.is_empty() {
+        return None;
+    }
+
+    for record in providers {
+        let provider_id = record
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if provider_id.is_empty() {
+            continue;
+        }
+
+        // Discovered OpenAI-compatible providers are exposed under dynamic
+        // `source-*` ids, while users and the model picker know them by their
+        // provider name (for example `ollama`). Match that stable name too so
+        // the same alias contract applies across all catalogue providers.
+        let matches = ["id", "name", "catalog", "preset"]
+            .into_iter()
+            .filter_map(|key| record.get(key).and_then(serde_json::Value::as_str))
+            .any(|alias| {
+                let alias = alias.trim();
+                alias.eq_ignore_ascii_case(requested_provider)
+                    || find_preset(alias).is_some_and(|preset| preset.id == requested_provider)
+            });
+        if !matches {
+            continue;
+        }
+
+        let candidate = format!("{provider_id}/{requested_model}");
+        if catalog.iter().any(|id| id == &candidate) {
+            return Some(candidate);
         }
     }
     None
@@ -3362,6 +3447,73 @@ pub fn delete_entry(id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stable_provider_alias_resolves_to_current_dynamic_source() {
+        let catalog = vec![
+            "source-c3f358329cebd120/deepseek-v4.1-flash".to_string(),
+            "source-f347c986443acd38/deepseek-v4.1-flash".to_string(),
+            "source-73800e7663517058/deepseek-v4.1-flash".to_string(),
+            "deepseek/deepseek-flash".to_string(),
+        ];
+        let providers = vec![
+            serde_json::json!({"id":"source-c3f358329cebd120","catalog":"opencode-go"}),
+            serde_json::json!({"id":"source-f347c986443acd38","catalog":"opencode-go"}),
+            serde_json::json!({"id":"source-73800e7663517058","name":"ollama"}),
+            serde_json::json!({"id":"deepseek","catalog":"deepseek"}),
+        ];
+
+        assert_eq!(
+            resolve_catalog_model_alias("opencode-go/deepseek-v4.1-flash", &catalog, &providers,)
+                .as_deref(),
+            Some("source-c3f358329cebd120/deepseek-v4.1-flash")
+        );
+        assert_eq!(
+            resolve_catalog_model_alias("OPEncode-Go/deepseek-v4.1-flash", &catalog, &providers)
+                .as_deref(),
+            Some("source-c3f358329cebd120/deepseek-v4.1-flash")
+        );
+        assert_eq!(
+            resolve_catalog_model_alias("opencode-go/not-present", &catalog, &providers),
+            None
+        );
+        assert_eq!(
+            resolve_catalog_model_alias("unknown/deepseek-v4.1-flash", &catalog, &providers),
+            None
+        );
+        assert_eq!(
+            resolve_engine_model_id(
+                "marionette/opencode-go/deepseek-v4.1-flash",
+                &catalog,
+                &providers,
+            )
+            .as_deref(),
+            Some("source-c3f358329cebd120/deepseek-v4.1-flash")
+        );
+        assert_eq!(
+            resolve_engine_model_id(
+                "marionette/source-f347c986443acd38/deepseek-v4.1-flash",
+                &catalog,
+                &providers,
+            )
+            .as_deref(),
+            Some("source-f347c986443acd38/deepseek-v4.1-flash")
+        );
+        assert_eq!(
+            resolve_catalog_model_alias("ollama/deepseek-v4.1-flash", &catalog, &providers)
+                .as_deref(),
+            Some("source-73800e7663517058/deepseek-v4.1-flash")
+        );
+        assert_eq!(
+            resolve_engine_model_id(
+                "marionette/ollama/deepseek-v4.1-flash",
+                &catalog,
+                &providers,
+            )
+            .as_deref(),
+            Some("source-73800e7663517058/deepseek-v4.1-flash")
+        );
+    }
     use std::fs;
     use std::path::PathBuf;
 

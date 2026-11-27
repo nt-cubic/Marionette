@@ -343,6 +343,11 @@
 /* ----- delegated agents ----- */
 .rail-agents {
   margin: 1px 0 2px;
+  /* Keep a busy delegation batch from pushing quota and changes out of the
+     rail. Eight full rows remain visible; the rest stay available by scroll. */
+  max-height: min(272px, 40vh);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
 }
 .rail-agent-row {
   min-height: 34px;
