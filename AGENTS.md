@@ -704,6 +704,41 @@ magpie 120–160MB——前两个是「运行时入场费」，调不掉，能�
   模型，任何 `set_config_option` 形状都失败时抛错并停发，不能把用户消息送到
   agent 的无关默认模型。回归：`npx tsx scripts/verify-bridge-routing.mts`。
 
+**2026-11-27 (OpenCode chip flipped back to `opencode/seaglass-alpha-free`):**
+picking a shared model on an agent that already advertises the whole engine
+catalog (opencode / pi / dsh / zcode) must switch in place with
+`session/set_config_option`; `bridgeSwitchNeedsRestart` keeps the process swap
+for process-pinned bridges only (grok owned TOML table, claude env, codex
+providers/set, antigravity gateway). Restarting a catalog-native agent only
+brought the fresh process up on the harness default and the chip stayed on it.
+Three more rules: (a) re-clicking the same cross item is never a silent no-op
+when `caps.currentModel` drifted away from the bound wire id -- re-assert it;
+(b) switching to a native model writes `preferredModel` BEFORE any restart (the
+old `unbindBridge` wiped it to null and raced the swap, so the pick was lost);
+(c) `detectCapabilityDrift` never clears `marionette/...`, `marionette::...`
+or `marionette\...` prefs -- the provider is spawn-conditional (engine asleep
+at spawn = absent), the same transient rule as `account:...`; the send-side
+persist guard skips the fallback chip for the same reason.
+
+**Headless doctor (`Marionette.exe --doctor`, 2026-11-27):** `tools\doctor.bat`
+(double-click) runs `--doctor` and `type`s the report; no window, no instance
+lock, no engine wake, no tokens. It must stay *before* the single-instance /
+WebView2 / writable-dir gates in `main.rs::main` because those are what it
+reports on. Output goes to `~/.marionette/logs/doctor-report.txt` (+ `.json`
+with `--json`; `%TEMP%\marionette-doctor.txt` when the data dir is not
+writable) because the release exe is a `windows`-subsystem binary and the
+batch file prints the file instead of relying on stdout. Checks: writable data
+dir, engine reachable, catalog size (live vs offline cache), registered
+sources, dead `bridge-bindings.json` rows, saved `preferredModel` wire ids the
+engine no longer lists, codex config vs engine port, and degraded wiring
+markers in the last 24h of `dev.log`. Exit 0/1/2 = ok/warn/fail.
+`engine.rs::write_serve_state` drops `engine/serve.json` (port/pid/version) on
+every serve start: another process cannot read the in-memory engine status (a
+fresh doctor run said "not running" while the app served on 3425). The doctor
+probes `serve.json` then 3425-3429 and treats a silent port as asleep; a stale
+`serve.json` is harmless.
+
+
 ## 中转安全批（2026-11-22：桥解析 / 模型名注入 / 网关令牌 / 订阅共享默认关）
 
 朋友（CC 里选「Claude 订阅」桥模型）实锤的四个问题一批修掉。改这块前先记红线：

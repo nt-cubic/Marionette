@@ -26,6 +26,7 @@ mod debug_log;
 mod delegation;
 mod desktop_notify;
 mod diagnostics;
+mod doctor;
 mod dock_support;
 mod drag_text;
 mod dsh_bridge;
@@ -249,6 +250,14 @@ fn main() {
     #[cfg(target_os = "windows")]
     if std::env::args().any(|arg| arg == "--marionette-computer-helper") {
         std::process::exit(computer::helper::run_helper());
+    }
+
+    // Headless health check (--doctor / --doctor --json), driven by
+    // tools\doctor.bat. No window, no instance lock, no engine: it has to run
+    // before the single-instance / WebView2 / writable-dir gates, because those
+    // are exactly what it reports on.
+    if std::env::args().any(|arg| arg == "--doctor") {
+        std::process::exit(doctor::run_cli());
     }
 
     // UI language for Rust-side user-visible strings (native dialogs,
