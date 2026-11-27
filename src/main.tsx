@@ -21,6 +21,7 @@ import "./styles/v2/shelf.css";
 import "./styles/v2/transcript.css";
 import "./styles/v2/composer.css";
 import "./styles/v2/dialogs.css";
+import "./styles/cheap-text.css";
 import "./styles/v2/chrome.css";
 import "./styles/v2/memo.css";
 import "./styles/v2/council.css";

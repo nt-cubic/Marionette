@@ -253,7 +253,11 @@ fn plugin_route(url: &str) -> Option<&str> {
 /// 部分 agent 不展示 initialize instructions——派活守则的可靠载体是
 /// 工具 description，这里是双保险的第二载。
 fn initialize_instructions(session_id: &str) -> String {
-    let mut text = "Use browser_open_tab with display=\"workspace\" only when the user explicitly asks to see or work on a rendered web page beside this conversation. Starting a local dev server does not authorize taking the workspace: open it in the background unless the user asked for it to be visible. Keep ordinary research, reference pages, sign-in, API ports, and one-off reads in the background. For a page you will revisit, pass a short stable id such as work-mail; opening an existing id returns that tab without navigating it.".to_string();
+    // P1-12: the browser / Computer Use schemas are not in tools/list. Point at
+    // the discovery entry first so an agent does not conclude they are absent.
+    let mut text = format!(
+        "Only a small core of Marionette tools is listed. Browser and Computer Use tools are found with {TOOL_SEARCH_NAME}: search a keyword, a group word (\"browser\", \"computer\"), or an exact tool name, then call the tool by that name. {TOOL_SEARCH_NAME} returns full schemas and usage notes. Use browser_open_tab with display=\"workspace\" only when the user explicitly asks to see or work on a rendered web page beside this conversation. Starting a local dev server does not authorize taking the workspace: open it in the background unless the user asked for it to be visible. Keep ordinary research, reference pages, sign-in, API ports, and one-off reads in the background. For a page you will revisit, pass a short stable id such as work-mail; opening an existing id returns that tab without navigating it."
+    );
     let kit_visible = SERVER
         .get()
         .is_some_and(|state| crate::delegation::kit_visible_for(&state.app, session_id));
@@ -279,7 +283,11 @@ fn route(method: &str, params: &Value, session_id: &str) -> Result<Value, Value>
                 // 工具只注入这一会话；普通会话的工具列表不出现它们）。
                 crate::chief::tools::chief_tool_schemas()
             } else {
-                merge_delegate_kit(tool_schemas_for_session(session_id), session_id)
+                // P1-12: list only the small resident core (+ the delegation
+                // kit). Browser / Computer Use schemas come from
+                // marionette_tool_search instead of every session paying for
+                // them up front; direct calls by exact name still resolve.
+                merge_delegate_kit(resident_tool_schemas(), session_id)
             }
         })),
         "tools/call" => {
@@ -338,30 +346,40 @@ fn route(method: &str, params: &Value, session_id: &str) -> Result<Value, Value>
 // Tool schemas
 // ---------------------------------------------------------------------------
 
-fn tool_schemas() -> Value {
-    fn tool(name: &str, description: &str, required: &[&str], properties: Value) -> Value {
+/// One MCP tool entry. Shared by the full catalog, the resident core and the
+/// search index so a schema is written once and cannot drift.
+fn tool(name: &str, description: &str, required: &[&str], properties: Value) -> Value {
+    json!({
+        "name": name,
+        "description": description,
+        "inputSchema": { "type": "object", "required": required, "properties": properties },
+    })
+}
+
+/// The browser guide's schema. Lives in both the resident core (P1-12 keeps
+/// the guide so a session can learn the browser model without a search) and
+/// the full catalog - one definition, not two.
+fn browser_help_tool() -> Value {
+    tool(
+        "browser_help",
+        "How the browser tools fit together: observation economy (cheap probes before snapshots), reusing one snapshot's generation across many actions, grants, handoff, tab ownership. Optional `topic` deep-dives; default overview.",
+        &[],
         json!({
-            "name": name,
-            "description": description,
-            "inputSchema": { "type": "object", "required": required, "properties": properties },
-        })
-    }
+            "topic": {
+                "type": "string",
+                "enum": ["overview", "refs", "snapshot", "actions", "tabs", "handoff"],
+                "description": "Optional deep dive; default overview."
+            }
+        }),
+    )
+}
+
+fn tool_schemas() -> Value {
     let tab_id = || json!({ "type": "string", "description": "Browser tab id from browser_list_tabs / browser_open_tab." });
     let generation = || json!({ "type": "string", "description": "The `generation` value from the snapshot these refs came from. One generation covers any number of consecutive actions — reuse it until an action answers stale or the page navigates, then take a new snapshot." });
     let element_ref = || json!({ "type": "string", "description": "Element ref from the snapshot tree (e.g. \"e12\"). Click by ref, not by pixel." });
     json!([
-        tool(
-            "browser_help",
-            "How the browser tools fit together: observation economy (cheap probes before snapshots), reusing one snapshot's generation across many actions, grants, handoff, tab ownership. Optional `topic` deep-dives; default overview.",
-            &[],
-            json!({
-                "topic": {
-                    "type": "string",
-                    "enum": ["overview", "refs", "snapshot", "actions", "tabs", "handoff"],
-                    "description": "Optional deep dive; default overview."
-                }
-            })
-        ),
+        browser_help_tool(),
         tool(
             "browser_list_tabs",
             "List the browser tabs open in Marionette's built-in browser, including stable id, owner session, pinned, busy, status, last use and sharing state (none / read / control).",
@@ -662,7 +680,304 @@ fn tool_schemas_for_session(session_id: &str) -> Value {
 }
 
 // ---------------------------------------------------------------------------
-// browser_help — the runtime guide, generated from the schema table so the
+// P1-12 - on-demand tool schema search
+//
+// `tools/list` keeps a small resident core (the browser guide + this search)
+// and withholds the browser / Computer Use schemas, which used to be injected
+// into every session. Discovery is a bounded search away. A direct call by an
+// exact known name is untouched: `dispatch` still resolves it, and every
+// authorization / handoff / dialog / ref-lease / key-whitelist check lives on
+// that dispatch path, never on `tools/list`.
+// ---------------------------------------------------------------------------
+
+pub(crate) const TOOL_SEARCH_NAME: &str = "marionette_tool_search";
+/// Most full schemas one search may return.
+const TOOL_SEARCH_MAX_MATCHES: usize = 8;
+/// Hard cap on the serialized tools array plus usage notes.
+const TOOL_SEARCH_MAX_BYTES: usize = 24_000;
+const TOOL_SEARCH_MAX_QUERY_CHARS: usize = 200;
+const TOOL_SEARCH_MAX_TOKENS: usize = 8;
+/// How many usage paragraphs one result may carry (Computer Use plus help).
+const TOOL_SEARCH_MAX_NOTES: usize = 3;
+
+/// Tool groups a bare group word expands to. Plugin tools live on their own
+/// `/mcp/p/<id>` route and are never part of this catalog.
+const TOOL_SEARCH_GROUPS: &[&str] = &["browser", "computer"];
+
+const COMPUTER_USAGE: &str = "Computer Use: list addressable windows with computer_list_windows; a window must be shared at read level before computer_screenshot / computer_snapshot, and Control actions (click, drag, scroll, type, press_key, set_value, restore) ask the user unless already allowed. Marionette's own windows and password managers are never shareable, and desktop chords (Win+..., Alt+Tab) never go through.";
+
+fn tool_search_tool() -> Value {
+    tool(
+        TOOL_SEARCH_NAME,
+        "Find the right Marionette tool. Only a small core is listed by default; the browser and Computer Use tool schemas are discovered here instead of being injected into every session. Query with a few keywords (\"open tab\", \"screenshot\"), a group word (\"browser\", \"computer\") to list that group's tool names, or an exact tool name to get its full schema and usage notes. Results are bounded; calling a tool by its exact name works without searching.",
+        &["query"],
+        json!({
+            "query": {
+                "type": "string",
+                "maxLength": 200,
+                "description": "Keywords, a group word (browser / computer), or an exact tool name such as browser_click."
+            }
+        }),
+    )
+}
+
+/// The small resident surface: the browser guide plus the search entry.
+fn resident_tool_schemas() -> Value {
+    json!([browser_help_tool(), tool_search_tool()])
+}
+
+fn tool_name(tool: &Value) -> &str {
+    tool.get("name").and_then(Value::as_str).unwrap_or("")
+}
+
+fn tool_description(tool: &Value) -> &str {
+    tool.get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+}
+
+fn first_sentence(text: &str) -> String {
+    let end = text.find(". ").map(|i| i + 1).unwrap_or(text.len());
+    text[..end].chars().take(160).collect()
+}
+
+fn search_tokens(raw: &str) -> Vec<String> {
+    raw.to_ascii_lowercase()
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|token| !token.is_empty())
+        .take(TOOL_SEARCH_MAX_TOKENS)
+        .map(str::to_string)
+        .collect()
+}
+
+/// Rank one tool against the query. Zero means "no match" and is dropped.
+fn search_score(name: &str, description: &str, tokens: &[String], raw: &str) -> i32 {
+    let name_l = name.to_ascii_lowercase();
+    let desc_l = description.to_ascii_lowercase();
+    let mut score = 0;
+    if !raw.is_empty() {
+        if name_l == raw {
+            score += 1000;
+        } else if name_l.contains(raw) {
+            score += 120;
+        }
+    }
+    let mut name_hits = 0;
+    let mut desc_hits = 0;
+    for token in tokens {
+        if name_l.contains(token.as_str()) {
+            name_hits += 1;
+        } else if desc_l.contains(token.as_str()) {
+            desc_hits += 1;
+        }
+    }
+    // Every keyword naming the tool itself is stronger than a prose hit.
+    if !tokens.is_empty() && name_hits == tokens.len() {
+        score += 200;
+    }
+    score + (name_hits as i32) * 40 + (desc_hits as i32) * 8
+}
+
+fn group_counts(tools: &[&Value]) -> Vec<Value> {
+    TOOL_SEARCH_GROUPS
+        .iter()
+        .map(|group| {
+            let prefix = format!("{group}_");
+            let count = tools
+                .iter()
+                .copied()
+                .filter(|tool| tool_name(tool).starts_with(&prefix))
+                .count();
+            json!({ "group": group, "count": count })
+        })
+        .collect()
+}
+
+/// Relevant help paragraphs for the matched tools, deduped and byte-bounded.
+fn usage_notes(chosen: &[Value], budget: usize) -> Vec<Value> {
+    let has_browser = chosen
+        .iter()
+        .any(|tool| tool_name(tool).starts_with("browser_"));
+    let has_computer = chosen
+        .iter()
+        .any(|tool| tool_name(tool).starts_with("computer_"));
+    let mut out: Vec<Value> = Vec::new();
+    let mut used = 0usize;
+    if has_computer && COMPUTER_USAGE.len() + 32 <= budget {
+        used += COMPUTER_USAGE.len() + 32;
+        out.push(json!({ "group": "computer", "text": COMPUTER_USAGE }));
+    }
+    for entry in HELP_TOPIC_TABLE {
+        if out.len() >= TOOL_SEARCH_MAX_NOTES || used >= budget {
+            break;
+        }
+        // The overview's prose names every browser tool; only offer it when at
+        // least one matched tool is a browser tool.
+        let relevant = if entry.related.is_empty() {
+            has_browser
+        } else {
+            chosen.iter().any(|tool| {
+                entry
+                    .related
+                    .iter()
+                    .any(|related| *related == tool_name(tool))
+            })
+        };
+        if !relevant {
+            continue;
+        }
+        let size = entry.text.len() + entry.name.len() + 32;
+        if used + size > budget {
+            continue;
+        }
+        used += size;
+        out.push(json!({ "topic": entry.name, "text": entry.text }));
+    }
+    out
+}
+
+/// Session-scoped entry: search the catalog this session is actually allowed
+/// to call (worker Computer Use policy applied exactly as `tools/list` does).
+fn tool_search(session_id: &str, args: &Value) -> Result<Value, String> {
+    let catalog = tool_schemas_for_session(session_id);
+    let result = tool_search_over(&catalog, args)?;
+    let matched = result.get("matched").and_then(Value::as_u64).unwrap_or(0);
+    let total = result
+        .get("searchable")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    // Counts only - the query itself may quote user material.
+    crate::debug_log::append(
+        "mcp",
+        "info",
+        session_id,
+        "tool search",
+        Some(&format!("{matched} match(es) of {total}")),
+    );
+    Ok(result)
+}
+
+/// Pure catalog search, split out so tests never read the live session store.
+fn tool_search_over(catalog: &Value, args: &Value) -> Result<Value, String> {
+    let raw: String = args
+        .get("query")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .chars()
+        .take(TOOL_SEARCH_MAX_QUERY_CHARS)
+        .collect();
+    let raw = raw.trim().to_ascii_lowercase();
+    let tools: Vec<&Value> = catalog
+        .as_array()
+        .map(|list| list.iter().collect())
+        .unwrap_or_default();
+    let total = tools.len();
+    let tokens = search_tokens(&raw);
+
+    // A bare group word lists the group's names instead of spending the whole
+    // budget on full schemas; the second call asks for one by exact name.
+    if tokens.len() == 1 && TOOL_SEARCH_GROUPS.contains(&tokens[0].as_str()) {
+        let group = tokens[0].as_str();
+        let prefix = format!("{group}_");
+        let index: Vec<Value> = tools
+            .iter()
+            .copied()
+            .filter(|tool| tool_name(tool).starts_with(&prefix))
+            .map(|tool| {
+                json!({
+                    "name": tool_name(tool),
+                    "hint": first_sentence(tool_description(tool)),
+                })
+            })
+            .collect();
+        return Ok(json!({
+            "query": raw,
+            "group": group,
+            "matched": index.len(),
+            "searchable": total,
+            "tools": index,
+            "note": if index.is_empty() {
+                format!("no {group} tools are available to this session")
+            } else {
+                format!("{group} tool names only. Call {TOOL_SEARCH_NAME} again with one of these exact names to get its full schema and usage notes.")
+            },
+        }));
+    }
+
+    // Empty query: name the groups, never guess a tool.
+    if tokens.is_empty() {
+        return Ok(json!({
+            "query": raw,
+            "matched": 0,
+            "searchable": total,
+            "tools": [],
+            "groups": group_counts(&tools),
+            "note": format!("give a few keywords, a group word, or an exact tool name to {TOOL_SEARCH_NAME}"),
+        }));
+    }
+
+    let mut ranked: Vec<(i32, &Value)> = tools
+        .iter()
+        .copied()
+        .filter_map(|tool| {
+            let score = search_score(tool_name(tool), tool_description(tool), &tokens, &raw);
+            (score > 0).then_some((score, tool))
+        })
+        .collect();
+    ranked.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| tool_name(a.1).cmp(tool_name(b.1)))
+    });
+
+    if ranked.is_empty() {
+        // Fail honestly: say nothing matched and how to widen, not an error.
+        return Ok(json!({
+            "query": raw,
+            "matched": 0,
+            "searchable": total,
+            "tools": [],
+            "groups": group_counts(&tools),
+            "note": format!("no tool matches that query. Call {TOOL_SEARCH_NAME} with \"browser\" or \"computer\" to list a group, then search by an exact tool name."),
+        }));
+    }
+
+    let mut chosen: Vec<Value> = Vec::new();
+    let mut used = 0usize;
+    let mut omitted = 0usize;
+    for (_, tool) in &ranked {
+        if chosen.len() >= TOOL_SEARCH_MAX_MATCHES {
+            omitted += 1;
+            continue;
+        }
+        let size = serde_json::to_string(tool).map(|s| s.len()).unwrap_or(0);
+        if used + size > TOOL_SEARCH_MAX_BYTES {
+            omitted += 1;
+            continue;
+        }
+        used += size;
+        chosen.push((**tool).clone());
+    }
+    let notes = usage_notes(&chosen, TOOL_SEARCH_MAX_BYTES.saturating_sub(used));
+
+    Ok(json!({
+        "query": raw,
+        "matched": ranked.len(),
+        "returned": chosen.len(),
+        "omitted": omitted,
+        "searchable": total,
+        "truncated": omitted > 0,
+        "tools": chosen,
+        "notes": notes,
+        "note": if omitted > 0 {
+            format!("{omitted} more match(es) did not fit; narrow the query or search by exact name.")
+        } else {
+            "call a tool by its exact name; no search is needed on later turns.".to_string()
+        },
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// browser_help - the runtime guide, generated from the schema table so the
 // agent reads what this build actually ships, never a second hand-written
 // manual that can drift. Topics for unshipped capabilities (waits, batch)
 // are deliberately absent; the tests pin coverage both ways.
@@ -689,87 +1004,117 @@ const HELP_WAITS: &str = "Waiting instead of guessing. browser_wait_for polls a 
 
 const HELP_BATCH: &str = "browser_batch chains typed steps against one snapshot's generation in a single call: a form fill is waitForSelector, click, setValue, pressKey, waitForLoadState instead of five round trips. The op set is closed (click, hover, type, setValue, pressKey, selectOption, waitForSelector, waitForLoadState, pageState, pageReady, snapshot) — no scripting, no evaluate, no navigation. Rules that keep it safe: at most 32 steps; steps run strictly in order; every Control step still asks its own permission and a refusal stops the batch; a failed step stops it too unless stopOnError=false; a snapshot step may only be last (it replaces the refs every later ref-based step relies on); if the page navigates mid-batch, later ref steps fail stale and stop. Each step's audit record lands in the result (index, op, ok, error) plus a final page state and the still-valid generation.";
 
-/// Answer `browser_help`. The tool list is generated from `tool_schemas()`
+/// One browser_help topic: its prose plus the tools the prose is about.
+struct HelpTopic {
+    name: &'static str,
+    text: &'static str,
+    /// Empty = every browser tool (the overview).
+    related: &'static [&'static str],
+}
+
+/// One table feeds both `browser_help` and the tool search's usage notes, so a
+/// topic cannot exist in one and be missing from the other.
+const HELP_TOPIC_TABLE: &[HelpTopic] = &[
+    HelpTopic {
+        name: "overview",
+        text: HELP_OVERVIEW,
+        related: &[],
+    },
+    HelpTopic {
+        name: "refs",
+        text: HELP_REFS,
+        related: &[
+            "browser_snapshot",
+            "browser_click",
+            "browser_hover",
+            "browser_type",
+            "browser_press_key",
+            "browser_select_option",
+            "browser_set_value",
+        ],
+    },
+    HelpTopic {
+        name: "snapshot",
+        text: HELP_SNAPSHOT,
+        related: &[
+            "browser_snapshot",
+            "browser_page_state",
+            "browser_page_ready",
+            "browser_screenshot",
+        ],
+    },
+    HelpTopic {
+        name: "actions",
+        text: HELP_ACTIONS,
+        related: &[
+            "browser_click",
+            "browser_hover",
+            "browser_type",
+            "browser_press_key",
+            "browser_select_option",
+            "browser_set_value",
+            "browser_handoff",
+        ],
+    },
+    HelpTopic {
+        name: "tabs",
+        text: HELP_TABS,
+        related: &["browser_list_tabs", "browser_open_tab", "browser_close_tab"],
+    },
+    HelpTopic {
+        name: "handoff",
+        text: HELP_HANDOFF,
+        related: &["browser_handoff"],
+    },
+    HelpTopic {
+        name: "waits",
+        text: HELP_WAITS,
+        related: &[
+            "browser_wait_for",
+            "browser_wait_for_load_state",
+            "browser_dialog",
+            "browser_page_state",
+            "browser_page_ready",
+        ],
+    },
+    HelpTopic {
+        name: "batch",
+        text: HELP_BATCH,
+        related: &[
+            "browser_batch",
+            "browser_snapshot",
+            "browser_click",
+            "browser_type",
+            "browser_set_value",
+            "browser_select_option",
+            "browser_press_key",
+            "browser_wait_for",
+            "browser_wait_for_load_state",
+            "browser_page_state",
+        ],
+    },
+];
+
+/// Answer browser_help. The tool list is generated from tool_schemas()
 /// (single source of truth); each topic narrows it to the tools its prose is
-/// about. Unknown topics are errors — help must not guess.
+/// about. Unknown topics are errors so help never guesses.
 fn help_payload(topic: &str) -> Result<Value, String> {
-    let (text, related): (&str, &[&str]) = match topic {
-        "overview" => (HELP_OVERVIEW, &[]), // empty = every browser tool
-        "refs" => (
-            HELP_REFS,
-            &[
-                "browser_snapshot",
-                "browser_click",
-                "browser_hover",
-                "browser_type",
-                "browser_press_key",
-                "browser_select_option",
-                "browser_set_value",
-            ],
-        ),
-        "snapshot" => (
-            HELP_SNAPSHOT,
-            &[
-                "browser_snapshot",
-                "browser_page_state",
-                "browser_page_ready",
-                "browser_screenshot",
-            ],
-        ),
-        "actions" => (
-            HELP_ACTIONS,
-            &[
-                "browser_click",
-                "browser_hover",
-                "browser_type",
-                "browser_press_key",
-                "browser_select_option",
-                "browser_set_value",
-                "browser_handoff",
-            ],
-        ),
-        "tabs" => (
-            HELP_TABS,
-            &["browser_list_tabs", "browser_open_tab", "browser_close_tab"],
-        ),
-        "handoff" => (HELP_HANDOFF, &["browser_handoff"]),
-        "waits" => (
-            HELP_WAITS,
-            &[
-                "browser_wait_for",
-                "browser_wait_for_load_state",
-                "browser_dialog",
-                "browser_page_state",
-                "browser_page_ready",
-            ],
-        ),
-        "batch" => (
-            HELP_BATCH,
-            &[
-                "browser_batch",
-                "browser_snapshot",
-                "browser_click",
-                "browser_type",
-                "browser_set_value",
-                "browser_select_option",
-                "browser_press_key",
-                "browser_wait_for",
-                "browser_wait_for_load_state",
-                "browser_page_state",
-            ],
-        ),
-        other => return Err(format!("unknown help topic: {other}")),
-    };
+    let entry = HELP_TOPIC_TABLE
+        .iter()
+        .find(|entry| entry.name == topic)
+        .ok_or_else(|| format!("unknown help topic: {topic}"))?;
     let tools: Vec<Value> = tool_schemas()
         .as_array()
         .unwrap()
         .iter()
+        .filter(|tool| tool_name(tool).starts_with("browser_"))
         .filter(|tool| {
-            tool["name"]
-                .as_str()
-                .is_some_and(|name| name.starts_with("browser_"))
+            entry.related.is_empty()
+                || entry
+                    .related
+                    .iter()
+                    .any(|related| *related == tool_name(tool))
         })
-        .filter(|tool| related.is_empty() || related.contains(&tool["name"].as_str().unwrap_or("")))
         .map(|tool| {
             json!({
                 "name": tool["name"],
@@ -779,8 +1124,8 @@ fn help_payload(topic: &str) -> Result<Value, String> {
         })
         .collect();
     Ok(json!({
-        "topic": topic,
-        "text": text,
+        "topic": entry.name,
+        "text": entry.text,
         "tools": tools,
     }))
 }
@@ -1120,6 +1465,13 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
     use crate::browser::surface;
     use crate::browser::{self, batch};
     use crate::computer;
+
+    // Discovery is a value, not an error: the browser / Computer Use schemas
+    // are withheld from tools/list but reachable here. Direct calls by exact
+    // name still fall through to the same arms as before.
+    if name == TOOL_SEARCH_NAME {
+        return tool_search(session_id, args);
+    }
 
     match name {
         "browser_help" => {
@@ -1642,12 +1994,11 @@ fn dispatch(app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Resu
 }
 
 #[cfg(not(target_os = "windows"))]
-fn dispatch(
-    _app: &AppHandle,
-    _session_id: &str,
-    name: &str,
-    _args: &Value,
-) -> Result<Value, String> {
+fn dispatch(_app: &AppHandle, session_id: &str, name: &str, args: &Value) -> Result<Value, String> {
+    // Tool search is pure catalog data; it works without the Windows hosts.
+    if name == TOOL_SEARCH_NAME {
+        return tool_search(session_id, args);
+    }
     Err(format!("tool unavailable on this platform: {name}"))
 }
 
@@ -1813,5 +2164,158 @@ mod tests {
         // their tools (2026-11-18), so their topics must resolve.
         assert!(help_payload("batch").is_ok());
         assert!(help_payload("waits").is_ok());
+    }
+
+    // -- P1-12: resident core vs searchable catalog -----------------------------
+
+    #[test]
+    fn resident_core_withholds_browser_and_computer_schemas() {
+        let resident = resident_tool_schemas();
+        let names: Vec<&str> = resident
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool_name(tool))
+            .collect();
+        assert_eq!(names, vec!["browser_help", TOOL_SEARCH_NAME]);
+        // The whole point: no browser/computer capability schema leaks into
+        // the default list. The guide is the only browser_* entry kept.
+        assert!(
+            !names.iter().any(|n| n.starts_with("computer_")),
+            "Computer Use schemas must not be resident"
+        );
+        assert_eq!(
+            names.iter().filter(|n| n.starts_with("browser_")).count(),
+            1,
+            "only browser_help stays resident"
+        );
+        // Everything withheld is still in the searchable catalog.
+        let full = tool_schemas();
+        let full_names: Vec<&str> = full
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool_name(tool))
+            .collect();
+        assert!(full_names.contains(&"browser_click"));
+        assert!(full_names.contains(&"computer_click"));
+        assert!(full_names.len() > names.len());
+    }
+
+    #[test]
+    fn resident_surface_is_much_smaller_than_the_full_catalog() {
+        let resident = serde_json::to_string(&resident_tool_schemas()).unwrap();
+        let full = serde_json::to_string(&tool_schemas()).unwrap();
+        eprintln!(
+            "P1-12 bytes: resident={} full={} (resident is {}% of full, saved {} bytes)",
+            resident.len(),
+            full.len(),
+            resident.len() * 100 / full.len(),
+            full.len().saturating_sub(resident.len()),
+        );
+        eprintln!(
+            "P1-12 count: resident=2 searchable={}",
+            tool_schemas().as_array().unwrap().len()
+        );
+        // A large regression in either direction should fail loudly.
+        assert!(resident.len() < full.len() / 2);
+    }
+
+    #[test]
+    fn search_finds_a_tool_with_full_schema_and_usage_notes() {
+        let catalog = tool_schemas();
+        let result = tool_search_over(&catalog, &json!({ "query": "click" })).unwrap();
+        assert!(result["matched"].as_u64().unwrap() >= 2);
+        let tools = result["tools"].as_array().unwrap();
+        assert!(!tools.is_empty());
+        let click = tools
+            .iter()
+            .find(|tool| tool_name(tool) == "browser_click")
+            .expect("search should surface browser_click");
+        // Full schema, not just a name: required params and properties exist.
+        assert_eq!(
+            click["inputSchema"]["required"],
+            json!(["tabId", "generation", "ref"])
+        );
+        assert!(click["inputSchema"]["properties"]["tabId"].is_object());
+        assert!(!result["notes"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_by_exact_name_ranks_it_first() {
+        let catalog = tool_schemas();
+        let result = tool_search_over(&catalog, &json!({ "query": "browser_set_value" })).unwrap();
+        assert_eq!(tool_name(&result["tools"][0]), "browser_set_value");
+    }
+
+    #[test]
+    fn a_bare_group_word_lists_names_instead_of_schemas() {
+        let catalog = tool_schemas();
+        for (group, expected) in [("browser", "browser_click"), ("computer", "computer_click")] {
+            let result = tool_search_over(&catalog, &json!({ "query": group })).unwrap();
+            assert_eq!(result["group"], group);
+            let tools = result["tools"].as_array().unwrap();
+            assert!(tools.iter().any(|tool| tool_name(tool) == expected));
+            // Names + a hint only, no inputSchema in the index view.
+            assert!(tools.iter().all(|tool| tool.get("inputSchema").is_none()));
+            assert!(tools
+                .iter()
+                .all(|tool| tool_name(tool).starts_with(&format!("{group}_"))));
+        }
+    }
+
+    #[test]
+    fn empty_and_unmatched_queries_fail_honestly() {
+        let catalog = tool_schemas();
+        let empty = tool_search_over(&catalog, &json!({ "query": "  " })).unwrap();
+        assert_eq!(empty["matched"], 0);
+        assert!(empty["tools"].as_array().unwrap().is_empty());
+        let groups = empty["groups"].as_array().unwrap();
+        assert!(groups
+            .iter()
+            .any(|g| g["group"] == "browser" && g["count"].as_u64().unwrap() > 0));
+
+        let none = tool_search_over(&catalog, &json!({ "query": "zzzznotatool" })).unwrap();
+        assert_eq!(none["matched"], 0);
+        assert!(none["tools"].as_array().unwrap().is_empty());
+        assert!(none["note"]
+            .as_str()
+            .unwrap_or("")
+            .contains("no tool matches"));
+    }
+
+    #[test]
+    fn search_is_capped_in_matches_and_bytes() {
+        let catalog = tool_schemas();
+        // "a" is in nearly every description - a deliberately greedy query.
+        let result = tool_search_over(&catalog, &json!({ "query": "a" })).unwrap();
+        let returned = result["tools"].as_array().unwrap().len();
+        assert!(returned <= TOOL_SEARCH_MAX_MATCHES);
+        assert!(result["matched"].as_u64().unwrap() >= returned as u64);
+        if result["truncated"].as_bool().unwrap_or(false) {
+            assert!(result["omitted"].as_u64().unwrap() > 0);
+        }
+        // The whole answer must stay bounded (schema array + notes + a small
+        // envelope of fixed keys).
+        let bytes = serde_json::to_string(&result).unwrap().len();
+        assert!(
+            bytes <= TOOL_SEARCH_MAX_BYTES + 8_000,
+            "search output grew past its cap: {bytes} bytes"
+        );
+    }
+
+    #[test]
+    fn search_never_returns_a_tool_missing_from_the_catalog() {
+        let catalog = tool_schemas();
+        let known: Vec<String> = catalog
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool_name(tool).to_string())
+            .collect();
+        let result = tool_search_over(&catalog, &json!({ "query": "browser" })).unwrap();
+        for tool in result["tools"].as_array().unwrap() {
+            assert!(known.iter().any(|name| name == tool_name(tool)));
+        }
     }
 }

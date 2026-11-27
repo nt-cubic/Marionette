@@ -1,4 +1,4 @@
-use crate::models::{Project, Session, SessionLineage};
+use crate::models::{Project, Session, SessionLineage, SessionPresentation};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fs;
@@ -187,6 +187,7 @@ impl StorageService {
             origin: Some(origin.unwrap_or("user").to_string()),
             native_session_ids: Vec::new(),
             pinned_at: None,
+            presentation: None,
         };
         let mut sessions = self.read_chat_sessions_all()?;
         sessions.retain(|current| current.id != session.id);
@@ -467,6 +468,7 @@ impl StorageService {
             origin: Some(origin.unwrap_or("user").to_string()),
             native_session_ids: Vec::new(),
             pinned_at: None,
+            presentation: None,
         };
         // Prepend so newest dialogs appear at the top of the project shelf.
         let mut sessions = self.list_sessions_all(project_id)?;
@@ -538,6 +540,7 @@ impl StorageService {
                 origin: Some("delegate".to_string()),
                 native_session_ids: Vec::new(),
                 pinned_at: None,
+                presentation: None,
             };
             sessions.retain(|current| current.id != session.id);
             sessions.insert(0, session.clone());
@@ -596,6 +599,7 @@ impl StorageService {
             origin: Some("delegate".to_string()),
             native_session_ids: Vec::new(),
             pinned_at: None,
+            presentation: None,
         };
         let mut sessions = all;
         sessions.retain(|s| s.id != session.id);
@@ -777,6 +781,7 @@ impl StorageService {
                 .map(|id| vec![id.to_string()])
                 .unwrap_or_default(),
             pinned_at: None,
+            presentation: None,
         };
         self.save_session(&session)?;
         if !events.is_empty() {
@@ -987,6 +992,56 @@ impl StorageService {
         Ok(session)
     }
 
+    /// Persist a presentation-only shelf state (P1-11).
+    ///
+    /// Deliberately separate from `update_session_status`: settling, snoozing
+    /// or archiving a dialog must never stop, park or otherwise touch the
+    /// agent process. `status`, `process_id`, `exited_at` and `last_active_at`
+    /// are left exactly as they were; presentation is not activity.
+    ///
+    /// Allowed states: `settled`, `snoozed` (requires a wake time),
+    /// `archived`, and `working` (clears the override). Unknown states fail
+    /// closed so a typo cannot silently hide a conversation.
+    pub fn set_session_presentation(
+        &self,
+        session_id: &str,
+        state: &str,
+        snoozed_until: Option<&str>,
+    ) -> Result<Session, String> {
+        let Some(mut session) = self.find_session(session_id)? else {
+            return Err(format!("Session not found: {session_id}"));
+        };
+        let state = state.trim().to_ascii_lowercase();
+        let presentation = match state.as_str() {
+            "working" => None,
+            "settled" | "archived" => Some(SessionPresentation {
+                state: state.clone(),
+                updated_at: now_string(),
+                snoozed_until: None,
+            }),
+            "snoozed" => {
+                let until = snoozed_until
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "Snoozed sessions need a wake time".to_string())?;
+                Some(SessionPresentation {
+                    state: state.clone(),
+                    updated_at: now_string(),
+                    snoozed_until: Some(until.to_string()),
+                })
+            }
+            _ => return Err(format!("Unknown presentation state: {state}")),
+        };
+        session.presentation = presentation;
+        self.save_session(&session)?;
+        Ok(session)
+    }
+
+    /// Clear a presentation override (back to runtime `working` / settled-by-policy).
+    pub fn clear_session_presentation(&self, session_id: &str) -> Result<Session, String> {
+        self.set_session_presentation(session_id, "working", None)
+    }
+
     fn remember_transcript_path(&self, session: &Session) {
         if session.transcript_path.is_empty() {
             return;
@@ -1012,6 +1067,10 @@ impl StorageService {
     }
 
     /// Disk write only — callers should drop the storage lock first.
+    /// P0-2: canonical transcript JSONL. Its only caller path is the Tauri
+    /// `write_transcript` / `append_transcript_events` commands, driven by the
+    /// frontend `useSessionRails.persistSessionNow`. Rust never normalizes ACP
+    /// events into this shape; the tee remains the raw ledger.
     pub fn write_transcript_file(path: &Path, events: &[serde_json::Value]) -> Result<(), String> {
         let mut body = String::new();
         for event in events {
@@ -1020,7 +1079,13 @@ impl StorageService {
             body.push_str(&line);
             body.push('\n');
         }
-        write_atomic(path, &body).map_err(|error| format!("Write transcript failed: {error}"))
+        let result =
+            write_atomic(path, &body).map_err(|error| format!("Write transcript failed: {error}"));
+        if result.is_ok() {
+            // P0-1 stage 4: transcript hop actually received a batch.
+            crate::subagent_observe::log_transcript_write(path, "rewrite", events);
+        }
+        result
     }
 
     /// 追加写（流式落盘的快路径）：只把新增事件续到文件尾，不重写整文件。
@@ -1045,9 +1110,15 @@ impl StorageService {
             .append(true)
             .open(path)
             .map_err(|error| format!("Open transcript for append failed: {error}"))?;
-        file.write_all(body.as_bytes())
+        let result = file
+            .write_all(body.as_bytes())
             .and_then(|_| file.flush())
-            .map_err(|error| format!("Append transcript failed: {error}"))
+            .map_err(|error| format!("Append transcript failed: {error}"));
+        if result.is_ok() {
+            // P0-1 stage 4: append batch actually landed.
+            crate::subagent_observe::log_transcript_write(path, "append", events);
+        }
+        result
     }
 
     /// Rewrite Clean-view transcript as JSONL (one SessionEvent per line).
@@ -1827,6 +1898,127 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// P1-11: shelf presentation is disk-backed but strictly separate from
+    /// process state. Settling a live dialog must keep it live.
+    #[test]
+    fn session_presentation_round_trips_without_touching_process_state() {
+        let root = test_root();
+        let global_dir = root.join("global");
+        let project_dir = root.join("workspace");
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let service = StorageService::from_global_dir(global_dir.clone()).unwrap();
+        let project = service
+            .add_project(project_dir.to_string_lossy().to_string())
+            .unwrap();
+        let session = service
+            .create_session(&project.id, "codex".to_string(), "Settle me".to_string())
+            .unwrap();
+        service
+            .update_session_status(&session.id, "running")
+            .unwrap();
+        let live = service.find_session(&session.id).unwrap().unwrap();
+        assert!(live.presentation.is_none());
+
+        let settled = service
+            .set_session_presentation(&session.id, "settled", None)
+            .unwrap();
+        let presentation = settled.presentation.as_ref().expect("settled presentation");
+        assert_eq!(presentation.state, "settled");
+        assert!(presentation.snoozed_until.is_none());
+        // Presentation is not process lifecycle and is not activity.
+        assert_eq!(settled.status, live.status);
+        assert_eq!(settled.process_id, live.process_id);
+        assert_eq!(settled.pty_id, live.pty_id);
+        assert_eq!(settled.exited_at, live.exited_at);
+        assert_eq!(settled.last_active_at, live.last_active_at);
+
+        let restarted = StorageService::from_global_dir(global_dir).unwrap();
+        let restored = restarted.find_session(&session.id).unwrap().unwrap();
+        let presentation = restored.presentation.expect("presentation after restart");
+        assert_eq!(presentation.state, "settled");
+        assert_eq!(restored.status, "running");
+        assert_eq!(restored.process_id, live.process_id);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn session_presentation_validates_states_and_snooze_wake_time() {
+        let root = test_root();
+        let global_dir = root.join("global");
+        let project_dir = root.join("workspace");
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let service = StorageService::from_global_dir(global_dir.clone()).unwrap();
+        let project = service
+            .add_project(project_dir.to_string_lossy().to_string())
+            .unwrap();
+        let session = service
+            .create_session(&project.id, "codex".to_string(), "Snooze me".to_string())
+            .unwrap();
+
+        // A snooze without a wake time would hide the row forever.
+        assert!(service
+            .set_session_presentation(&session.id, "snoozed", None)
+            .is_err());
+        assert!(service
+            .set_session_presentation(&session.id, "nonsense", None)
+            .is_err());
+        assert!(
+            service
+                .find_session(&session.id)
+                .unwrap()
+                .unwrap()
+                .presentation
+                .is_none(),
+            "a rejected write must not leave a partial presentation"
+        );
+
+        let snoozed = service
+            .set_session_presentation(
+                &session.id,
+                "snoozed",
+                Some("2030-01-01T09:00:00.000Z"),
+            )
+            .unwrap();
+        let presentation = snoozed.presentation.expect("snoozed presentation");
+        assert_eq!(presentation.state, "snoozed");
+        assert_eq!(
+            presentation.snoozed_until.as_deref(),
+            Some("2030-01-01T09:00:00.000Z")
+        );
+
+        let restarted = StorageService::from_global_dir(global_dir).unwrap();
+        let restored = restarted.find_session(&session.id).unwrap().unwrap();
+        assert_eq!(
+            restored
+                .presentation
+                .as_ref()
+                .and_then(|value| value.snoozed_until.as_deref()),
+            Some("2030-01-01T09:00:00.000Z")
+        );
+
+        // Switching away from snoozed drops the stale wake time.
+        let archived = restarted
+            .set_session_presentation(
+                &session.id,
+                "archived",
+                Some("2030-01-01T09:00:00.000Z"),
+            )
+            .unwrap();
+        let presentation = archived.presentation.expect("archived presentation");
+        assert_eq!(presentation.state, "archived");
+        assert!(presentation.snoozed_until.is_none());
+
+        let cleared = restarted.clear_session_presentation(&session.id).unwrap();
+        assert!(cleared.presentation.is_none());
+        assert_eq!(cleared.status, session.status);
+        assert_eq!(cleared.last_active_at, session.last_active_at);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
     /// Pin state is disk-backed and must survive a restart (the shelf sorts on
     /// it), and pinning must not disturb the row's recency stamp.
     #[test]
@@ -2095,6 +2287,56 @@ mod tests {
         assert_eq!(tail.total_lines, 2, "空行不计数");
         assert_eq!(tail.first_line, 1);
         assert_eq!(tail.events[0]["text"], "m1");
+    }
+
+    /// P0-2 canonical-writer contract: a replay that starts from a loaded
+    /// transcript must append only the new suffix. The frontend owns the
+    /// prefix accounting; this pins the storage half -- append never rewrites
+    /// or re-emits the prefix, so an arm/flush exactly once cannot duplicate
+    /// cards. (A second open with an advanced tee cursor then plans `none`.)
+    #[test]
+    fn canonical_append_after_load_keeps_prefix_and_adds_only_suffix() {
+        let root = test_root();
+        let global_dir = root.join("global");
+        let project_dir = root.join("workspace");
+        fs::create_dir_all(&project_dir).unwrap();
+        let service = StorageService::from_global_dir(global_dir).unwrap();
+        let project = service
+            .add_project(project_dir.to_string_lossy().to_string())
+            .unwrap();
+        let session = service
+            .create_session(&project.id, "opencode".into(), "T".into())
+            .unwrap();
+        let mk = |i: usize, kind: &str| {
+            serde_json::json!({
+                "type": kind,
+                "sessionId": session.id,
+                "text": format!("e{i}"),
+                "createdAt": format!("2026-11-27T00:00:{i:02}Z")
+            })
+        };
+        let loaded = vec![mk(0, "user_message"), mk(1, "assistant_message")];
+        let path = service.transcript_path_for(&session.id).unwrap();
+        StorageService::write_transcript_file(&path, &loaded).unwrap();
+
+        // Simulate a reopen: load the canonical tail, then append the replay
+        // suffix the frontend computed from the reference-identical prefix.
+        let reopened = service.load_transcript(&session.id).unwrap();
+        assert_eq!(reopened.len(), 2);
+        let replayed_suffix = vec![mk(2, "tool_call"), mk(3, "assistant_message")];
+        StorageService::append_transcript_file(&path, &replayed_suffix).unwrap();
+
+        let full = service.load_transcript(&session.id).unwrap();
+        let texts: Vec<_> = full.iter().filter_map(|e| e["text"].as_str()).collect();
+        assert_eq!(texts, vec!["e0", "e1", "e2", "e3"]);
+        assert_eq!(full.len(), 4, "prefix is preserved exactly once");
+
+        // A repeated open that sees cursor == max plans `none`: appending an
+        // empty suffix must not change the file.
+        StorageService::append_transcript_file(&path, &[]).unwrap();
+        assert_eq!(service.load_transcript(&session.id).unwrap().len(), 4);
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

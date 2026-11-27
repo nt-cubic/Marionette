@@ -1,13 +1,20 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
-import { Archive, Bell, BellOff, ChevronRight, CloudMoon, Download, Folder, FolderOpen, GripVertical, MessageSquare, MoreHorizontal, Network, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, Settings, SlidersHorizontal, SunMedium, Trash2, UsersRound, X, Zap } from "lucide-react";
+import { AlarmClock, Archive, Bell, BellOff, Check, ChevronRight, CloudMoon, Download, Folder, FolderOpen, GripVertical, MessageSquare, MoreHorizontal, Network, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Save, Search, Send, Settings, SlidersHorizontal, SunMedium, Trash2, UsersRound, X, Zap } from "lucide-react";
 // Refresh on a project row folds CLI history into the normal session list.
 import type { AgentConfig, Project, ProxyConfig, ProxyTestResult, Session } from "../lib/types";
 import { t, useLocale, useT, type DictKey } from "../lib/i18n";
 import { agentInkStyle } from "../lib/agentInk";
 import { themeToggleTitle, type ThemeMode } from "../lib/theme";
 import { collapsedShelfSessions, pinStamp, sortSessionsNewestFirst } from "../lib/sessionOrder";
+import {
+  DEFAULT_SESSION_QUIET_MS,
+  isSessionHiddenFromShelf,
+  resolveSessionPresentation,
+  type SessionPresentationSignals,
+  type SessionPresentationState,
+} from "../lib/sessionGroups";
 import { suspendControl } from "../lib/sessionSuspend";
 import { showToast } from "../lib/toast";
 import { loadCollapsedProjectIds, saveCollapsedProjectIds } from "../lib/uiRestore";
@@ -37,6 +44,7 @@ import { ModelSettingsDialog } from "./ModelSettingsDialog";
 import { MODEL_SETTINGS_EVENT } from "../lib/modelSettings";
 import { SplitBesideMenu, type OpenBesideEdge } from "./SplitBesideMenu";
 import { StaffRoster, type StaffRosterItem } from "./StaffRoster";
+import { RecentProjectDiscovery } from "./RecentProjectDiscovery";
 import type { DropEdge } from "../lib/splitWorkspace";
 import { dockFooterHost, useDocked } from "../lib/dockFooter";
 import { OPEN_ENGINE_EVENT, OPEN_PROXY_EVENT, OPEN_TELEGRAM_EVENT } from "../lib/shellActions";
@@ -108,17 +116,31 @@ function SessionMoreMenu({
   x,
   y,
   pinned,
+  presentationState,
   onPin,
   onRename,
   onExport,
+  onSettle,
+  onSnoozeHour,
+  onSnoozeTomorrow,
+  onWake,
+  onArchive,
+  onRestore,
   onClose,
 }: {
   x: number;
   y: number;
   pinned: boolean;
+  presentationState: SessionPresentationState;
   onPin?: () => void;
   onRename?: () => void;
   onExport?: () => void;
+  onSettle?: () => void;
+  onSnoozeHour?: () => void;
+  onSnoozeTomorrow?: () => void;
+  onWake?: () => void;
+  onArchive?: () => void;
+  onRestore?: () => void;
   onClose: () => void;
 }) {
   const t = useT();
@@ -139,7 +161,7 @@ function SessionMoreMenu({
   }, [onClose]);
 
   const left = Math.max(8, Math.min(x - 176, window.innerWidth - 188));
-  const top = Math.max(8, Math.min(y, window.innerHeight - 132));
+  const top = Math.max(8, Math.min(y, window.innerHeight - 330));
 
   return createPortal(
     <div
@@ -159,6 +181,84 @@ function SessionMoreMenu({
         >
           {pinned ? <PinOff size={13} aria-hidden /> : <Pin size={13} aria-hidden />}
           {pinned ? t("shelf.unpin") : t("shelf.pin")}
+        </button>
+      )}
+      {presentationState === "working" && onSettle && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onSettle();
+            onClose();
+          }}
+        >
+          <Check size={13} aria-hidden />
+          {t("shelf.settle")}
+        </button>
+      )}
+      {(presentationState === "settled" || presentationState === "archived") && onRestore && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onRestore();
+            onClose();
+          }}
+        >
+          <SunMedium size={13} aria-hidden />
+          {t("shelf.restore")}
+        </button>
+      )}
+      {presentationState !== "archived" && presentationState !== "snoozed" && onSnoozeHour && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onSnoozeHour();
+            onClose();
+          }}
+        >
+          <AlarmClock size={13} aria-hidden />
+          {t("shelf.snoozeHour")}
+        </button>
+      )}
+      {presentationState !== "archived" && presentationState !== "snoozed" && onSnoozeTomorrow && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onSnoozeTomorrow();
+            onClose();
+          }}
+        >
+          <CloudMoon size={13} aria-hidden />
+          {t("shelf.snoozeTomorrow")}
+        </button>
+      )}
+      {presentationState === "snoozed" && onWake && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onWake();
+            onClose();
+          }}
+        >
+          <SunMedium size={13} aria-hidden />
+          {t("shelf.wake")}
+        </button>
+      )}
+      {presentationState !== "archived" && onArchive && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onArchive();
+            onClose();
+          }}
+        >
+          <Archive size={13} aria-hidden />
+          {t("shelf.archive")}
         </button>
       )}
       {onRename && (
@@ -214,6 +314,8 @@ type ProjectShelfProps = {
   desktopNotifyEnabled?: boolean;
   onToggleDesktopNotify?: () => void;
   onAddProject: () => void;
+  /** Called after a project is added from the read-only recent-project scan. */
+  onProjectAdded?: (project: Project) => void;
   onNewSession: (projectId: string) => void;
   onProjectSelect: (projectId: string) => void;
   onSessionSelect: (session: Session) => void;
@@ -222,6 +324,20 @@ type ProjectShelfProps = {
   onDeleteSession: (sessionId: string) => void;
   /** Pin / unpin a dialog so it sorts to the top of its project. */
   onToggleSessionPin?: (sessionId: string, pinned: boolean) => void;
+  /**
+   * P1-11 presentation signals supplied by App. Missing signals fall back to
+   * the stored session status; absent callback keeps the persisted overrides
+   * read-only (no settle/snooze/archive actions are rendered).
+   */
+  sessionPresentationSignals?: (sessionId: string) => SessionPresentationSignals | undefined;
+  /** Persist a shelf-only presentation state. Must never stop the agent process. */
+  onSetSessionPresentation?: (
+    sessionId: string,
+    state: SessionPresentationState,
+    snoozedUntil?: string | null,
+  ) => void;
+  /** Quiet period before App may auto-settle; defaults to 15 minutes. */
+  presentationQuietMs?: number;
   onDeleteProject: (projectId: string) => void;
   /** Manual rename — always persists (like first-message auto-title). */
   onRenameSession?: (sessionId: string, label: string) => void;
@@ -384,6 +500,7 @@ export function ProjectShelf({
   onSessionSelect,
   onOpenBeside,
   onAddProject,
+  onProjectAdded,
   onNewSession,
   theme,
   onToggleTheme,
@@ -391,6 +508,9 @@ export function ProjectShelf({
   onToggleDesktopNotify,
   onDeleteSession,
   onToggleSessionPin,
+  sessionPresentationSignals,
+  onSetSessionPresentation,
+  presentationQuietMs = DEFAULT_SESSION_QUIET_MS,
   onDeleteProject,
   onRenameSession,
   onSuspendSession,
@@ -420,6 +540,79 @@ export function ProjectShelf({
   const unreadDone = doneUnreadIds ?? EMPTY_DONE_UNREAD;
   const t = useT();
   const locale = useLocale();
+  /** Minute clock so an expired snooze surfaces without any other re-render. */
+  const [presentationNow, setPresentationNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setPresentationNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const presentationPolicy = useMemo(
+    () => ({ quietMs: presentationQuietMs }),
+    [presentationQuietMs],
+  );
+  const presentationSignalFor = (session: Session) =>
+    sessionPresentationSignals?.(session.id);
+  const presentationStateFor = (session: Session) =>
+    resolveSessionPresentation(
+      session,
+      presentationSignalFor(session),
+      presentationPolicy,
+      presentationNow,
+    );
+  const isHiddenByPresentation = (session: Session) =>
+    isSessionHiddenFromShelf(
+      session,
+      presentationSignalFor(session),
+      presentationPolicy,
+      presentationNow,
+    );
+  /**
+   * All dialog rows the shelf knows about, de-duplicated. Archived/snoozed
+   * rows are pulled out of the normal lists into their own restore sections.
+   */
+  const presentationSessions = useMemo(() => {
+    const byId = new Map<string, Session>();
+    for (const session of [...sessions, ...chatSessions, ...memoSessions]) {
+      byId.set(session.id, session);
+    }
+    return [...byId.values()];
+  }, [sessions, chatSessions, memoSessions]);
+  const shelfSessions = useMemo(
+    () => sessions.filter((session) => !isHiddenByPresentation(session)),
+    // presentationSignalFor is a render-local closure over these deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sessions, sessionPresentationSignals, presentationPolicy, presentationNow],
+  );
+  const archivedSessions = useMemo(
+    () =>
+      presentationSessions.filter(
+        (session) => presentationStateFor(session) === "archived",
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [presentationSessions, sessionPresentationSignals, presentationPolicy, presentationNow],
+  );
+  const snoozedSessions = useMemo(
+    () =>
+      presentationSessions.filter(
+        (session) => presentationStateFor(session) === "snoozed",
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [presentationSessions, sessionPresentationSignals, presentationPolicy, presentationNow],
+  );
+  const setPresentation = (
+    session: Session,
+    state: SessionPresentationState,
+    snoozedUntil?: string | null,
+  ) => onSetSessionPresentation?.(session.id, state, snoozedUntil ?? null);
+  /** Two explicit snooze presets keep a wake time on every snooze. */
+  const snoozeUntil = (preset: "hour" | "tomorrow"): string => {
+    const now = Date.now();
+    if (preset === "hour") return new Date(now + 60 * 60_000).toISOString();
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(9, 0, 0, 0);
+    return tomorrow.toISOString();
+  };
   /** Collapsed project ids (persisted). Default for unknown ids is expanded. */
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => loadCollapsedProjectIds());
   const [query, setQuery] = useState("");
@@ -925,13 +1118,18 @@ export function ProjectShelf({
   const [statusFilter, setStatusFilter] = useState<ShelfStatusFilter | null>(null);
   const statusCounts = useMemo(() => {
     const counts: Record<ShelfStatusFilter, number> = { running: 0, waiting: 0, done: 0, error: 0 };
-    for (const session of [...sessions, ...chatSessions, ...memoSessions]) {
+    for (const session of presentationSessions) {
+      // Archived / actively snoozed rows are not on the normal shelf, so the
+      // filter chips must not count them either (counts and rows stay equal).
+      if (isSessionHiddenFromShelf(session, sessionPresentationSignals?.(session.id), presentationPolicy, presentationNow)) {
+        continue;
+      }
       for (const { id } of SHELF_STATUS_ORDER) {
         if (sessionMatchesStatus(session, id, unreadDone)) counts[id] += 1;
       }
     }
     return counts;
-  }, [sessions, chatSessions, memoSessions, unreadDone]);
+  }, [presentationSessions, sessionPresentationSignals, presentationPolicy, presentationNow, unreadDone]);
   // A filter whose count drops to zero (the run finished) lets go by itself.
   const activeStatusFilter = statusFilter && statusCounts[statusFilter] > 0 ? statusFilter : null;
   // 归零不只是显示上放手——状态本身也要清掉。旧实现把 statusFilter 留在
@@ -951,7 +1149,7 @@ export function ProjectShelf({
     // 藏掉会让用户以为项目/对话丢了（2026-10-25 反馈）。搜索仍然只留命中项。
     if (!q && activeStatusFilter) {
       const sessionsByProject = new Map<string, Session[]>();
-      for (const session of sessions) {
+      for (const session of shelfSessions) {
         if (sessionMatchesStatus(session, activeStatusFilter, unreadDone)) {
           const list = sessionsByProject.get(session.projectId) ?? [];
           list.push(session);
@@ -971,7 +1169,7 @@ export function ProjectShelf({
     // Titles only: the box filters the names drawn in the shelf (project name,
     // session title). Transcript content is out of scope here — matching it
     // meant reading every transcript on each keystroke.
-    for (const session of sessions) {
+    for (const session of shelfSessions) {
       if (statusOk(session) && (!q || session.label.toLowerCase().includes(q))) {
         projectIds.add(session.projectId);
         const list = sessionsByProject.get(session.projectId) ?? [];
@@ -982,7 +1180,7 @@ export function ProjectShelf({
 
     for (const project of projects) {
       if (q && project.name.toLowerCase().includes(q)) {
-        const own = sessions.filter((s) => s.projectId === project.id && statusOk(s));
+        const own = shelfSessions.filter((s) => s.projectId === project.id && statusOk(s));
         // Under a status filter a name match alone does not list the project.
         if (activeStatusFilter && own.length === 0) continue;
         projectIds.add(project.id);
@@ -994,7 +1192,7 @@ export function ProjectShelf({
       projects: projects.filter((p) => projectIds.has(p.id)),
       sessionsByProject,
     };
-  }, [projects, query, sessions, activeStatusFilter, unreadDone]);
+  }, [projects, query, shelfSessions, activeStatusFilter, unreadDone]);
 
   const toggleProject = (projectId: string) => {
     setCollapsedProjects((current) => {
@@ -1308,23 +1506,27 @@ export function ProjectShelf({
 
   const searching = Boolean(query.trim()) || activeStatusFilter != null;
   const visibleChatSessions = useMemo(() => {
-    if (!searching) return chatSessions;
+    const visible = chatSessions.filter((session) => !isHiddenByPresentation(session));
+    if (!searching) return visible;
     const q = query.trim().toLowerCase();
-    return chatSessions.filter(
+    return visible.filter(
       (session) =>
         (!q || session.label.toLowerCase().includes(q)) &&
         (!activeStatusFilter || sessionMatchesStatus(session, activeStatusFilter, unreadDone)),
     );
-  }, [chatSessions, query, searching, activeStatusFilter, unreadDone]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatSessions, query, searching, activeStatusFilter, unreadDone, sessionPresentationSignals, presentationPolicy, presentationNow]);
   const visibleMemoSessions = useMemo(() => {
-    if (!searching) return memoSessions;
+    const visible = memoSessions.filter((session) => !isHiddenByPresentation(session));
+    if (!searching) return visible;
     const q = query.trim().toLowerCase();
-    return memoSessions.filter(
+    return visible.filter(
       (session) =>
         (!q || session.label.toLowerCase().includes(q)) &&
         (!activeStatusFilter || sessionMatchesStatus(session, activeStatusFilter, unreadDone)),
     );
-  }, [memoSessions, query, searching, activeStatusFilter, unreadDone]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [memoSessions, query, searching, activeStatusFilter, unreadDone, sessionPresentationSignals, presentationPolicy, presentationNow]);
   const staffQuery = query.trim().toLowerCase();
   const visibleStaff = useMemo(() => {
     const staff = staffRoster ?? [];
@@ -1421,6 +1623,7 @@ export function ProjectShelf({
     const isRenaming = renamingId === session.id;
     const pinned = pinStamp(session) != null;
     const doneUnread = unreadDone.has(session.id);
+    const presentationState = presentationStateFor(session);
     const beginRename = () => {
       if (!onRenameSession) return;
       setRenamingId(session.id);
@@ -1502,6 +1705,12 @@ export function ProjectShelf({
             )}
             {session.origin === "agent-worker" && (
               <span className="shelf-origin-chip">{t("shelf.agentWorkerOrigin")}</span>
+            )}
+            {presentationState === "snoozed" && (
+              <span className="shelf-origin-chip">{t("shelf.snoozed")}</span>
+            )}
+            {presentationState === "archived" && (
+              <span className="shelf-origin-chip">{t("shelf.archived")}</span>
             )}
             {chatStatus && (
               <span className={`chat-row__status is-${chatStatus.tone}`}>{chatStatus.text}</span>
@@ -1616,6 +1825,13 @@ export function ProjectShelf({
         </button>
       </div>
 
+      <RecentProjectDiscovery
+        compact
+        existingProjects={projects}
+        agents={agents}
+        onProjectAdded={onProjectAdded}
+      />
+
       <div className="project-list custom-scrollbar scrollbar-autohide" aria-label={t("v2shelf.projectsAria")}>
         {allVisibleProjects.length === 0 && !searching && (
           <div className="project-list__empty">{t("v2shelf.noProjects")}</div>
@@ -1629,13 +1845,13 @@ export function ProjectShelf({
           const derivedShelf = memoPerProject(
             projectShelfCacheRef.current,
             project.id,
-            [filtered.sessionsByProject, sessions, unreadDone, sessionsExpandedByProject, searching, activeStatusFilter, Math.floor(Date.now() / 60000), locale],
+            [filtered.sessionsByProject, shelfSessions, unreadDone, sessionsExpandedByProject, searching, activeStatusFilter, Math.floor(Date.now() / 60000), locale],
             () => {
               const rawSessions = activeStatusFilter
-                ? // 状态过滤下取不到 = 没有匹配（项目行置灰、不列会话）；搜索与
-                  // 无过滤才回退全量。搜索路径 filtered 只含命中项目，不会到这。
+                ? // ç¶æè¿æ»¤ä¸åä¸å° = æ²¡æå¹éï¼é¡¹ç®è¡ç½®ç°ãä¸åä¼è¯ï¼ï¼æç´¢ä¸
+                  // æ è¿æ»¤æåéå¨éãæç´¢è·¯å¾ filtered åªå«å½ä¸­é¡¹ç®ï¼ä¸ä¼å°è¿ã
                   (filtered.sessionsByProject?.get(project.id) ?? [])
-                : sessions.filter((session) => session.projectId === project.id);
+                : shelfSessions.filter((session) => session.projectId === project.id);
               // Pinned first, then recency — click-to-select must not jump the row.
               const projectSessions = sortSessionsNewestFirst(rawSessions);
               const sessionsFullyExpanded = searching || sessionsExpandedByProject.has(project.id);
@@ -1804,6 +2020,7 @@ export function ProjectShelf({
                     const isRenaming = renamingId === session.id;
                     const pinned = pinStamp(session) != null;
                     const doneUnread = unreadDone.has(session.id);
+                    const presentationState = presentationStateFor(session);
                     const beginRename = () => {
                       if (!onRenameSession) return;
                       setRenamingId(session.id);
@@ -1900,6 +2117,12 @@ export function ProjectShelf({
                               )}
                               {session.origin === "agent-worker" && (
                                 <span className="shelf-origin-chip">{t("shelf.agentWorkerOrigin")}</span>
+                              )}
+                              {presentationState === "snoozed" && (
+                                <span className="shelf-origin-chip">{t("shelf.snoozed")}</span>
+                              )}
+                              {presentationState === "archived" && (
+                                <span className="shelf-origin-chip">{t("shelf.archived")}</span>
                               )}
                               {statusWord && (
                                 <span className={`session-row__status is-${statusWord.tone}`}>
@@ -2034,6 +2257,37 @@ export function ProjectShelf({
             style={{ ["--chat-list-preview" as string]: String(SESSION_LIST_PREVIEW) }}
           >
             {sortSessionsNewestFirst(visibleMemoSessions).map(renderChatRow)}
+          </div>
+        </section>
+      )}
+
+      {/* P1-11: snoozed / archived rows leave the normal lists but keep a
+          visible restore path. Hidden while searching (archive is search-out). */}
+      {!searching && snoozedSessions.length > 0 && (
+        <section className="chat-section chat-section--memo" aria-label={t("shelf.snoozedGroup")}>
+          <div className="chat-section__header" title={t("shelf.snoozedGroupTitle")}>
+            <span className="chat-section__title">
+              <CloudMoon size={13} aria-hidden />
+              {t("shelf.snoozedGroup")}
+            </span>
+            <span className="shelf-status__count">{snoozedSessions.length}</span>
+          </div>
+          <div className="chat-list custom-scrollbar scrollbar-autohide">
+            {sortSessionsNewestFirst(snoozedSessions).map(renderChatRow)}
+          </div>
+        </section>
+      )}
+      {!searching && archivedSessions.length > 0 && (
+        <section className="chat-section chat-section--memo" aria-label={t("shelf.archivedGroup")}>
+          <div className="chat-section__header" title={t("shelf.archivedGroupTitle")}>
+            <span className="chat-section__title">
+              <Archive size={13} aria-hidden />
+              {t("shelf.archivedGroup")}
+            </span>
+            <span className="shelf-status__count">{archivedSessions.length}</span>
+          </div>
+          <div className="chat-list custom-scrollbar scrollbar-autohide">
+            {sortSessionsNewestFirst(archivedSessions).map(renderChatRow)}
           </div>
         </section>
       )}
@@ -2636,6 +2890,37 @@ export function ProjectShelf({
         x={moreMenu.x}
         y={moreMenu.y}
         pinned={pinStamp(moreMenu.session) != null}
+        presentationState={presentationStateFor(moreMenu.session)}
+        onSettle={
+          onSetSessionPresentation
+            ? () => setPresentation(moreMenu.session, "settled")
+            : undefined
+        }
+        onSnoozeHour={
+          onSetSessionPresentation
+            ? () => setPresentation(moreMenu.session, "snoozed", snoozeUntil("hour"))
+            : undefined
+        }
+        onSnoozeTomorrow={
+          onSetSessionPresentation
+            ? () => setPresentation(moreMenu.session, "snoozed", snoozeUntil("tomorrow"))
+            : undefined
+        }
+        onWake={
+          onSetSessionPresentation
+            ? () => setPresentation(moreMenu.session, "working")
+            : undefined
+        }
+        onArchive={
+          onSetSessionPresentation
+            ? () => setPresentation(moreMenu.session, "archived")
+            : undefined
+        }
+        onRestore={
+          onSetSessionPresentation
+            ? () => setPresentation(moreMenu.session, "working")
+            : undefined
+        }
         onPin={
           onToggleSessionPin
             ? () =>

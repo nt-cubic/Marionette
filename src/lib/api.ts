@@ -3,7 +3,7 @@ import { previewFamilyModels } from "./mockData";
 import { t } from "./i18n";
 import { normalizeCredentialScan } from "./credentialScan";
 import { agents as mockAgents, projects as mockProjects, sessions as mockSessions, memoryStore as mockMemoryStore } from "./mockData";
-import type { AgentConfig, AgentCommandStatus, CapabilitySnapshot, PluginProbe, Project, ProviderInfo, ProxyConfig, ProxyTestResult, Session, SessionLabelSource, UniversalPlugin, UniversalSkill, UniversalPluginSpec } from "./types";
+import type { AgentConfig, AgentCommandStatus, CapabilitySnapshot, PluginProbe, Project, ProjectDiscoveryReport, ProviderInfo, ProxyConfig, ProxyTestResult, Session, SessionLabelSource, UniversalPlugin, UniversalSkill, UniversalPluginSpec } from "./types";
 
 export function isTauriRuntime() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -338,6 +338,27 @@ export async function refreshExternalSessions(projectId: string): Promise<Extern
   return invoke<ExternalRefreshResult>("refresh_external_sessions", { projectId });
 }
 
+const EMPTY_DISCOVERY: ProjectDiscoveryReport = {
+  projects: [],
+  scannedSources: [],
+  failedSources: [],
+  truncated: false,
+};
+
+/**
+ * Recent-project discovery (T3 P1-6). Read-only: scans existing local agent
+ * session stores for candidate folders. A failure (or no store at all) comes
+ * back as an empty report so it can never block the normal Add Project path.
+ */
+export async function discoverRecentProjects(): Promise<ProjectDiscoveryReport> {
+  if (!isTauriRuntime()) return EMPTY_DISCOVERY;
+  try {
+    return await invoke<ProjectDiscoveryReport>("discover_recent_projects");
+  } catch {
+    return EMPTY_DISCOVERY;
+  }
+}
+
 export async function listSessions(projectId: string): Promise<Session[]> {
   if (!isTauriRuntime()) return mockSessions.filter((session) => session.projectId === projectId);
   try {
@@ -370,12 +391,14 @@ export async function createSession(projectId: string, agentId: string, label = 
 }
 
 /** Create a Chat session in the global Chat store. `origin: "memo"` files the
- *  dialog under the shelf's 收纳盒 group (still a Chat session everywhere else). */
+ *  dialog under the shelf's 收纳盒 group; `origin: "diagnostic"` marks a
+ *  triage chat started from the diagnostic bundle. Both are ordinary Chat
+ *  sessions everywhere else. */
 export async function createChatSession(
   agentId: string,
   label = t("api.newConversation"),
   cwd?: string | null,
-  origin?: "memo",
+  origin?: "memo" | "diagnostic",
 ): Promise<Session | null> {
   if (!isTauriRuntime()) {
     const now = new Date().toISOString();
@@ -505,6 +528,13 @@ export async function updateSessionStatus(
   await invoke("update_session_status", { sessionId, status });
 }
 
+/**
+ * Canonical transcript writers (P0-2). Both are called only from
+ * `useSessionRails.persistSessionNow` (live debounce and tee replay share
+ * that one routine). `write` replaces the file; `append` extends the exact
+ * new suffix. No other layer -- broker, tee, delegation -- may write the
+ * canonical `<sid>.jsonl`.
+ */
 export async function writeTranscript(sessionId: string, events: unknown[]): Promise<void> {
   if (!isTauriRuntime()) return;
   await invoke("write_transcript", { sessionId, events });
@@ -547,7 +577,15 @@ export async function loadTranscriptWindow(
   }
 }
 
-/** 全量加载（编辑重发补头 / 标签修复等全量消费者）。失败给空数组。导出走 loadTranscriptFull。 */
+/** Bounded explicit read: tail window, failures surface (unlike loadTranscriptPage). */
+export async function loadTranscriptPageStrict(
+  sessionId: string,
+  tail: number,
+): Promise<TranscriptPage> {
+  if (!isTauriRuntime()) throw new Error("desktop required");
+  return invoke<TranscriptPage>("load_transcript", { sessionId, tail });
+}
+
 export async function loadTranscript(sessionId: string): Promise<unknown[]> {
   if (!isTauriRuntime()) return [];
   try {
@@ -674,6 +712,25 @@ export async function savePastedImage(
     base64Data,
     mimeType: mimeType ?? null,
   });
+}
+
+/**
+ * Persist folded large-paste text under `~/.marionette/attachments/pasted-text/`.
+ * Content-addressed: the same UTF-8 bytes always reuse the same file, so a
+ * repeated paste event cannot create a second attachment.
+ */
+export type PastedTextFile = {
+  path: string;
+  name: string;
+  byteLength: number;
+  sha256: string;
+};
+
+export async function savePastedText(text: string): Promise<PastedTextFile> {
+  if (!isTauriRuntime()) {
+    throw new Error("Paste text folding requires the desktop app");
+  }
+  return invoke("save_pasted_text", { text });
 }
 
 /** 文件清单剪贴板（CF_HDROP）的一条：资源管理器复制的文件。 */
@@ -851,6 +908,36 @@ export async function saveDiagnosticReport(request: {
 }): Promise<DiagnosticSaveResult | null> {
   if (!isTauriRuntime()) return null;
   return invoke<DiagnosticSaveResult | null>("save_diagnostic_report", { request });
+}
+
+/**
+ * Build the same redacted bundle without the native save dialog. Rust writes
+ * `report.md`, `manifest.json` and a bounded warning/error `log-tail.txt` under
+ * Marionette's own diagnostics directory so a triage chat can read them.
+ */
+export type DiagnosticBundleResult = {
+  directory: string;
+  reportPath: string;
+  manifestPath: string;
+  logTailPath: string;
+  redactions: number;
+  logFiles: number;
+  logTailLines: number;
+  installedVersion: string;
+  sourceVersion: string | null;
+  sourceVersionNote: string;
+  generatedAt: string;
+};
+
+export async function buildDiagnosticBundle(request: {
+  schemaVersion: 1;
+  summary: string;
+  uiState: unknown;
+}): Promise<DiagnosticBundleResult> {
+  if (!isTauriRuntime()) {
+    throw new Error("Diagnostic triage requires the desktop app");
+  }
+  return invoke<DiagnosticBundleResult>("build_diagnostic_bundle", { request });
 }
 
 export async function generateHandoff(params: {
@@ -1549,6 +1636,34 @@ export async function engineQuota(force = false): Promise<EngineQuotaResult> {
     return { entries: [], stale: false };
   }
 }
+
+/**
+ * Cheap text settings and title/branch/commit requests live in
+ * `lib/cheapText.ts` (P1-13). Re-exported here so existing imports keep working.
+ */
+export {
+  CHEAP_TEXT_TITLE_EVENT,
+  DEFAULT_CHEAP_TEXT_SETTINGS,
+  cheapTextConfigured,
+  cheapTextViewToDraft,
+  generateCheapText,
+  getCheapTextSettings,
+  listCheapTextSources,
+  normalizeCheapTextDraft,
+  requestCheapBranchName,
+  requestCheapCommitMessage,
+  requestCheapSessionTitle,
+  requestCheapTitle,
+  saveCheapTextSettings,
+  subscribeCheapTitle,
+} from "./cheapText";
+export type {
+  CheapTextKind,
+  CheapTextSaveResult,
+  CheapTextSettings,
+  CheapTextSettingsDraft,
+  CheapTextSource,
+} from "./cheapText";
 
 /** Manually stop the gateway (self-spawned instances only; reused installs no-op). */
 export async function engineStop(): Promise<void> {
@@ -2307,4 +2422,30 @@ export async function chiefTeeConsume(sessionId: string, uptoSeq: number): Promi
 export async function chiefTeeCursor(sessionId: string): Promise<number> {
   if (!isTauriRuntime()) return 0;
   return await invoke<number>("chief_tee_cursor", { sessionId });
+}
+
+/** P0-3: content-free tee health (counts only) for the worker notice. */
+export async function chiefTeeHealth(sessionId: string): Promise<import("./chiefTee").ChiefTeeHealth | null> {
+  if (!isTauriRuntime()) return null;
+  return await invoke<import("./chiefTee").ChiefTeeHealth>("chief_tee_health", { sessionId });
+}
+
+/** P0-3: one bounded slice of the immutable tee for segmented recovery. */
+export async function chiefTeeReplaySegment(
+  sessionId: string,
+  afterSeq: number,
+  limit: number,
+): Promise<{
+  events?: unknown[];
+  badLines?: number;
+  hasMore?: boolean;
+  nextSeq?: number;
+} | null> {
+  if (!isTauriRuntime()) return null;
+  return await invoke<{
+    events?: unknown[];
+    badLines?: number;
+    hasMore?: boolean;
+    nextSeq?: number;
+  }>("chief_tee_replay_segment", { sessionId, afterSeq, limit });
 }

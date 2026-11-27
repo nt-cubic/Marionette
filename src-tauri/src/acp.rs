@@ -354,6 +354,10 @@ struct AcpProcess {
     /// Windows 构建是 PyInstaller onefile，每次启动解压 ~150MB 进系统
     /// 临时目录且杀进程后永不清理）。进程树回收后删除。
     scratch_dir: Option<std::path::PathBuf>,
+    /// P0-1 observability: parsed `session/update` counters for this logical
+    /// session (stage 2 of the worker pipeline). Relaxed atomics on the read
+    /// thread; the summary is emitted once per turn end / stdout EOF.
+    observe: Arc<crate::subagent_observe::AcpCounters>,
 }
 
 struct PendingPermission {
@@ -1331,6 +1335,7 @@ impl AcpService {
                 );
             })
         };
+        let observe = crate::subagent_observe::acp_counters(&session_id);
         let process = Arc::new(AcpProcess {
             stdin_tx: Mutex::new(stdin_tx),
             child: Mutex::new(child),
@@ -1354,6 +1359,7 @@ impl AcpService {
             // Antigravity per-launch scratch (TMP/TEMP redirect target);
             // deleted at both teardown points once the process tree is gone.
             scratch_dir: antigravity_scratch.take(),
+            observe,
         });
         sessions.insert(session_id.clone(), Arc::clone(&process));
         drop(sessions);
@@ -2920,6 +2926,49 @@ impl AcpService {
         Ok(json!({ "accepted": true, "id": id, "images": image_count }))
     }
 
+    /// Create a terminal owned by Marionette itself rather than an agent
+    /// session (P1-14 user-owned project actions).
+    ///
+    /// `owner` must be a synthetic id such as `project-action:<projectId>`.
+    /// Even when that id is passed as the ACP session id, no agent session,
+    /// permission mode, or always-approve setting is consulted: this is a
+    /// direct user-requested process in the shared terminal host.
+    pub fn create_user_terminal(
+        &self,
+        owner: &str,
+        cwd: &str,
+        command: &str,
+        args: &[String],
+    ) -> Result<String, String> {
+        let params = json!({
+            "command": command,
+            "args": args,
+            "cwd": cwd,
+        });
+        let value = self
+            .terminals
+            .handle("terminal/create", &params, owner, None)
+            .map_err(|err| err.message().to_string())?;
+        value
+            .get("terminalId")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| "terminal/create returned no terminalId".to_string())
+    }
+
+    /// Snapshot of one terminal created by [`AcpService::create_user_terminal`].
+    /// Used by the project-action run command to poll exit status and output.
+    pub fn user_terminal_snapshot(&self, terminal_id: &str) -> Result<Value, String> {
+        self.terminals
+            .handle(
+                "terminal/output",
+                &json!({ "terminalId": terminal_id }),
+                "",
+                None,
+            )
+            .map_err(|err| err.message().to_string())
+    }
+
     /// 后台任务面板：terminal 宿主快照（create 过的全部条目，含已结束未清理的）。
     pub fn list_terminals(&self) -> Vec<serde_json::Value> {
         self.terminals.list_running()
@@ -3984,6 +4033,9 @@ fn read_stdout(
                     };
                     let kind = if result.is_ok() { "response" } else { "error" };
                     emit_turn_complete(&app, &session_id, kind, stop_reason, message.clone());
+                    // P0-1 stage 2 snapshot: cumulative, so the last turn end
+                    // is the run's total (process restarts share the counters).
+                    process.observe.flush(&session_id, "turn_complete");
                 } else if is_cancel_ack {
                     let _ = process.cancelling_prompt_id.compare_exchange(
                         id,
@@ -4071,6 +4123,17 @@ fn read_stdout(
             .get("method")
             .and_then(Value::as_str)
             .map(str::to_string);
+        // P0-1 stage 2: count what the ACP parser actually saw, by
+        // `sessionUpdate` kind. This is the parse boundary, before the
+        // dispatcher's chunk coalescing and before the tee.
+        if method.as_deref() == Some("session/update") {
+            if let Some(kind) = message
+                .pointer("/params/update/sessionUpdate")
+                .and_then(Value::as_str)
+            {
+                process.observe.note(kind);
+            }
+        }
         emit_event(
             &app,
             &session_id,
@@ -4113,6 +4176,9 @@ fn read_stdout(
     }
     // Also drop Ask / Plan / Permission waiters so the UI is not stuck on a
     // dead process (write_response is best-effort if the pipe is already gone).
+    // P0-1 stage 2 final snapshot: the reader is gone, so this is the last
+    // chance to record what it parsed for this run.
+    process.observe.flush(&session_id, "stdout_eof");
     drop_ui_pending_for_session(
         &session_id,
         &plan_approvals,
@@ -4367,6 +4433,10 @@ fn handle_agent_request(
                     if let Some(obj) = q.as_object_mut() {
                         obj.insert("other".into(), Value::Bool(true));
                         obj.insert("note".into(), Value::Bool(true));
+                        // Grok accepts a free string on every question, so the
+                        // attachment affordance is available everywhere here.
+                        // (No native attachment field - files go in a follow-up.)
+                        obj.insert("attachmentsAllowed".into(), Value::Bool(true));
                     }
                 }
             }

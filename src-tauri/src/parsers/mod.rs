@@ -1,7 +1,8 @@
 //! Read-only parsers for external ACP agent session stores.
 //!
-//! Scan is filtered to a single Marionette project root. Unknown directories
-//! never become projects.
+//! `list_all` is filtered to a single Marionette project root. `discovery`
+//! only proposes candidate roots (and never adds them); a candidate becomes a
+//! project solely through an explicit Add Project action.
 
 pub(crate) mod antigravity;
 mod claude;
@@ -10,6 +11,7 @@ mod codex;
 mod cursor;
 pub(crate) mod dedup;
 mod deepseek;
+pub(crate) mod discovery;
 mod gemini;
 mod grok;
 pub(crate) mod jsonl_agents;

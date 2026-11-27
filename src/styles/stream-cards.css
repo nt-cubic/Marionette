@@ -509,6 +509,115 @@
   outline-offset: 0;
 }
 
+/* Attachments on questions that accept a custom text answer. Paths stay
+   visible before submit; the files are referenced in place (no copies). */
+.ask-card__attach {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.ask-card__attach-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.ask-card__attach-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ask-card__attach-add:hover:not(:disabled) {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.ask-card__attach-add:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ask-card__attach-list {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ask-card__attach-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 20px;
+  gap: 6px;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 4px 2px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+
+.ask-card__attach-name {
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.ask-card__attach-path {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.ask-card__attach-x {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.ask-card__attach-x:hover:not(:disabled) {
+  background: var(--panel-raised);
+  color: var(--text);
+}
+
+.ask-card__attach-x:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ask-card__attach-hint {
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
 .ask-card__actions {
   display: flex;
   flex-wrap: wrap;

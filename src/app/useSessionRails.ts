@@ -1,3 +1,32 @@
+/**
+ * P0-2 ownership (backend-driven worker transcripts).
+ *
+ * One worker event chain has four distinct representations. Do not conflate
+ * them, and do not add a second writer:
+ *
+ *   1. RAW ACP EVENTS -- JSON-RPC envelopes parsed in `src-tauri/src/acp.rs`
+ *      (`session/update` etc). They feed in-process dispatch and dev.log only.
+ *   2. TEE EVENTS -- `src-tauri/src/chief/tee.rs` appends those raw envelopes,
+ *      unchanged, plus `{seq, ts, sessionId, kind}`, to
+ *      `~/.marionette/chief/sessions/<sid>.events.jsonl`. This is an
+ *      append-only RAW ledger, not SessionEvents. Its `consume` cursor is only
+ *      a replay filter; it never deletes evidence.
+ *   3. NORMALIZED SessionEvents -- `applyAcpPartToEvents` / `applyStreamPart`
+ *      fold ACP chunks into cards (assistant / thought / tool / user_message).
+ *      They live in the shadow/live rails here; this is the only shape that is
+ *      rendered or persisted.
+ *   4. CANONICAL TRANSCRIPT JSONL -- `<sid>.jsonl` with one persistable
+ *      SessionEvent per line. **Only `persistSessionNow` in this file writes
+ *      it** (live stream and tee replay share the same function). `storage.rs`,
+ *      `chief/broker.rs` and `chief/tee.rs` never normalize or write it.
+ *      Replay must go through `applyStreamPart` first and then flush; never
+ *      build a second normalization pipeline in Rust.
+ *
+ * P0-2 invariant: after tee replay for an opened/settled session, the replay
+ * batch is flushed durably exactly once, and the tee cursor advances only if
+ * that flush succeeded. An empty canonical transcript is never trusted as
+ * "already consumed" -- the replay starts from seq 0 instead.
+ */
 import { useRef, type MutableRefObject } from "react";
 import {
   applyAcpPartToEvents,
@@ -54,6 +83,49 @@ export interface SessionRailsEnv {
  * Map 上——React 状态只有每会话的 tick 计数（App 侧），rail 本体不整条
  * 进 state。
  */
+export type TranscriptPersistPlan =
+  | { kind: "none" }
+  | { kind: "append"; suffix: SessionEvent[] }
+  | { kind: "rewrite"; events: SessionEvent[] }
+  | { kind: "ensure-head" };
+
+/**
+ * Pure decision for the canonical transcript writer (kept DOM-free so tests
+ * can pin the invariants):
+ * - reference-identical prefix + growth -> append only the new suffix;
+ * - same length -> nothing to do;
+ * - a different rail with a truncated head -> load the head first (a rewrite
+ *   must never eat history);
+ * - otherwise rewrite the whole persistable rail.
+ */
+export function planTranscriptPersist(
+  events: SessionEvent[],
+  lastPersisted: SessionEvent[] | undefined,
+  opts: { headTruncated: boolean },
+): TranscriptPersistPlan {
+  if (events.length === 0) return { kind: "none" };
+  const prefixIdentical =
+    lastPersisted != null &&
+    events.length >= lastPersisted.length &&
+    lastPersisted.every((ev, i) => events[i] === ev);
+  if (lastPersisted != null && prefixIdentical) {
+    if (events.length === lastPersisted.length) return { kind: "none" };
+    return { kind: "append", suffix: events.slice(lastPersisted.length) };
+  }
+  if (opts.headTruncated) return { kind: "ensure-head" };
+  return { kind: "rewrite", events };
+}
+
+/**
+ * P0-2: an empty canonical transcript is never trusted as "already consumed".
+ * The raw tee can always rebuild it, so replay starts at seq 0. Any stored
+ * cursor from a previous (lost) flush is ignored.
+ */
+export function replayStartCursor(storedCursor: number, transcriptEmpty: boolean): number {
+  if (transcriptEmpty) return 0;
+  return Number.isFinite(storedCursor) && storedCursor > 0 ? storedCursor : 0;
+}
+
 export function useSessionRails(env: SessionRailsEnv) {
   const eventsBySessionRef = useRef(new Map<string, SessionEvent[]>());
   const shadowBySessionRef = useRef(new Map<string, SessionEvent[]>());
@@ -91,63 +163,99 @@ export function useSessionRails(env: SessionRailsEnv) {
     return events.length === last.length && last.every((ev, i) => events[i] === ev);
   };
 
+  const persistChainsRef = useRef(new Map<string, Promise<boolean>>());
+
+  /**
+   * The single write routine for both callers -- the live debounce and the
+   * explicit tee-replay flush. Returns true only when the rail's persistable
+   * view is known to be on disk; a false answer must not advance the tee
+   * cursor.
+   */
+  const persistSessionNow = async (
+    sessionId: string,
+    headRetry = false,
+  ): Promise<boolean> => {
+    if (!isTauriRuntime()) return false;
+    if (!env.ownsAcpSession(sessionId)) return false;
+    if (env.reloadingSessionsRef.current.has(sessionId)) return false;
+    const pendingTimer = env.transcriptSaveTimers.current.get(sessionId);
+    if (pendingTimer) {
+      clearTimeout(pendingTimer);
+      env.transcriptSaveTimers.current.delete(sessionId);
+    }
+    const events = persistableEventsForSession(
+      shadowBySessionRef.current.get(sessionId) ?? EMPTY_EVENTS,
+      sessionId,
+    );
+    const plan = planTranscriptPersist(events, lastPersistedRef.current.get(sessionId), {
+      headTruncated: env.isHeadTruncated(sessionId),
+    });
+    if (plan.kind === "none") return true;
+    if (plan.kind === "ensure-head") {
+      if (headRetry) return false;
+      await env.ensureHeadForPersist(sessionId);
+      if (env.isHeadTruncated(sessionId)) return false;
+      return persistSessionNow(sessionId, true);
+    }
+    lastPersistedRef.current.set(sessionId, events);
+    try {
+      if (plan.kind === "append") {
+        await appendTranscriptEvents(sessionId, plan.suffix);
+      } else {
+        await writeTranscript(sessionId, plan.events);
+      }
+      return true;
+    } catch (error) {
+      // Drop the accounting mark so the next flush conservatively falls back
+      // to a full rewrite instead of appending a suffix that never landed.
+      lastPersistedRef.current.delete(sessionId);
+      env.pushDebugRef.current({
+        sessionId,
+        level: "warn",
+        source: "transcript",
+        summary:
+          plan.kind === "append"
+            ? "append transcript failed; falling back to full write"
+            : "write transcript failed",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  };
+
+  /** Serialize writes per session so the debounce and replay cannot double-write. */
+  const enqueuePersist = (sessionId: string): Promise<boolean> => {
+    const previous = persistChainsRef.current.get(sessionId) ?? Promise.resolve(true);
+    const run = previous.catch(() => false).then(() => persistSessionNow(sessionId));
+    persistChainsRef.current.set(sessionId, run);
+    void run
+      .finally(() => {
+        if (persistChainsRef.current.get(sessionId) === run) {
+          persistChainsRef.current.delete(sessionId);
+        }
+      })
+      .catch(() => undefined);
+    return run;
+  };
+
+  /**
+   * Explicit flush used by tee replay before its cursor advances. It cancels
+   * the pending debounce and writes through the same plan as the live path.
+   */
+  const flushSessionTranscript = (sessionId: string): Promise<boolean> =>
+    enqueuePersist(sessionId);
+
   const armTranscriptTimer = (sessionId: string) => {
     if (!isTauriRuntime()) return;
     if (!env.ownsAcpSession(sessionId)) return;
     if (env.reloadingSessionsRef.current.has(sessionId)) return;
     const prev = env.transcriptSaveTimers.current.get(sessionId);
     if (prev) clearTimeout(prev);
-    // 自适应 debounce：大转录（按事件数近似）流式期间升档，磁盘压力让路；
-    // turn 收尾 / 关闭路径的显式 flush 不受影响。
     const sizeHint = shadowBySessionRef.current.get(sessionId)?.length ?? 0;
     const delay = sizeHint > FLUSH_DEBOUNCE_SLOW_EVENTS ? FLUSH_DEBOUNCE_SLOW_MS : FLUSH_DEBOUNCE_MS;
     const timer = setTimeout(() => {
       env.transcriptSaveTimers.current.delete(sessionId);
-      if (!env.ownsAcpSession(sessionId)) return;
-      if (env.reloadingSessionsRef.current.has(sessionId)) return;
-      const events = persistableEventsForSession(
-        shadowBySessionRef.current.get(sessionId) ?? EMPTY_EVENTS,
-        sessionId,
-      );
-      if (events.length === 0) return;
-      const last = lastPersistedRef.current.get(sessionId);
-      const prefixIdentical =
-        last != null && events.length >= last.length && last.every((ev, i) => events[i] === ev);
-      if (last != null && prefixIdentical) {
-        if (events.length === last.length) return; // 无变化
-        const suffix = events.slice(last.length);
-        lastPersistedRef.current.set(sessionId, events);
-        void appendTranscriptEvents(sessionId, suffix).catch((error) => {
-          // 追加失败：丢弃账本标记，下一轮自动退回全量重写（保守恢复）。
-          lastPersistedRef.current.delete(sessionId);
-          env.pushDebugRef.current({
-            sessionId,
-            level: "warn",
-            source: "transcript",
-            summary: "append transcript failed; falling back to full write",
-            detail: error instanceof Error ? error.message : String(error),
-          });
-        });
-        return;
-      }
-      // 全量重写前必须补齐截断的头部——rail 只装了尾部，直接写会把磁盘上
-      // 的历史头吃掉。ensureHead 内部的 updateSessionEvents 会重新 arm 本
-      // timer，届时头已在、走真正的全量写。
-      if (env.isHeadTruncated(sessionId)) {
-        void env.ensureHeadForPersist(sessionId);
-        return;
-      }
-      lastPersistedRef.current.set(sessionId, events);
-      void writeTranscript(sessionId, events).catch((error) => {
-        lastPersistedRef.current.delete(sessionId);
-        env.pushDebugRef.current({
-          sessionId,
-          level: "warn",
-          source: "transcript",
-          summary: "write transcript failed",
-          detail: error instanceof Error ? error.message : String(error),
-        });
-      });
+      void enqueuePersist(sessionId);
     }, delay);
     env.transcriptSaveTimers.current.set(sessionId, timer);
   };
@@ -247,5 +355,6 @@ export function useSessionRails(env: SessionRailsEnv) {
     publishedEventsForView,
     notePersisted,
     isPersistClean,
+    flushSessionTranscript,
   };
 }

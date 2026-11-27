@@ -64,6 +64,14 @@ export type AcpTextPart = {
   notice?: SessionNotice;
 };
 
+/** A user prompt echo carried by an ACP session/update notification. */
+export type AcpUserTextPart = {
+  text: string;
+  isDelta: boolean;
+  sessionUpdate: string;
+  messageId?: string;
+};
+
 export type SubagentResultPatch = {
   id: string;
   title?: string;
@@ -1170,6 +1178,33 @@ export function extractAcpUpdateText(data: unknown): AcpTextPart | null {
   }
 
   return { role: "other", text: textFromContent, isDelta, sessionUpdate, messageId };
+}
+
+/**
+ * Parse a user_message_chunk without widening AcpTextPart's agent-only roles.
+ * Worker tee replay needs this path to rebuild a single You card even when
+ * the local composer event was not present in the canonical transcript.
+ */
+export function extractAcpUserText(data: unknown): AcpUserTextPart | null {
+  const update = getSessionUpdate(data);
+  if (!update) return null;
+  const sessionUpdate = getSessionUpdateKind(update);
+  if (!sessionUpdate.includes("user_message")) return null;
+  const messageId =
+    typeof update.messageId === "string"
+      ? update.messageId
+      : typeof update.message_id === "string"
+        ? update.message_id
+        : undefined;
+  const source = update.delta ?? update.content ?? update.text ?? update.message;
+  const text = extractTextContent(source);
+  if (!text) return null;
+  return {
+    text,
+    isDelta: sessionUpdate.includes("chunk"),
+    sessionUpdate,
+    messageId,
+  };
 }
 
 /**

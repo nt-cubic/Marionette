@@ -6,6 +6,25 @@ export type Project = {
   lastOpenedAt: string;
 };
 
+/**
+ * Candidate project root found in an existing local agent session store
+ * (T3 P1-6). Read-only hint: nothing is added until the user picks it.
+ */
+export type DiscoveredProject = {
+  rootPath: string;
+  name: string;
+  sessionCount: number;
+  agents: string[];
+  lastActiveAt?: string;
+};
+
+export type ProjectDiscoveryReport = {
+  projects: DiscoveredProject[];
+  scannedSources: string[];
+  failedSources: string[];
+  truncated: boolean;
+};
+
 /** A CLI the ACP bridge shells out to (installed separately from the bridge). */
 export type AgentDependency = {
   command: string;
@@ -94,6 +113,21 @@ export type SessionViewMode = "clean" | "diff" | "logs";
 /** Where the current conversation label came from. */
 export type SessionLabelSource = "default" | "user" | "agent" | "manual";
 
+/**
+ * Persisted shelf presentation (P1-11). This is *not* process lifecycle:
+ * settling, snoozing or archiving a dialog never stops or parks its agent.
+ * `working` is derived at runtime and therefore never stored.
+ */
+export type SessionPresentationOverride = "settled" | "snoozed" | "archived";
+
+export type SessionPresentation = {
+  state: SessionPresentationOverride;
+  /** When the shelf state was last written (ISO or epoch-millis string). */
+  updatedAt: string;
+  /** Snooze wake time; only meaningful when `state === "snoozed"`. */
+  snoozedUntil?: string | null;
+};
+
 export type Session = {
   id: string;
   projectId: string;
@@ -143,6 +177,11 @@ export type Session = {
    * = not pinned.
    */
   pinnedAt?: string | null;
+  /**
+   * Presentation-only shelf state (settled / snoozed / archived). Kept
+   * separate from `status` on purpose. See SessionPresentation above.
+   */
+  presentation?: SessionPresentation | null;
 };
 
 /** Snapshot of Composer model/mode/effort bound to a dialog. */

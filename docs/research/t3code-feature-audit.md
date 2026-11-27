@@ -1,10 +1,10 @@
 # T3 Code ⇄ Marionette 产品审计（cross-project canonical audit）
 
-> **性质**：只读研究 + 单文件产出。本文件是唯一被创建/修改的文件；T3 仓库与 Marionette 源码均未改动，
-> 未执行构建、安装或提交。
+> **Scope:** documentation-only, two-pass audit. No Marionette source, configuration, build, or install was changed.
+> The first pass established the full product/architecture map; section 9 records the latest-source UX review.
 >
-> **审计对象**：`D:\Myself\t3code`（T3 Code，MIT，Node WebSocket server + Electron/Web/React Native 三端）
-> **对照对象**：`D:\Myself\Marionette`（Tauri 2 + React，Windows 本地多 Agent 图形壳 + 跨用引擎，v0.9.1）
+> **Audit target:** official pingdotgg/t3code; second-pass checkout at D:\\Project\\t3code (T3 Code, MIT, Node WebSocket server + Electron/Web/React Native)
+> **Comparison target:** Marionette (Tauri 2 + React, Windows local multi-agent shell + cross-use engine, v0.9.1)
 >
 > **日期**：2026-11-27 ｜ **审计口径**：文档优先，文档含糊处读代码；文档与代码冲突时以代码为准并记录。
 >
@@ -41,6 +41,9 @@
    （前端 `performSend` 与后端 `chief/runner.rs` 两套发送管线必须手工对齐）。
 3. **Marionette 有三个 T3 完全没有的护城河**，审计时不要为了「对齐 T3」把它们稀释掉：
    跨用引擎（任何来源的模型喂给任何 agent）、贴边驻留 + 保持会话进程存活、Computer Use（操作桌面原生应用）。
+
+> **Second-pass UX result:** the latest official-source review and the ranked T3-only UX gap list are
+> in section 9. That section also corrects stale Marionette claims from the first pass.
 
 **先做的一件事**：把「发送 / 回合生命周期」抽成**唯一一份可复用服务**（第 5 节 A1）。
 这是 T3 全篇最便宜、回报最高的一条，也是 Marionette 目前技术债最集中的一处。
@@ -550,7 +553,7 @@
 
 #### A2. 文本生成通道（标题 / 分支名 / 提交信息）
 - **为什么**：T3 把所有「轻文本」任务从编码 agent 里拿出来，交给便宜的 text generator（OpenAI/Anthropic/
-  OpenRouter/自定义 OpenAI 兼容）。Marionette 现在**没有自动标题、没有提交信息生成**（只有手改重命名），
+  OpenRouter/custom OpenAI). Marionette already creates a first-prompt title, but it does not generate a semantic title, regenerate one, or create commit messages.
   每开一个会话都少一条「一眼能认出来」的线索。
 - **切片**：新增 `src-tauri/src/textgen.rs` 与 `~/.marionette/textgen.json`（baseURL+key+model，复用 `credentials.rs`
   的加密存放）；先落两个用途：会话标题、分支名。UI 在会话行菜单加「重新生成标题」；失败静默保留原标题。
@@ -634,7 +637,7 @@
 | D5 | **能力诚实 / 不模拟权限档** | 把 T3 的四条「honest capabilities」写成 Marionette 的通则 + 测试：声称支持的档位必须真生效；档位不生效就写清并降级 | 在 `capabilityDrift.ts` 与 `delegation.rs` 各加一层「声明 vs 实测」断言；把 AGENTS 里散落的 fail-closed 条款收成一篇 `docs/guides/honest-capabilities.md`（新文件，另行排期） | 新增 `verify-honest-capabilities.mts`：桥接模型档位、账号模型漂移、派活档位继承三类场景都被钉住 |
 | D6 | **会话三态与自动收尾** | T3：settle/snooze/archive + 7 天或 PR 合并自动结算 + 每条可豁免。Marionette 现在只有「挂起（进程级）」与「删除」 | 加「已收尾」这一**展示层**状态（不动进程语义）：7 天无活动、无未读、无后台任务 → 收进「已收尾」组；可手动豁免；不影响挂起 | 收尾只是折叠，不杀进程、不丢未读；筛选器与计数一致 |
 | D7 | **项目动作（`t3.json` 类比）** | T3 允许仓库里 checked-in 的脚本与 worktree 生命周期挂钩。Marionette 已有项目概念与 `context_inventory`，但无「项目动作」 | `~/.marionette/projects/<id>/project.json`（**不进仓库**，避免 checked-in 脚本的执行风险）声明 `setup` / `dev` / `cleanup`；入口在项目行菜单；setup 只在新建 worktree（D1）后跑 | 动作输出进 ACP 终端或独立日志；失败不阻塞会话；可一键停 |
-| D8 | **单线程定时发送** | T3 是三种目的地 + webhook + 时区。Marionette 只做「同一会话、按时间、重复」 | `src-tauri/src/scheduler.rs`（应用运行或贴边常驻时生效，关了就不跑并如实显示「下次需应用在运行」）；UI 在会话行菜单加「定时发送」 | 应用不在时不假装已发；错过的运行在启动后按策略补一次或跳过（明确文案）；`verify-scheduler.mts` |
+| D8 | **Scheduled send (already implemented)** | Existing client-side queue handles same-session scheduled sends; do not add a second scheduler. | Extend the existing scheduled-send path with reset-aware offers and explicit app-not-running behavior | Reset time and actual send outcome stay distinct; user confirms any reset retry; extend queue tests |
 | D9 | **无障碍（播报 + 窗口标题）** | T3 有三档播报 + 窗口标题前缀状态（Working / Needs approval / Needs your input） | 前端用 `aria-live` 播报「回合开始 / 需要你 / 完成」；`shell_integration.rs` 把状态写进窗口标题（现在只写产品名） | 播报不念推理文本；标题在贴边态不乱（窄条标题有自己的规则）；开关持久化 |
 | D10 | **迁移前快照 + doctor 扩展** | T3：更新前快照 SQLite，trial 迁移失败可回滚。Marionette 是 JSON/JSONL，但 schema 迁移同样不可逆 | `storage.rs` 在 `schema_version` 变化时先把 `~/.marionette` 元数据（index/ledger/bindings/settings）打成一个 zip 到 `backups/`；`doctor` 报「最近备份时间 + 可回滚性」 | 迁移失败自动还原并留日志；备份不复制转录正文（体积不可控） |
 | D11 | **文档治理（rewrite-not-append）** | T3 的 internals 规则：代码能读出来的不写；决定变了就**重写**那一段，不追加第二份说明 | 把 `AGENTS.md` 里「已失效的批次记录」压成「现行红线 + 指向代码/手册」，历史进 `docs/archive/` | 红线条目不随时间增长；每条红线都能指到代码或测试 |
@@ -710,7 +713,7 @@
 | D1 worktree | 单仓 worktree + 删除保护 + doctor 孤儿检查 | 两会话并行不互相污染；`cargo test worktree` |
 | D6 三态 | 「已收尾」展示层 + 自动收尾规则 | 只折叠不杀进程；可豁免 |
 | D7 项目动作 | `project.json` + setup/dev/cleanup | 失败不阻塞；可停 |
-| D8 定时发送 | `scheduler.rs` + 会话菜单 | 应用不在时不假装已发 |
+| D8 scheduled send | Existing scheduled-send queue + reset-aware offer | App not running does not claim delivery; user confirms reset retry |
 | D9 无障碍 | 播报 + 窗口标题状态 | 不念推理；贴边标题不乱 |
 | D10 迁移快照 | `backups/` + doctor 展示 | 迁移失败自动还原 |
 | D11 文档治理 | AGENTS 收敛 + 归档 | 红线条目不再增长 |
@@ -900,7 +903,7 @@
 | 「edit&resend 只截断本地转录，没有 provider 级 rewind」 | `acp.rs` 与全仓 grep **无** `rewind`/`rollback` 会话通道；`storage.rs` 里的 truncate 都是文件写安全 | 可能通过「新会话 + 历史注入」实现，效果类似但不等于协议回滚；D2 实施前需确认 |
 | 「Marionette 无用户终端」 | `package.json` 无 xterm 类依赖；`components/` 无 Terminal 组件（`ContextPanel` 里的 Terminal 是 dev server 文案） | 低 |
 | 「Marionette 无 PR 集成」 | 全仓 grep `pull_request`/`gh pr` 零命中 | 低 |
-| 「Marionette 无定时任务」 | 无 scheduler/cron 模块（只有 tick 保鲜） | 低 |
+| Marionette scheduled sends | Client-side scheduled sends already exist; there is no separate long-lived cron service. | Low |
 | 「Marionette 无跨会话全文搜索」 | `docs/CURRENT.md` 明写「按标题过滤，不读正文」；`conversationFind.ts` 是当前对话内查找 | 低 |
 
 ### 8.4 文档本身的缺口（T3 文档没写清的地方）
@@ -967,3 +970,232 @@
 ---
 
 *本文件由只读审计生成；除本文件外未修改任何仓库内容。*
+## 9. Second-pass review: T3 UX gaps worth adopting (2026-11-27)
+
+> **Source snapshot:** official pingdotgg/t3code main at HEAD ba726618376e8e61428fc9b0394de41579a97609,
+> checked out outside the Marionette worktree. The review covered all 85 Markdown files under docs/,
+> plus the root contribution, evaluation, security, and release guidance.
+>
+> **Selection rule:** this section asks which T3-only *user experiences* are both useful and compatible
+> with Marionette's Windows-local, single-user, edge-docked product boundary. Features that only make
+> sense with a remote server, multiple clients, a PR platform, or a durable cloud relay are excluded
+> from the adoption queue.
+
+### 9.1 T3-only UX inventory and decision
+
+| Priority | T3-only UX | Marionette today | Decision |
+|---|---|---|---|
+| P0 | One-click issue triage with a coding agent | Diagnostic export stops at a Markdown/JSON report | **Adopt now** as a diagnostic-chat action |
+| P0 | Files/images attached to question answers | Ask cards accept text/options only | **Adapt now** through the existing attachment pipeline |
+| P0 | Large pastes automatically become text attachments | Large text goes directly into the prompt | **Adopt now** with explicit paste-as-text bypass |
+| P0 | Thread references that agents can read on demand | No explicit cross-session reference path | **Adapt now** with bounded snapshots, then a read-only tool |
+| P1 | Discover recent projects during onboarding | Projects must already be added before CLI sessions can be imported | **Adapt discovery only**; no Git URL clone or project-default overrides |
+| P1 | Working / Settled / Snoozed / Archived thread states | Active, process-parked, and deleted; status filters only | **Adapt next**; keep process semantics separate |
+| P1 | Browser find-on-page, responsive viewports, rotation, zoom | Browser has profiles, picker, annotation, handoff, and ref leases | **Adopt the small subset** |
+| P1 | Diff find, hide-whitespace, colorblind palette, split view | Turn diff and review/quote paths exist; those view controls do not | **Adopt the low-risk subset** |
+| P1 | Custom usage prices, model aliasing, include/exclude filters | models.dev pricing and cost coverage exist; overrides do not | **Adapt next** |
+| P1 | Resume/snooze after a known quota reset | Quota reset time is displayed; scheduled send exists separately | **Join the existing two paths** |
+| P1 | F6/Shift+F6 workspace-area focus cycling | Ctrl shortcuts and local aria-live regions; no area-focus model | **Adopt next** |
+| P1 | Prompt links and thread links with hidden-character defense | Path launch exists; no versioned prompt/deep-link payload | **Adapt carefully** |
+| P1 | On-demand tool schema search | Browser/computer/plugin schemas are injected up front | **Adapt after S0** to reduce context tax without hiding capabilities |
+| P1 | Window capture plus accessibility text inserted into a draft | Computer Use exposes window/screenshot primitives, but no SnapShot shortcut/draft flow | **Adopt as the existing A6 item** |
+| P2 | Dedicated cheap text model for generated titles | First-user-message titles exist; no model rewrite/regeneration | **Adapt after A2** |
+| P2 | Visual HTML replies and interactive MCP Apps | Safe declarative spec cards exist; arbitrary HTML/MCP UI does not | **Defer** behind a sandbox/security design |
+| P2 | Devices, voice input, and remote streamed browser | No device/video/STT pipeline; browser is local WebView2 | **Defer/reject by product shape** |
+| P2 | Hide-successful / hide-all / Zen activity modes | Clean view always keeps folded activity groups | **Defer**; opt-in only after observability is fixed |
+| P2 | Rich Markdown composer with live styling | Plain textarea with a stable transcript renderer | **Defer**; high editor cost, low current pain |
+| P2 | Provider instances, MCP OAuth flows, private secret cards | Custom agents can duplicate binaries but instances are not first class | **Defer** until a real workflow requires them |
+| P2 | Project setup/dev/test/cleanup actions | Project context exists; no user-owned action registry | **Adapt after worktree** from local Marionette config only |
+
+### 9.2 Immediate UX additions
+
+#### P1-1. Diagnostic triage chat
+
+- Add a Ctrl K action that creates a Chat session with origin diagnostic and attaches the redacted
+  diagnostic Markdown/JSON plus the relevant log tail.
+- The playbook must treat logs, reports, issue text, and repository content as untrusted data, never
+  as agent instructions. It must never read credentials, patch Marionette by default, or post an issue
+  without an explicit confirmation.
+- Prefer the source for the exact installed version. If the source is unavailable, proceed from logs
+  and label conclusions as unverified.
+- This is the intended consumer of the existing diagnostic schema and the highest-value follow-up to
+  the current export feature.
+
+#### P1-2. Attachments in question answers
+
+- Allow files and screenshots only on questions that accept a custom text answer.
+- Keep one attachment draft per question. Uploads must finish before submission, and deleting the
+  session must clean them up.
+- Put attachment paths beside, not inside, enum values. If ACP form elicitation has no attachment
+  channel, add a clearly labeled follow-up user message after the answer instead of corrupting the
+  answer schema.
+
+#### P1-3. Large-paste folding
+
+- At 32 KiB, convert pasted text to a UTF-8 text attachment. Also fold any paste that would exceed
+  the composer limit.
+- Ctrl+Shift+V forces inline text. Show a toast when the attachment cannot be staged.
+- Reuse the existing attachment ownership and cleanup rules; never write the pasted file into the
+  project tree.
+
+#### P1-4. Session references
+
+- Support dragging a session row into the composer or pasting a Marionette session link.
+- Initial implementation: create an explicit bounded snapshot containing metadata, the first user
+  request, recent user/assistant turns, and selected tool outcomes. Exclude thoughts, credentials,
+  raw tool bodies, and unrelated transcript regions by default.
+- Follow-up: expose a read-only session-read MCP tool with a hard event/byte budget. Explicitly
+  referenced sessions are the only readable ones.
+
+
+### 9.3 Adaptations worth scheduling
+
+#### P1-6. Recent-project discovery only
+
+- Scan the agent session stores already supported by Marionette for recent project roots. Present
+  candidates with activity counts and import counts; never add a project without selection.
+- Do not add Git URL cloning. Existing local projects remain the normal entry path.
+- Do not add project-level agent/model/permission defaults. The current dialog and per-agent inheritance
+  already matches the product expectation: new chats follow the current or most recent project dialog.
+
+#### P1-7. Browser and diff usability
+
+- Browser: find-on-page first, then phone/tablet viewport presets, rotation, and zoom.
+- Diff: find across loaded files, hide whitespace, and a colorblind-friendly palette.
+- Do not add remote browser streaming, preview tunnels, cookie import, or recording in this slice.
+
+#### P1-8. T3-style Usage page redesign, overrides, and reset-aware delivery
+
+- Use T3's Usage information architecture, not the current long-dashboard order: a compact header with
+  environment/provider filters, period, Cost/Tokens/Limits tabs, and refresh; a simple first screen that
+  shows one large total, session count, provider shares, and one trend chart.
+- Separate Limits into its own tab. Put detailed provider/model breakdown, time breakdown, tool/file
+  activity, context composition, session rows, and per-turn detail in a second layer or expandable
+  section. The default screen must not show every chart at once.
+- Adapt the visual treatment to Marionette's 3px/1px/no-shadow language while preserving T3's hierarchy,
+  spacing discipline, responsive filter controls, skeleton/loading states, and per-model drilldown.
+- Add custom per-million pricing, model alias mapping, and include/exclude filters. Add a generic HTTP
+  quota source only after those core controls.
+- On a usage-limit failure with a trustworthy reset time, offer Schedule after reset and feed the
+  confirmed payload into the existing scheduled-send path.
+- Acceptance: a first-time user can identify total spend/tokens, the largest provider/model, period, and
+  remaining limits without opening a detail panel; dock/compact widths do not horizontally overflow;
+  every existing CSV and per-session capability remains reachable.
+
+#### P1-9. Prompt links and area focus
+
+- Prompt links: marionette://new with prompt, project/session, agent, and model parameters. Strip
+  control and hidden characters, cap prompt length, confirm before replacing a draft, and never
+  auto-send or change permissions.
+- Replace the current raw pending-path handoff with a schema-versioned JSON request before adding
+  richer launch payloads.
+- Add F6/Shift+F6 cycling across visible workspace areas and restore the prior control when palettes
+  or menus close.
+
+#### P1-10. Window capture into the current draft
+
+- Expose a configurable shortcut that captures a user-selected window plus its title/process and an
+  optional bounded accessibility-text summary.
+- Reuse the Computer Use window/screenshot primitives. This is a user action, not an agent permission
+  escalation; agent-side Computer Use authorization remains unchanged.
+- Attach the PNG through the normal image pipeline and prefill a short context block. Exclude Marionette
+  itself and existing Computer Use blacklisted windows.
+
+
+#### P1-12. On-demand tool schema search
+
+- Keep a small always-on core tool set. Put browser, computer, and optional plugin tools behind one
+  `marionette_tool_search(query)` entry that returns a bounded set of full schemas.
+- Preserve direct named calls for tools the user has explicitly enabled, so discovery never becomes a
+  mandatory extra hop.
+- **Acceptance:** measured session-start schema bytes decrease; unsupported tools stay hidden; the model
+  finds the needed browser/computer tool in at most two discovery calls in fixed scenarios.
+
+#### P1-13. Cheap text-generation service
+
+- Add a configured low-cost text model for lightweight tasks: title regeneration, branch names, commit
+  messages, and later optional next-prompt suggestions.
+- Generation must never block the first message, must fail back to the existing title silently, and must
+  be labeled separately in usage accounting.
+- Prefer the existing cross-use credentials/source machinery over a second credential system.
+
+#### P1-14. Local project actions
+
+- Add setup, dev, test, and cleanup actions stored under Marionette-owned project metadata, not from
+  checked-in repository scripts.
+- Run actions in an ACP terminal with visible output, explicit stop, and no automatic approval widening.
+- Setup actions may run only after a new worktree is created; failures never block chat startup unless
+  the user asked to wait.
+
+### 9.4 Session lifecycle UX
+
+#### P1-11. Working, Settled, Snoozed, Archived session states
+
+- Keep process lifecycle separate from presentation lifecycle. `parked` means the agent process ended;
+  `settled`, `snoozed`, and `archived` change what the sidebar shows and when attention returns it.
+- Working collects sessions that are running, waiting on a worker, or waiting for the user.
+- Settled auto-collapses after a configurable quiet period only when there is no unread attention,
+  approval, question, delegated worker, or scheduled work. Snoozed hides until a wake time or an
+  attention event. Archived leaves normal sidebar/search until restored.
+- Every action has an immediate Undo or a clearly visible restore action.
+
+
+### 9.5 Engineering principles still missing from the first roadmap
+
+1. **Command receipts and idempotency.** The unified turn service must accept a client request id and
+   deduplicate UI, Telegram, scheduled-send, and delegation retries. Event-sequence equality alone is
+   not enough.
+2. **One transport retry owner.** Foregrounding, proxy changes, engine wake, and network recovery
+   must probe one established session owner rather than create competing retry loops.
+3. **Health is not freshness.** A live engine/socket and fresh projections are separate states. Cached
+   data must never be labeled live.
+4. **Real startup signals only.** Worker starting/running/waiting phases come from ACP events, process
+   state, or a blocking request, never a timer.
+5. **Lost effects retire.** Crash recovery must not automatically replay a prompt or checkpoint tied to
+   a lost process. Manual continuation remains the safe default.
+6. **Bounded diagnostics.** Add renderer long-task and backend main-loop stall traces above two seconds,
+   with a small offline summary command and the same redaction boundary as diagnostic export.
+7. **Large-component closure hygiene.** In App and Composer, keep render-local work in plain functions
+   and stabilize only callbacks that cross component boundaries. This prevents old transcript/server
+   scopes from being retained by isolated memoized handlers.
+8. **Reverse-state review.** Every new state needs a visible way out: open/close, queue/cancel,
+   start/stop, snooze/wake, hide/reveal, and recover/ignore.
+9. **Visual evidence.** Layout and interaction changes need before/after captures in addition to the
+   four-window-form manual pass.
+
+### 9.6 Corrections to the first audit
+
+- New-chat inheritance already follows the current or most recent same-project dialog; model/mode/effort
+  transfer when the agent stays the same, and per-agent last-used values are the fallback. Do not add a
+  project-default layer merely to reproduce T3.
+- The claim that Marionette has no scheduled tasks is obsolete. Scheduled sends already exist as a
+  client-side queue and should be extended, not rebuilt.
+- Marionette already auto-titles a session from its first user message. The remaining gap is a cheap
+  model-generated semantic title, regenerate action, and optional per-project title instructions.
+- Marionette already supports --open-path, a bare directory argument, and single-instance handoff.
+  Do not add a duplicate open-directory command; extend the existing handoff format for prompt links.
+- Dev-server discovery, quote/annotation capture, MemoBox draft saving, browser handoff, and explicit
+  browser sharing are already present and must not be re-planned.
+- The first audit's A2/D8 wording and the unverified Marionette no-scheduler row must be read through
+  these corrections.
+
+### 9.7 Do not copy
+
+- Cloud identity, relay, guest links, peer links, multi-machine routing, load balancing.
+- Mobile/web clients, remote streamed browsers, preview tunnels, managed policy, product telemetry.
+- PR/Issue platform integrations, PR watching, review guides, stacks, and multi-host source control.
+- Durable workflow/webhook platforms and checked-in project scripts executed without an explicit
+  local approval.
+- Custom CSS/background themes that would break the Marionette UI language.
+- Automatic post-update/provider crash continuation that can spend money without a user action.
+- Windows startup registration, Git URL clone in Add Project, and project-level default overrides
+  were explicitly declined by the user on 2026-11-27.
+
+### 9.8 Release and compliance deltas
+
+- Windows Authenticode signing is a larger release-hardening item than most remaining UI polish.
+  The repository currently has no signing pipeline; this needs a publisher-identity decision before
+  it can become an implementation task.
+- Add an in-app third-party notices viewer and generate the notice inventory during release.
+- Keep backup/trial migration/rollback work in Phase 5. T3's launcher architecture should not be
+  copied, but its rule that a failed migration must not destroy the old data does apply.

@@ -1,5 +1,12 @@
-import { useMemo } from "react";
-import { parseUnifiedDiff, type DiffLine } from "../lib/annotations";
+import { useEffect, useMemo, useRef } from "react";
+import type { ReactNode } from "react";
+import { type DiffLine } from "../lib/annotations";
+import {
+  buildDiffDisplay,
+  diffLineText,
+  findDiffMatches,
+  type DiffMatch,
+} from "../lib/diffPresentation";
 import { useT } from "../lib/i18n";
 
 export type DiffLineComment = {
@@ -12,30 +19,37 @@ export type DiffLineComment = {
 type UnifiedDiffViewProps = {
   text: string;
   className?: string;
-  /** Click a line → pin an annotation for the next send. */
+  /** Click a line -> pin an annotation for the next send. */
   onLineComment?: (comment: DiffLineComment) => void;
   /**
-   * Elide the gap between hunks with a `⋮` row (Codex-style) instead of
+   * Elide the gap between hunks with a gap marker (Codex-style) instead of
    * showing nothing. Only matters for multi-hunk diffs.
    */
   elideUnchanged?: boolean;
+  /**
+   * Presentation only: soften add/del pairs that differ solely in whitespace.
+   * Both lines stay rendered and commentable; the patch text is untouched.
+   */
+  ignoreWhitespace?: boolean;
+  /** Presentation only: highlight occurrences in the rendered lines. */
+  findQuery?: string;
+  /** The active match from `findDiffMatches`; gets the "current" marker. */
+  activeMatch?: DiffMatch | null;
 };
 
-/**
- * Hard row ceiling (audit P1-A): one oversized diff card used to mount every
- * line × 6-7 spans, so a single huge paste could add tens of thousands of DOM
- * nodes to the transcript. The card keeps its head and tail; the middle gap is
- * announced instead of rendered.
- */
-const MAX_RENDER_LINES = 1000;
-
-function lineClass(line: DiffLine): string {
+function lineClass(line: DiffLine, wsIgnored: boolean): string {
   const base = "file-diff-card__line";
-  if (line.type === "add") return `${base} is-add`;
-  if (line.type === "del") return `${base} is-del`;
-  if (line.type === "hunk") return `${base} is-hunk`;
-  if (line.type === "meta") return `${base} is-meta`;
-  return base;
+  const withKind =
+    line.type === "add"
+      ? `${base} is-add`
+      : line.type === "del"
+        ? `${base} is-del`
+        : line.type === "hunk"
+          ? `${base} is-hunk`
+          : line.type === "meta"
+            ? `${base} is-meta`
+            : base;
+  return wsIgnored ? `${withKind} is-ws-ignored` : withKind;
 }
 
 /** Which side a line's number belongs to (context counts as the new file). */
@@ -46,45 +60,95 @@ function lineSide(line: DiffLine): "old" | "new" | null {
   return null;
 }
 
+/** Paint the matches of one rendered line; the active one is marked. */
+function renderLineBody(
+  content: string,
+  hits: DiffMatch[],
+  row: number,
+  active: DiffMatch | null | undefined,
+): ReactNode {
+  if (hits.length === 0) return content || " ";
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  hits.forEach((hit, index) => {
+    if (hit.start > cursor) nodes.push(content.slice(cursor, hit.start));
+    const current =
+      active != null &&
+      active.row === row &&
+      active.start === hit.start &&
+      active.end === hit.end;
+    nodes.push(
+      <mark
+        key={`${hit.start}-${index}`}
+        className={`file-diff-card__hit${current ? " is-current" : ""}`}
+      >
+        {content.slice(hit.start, hit.end)}
+      </mark>,
+    );
+    cursor = hit.end;
+  });
+  if (cursor < content.length) nodes.push(content.slice(cursor));
+  return nodes;
+}
+
 /** Shared line-numbered diff renderer for tool cards, previews and dialogs. */
 export function UnifiedDiffView({
   text,
   className,
   onLineComment,
   elideUnchanged = false,
+  ignoreWhitespace = false,
+  findQuery = "",
+  activeMatch = null,
 }: UnifiedDiffViewProps) {
   const t = useT();
-  const { parsed, elidedMiddle } = useMemo(() => {
-    if (!text) return { parsed: [] as DiffLine[], elidedMiddle: 0 };
-    const all = parseUnifiedDiff(text);
-    if (all.length <= MAX_RENDER_LINES) return { parsed: all, elidedMiddle: 0 };
-    // Keep the head and tail (where the action usually is), elide the middle.
-    const head = Math.floor(MAX_RENDER_LINES * 0.7);
-    const tail = MAX_RENDER_LINES - head;
-    return {
-      parsed: [...all.slice(0, head), ...all.slice(all.length - tail)],
-      elidedMiddle: all.length - MAX_RENDER_LINES,
-    };
-  }, [text]);
-  // `⋮` marks the gap between hunks — never the header lines before the first.
-  const rows = useMemo(() => {
-    let seenHunk = false;
-    return parsed.map((line, index) => {
-      const elide = elideUnchanged && line.type === "hunk" && seenHunk;
-      if (line.type === "hunk") seenHunk = true;
-      // The truncation gap sits right after the head block (index === head).
-      const showTruncation = elidedMiddle > 0 && index === Math.floor(MAX_RENDER_LINES * 0.7);
-      return { line, elide, showTruncation };
-    });
-  }, [parsed, elideUnchanged, elidedMiddle]);
+  const preRef = useRef<HTMLPreElement>(null);
+  const display = useMemo(
+    () => buildDiffDisplay(text, { ignoreWhitespace, elideUnchanged }),
+    [text, ignoreWhitespace, elideUnchanged],
+  );
+  const rows = display.lines;
+  const matchesByRow = useMemo(() => {
+    const map = new Map<number, DiffMatch[]>();
+    if (!findQuery.trim()) return map;
+    for (const match of findDiffMatches(rows, findQuery)) {
+      const list = map.get(match.row);
+      if (list) list.push(match);
+      else map.set(match.row, [match]);
+    }
+    return map;
+  }, [findQuery, rows]);
+
+  // Keep the current match in view. This is a local scrollIntoView on the
+  // marker, so it works whether the diff sits in the page or a tool card.
+  useEffect(() => {
+    if (!activeMatch) return;
+    const el = preRef.current?.querySelector(".file-diff-card__hit.is-current");
+    el?.scrollIntoView({ block: "center" });
+  }, [activeMatch?.row, activeMatch?.start]);
 
   return (
-    <pre className={className}>
-      {rows.map(({ line, elide, showTruncation }, index) => {
+    <pre ref={preRef} className={className}>
+      {rows.map(({ line, elide, showTruncation, wsIgnored }, index) => {
         const side = lineSide(line);
-        const lineNumber = side === "new" ? line.newLine : side === "old" ? line.oldLine : null;
+        const lineNumber =
+          side === "new" ? line.newLine : side === "old" ? line.oldLine : null;
         const canComment =
           Boolean(onLineComment) && side != null && lineNumber != null && line.type !== "meta";
+        const isCodeLine =
+          line.type === "add" || line.type === "del" || line.type === "ctx";
+        const hits = matchesByRow.get(index) ?? [];
+        const marker =
+          isCodeLine && /^[-+ ]/.test(line.raw) ? line.raw.slice(0, 1) : "";
+        const body =
+          findQuery.trim() && isCodeLine ? (
+            <>
+              {marker}
+              {renderLineBody(diffLineText(line), hits, index, activeMatch)}
+            </>
+          ) : (
+            line.raw || " "
+          );
 
         return (
           <span key={index}>
@@ -95,11 +159,13 @@ export function UnifiedDiffView({
                   <span className="file-diff-card__ln" />
                 </span>
                 <span className="file-diff-card__code">
-                  {showTruncation ? t("md.elidedMiddleLines", { n: elidedMiddle }) : "⋯"}
+                  {showTruncation
+                    ? t("md.elidedMiddleLines", { n: display.elidedMiddle })
+                    : "\u22EF"}
                 </span>
               </span>
             )}
-            <span className={lineClass(line)}>
+            <span className={lineClass(line, wsIgnored)}>
               <span className="file-diff-card__gutter" aria-hidden>
                 <span className="file-diff-card__ln file-diff-card__ln--old">
                   {line.oldLine ?? ""}
@@ -123,10 +189,10 @@ export function UnifiedDiffView({
                     });
                   }}
                 >
-                  {line.raw || " "}
+                  {body}
                 </button>
               ) : (
-                <span className="file-diff-card__code">{line.raw || " "}</span>
+                <span className="file-diff-card__code">{body}</span>
               )}
               {"\n"}
             </span>

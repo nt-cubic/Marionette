@@ -46,6 +46,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 };
 
 use super::agent::{self, SnapshotRequest};
+use super::find;
 use super::pick;
 use super::ref_lease::{self, LeaseDeath, RefLease};
 
@@ -1225,6 +1226,97 @@ pub fn probe(surface: &Surface, expression: &str) -> Result<Value, String> {
             Err("the page probe did not install itself in this document".to_string())
         }
     }
+}
+
+/// Run one in-page find action (`search` / `next` / `prev` / `clear`).
+///
+/// This is a UI convenience, not an agent tool: it never takes a grant, never
+/// installs the aria engine and never advances the ref lease. It does use the
+/// process-wide CDP lease so it cannot overlap a snapshot, and the answer is
+/// the find script's own JSON (`{count,index,truncated}`).
+pub fn find(
+    surface: &Surface,
+    action: &str,
+    query: Option<&str>,
+    case_sensitive: bool,
+) -> Result<Value, String> {
+    let expression = match action {
+        "search" => find::search_call(query.unwrap_or(""), case_sensitive),
+        "next" => find::step_call(false),
+        "prev" => find::step_call(true),
+        "clear" => find::clear_call(),
+        other => return Err(format!("unknown find action: {other}")),
+    };
+    let _lease = CdpLease::take()?;
+    let raw = evaluate_in_world_raw(surface, &expression)?;
+    serde_json::from_str(&raw).map_err(|e| format!("find answer is not json: {e}"))
+}
+
+/// Emulate a viewport for the responsive preview. Honest about what it is:
+/// the page is rendered at `width x height` CSS px with a fit scale, and the
+/// real browsing size is untouched once `clear_viewport` runs. `scale` is the
+/// preview fit factor the frontend computes from the host rectangle.
+pub fn set_viewport(
+    surface: &Surface,
+    width: f64,
+    height: f64,
+    mobile: bool,
+    scale: f64,
+) -> Result<Value, String> {
+    let _lease = CdpLease::take()?;
+    let width = width.round().clamp(200.0, 4096.0) as i64;
+    let height = height.round().clamp(200.0, 4096.0) as i64;
+    let scale = scale.clamp(0.25, 2.0);
+    let webview2 = surface.webview.webview();
+    let params = json!({
+        "width": width,
+        "height": height,
+        // 0 = keep the page's own device pixel ratio; the preview fit factor
+        // below is what scales the rendered surface.
+        "deviceScaleFactor": 0,
+        "mobile": mobile,
+        "scale": scale,
+        "screenWidth": width,
+        "screenHeight": height,
+        "positionX": 0,
+        "positionY": 0,
+        "screenOrientation": {
+            "type": if width >= height { "landscapePrimary" } else { "portraitPrimary" },
+            "angle": if width >= height { 90 } else { 0 }
+        }
+    });
+    call_and_wait(
+        &webview2,
+        "Emulation.setDeviceMetricsOverride",
+        &params.to_string(),
+    )?;
+    let touch = if mobile {
+        json!({ "enabled": true, "maxTouchPoints": 5 })
+    } else {
+        json!({ "enabled": false })
+    };
+    // Touch emulation is additive: a failure there must not undo the metrics.
+    let _ = call_and_wait(&webview2, "Emulation.setTouchEmulationEnabled", &touch.to_string());
+    Ok(json!({
+        "emulated": true,
+        "width": width,
+        "height": height,
+        "mobile": mobile,
+        "scale": scale,
+    }))
+}
+
+/// Undo `set_viewport` entirely: metrics and touch emulation.
+pub fn clear_viewport(surface: &Surface) -> Result<Value, String> {
+    let _lease = CdpLease::take()?;
+    let webview2 = surface.webview.webview();
+    call_and_wait(&webview2, "Emulation.clearDeviceMetricsOverride", "{}")?;
+    let _ = call_and_wait(
+        &webview2,
+        "Emulation.setTouchEmulationEnabled",
+        &json!({ "enabled": false }).to_string(),
+    );
+    Ok(json!({ "emulated": false }))
 }
 
 /// Write one control by ref, through the page probe (Control level; the

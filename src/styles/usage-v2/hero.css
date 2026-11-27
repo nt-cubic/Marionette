@@ -245,3 +245,384 @@
   margin: 0;
   color: var(--text-faint);
 }
+
+/* -- First-screen summary band (UsageHero rewrite, 2026-11-27) --------
+   Overrides the old five-column rule with one headline column plus a
+   compact stat grid; later in the sheet so it wins without !important. */
+
+.uv2-hero {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.9fr) minmax(0, 1.4fr);
+  gap: 14px 32px;
+  align-items: center;
+  padding: 18px var(--uv2-gap) 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-raised);
+}
+
+.uv2-hero__lead {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+}
+
+.uv2-hero__lead .uv2-spark {
+  margin-bottom: 3px;
+}
+
+.uv2-hero__num {
+  color: var(--text-strong);
+  font-size: 30px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+
+.uv2-hero__noun {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.uv2-hero__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-height: 16px;
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+
+.uv2-hero__sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.uv2-hero__stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
+  gap: 16px 18px;
+  min-width: 0;
+}
+
+.uv2-hero__cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.uv2-hero__cell b {
+  overflow: hidden;
+  color: var(--text-strong);
+  font-size: 17px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uv2-hero__cell span {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@container uv2 (max-width: 620px) {
+  .uv2-hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .uv2-hero__num {
+    font-size: 26px;
+  }
+}
+
+/* -- Provider / model share band (UsageShares) ----------------------- */
+
+.uv2-shares__cols {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 28px;
+}
+
+.uv2-shares__list {
+  min-width: 0;
+}
+
+.uv2-shares__list h3 {
+  margin: 0 0 4px;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.uv2-shares__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) 46px 62px 72px;
+  gap: 10px;
+  align-items: center;
+  min-height: 28px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.uv2-shares__list .uv2-shares__row:last-child {
+  border-bottom: 0;
+}
+
+.uv2-shares__name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.uv2-shares__name b,
+.uv2-shares__name em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uv2-shares__name b {
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.uv2-shares__name em {
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-style: normal;
+}
+
+.uv2-shares__bar {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--hairline);
+  overflow: hidden;
+}
+
+.uv2-shares__bar s {
+  display: block;
+  height: 100%;
+  background: var(--agent-ink, var(--accent));
+  text-decoration: none;
+}
+
+.uv2-shares__none {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+@container uv2 (max-width: 620px) {
+  .uv2-shares__cols {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .uv2-shares__row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px 58px;
+  }
+
+  .uv2-shares__row > :last-child {
+    display: none;
+  }
+}
+
+/* -- Limits tab (UsageLimits) ---------------------------------------- */
+
+.uv2-limits__grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px 18px;
+}
+
+.uv2-limits__grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.uv2-limits__grid b {
+  color: var(--text-strong);
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.uv2-limits__grid span {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.uv2-limits__note {
+  margin: 10px 0 0;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.uv2-limits__empty {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.uv2-limits__provs {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.uv2-limits__prov {
+  min-width: 0;
+}
+
+.uv2-limits__provhead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  margin-bottom: 4px;
+}
+
+.uv2-limits__provhead b {
+  color: var(--text-strong);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.uv2-limits__provhead em {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.uv2-limits__bal {
+  margin-left: auto;
+  color: var(--text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.uv2-limits__win {
+  display: grid;
+  grid-template-columns: minmax(88px, 0.9fr) minmax(0, 1.2fr) 48px minmax(80px, auto) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 24px;
+  border-bottom: 1px solid var(--hairline);
+  font-size: 11.5px;
+}
+
+.uv2-limits__prov .uv2-limits__win:last-child {
+  border-bottom: 0;
+}
+
+.uv2-limits__wname {
+  overflow: hidden;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uv2-limits__bar {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--hairline);
+  overflow: hidden;
+}
+
+.uv2-limits__bar s {
+  display: block;
+  height: 100%;
+  background: var(--agent-ink, var(--accent));
+  text-decoration: none;
+}
+
+.uv2-limits__bar s.is-warn {
+  background: var(--yellow);
+}
+
+.uv2-limits__bar s.is-hot {
+  background: var(--red);
+}
+
+.uv2-limits__wreset {
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@container uv2 (max-width: 620px) {
+  .uv2-limits__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* The status strip already carries the stale marker; keep the header short. */
+  .uv2-limits .uv2-sh__right {
+    display: none;
+  }
+
+  .uv2-limits__win {
+    grid-template-columns: minmax(0, 1fr) 44px;
+    gap: 4px 10px;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+
+  .uv2-limits__wname {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .uv2-limits__win > .num {
+    grid-column: 2;
+    grid-row: 1;
+    text-align: right;
+  }
+
+  .uv2-limits__bar {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .uv2-limits__wreset {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    text-align: left;
+  }
+}
+
+/* Keep the 180-column day chart inside a narrow dock pane. */
+@container uv2 (max-width: 620px) {
+  .uv2-trend__chart {
+    gap: 3px;
+  }
+
+  .uv2-trend__stack {
+    max-width: 16px;
+  }
+}
+
+@container uv2 (max-width: 420px) {
+  .uv2-trend__chart {
+    gap: 2px;
+  }
+}

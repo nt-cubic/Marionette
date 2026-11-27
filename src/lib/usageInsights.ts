@@ -35,7 +35,14 @@ import {
   type UsageLedger,
 } from "./usageLedger";
 import type { Tally } from "./usageDigest";
-import { costOfBuckets, costOfModelUsage, rateForModel, type RateIndex } from "./tokenPrices";
+import { costOfBuckets, costOfModelUsage, type RateIndex } from "./tokenPrices";
+import {
+  canonicalModelId,
+  effectiveRateForModel,
+  emptyUsageOverrides,
+  modelAllowed,
+  type UsageOverrides,
+} from "./usageOverrides";
 
 export type InsightRange = 1 | 7 | 30 | 90 | 180;
 
@@ -55,6 +62,9 @@ export type DayPoint = {
   turns: number;
 };
 
+/** Which price produced a model row's money figure. Reported always wins. */
+export type PricingSource = "reported" | "custom" | "catalog" | "unpriced";
+
 export type ModelRow = {
   modelId: string;
   buckets: Buckets;
@@ -66,6 +76,8 @@ export type ModelRow = {
   /** The DeepSeek peak ×2 part of `usd`, when any. */
   peakExtraUsd: number;
   turns: number;
+  /** UI provenance: a custom price is an estimate, reported cost is authoritative. */
+  pricedBy: PricingSource;
 };
 
 export type AgentRow = {
@@ -87,12 +99,12 @@ export type AgentRow = {
 
 export type RankRow = { key: string; label: string; kind: "tool" | "cmd" | "skill" | "mcp"; n: number; fail: number; avgMs: number };
 
-/** 一段窗口里一个文件的被读/被改记录(路径来自工具调用,agent 报什么就是什么)。 */
+/** Per-file read/edit activity inside the window (paths come from tool calls). */
 export type FileRow = {
   path: string;
-  /** 读工具次数。 */
+  /** Number of read-tool calls. */
   reads: number;
-  /** 编辑/写入次数。 */
+  /** Number of edit/write calls. */
   edits: number;
   add: number;
   del: number;
@@ -150,9 +162,9 @@ export type UsageInsights = {
   usd: {
     value: number | null;
     coverage: number;
-    /** agent 自报费用合计(USD)——比牌价折算准。 */
+    /** Sum of agent-reported cost (USD); more accurate than catalogue pricing. */
     reported: number;
-    /** DeepSeek 高峰时段 ×2 的加价合计(USD;不含法定节假日,略偏高)。 */
+    /** DeepSeek peak surcharge x2 (USD; no public holidays; slightly high). */
     peakExtra: number;
   };
   hit: number | null;
@@ -170,12 +182,12 @@ export type UsageInsights = {
   toolTotals: { n: number; fail: number };
   cmdTotals: { n: number; fail: number };
   skillTotals: { n: number; fail: number };
-  edits: { ops: number; add: number; del: number; /** true = git 对账真数;false = 工具文本估算。 */ git: boolean };
-  /** 压缩事件数(ACP compaction_update completed)。 */
+  edits: { ops: number; add: number; del: number; /** true = git truth; false = tool-text estimate */ git: boolean };
+  /** Compaction events (ACP compaction_update completed). */
   compactions: number;
   turnFails: number;
   turnCancels: number;
-  /** 窗口内按文件聚合的读/改活动,按 (reads + edits) 降序。 */
+  /** Per-file read/edit activity in the window, busiest first. */
   files: FileRow[];
   /** 7 × 24, Monday first (not agent-filtered: hours are recorded per day). */
   hourGrid: number[][];
@@ -184,9 +196,11 @@ export type UsageInsights = {
   /** Turns that ended at ≥ 80% context. */
   ctxHot: number;
   sessions: SessionRow[];
+  /** Every model seen in the range before the include/exclude filter. */
+  allModels: string[];
 };
 
-// ── small helpers ────────────────────────────────────────────────────
+// small helpers ------------------------------------------------------------
 
 const zero = (): Buckets => ({ input: 0, output: 0, cached: 0, cacheCreation: 0, reasoning: 0 });
 
@@ -257,9 +271,19 @@ function totalsOf(rows: RankRow[]): { n: number; fail: number } {
   return rows.reduce((acc, r) => ({ n: acc.n + r.n, fail: acc.fail + r.fail }), { n: 0, fail: 0 });
 }
 
+function mergePricingSource(a: PricingSource, b: PricingSource): PricingSource {
+  const rank: Record<PricingSource, number> = { reported: 4, custom: 3, catalog: 2, unpriced: 1 };
+  return rank[b] > rank[a] ? b : a;
+}
+
 type Priced = { usd: number | null; priced: number; unpriced: number; reported: number; peakExtra: number };
 
-function priceModels(day: LedgerDay, agent: string | null, prices: RateIndex | null): Priced {
+function priceModels(
+  day: LedgerDay,
+  agent: string | null,
+  prices: RateIndex | null,
+  overrides: UsageOverrides,
+): Priced {
   let usd = 0;
   let any = false;
   let priced = 0;
@@ -268,7 +292,8 @@ function priceModels(day: LedgerDay, agent: string | null, prices: RateIndex | n
   let peakExtra = 0;
   for (const [modelId, m] of Object.entries(day.models)) {
     if (agent && m.agent !== agent) continue;
-    const cost = costOfModelUsage(m, prices ? rateForModel(modelId, prices) : null);
+    const { rate } = effectiveRateForModel(modelId, prices, overrides);
+    const cost = costOfModelUsage(m, rate);
     priced += cost.pricedTokens;
     unpriced += cost.unpricedTokens;
     reported += cost.reportedUsd;
@@ -305,12 +330,13 @@ function scopeSession(
   fromKey: string,
   endKey: string,
   prices: RateIndex | null,
+  overrides: UsageOverrides,
 ): SessionRow {
   const buckets = zero();
   let turns = 0;
   let reported = 0;
   let last = summary.last;
-  const modelTurns = new Map<string, number>();
+  const modelTurns = new Map<string, { raw: string; n: number }>();
   for (const key of summary.dayKeys ?? []) {
     if (key < fromKey || key > endKey) continue;
     const row = ledger.days[key]?.sessions?.[id];
@@ -323,8 +349,11 @@ function scopeSession(
     turns += row.turns;
     reported += row.repUsd ?? 0;
     if (row.last > 0 && row.last <= last) last = row.last;
-    for (const [modelId, n] of Object.entries(row.models)) {
-      modelTurns.set(modelId, (modelTurns.get(modelId) ?? 0) + n);
+    for (const [rawModelId, n] of Object.entries(row.models)) {
+      const modelId = canonicalModelId(rawModelId, overrides.aliases);
+      const cur = modelTurns.get(modelId) ?? { raw: rawModelId, n: 0 };
+      cur.n += n;
+      modelTurns.set(modelId, cur);
     }
   }
   let usd: number | null = null;
@@ -334,8 +363,9 @@ function scopeSession(
     let sum = 0;
     let any = false;
     const turnTotal = Math.max(1, turns);
-    for (const [modelId, n] of modelTurns) {
-      const share = n / turnTotal;
+    for (const [, entry] of modelTurns) {
+      const share = entry.n / turnTotal;
+      const { rate } = effectiveRateForModel(entry.raw, prices, overrides);
       const cost = costOfBuckets(
         {
           input: buckets.input * share,
@@ -343,7 +373,7 @@ function scopeSession(
           cached: buckets.cached * share,
           cacheCreation: buckets.cacheCreation * share,
         },
-        rateForModel(modelId, prices),
+        rate,
       );
       if (cost.usd != null) {
         sum += cost.usd;
@@ -371,15 +401,22 @@ function scopeSession(
   };
 }
 
-// ── the fold ─────────────────────────────────────────────────────────
+// the fold ----------------------------------------------------------------
 
 export function aggregateInsights(
   ledger: UsageLedger,
-  opts: { range: InsightRange; agent?: string | null; now?: Date; prices?: RateIndex | null },
+  opts: {
+    range: InsightRange;
+    agent?: string | null;
+    now?: Date;
+    prices?: RateIndex | null;
+    overrides?: UsageOverrides | null;
+  },
 ): UsageInsights {
   const now = opts.now ?? new Date();
   const agent = opts.agent ?? null;
   const prices = opts.prices ?? null;
+  const overrides = opts.overrides ?? emptyUsageOverrides();
   const span = keysBack(opts.range, now);
   const fromKey = span[0]?.key ?? dayKeyOf(now);
   const endKey = span[span.length - 1]?.key ?? fromKey;
@@ -415,7 +452,7 @@ export function aggregateInsights(
   const editCounts = new Map<string, { n: number; add: number; del: number }>();
   let hasDetail = false;
 
-  type AgentAcc = { buckets: Buckets; turns: number; ttft: number[]; tps: number[]; series: number[]; models: Map<string, { buckets: Buckets; turns: number; usd: number; usdAny: boolean; reported: number; peakExtra: number }>; usd: number; usdAny: boolean; reported: number; peakExtra: number };
+  type AgentAcc = { buckets: Buckets; turns: number; ttft: number[]; tps: number[]; series: number[]; models: Map<string, { buckets: Buckets; turns: number; usd: number; usdAny: boolean; reported: number; peakExtra: number; pricedBy: PricingSource }>; usd: number; usdAny: boolean; reported: number; peakExtra: number };
   const agentAcc = new Map<string, AgentAcc>();
   const agentOf = (id: string): AgentAcc => {
     let a = agentAcc.get(id);
@@ -429,6 +466,7 @@ export function aggregateInsights(
   const daily: DayPoint[] = [];
   const timingDaily: Record<TimingKey, number>[] = [];
   const modelIds = new Set<string>();
+  const allModelIds = new Set<string>();
 
   span.forEach(({ key, date }, idx) => {
     const day = ledger.days[key];
@@ -439,7 +477,7 @@ export function aggregateInsights(
       return;
     }
     const scope = dayScope(day, agent);
-    const cost = priceModels(day, agent, prices);
+    const cost = priceModels(day, agent, prices, overrides);
     addB(totals, scope.buckets);
     turns += scope.turns;
     if (scope.turns > 0) activeDays += 1;
@@ -508,16 +546,28 @@ export function aggregateInsights(
         a.series[idx] = (a.series[idx] ?? 0) + l.output;
       }
     }
-    for (const [modelId, m] of Object.entries(day.models)) {
+    for (const [rawModelId, m] of Object.entries(day.models)) {
       if (agent && m.agent !== agent) continue;
+      const modelId = canonicalModelId(rawModelId, overrides.aliases);
+      allModelIds.add(modelId);
+      // The include/exclude filter is a model-breakdown filter, not a rewrite
+      // of the period totals (the ledger has no model-split detail for legacy days).
+      if (!modelAllowed(rawModelId, overrides)) continue;
       modelIds.add(modelId);
       const a = agentOf(m.agent ?? "unknown");
-      const row = a.models.get(modelId) ?? { buckets: zero(), turns: 0, usd: 0, usdAny: false, reported: 0, peakExtra: 0 };
+      const row =
+        a.models.get(modelId) ??
+        { buckets: zero(), turns: 0, usd: 0, usdAny: false, reported: 0, peakExtra: 0, pricedBy: "unpriced" as PricingSource };
       addB(row.buckets, m);
       row.turns += m.turns;
-      const c = costOfModelUsage(m, prices ? rateForModel(modelId, prices) : null);
+      const { rate, custom } = effectiveRateForModel(rawModelId, prices, overrides);
+      const c = costOfModelUsage(m, rate);
       row.reported += c.reportedUsd;
       row.peakExtra += c.peakExtraUsd;
+      row.pricedBy = mergePricingSource(
+        row.pricedBy,
+        c.reportedUsd > 0 ? "reported" : custom ? "custom" : rate ? "catalog" : "unpriced",
+      );
       if (c.usd != null) {
         row.usd += c.usd;
         row.usdAny = true;
@@ -551,7 +601,7 @@ export function aggregateInsights(
     const scope = dayScope(day, agent);
     addB(prev, scope.buckets);
     prevTurns += scope.turns;
-    const c = priceModels(day, agent, prices);
+    const c = priceModels(day, agent, prices, overrides);
     if (c.usd != null) {
       prevUsd += c.usd;
       prevUsdAny = true;
@@ -596,7 +646,7 @@ export function aggregateInsights(
   const agents: AgentRow[] = [...agentAcc.entries()]
     .map(([agentId, a]) => {
       const models: ModelRow[] = [...a.models.entries()]
-        .map(([modelId, m]) => ({ modelId, buckets: m.buckets, total: bucketTotal(m.buckets), hit: hitRate(m.buckets), usd: m.usdAny ? m.usd : null, reportedUsd: m.reported, peakExtraUsd: m.peakExtra, turns: m.turns }))
+        .map(([modelId, m]) => ({ modelId, buckets: m.buckets, total: bucketTotal(m.buckets), hit: hitRate(m.buckets), usd: m.usdAny ? m.usd : null, reportedUsd: m.reported, peakExtraUsd: m.peakExtra, turns: m.turns, pricedBy: m.pricedBy }))
         .sort((x, y) => y.total - x.total);
       return {
         agentId,
@@ -641,7 +691,7 @@ export function aggregateInsights(
   const fromMs = span.length > 0 ? new Date(`${fromKey}T00:00:00`).getTime() : 0;
   const sessions: SessionRow[] = Object.entries(ledger.sessions ?? {})
     .filter(([, s]) => s.last >= fromMs && (!agent || s.agentId === agent))
-    .map(([id, s]) => scopeSession(ledger, s, id, fromKey, endKey, prices))
+    .map(([id, s]) => scopeSession(ledger, s, id, fromKey, endKey, prices, overrides))
     .filter((row) => row.turns > 0 || row.total > 0)
     .sort((a, b) => b.last - a.last);
 
@@ -706,5 +756,6 @@ export function aggregateInsights(
     ctxHist,
     ctxHot: (ctxHist[8] ?? 0) + (ctxHist[9] ?? 0),
     sessions,
+    allModels: [...allModelIds].sort((a, b) => a.localeCompare(b)),
   };
 }

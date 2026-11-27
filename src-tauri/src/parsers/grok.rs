@@ -35,6 +35,45 @@ fn summary_cwd(v: &Value) -> String {
         .to_string()
 }
 
+/// Discovery (P1-6): one hit per real (non-subagent, non-empty) session.
+pub(crate) fn discover_hits() -> Vec<super::discovery::DiscoveryHit> {
+    use super::discovery::DiscoveryHit;
+    let Some(root) = grok_sessions_root().filter(|p| p.is_dir()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for cwd_path in read_subdirs(&root) {
+        for session_dir in read_subdirs(&cwd_path) {
+            let summary_path = session_dir.join("summary.json");
+            let Some(summary) = read_json_file(&summary_path) else {
+                continue;
+            };
+            if json_str(&summary, "session_kind") == Some("subagent") {
+                continue;
+            }
+            if summary.get("num_messages").and_then(|x| x.as_u64()) == Some(0) {
+                continue;
+            }
+            let cwd = summary_cwd(&summary);
+            if cwd.is_empty() {
+                continue;
+            }
+            out.push(DiscoveryHit {
+                cwd,
+                agent_id: "grok-build",
+                count: 1,
+                last_active_at: json_str(&summary, "last_active_at")
+                    .or_else(|| json_str(&summary, "updated_at"))
+                    .map(str::to_string),
+            });
+            if out.len() >= super::discovery::MAX_HITS_PER_SOURCE {
+                return out;
+            }
+        }
+    }
+    out
+}
+
 impl AgentParser for GrokParser {
     fn source(&self) -> &'static str {
         "grok"

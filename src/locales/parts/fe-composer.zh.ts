@@ -1,6 +1,23 @@
 /** Composer input area (model/agent/send menus), error strip, image annotator
  *  and lightbox, plus annotation text sent with prompts. */
 export const zh = {
+  "composer.sessionReferenceChip": "\u4f1a\u8bdd\u5f15\u7528 \u00b7 {label}",
+  "composer.sessionReferenceLoading": "\u8bfb\u53d6\u4e2d\u2026",
+  "composer.sessionReferenceCounts": "{turns} \u8f6e \u00b7 {tools} \u4e2a\u5de5\u5177 \u00b7 {size}",
+  "composer.sessionReferenceTruncated": "{counts}\uff08\u5df2\u622a\u65ad\uff09",
+  "composer.sessionReferenceRemove": "\u79fb\u9664\u4f1a\u8bdd\u5f15\u7528\uff1a{label}",
+  "composer.sessionReferenceErrorDesktop": "\u9700\u8981\u684c\u9762\u5e94\u7528",
+  "composer.sessionReferenceErrorNotFound": "\u627e\u4e0d\u5230\u8be5\u4f1a\u8bdd",
+  "composer.sessionReferenceErrorReadFailed": "\u8bfb\u53d6\u5931\u8d25",
+  "composer.sessionReferenceReadFailedDetail": "\u8bfb\u53d6\u5931\u8d25\uff1a{reason}",
+  "composer.sessionReferencePending": "\u4f1a\u8bdd\u5f15\u7528\u8fd8\u5728\u8bfb\u53d6\u4e2d",
+  "composer.sessionReferenceDuplicate": "\u8fd9\u4e2a\u4f1a\u8bdd\u5df2\u7ecf\u5728\u5f15\u7528\u91cc",
+  "composer.sessionReferenceLimit": "\u4e00\u6b21\u6700\u591a\u5f15\u7528 {count} \u4e2a\u4f1a\u8bdd",
+  "composer.sessionReferenceSkipped": "\u6709\u4f1a\u8bdd\u5f15\u7528\u8bfb\u53d6\u5931\u8d25\uff0c\u5df2\u8df3\u8fc7",
+  "composer.pasteTextReference": "[粘贴文本附件 · {size}] {path}",
+  "composer.pasteTextFailed": "粘贴文本暂存失败，草稿已保留：{reason}",
+  "composer.pasteTextNeedsDesktop": "折叠大段粘贴需要桌面应用；这次已按普通文本粘贴",
+  "composer.pasteTextAlreadyAttached": "这段文本已经在草稿附件里",
   "composer.justNow": "刚刚",
   "composer.bridgeSwitchedBanner": "**已切换到共享模型 {label}。**\n\nagent 进程已用新模型重启，历史保留 —— 下一条消息直接生效。",
   "composer.bridgeSwitchedFlash": "已切换到 {label}，下一条消息即生效",

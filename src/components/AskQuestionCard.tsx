@@ -1,6 +1,16 @@
-import { HelpCircle } from "lucide-react";
+import { HelpCircle, Paperclip, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
+import {
+  buildQuestionAttachmentFollowUp,
+  clearQuestionAttachmentDrafts,
+  pickQuestionAttachments,
+  questionAcceptsAttachments,
+  readQuestionAttachmentDrafts,
+  writeQuestionAttachmentDrafts,
+  type QuestionAttachment,
+  type QuestionAttachmentFollowUp,
+} from "../lib/questionAttachments";
 
 export type AskQuestionOption = {
   label: string;
@@ -19,10 +29,17 @@ export type AskQuestionItem = {
    */
   other?: boolean;
   /**
-   * Whether this question has a separate note channel (「补充」): Codex's
-   * `_note`, or Claude's `_custom` on a single-select question.
+   * Whether this question has a separate note channel: Codex's `_note`, or
+   * Claude's `_custom` on a single-select question.
    */
   note?: boolean;
+  /**
+   * UI hint from the payload (elicitation `questions_for_ui` / Grok bridge).
+   * There is no native ACP attachment field; attachments are only offered on
+   * questions whose schema accepts a custom text answer, and `false` is a
+   * veto. Absent = infer from `other` / `options`.
+   */
+  attachmentsAllowed?: boolean;
 };
 
 export type AskQuestionPrompt = {
@@ -46,7 +63,12 @@ type AskQuestionCardProps = {
   prompt: AskQuestionPrompt;
   busy?: boolean;
   variant?: "dock" | "stream";
-  onSubmit: (answers: AskQuestionAnswer[]) => void;
+  /**
+   * `followUp` is the one explicit message carrying attachment paths. It must
+   * be sent only after the answer itself was accepted - the card cannot know
+   * that, so the host owns the ordering (see `sendQuestionAttachmentFollowUp`).
+   */
+  onSubmit: (answers: AskQuestionAnswer[], followUp?: QuestionAttachmentFollowUp) => void;
   onDecline: () => void;
 };
 
@@ -102,15 +124,46 @@ export function AskQuestionCard({
   const [picks, setPicks] = useState<string[][]>(() => questions.map(() => []));
   const [otherText, setOtherText] = useState<string[]>(() => questions.map(() => ""));
   const [noteText, setNoteText] = useState<string[]>(() => questions.map(() => ""));
+  /**
+   * Per-question attachment drafts. Paths only: nothing is copied, so leaving
+   * the form can never delete a user file. The registry survives remounts of
+   * this card while the same request is pending.
+   */
+  const [attachmentDrafts, setAttachmentDrafts] = useState<QuestionAttachment[][]>(() =>
+    readQuestionAttachmentDrafts(prompt, questions.length),
+  );
+  /** Index of the question whose file picker is open, or null. */
+  const [attaching, setAttaching] = useState<number | null>(null);
   const t = useT();
 
   const questionsRef = useRef(questions);
   questionsRef.current = questions;
+
+  const draftKey = `${prompt.sessionId}\u0000${prompt.requestId}`;
+  const draftKeyRef = useRef(draftKey);
+
   useEffect(() => {
-    setPicks(questionsRef.current.map(() => []));
-    setOtherText(questionsRef.current.map(() => ""));
-    setNoteText(questionsRef.current.map(() => ""));
-  }, [prompt.requestId]); // only reset on new request
+    const current = questionsRef.current;
+    setPicks(current.map(() => []));
+    setOtherText(current.map(() => ""));
+    setNoteText(current.map(() => ""));
+    setAttachmentDrafts(readQuestionAttachmentDrafts(prompt, current.length));
+    setAttaching(null);
+  }, [draftKey]); // only reset on new request
+
+  // Persist drafts as they change. The first pass after a request swap must not
+  // write the previous request's rows under the new key; the reset effect above
+  // repopulates state and the next pass stores the right rows.
+  useEffect(() => {
+    if (draftKeyRef.current !== draftKey) {
+      draftKeyRef.current = draftKey;
+      return;
+    }
+    writeQuestionAttachmentDrafts(
+      { sessionId: prompt.sessionId, requestId: prompt.requestId },
+      attachmentDrafts,
+    );
+  }, [attachmentDrafts, draftKey, prompt.requestId, prompt.sessionId]);
 
   const allReady = useMemo(() => {
     if (total === 0) return false;
@@ -165,6 +218,30 @@ export function AskQuestionCard({
     });
   }, []);
 
+  const addAttachments = useCallback(
+    async (qi: number) => {
+      if (busy || attaching !== null) return;
+      setAttaching(qi);
+      try {
+        const next = await pickQuestionAttachments(attachmentDrafts[qi] ?? []);
+        setAttachmentDrafts((prev) =>
+          prev.map((row, index) => (index === qi ? next : row)),
+        );
+      } finally {
+        setAttaching(null);
+      }
+    },
+    [attachmentDrafts, attaching, busy],
+  );
+
+  const removeAttachment = useCallback((qi: number, id: string) => {
+    setAttachmentDrafts((prev) =>
+      prev.map((row, index) =>
+        index === qi ? row.filter((attachment) => attachment.id !== id) : row,
+      ),
+    );
+  }, []);
+
   const buildAnswers = useCallback((): AskQuestionAnswer[] => {
     return questions.map((q, i) => {
       const typed = (otherText[i] ?? "").trim();
@@ -180,9 +257,30 @@ export function AskQuestionCard({
   }, [questions, picks, otherText, noteText]);
 
   const submit = useCallback(() => {
-    if (!allReady || busy) return;
-    onSubmit(buildAnswers());
-  }, [allReady, busy, onSubmit, buildAnswers]);
+    if (!allReady || busy || attaching !== null) return;
+    // Paths never enter `selected`/`typed`: the answer body stays schema-valid,
+    // and the files ride in one explicit follow-up message built here.
+    const followUp = buildQuestionAttachmentFollowUp(questions, attachmentDrafts) ?? undefined;
+    clearQuestionAttachmentDrafts(prompt);
+    setAttachmentDrafts(questions.map(() => []));
+    onSubmit(buildAnswers(), followUp);
+  }, [
+    allReady,
+    attaching,
+    attachmentDrafts,
+    buildAnswers,
+    busy,
+    onSubmit,
+    prompt,
+    questions,
+  ]);
+
+  const decline = useCallback(() => {
+    if (busy) return;
+    clearQuestionAttachmentDrafts(prompt);
+    setAttachmentDrafts(questions.map(() => []));
+    onDecline();
+  }, [busy, onDecline, prompt, questions]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -190,13 +288,13 @@ export function AskQuestionCard({
       const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
       if (tag === "textarea") return;
       if (tag === "input") return;
-      if (!allReady || busy) return;
+      if (!allReady || busy || attaching !== null) return;
       e.preventDefault();
       submit();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [allReady, busy, submit]);
+  }, [allReady, attaching, busy, submit]);
 
   if (total === 0) return null;
 
@@ -230,6 +328,9 @@ export function AskQuestionCard({
           const other = otherText[qi] ?? "";
           const note = noteText[qi] ?? "";
           const ready = questionCanProceed(q, selected, other);
+          const acceptsAttachments = questionAcceptsAttachments(q);
+          const attachments = attachmentDrafts[qi] ?? [];
+          const attachingHere = attaching === qi;
           return (
             <section
               key={`${qi}:${q.question.slice(0, 48)}`}
@@ -331,6 +432,47 @@ export function AskQuestionCard({
                   />
                 </label>
               )}
+
+              {acceptsAttachments ? (
+                <div className="ask-card__attach">
+                  <div className="ask-card__attach-head">
+                    <span>{t("ask.attachments")}</span>
+                    <button
+                      type="button"
+                      className="ask-card__attach-add"
+                      disabled={busy || attaching !== null}
+                      onClick={() => void addAttachments(qi)}
+                    >
+                      <Paperclip size={11} aria-hidden />
+                      {attachingHere ? t("ask.attachAdding") : t("ask.attachFile")}
+                    </button>
+                  </div>
+                  {attachments.length > 0 ? (
+                    <ul className="ask-card__attach-list">
+                      {attachments.map((attachment) => (
+                        <li key={attachment.id} className="ask-card__attach-item">
+                          <span className="ask-card__attach-name" title={attachment.path}>
+                            {attachment.name}
+                          </span>
+                          <span className="ask-card__attach-path" title={attachment.path}>
+                            {attachment.path}
+                          </span>
+                          <button
+                            type="button"
+                            className="ask-card__attach-x"
+                            disabled={busy}
+                            aria-label={t("ask.removeAttachment", { name: attachment.name })}
+                            onClick={() => removeAttachment(qi, attachment.id)}
+                          >
+                            <X size={11} aria-hidden />
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  <span className="ask-card__attach-hint">{t("ask.attachmentsHint")}</span>
+                </div>
+              ) : null}
             </section>
           );
         })}
@@ -341,14 +483,14 @@ export function AskQuestionCard({
           type="button"
           className="ask-card__btn ask-card__btn--ghost"
           disabled={busy}
-          onClick={onDecline}
+          onClick={decline}
         >
           {t("ask.skip")}
         </button>
         <button
           type="button"
           className="ask-card__btn ask-card__btn--primary"
-          disabled={busy || !allReady}
+          disabled={busy || !allReady || attaching !== null}
           onClick={submit}
         >
           {t("ask.confirm")}

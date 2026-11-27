@@ -51,6 +51,8 @@ import { en as enFeUv2F } from "./parts/fe-uv2f.en";
 import { en as enFeChief } from "./parts/fe-chief.en";
 import { en as enFePicker } from "./parts/fe-picker.en";
 import { en as enFeDelegate } from "./parts/fe-delegate.en";
+import { en as enFeProjectActions } from "./parts/fe-projectactions.en";
+import { en as enFeCheapText } from "./parts/fe-cheaptext.en";
 
 export const en = {
   ...enCommon,
@@ -100,4 +102,6 @@ export const en = {
   ...enFeUv2F,
   ...enFeChief,
   ...enFeDelegate,
+  ...enFeCheapText,
+  ...enFeProjectActions,
 } satisfies Record<keyof typeof zh, string>;

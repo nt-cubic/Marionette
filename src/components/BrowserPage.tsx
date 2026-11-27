@@ -3,19 +3,27 @@ import type { Dispatch, SetStateAction } from "react";
 import {
   Bot,
   Check,
+  ChevronDown,
+  ChevronUp,
   Globe,
+  MonitorSmartphone,
   MoreHorizontal,
   Pin,
   Plus,
   RefreshCw,
+  RotateCw,
+  Search,
   Share2,
   UserRound,
   X,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   browserCloseTab,
   browserClaimTab,
+  browserFind,
   browserNavigateTab,
   browserOpenTab,
   browserPickClear,
@@ -26,7 +34,10 @@ import {
   browserSetTabVisible,
   browserShareTab,
   browserSetTabPinned,
+  browserViewportReset,
+  browserViewportSet,
   onBrowserPick,
+  type BrowserFindResult,
   type BrowserPickEvent,
   type BrowserPickMode,
   type BrowserHandoffRequest,
@@ -84,6 +95,23 @@ const FINALIZE_RETRY_MS = 400;
 const PICKER_TOGGLE_RETRIES = 6;
 const PICKER_TOGGLE_RETRY_MS = 350;
 
+// Responsive preview presets. `width`/`height` 0 means "the host's own size"
+// (the desktop preset); phone/tablet are the CSS px of the emulated viewport.
+// These only change what the preview renders (Emulation.setDeviceMetricsOverride)
+// and are reset when the tab changes or this page unmounts.
+type ViewportPreset = "desktop" | "phone" | "tablet";
+const VIEWPORT_PRESETS: Record<
+  ViewportPreset,
+  { width: number; height: number; mobile: boolean }
+> = {
+  desktop: { width: 0, height: 0, mobile: false },
+  phone: { width: 390, height: 844, mobile: true },
+  tablet: { width: 820, height: 1180, mobile: true },
+};
+const VIEWPORT_ZOOM_MIN = 0.5;
+const VIEWPORT_ZOOM_MAX = 2;
+const VIEWPORT_ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
+
 async function setPickerBackend(tabId: string, mode: BrowserPickMode | null) {
   let result = await browserPickSet(tabId, mode !== null, mode ?? "element");
   for (let attempt = 1; attempt < PICKER_TOGGLE_RETRIES && !result.ok; attempt++) {
@@ -139,6 +167,27 @@ export function BrowserPage({
   const pickModesRef = useRef(pickModes);
   pickModesRef.current = pickModes;
   const pickerRequestSeq = useRef<Record<string, number>>({});
+
+  // -- Find on page -------------------------------------------------------
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findResult, setFindResult] = useState<
+    (BrowserFindResult & { error?: boolean }) | null
+  >(null);
+  const findInputRef = useRef<HTMLInputElement>(null);
+  const findSeq = useRef(0);
+
+  // -- Responsive preview -------------------------------------------------
+  const [viewportOpen, setViewportOpen] = useState(false);
+  const [viewportPreset, setViewportPreset] = useState<ViewportPreset>("desktop");
+  const [viewportRotated, setViewportRotated] = useState(false);
+  const [viewportZoom, setViewportZoom] = useState(1);
+  const [viewportNotice, setViewportNotice] = useState<string | null>(null);
+  const [viewportHostTick, setViewportHostTick] = useState(0);
+  const emulatedTabRef = useRef<string | null>(null);
+  const emulationActiveRef = useRef(false);
+  emulationActiveRef.current =
+    viewportPreset !== "desktop" || viewportZoom !== 1;
 
   // Address bar follows the active tab; typing is a draft, Enter navigates.
   useEffect(() => {
@@ -275,6 +324,8 @@ export function BrowserPage({
     if (!host || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
       if (active && visible) void syncBounds(active.id);
+      // Keep the preview's fit scale honest when the pane is resized.
+      if (emulationActiveRef.current) setViewportHostTick((value) => value + 1);
     });
     observer.observe(host);
     return () => observer.disconnect();
@@ -545,6 +596,189 @@ export function BrowserPage({
     }
   };
 
+  // -- Find on page -------------------------------------------------------
+
+  const closeFind = useCallback(() => {
+    findSeq.current += 1;
+    setFindOpen(false);
+    setFindQuery("");
+    setFindResult(null);
+    const tabId = active?.id;
+    if (tabId) void browserFind(tabId, "clear");
+  }, [active?.id]);
+
+  const stepFind = useCallback(
+    async (backwards: boolean) => {
+      const tabId = active?.id;
+      if (!tabId || !findQuery.trim() || !findResult || findResult.count === 0) return;
+      const seq = ++findSeq.current;
+      const result = await browserFind(tabId, backwards ? "prev" : "next");
+      if (findSeq.current !== seq) return;
+      setFindResult(result ?? { count: 0, index: -1, error: true });
+    },
+    [active?.id, findQuery, findResult],
+  );
+
+  // Which Ctrl F is this? The browser surface owns the key when it is the
+  // focused pane (or the dock's full-page browser), not when a session pane
+  // beside it holds focus. The native page itself keeps the key: keyboard
+  // events inside the child WebView2 do not reach this webview (manual gap).
+  const browserOwnsFind = useCallback(() => {
+    if (!visible) return false;
+    const root = rootRef.current;
+    if (!root) return false;
+    if (root.closest(".browser-dock-page")) return true;
+    const activeEl = document.activeElement;
+    if (activeEl && root.contains(activeEl)) return true;
+    const pane = root.closest(".session-pane");
+    if (pane) return pane.classList.contains("is-focused");
+    return !document.querySelector(".session-pane.is-focused");
+  }, [visible]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey) return;
+      if (event.key !== "f" && event.key !== "F") return;
+      if (!browserOwnsFind()) return;
+      // App.tsx opens the conversation find on Ctrl F; a focused browser
+      // surface owns it instead. Capture + stopImmediatePropagation keeps the
+      // transcript listener from also firing.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      setFindOpen(true);
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [browserOwnsFind]);
+
+  // Focus the field when the bar opens.
+  useEffect(() => {
+    if (!findOpen) return;
+    const input = findInputRef.current;
+    if (input) {
+      input.focus();
+      input.select();
+    }
+  }, [findOpen]);
+
+  // Search as you type. A sequence guard drops answers that arrive after a
+  // newer query. Navigation (url change) re-runs the same query.
+  useEffect(() => {
+    if (!findOpen) return;
+    const tabId = active?.id;
+    if (!tabId) return;
+    const seq = ++findSeq.current;
+    const query = findQuery;
+    setFindResult(null);
+    if (!query.trim()) {
+      void browserFind(tabId, "clear");
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void browserFind(tabId, "search", query, false).then((result) => {
+        if (findSeq.current !== seq) return;
+        setFindResult(result ?? { count: 0, index: -1, error: true });
+      });
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [active?.id, active?.url, findOpen, findQuery]);
+
+  // Leaving the tab drops the page selection and closes the bar: those ranges
+  // described a document the user is no longer looking at.
+  const findTabRef = useRef<string | null>(null);
+  useEffect(() => {
+    const tabId = active?.id ?? null;
+    const previous = findTabRef.current;
+    findTabRef.current = tabId;
+    if (previous && previous !== tabId) {
+      findSeq.current += 1;
+      void browserFind(previous, "clear");
+      setFindOpen(false);
+      setFindQuery("");
+      setFindResult(null);
+    }
+  }, [active?.id]);
+
+  // -- Responsive preview -------------------------------------------------
+  // Presentation only: desktop at 100% clears the emulation; anything else
+  // renders the page at an emulated viewport with a fit scale. The patch,
+  // the page's data and the browser's real size are never changed.
+
+  const zoomBy = (direction: 1 | -1) => {
+    setViewportZoom((current) => {
+      const at = VIEWPORT_ZOOM_STEPS.findIndex((step) => step >= current - 0.001);
+      const index = Math.min(
+        VIEWPORT_ZOOM_STEPS.length - 1,
+        Math.max(0, (at < 0 ? 0 : at) + direction),
+      );
+      return VIEWPORT_ZOOM_STEPS[index] ?? VIEWPORT_ZOOM_MAX;
+    });
+  };
+
+  useEffect(() => {
+    const tab = active;
+    if (!tab || !visible) return;
+    let cancelled = false;
+    const previous = emulatedTabRef.current;
+    if (previous && previous !== tab.id) {
+      emulatedTabRef.current = null;
+      void browserViewportReset(previous);
+    }
+    const preset = VIEWPORT_PRESETS[viewportPreset];
+    const wantsEmulation = viewportPreset !== "desktop" || viewportZoom !== 1;
+    if (!wantsEmulation) {
+      emulatedTabRef.current = null;
+      void browserViewportReset(tab.id).then((ok) => {
+        if (!cancelled) setViewportNotice(ok ? null : t("browser.viewportFailed"));
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+    const rect = hostRef.current?.getBoundingClientRect();
+    const hostW = Math.max(240, Math.round(rect?.width || window.innerWidth));
+    const hostH = Math.max(240, Math.round(rect?.height || window.innerHeight));
+    let width = preset.width || hostW;
+    let height = preset.height || hostH;
+    if (preset.width > 0 && viewportRotated) {
+      const swap = width;
+      width = height;
+      height = swap;
+    }
+    const fit = Math.min(1, hostW / width, hostH / height);
+    const scale =
+      Math.round(Math.min(2, Math.max(0.25, fit * viewportZoom)) * 100) / 100;
+    emulatedTabRef.current = tab.id;
+    void browserViewportSet(tab.id, width, height, preset.mobile, scale).then(
+      (ok) => {
+        if (!cancelled) setViewportNotice(ok ? null : t("browser.viewportFailed"));
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    active?.id,
+    active?.url,
+    visible,
+    viewportPreset,
+    viewportRotated,
+    viewportZoom,
+    viewportHostTick,
+    t,
+  ]);
+
+  // A native surface outlives this React page; drop the emulation on unmount.
+  useEffect(
+    () => () => {
+      if (emulatedTabRef.current) {
+        void browserViewportReset(emulatedTabRef.current);
+        emulatedTabRef.current = null;
+      }
+    },
+    [],
+  );
+
   // Esc leaves the page (a share menu consumes it first, then the picker).
   // The page picker has its own Esc path — the in-page script sends a cancel
   // event that resets `pickModes` — so this only fires when the main window
@@ -564,6 +798,10 @@ export function BrowserPage({
           setShareMenuFor(null);
           return;
         }
+        if (findOpen) {
+          closeFind();
+          return;
+        }
         if (active && (pickModes[active.id] ?? null)) {
           void setPickerMode(active.id, null);
           return;
@@ -573,7 +811,7 @@ export function BrowserPage({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [active, embedded, pickModes, setPickerMode, onExit, shareMenuFor]);
+  }, [active, closeFind, embedded, findOpen, pickModes, setPickerMode, onExit, shareMenuFor]);
 
   return (
     <div ref={rootRef} className="browser-page">
@@ -741,11 +979,42 @@ export function BrowserPage({
             />
             <button
               type="button"
+              className={`pill-action pill-action--icon pill-action--sm${
+                findOpen ? " is-active" : ""
+              }`}
+              title={t("browser.findPlaceholder")}
+              aria-label={t("browser.findPlaceholder")}
+              aria-pressed={findOpen}
+              onClick={() => (findOpen ? closeFind() : setFindOpen(true))}
+            >
+              <Search size={12} />
+            </button>
+            <button
+              type="button"
               className="pill-action pill-action--icon pill-action--sm"
               title={t("browser.reload")}
               onClick={() => void browserNavigateTab(active.id, active.url)}
             >
               <RefreshCw size={12} />
+            </button>
+            {(viewportPreset !== "desktop" || viewportZoom !== 1) && (
+              <span className="browser-page__emulated" title={t("browser.viewportNote")}>
+                {t("browser.viewportBadge")}
+              </span>
+            )}
+            <button
+              type="button"
+              className={`pill-action pill-action--icon pill-action--sm browser-page__viewport-btn${
+                viewportOpen || viewportPreset !== "desktop" || viewportZoom !== 1
+                  ? " is-active"
+                  : ""
+              }`}
+              title={t("browser.viewport")}
+              aria-label={t("browser.viewport")}
+              aria-expanded={viewportOpen}
+              onClick={() => setViewportOpen((value) => !value)}
+            >
+              <MonitorSmartphone size={12} />
             </button>
             <div className="browser-page__share">
               <button
@@ -792,6 +1061,154 @@ export function BrowserPage({
                     </button>
                   </div>
                 </>
+              )}
+            </div>
+          </div>
+        )}
+        {active && findOpen && (
+          <div className="find-bar find-bar--inline browser-page__find" role="search">
+            <Search size={12} aria-hidden />
+            <input
+              ref={findInputRef}
+              className="find-bar__input"
+              type="text"
+              value={findQuery}
+              placeholder={t("browser.findPlaceholder")}
+              aria-label={t("browser.findPlaceholder")}
+              spellCheck={false}
+              onChange={(event) => setFindQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  closeFind();
+                } else if (event.key === "Enter") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  void stepFind(event.shiftKey);
+                }
+              }}
+            />
+            <span
+              className={`find-bar__count${
+                findResult?.error ||
+                (findQuery.trim() && (findResult?.count ?? 0) === 0)
+                  ? " is-empty"
+                  : ""
+              }`}
+              title={findResult?.truncated ? t("browser.findTruncated") : undefined}
+            >
+              {findResult?.error
+                ? t("browser.findFailed")
+                : findResult && findResult.count > 0
+                  ? t("browser.findCounter", {
+                      i: findResult.index + 1,
+                      n: `${findResult.count}${findResult.truncated ? "+" : ""}`,
+                    })
+                  : findQuery.trim()
+                    ? t("browser.findNoMatch")
+                    : ""}
+            </span>
+            <button
+              type="button"
+              className="find-bar__btn"
+              title={t("browser.findPrev")}
+              aria-label={t("browser.findPrev")}
+              disabled={!findResult || findResult.count === 0}
+              onClick={() => void stepFind(true)}
+            >
+              <ChevronUp size={12} aria-hidden />
+            </button>
+            <button
+              type="button"
+              className="find-bar__btn"
+              title={t("browser.findNext")}
+              aria-label={t("browser.findNext")}
+              disabled={!findResult || findResult.count === 0}
+              onClick={() => void stepFind(false)}
+            >
+              <ChevronDown size={12} aria-hidden />
+            </button>
+            <button
+              type="button"
+              className="find-bar__btn"
+              title={t("browser.findClose")}
+              aria-label={t("browser.findClose")}
+              onClick={closeFind}
+            >
+              <X size={12} aria-hidden />
+            </button>
+          </div>
+        )}
+        {active && viewportOpen && (
+          <div className="browser-viewport" role="group" aria-label={t("browser.viewport")}>
+            <div className="browser-viewport__head">
+              <span className="browser-viewport__title">{t("browser.viewport")}</span>
+              <small className="browser-viewport__note">{t("browser.viewportNote")}</small>
+            </div>
+            <div className="browser-viewport__row">
+              {(["desktop", "phone", "tablet"] as const).map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  className={`browser-viewport__chip${
+                    viewportPreset === preset ? " is-active" : ""
+                  }`}
+                  aria-pressed={viewportPreset === preset}
+                  onClick={() => {
+                    setViewportPreset(preset);
+                    if (preset === "desktop") setViewportRotated(false);
+                  }}
+                >
+                  {t(("browser.viewportPreset." + preset) as never)}
+                </button>
+              ))}
+              <button
+                type="button"
+                className="browser-viewport__icon"
+                title={t("browser.viewportRotate")}
+                aria-label={t("browser.viewportRotate")}
+                aria-pressed={viewportRotated}
+                disabled={viewportPreset === "desktop"}
+                onClick={() => setViewportRotated((value) => !value)}
+              >
+                <RotateCw size={12} />
+              </button>
+            </div>
+            <div className="browser-viewport__row">
+              <span className="browser-viewport__label">{t("browser.viewportZoom")}</span>
+              <button
+                type="button"
+                className="browser-viewport__icon"
+                title={t("browser.viewportZoomOut")}
+                aria-label={t("browser.viewportZoomOut")}
+                disabled={viewportZoom <= VIEWPORT_ZOOM_MIN}
+                onClick={() => zoomBy(-1)}
+              >
+                <ZoomOut size={12} />
+              </button>
+              <span className="browser-viewport__zoom">{Math.round(viewportZoom * 100)}%</span>
+              <button
+                type="button"
+                className="browser-viewport__icon"
+                title={t("browser.viewportZoomIn")}
+                aria-label={t("browser.viewportZoomIn")}
+                disabled={viewportZoom >= VIEWPORT_ZOOM_MAX}
+                onClick={() => zoomBy(1)}
+              >
+                <ZoomIn size={12} />
+              </button>
+              <button
+                type="button"
+                className="browser-viewport__reset"
+                onClick={() => setViewportZoom(1)}
+              >
+                {t("browser.viewportZoomReset")}
+              </button>
+              {viewportNotice && (
+                <span className="browser-viewport__notice" role="status">
+                  {viewportNotice}
+                </span>
               )}
             </div>
           </div>

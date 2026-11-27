@@ -280,6 +280,66 @@ export function onBrowserPick(
   return listen<BrowserPickEvent>("marionette-browser-pick", (event) => handler(event.payload));
 }
 
+// -- Find on page (Ctrl F on the browser surface) -------------------------
+// UI-only commands: no grant, no aria engine, no conversation side effects.
+// The page itself answers `{count,index,truncated}`; a failed call is `null`
+// so the bar can say "search failed" instead of pretending there are no hits.
+
+export type BrowserFindResult = {
+  count: number;
+  index: number;
+  truncated?: boolean;
+};
+
+export async function browserFind(
+  tabId: string,
+  action: "search" | "next" | "prev" | "clear",
+  query?: string,
+  caseSensitive = false,
+): Promise<BrowserFindResult | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke<BrowserFindResult>("browser_find", {
+      tabId,
+      action,
+      query: query ?? null,
+      caseSensitive,
+    });
+  } catch {
+    return null;
+  }
+}
+
+// -- Responsive viewport preview (emulation) -------------------------------
+// These change only what the preview renders. They never touch the page's
+// data, and `browserViewportReset` restores the real metrics.
+
+export async function browserViewportSet(
+  tabId: string,
+  width: number,
+  height: number,
+  mobile: boolean,
+  scale: number,
+): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try {
+    await invoke("browser_viewport_set", { tabId, width, height, mobile, scale });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function browserViewportReset(tabId: string): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try {
+    await invoke("browser_viewport_reset", { tabId });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ── Session approval mirror ────────────────────────────────────────────────
 // "Always approve" lives in the Composer's per-session state; the Rust tool
 // channel needs it to decide between a permission card and an auto-grant.

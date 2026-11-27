@@ -9,6 +9,7 @@
 
 pub mod agent;
 pub mod batch;
+pub mod find;
 pub mod pick;
 pub mod probe;
 pub mod ref_lease;
@@ -848,6 +849,52 @@ mod imp {
         surface::with_surface(&app, &tab_id, move |s| surface::pick_resolve(s))?
     }
 
+    // -- find on page + responsive preview (UI only) --------------------------
+    // Neither command is an agent tool: no grant check, no aria engine, no ref
+    // lease. They act on the user's own tab and answer through the same
+    // process-wide CDP lease as the read path, so they cannot overlap it.
+
+    /// `action` = search | next | prev | clear. `query` only matters for search.
+    #[tauri::command(async)]
+    pub fn browser_find(
+        app: AppHandle,
+        tab_id: String,
+        action: String,
+        query: Option<String>,
+        case_sensitive: Option<bool>,
+    ) -> Result<Value, String> {
+        surface::with_surface(&app, &tab_id, move |s| {
+            surface::find(s, &action, query.as_deref(), case_sensitive.unwrap_or(false))
+        })?
+    }
+
+    /// Emulate a viewport for the preview. `scale` is the fit factor computed
+    /// from the host rectangle (see BrowserPage); it never changes real data.
+    #[tauri::command(async)]
+    pub fn browser_viewport_set(
+        app: AppHandle,
+        tab_id: String,
+        width: f64,
+        height: f64,
+        mobile: Option<bool>,
+        scale: Option<f64>,
+    ) -> Result<Value, String> {
+        surface::with_surface(&app, &tab_id, move |s| {
+            surface::set_viewport(
+                s,
+                width,
+                height,
+                mobile.unwrap_or(false),
+                scale.unwrap_or(1.0),
+            )
+        })?
+    }
+
+    #[tauri::command(async)]
+    pub fn browser_viewport_reset(app: AppHandle, tab_id: String) -> Result<Value, String> {
+        surface::with_surface(&app, &tab_id, move |s| surface::clear_viewport(s))?
+    }
+
     /// Diagnostic (E2E harness): the CDP-level truth about one tab — what the
     /// renderer loaded vs what the window composited. Not for the product UI.
     #[tauri::command(async)]
@@ -1265,6 +1312,31 @@ mod imp {
     }
     #[tauri::command(async)]
     pub fn browser_pick_resolve(_app: AppHandle, _tab_id: String) -> Result<Value, String> {
+        unavailable()
+    }
+    #[tauri::command(async)]
+    pub fn browser_find(
+        _app: AppHandle,
+        _tab_id: String,
+        _action: String,
+        _query: Option<String>,
+        _case_sensitive: Option<bool>,
+    ) -> Result<Value, String> {
+        unavailable()
+    }
+    #[tauri::command(async)]
+    pub fn browser_viewport_set(
+        _app: AppHandle,
+        _tab_id: String,
+        _width: f64,
+        _height: f64,
+        _mobile: Option<bool>,
+        _scale: Option<f64>,
+    ) -> Result<Value, String> {
+        unavailable()
+    }
+    #[tauri::command(async)]
+    pub fn browser_viewport_reset(_app: AppHandle, _tab_id: String) -> Result<Value, String> {
         unavailable()
     }
     #[tauri::command(async)]

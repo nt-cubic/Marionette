@@ -36,4 +36,6 @@ export const zh = {
   "palette.openProxyHint": "HTTP / SOCKS 代理",
   "palette.exportDiagnostics": "导出诊断报告…",
   "palette.exportDiagnosticsHint": "日志与环境，自动脱敏",
+  "palette.diagnoseWithAgent": "\u8ba9 Agent \u8bca\u65ad\u2026",
+  "palette.diagnoseWithAgentHint": "\u751f\u6210\u8131\u654f\u8bca\u65ad\u5305\u5e76\u9884\u586b\u6392\u67e5\u4f1a\u8bdd",
 } as const;

@@ -1,6 +1,6 @@
-import { t } from "./i18n";
+import { t, type DictKey } from "./i18n";
 import { isExitAnswer, readCommandExit, signalOfExitCode } from "./exitMeaning";
-import { projectAttention } from "./fleetAttention";
+import { projectAttention, type Attention } from "./fleetAttention";
 
 /**
  * 后台任务面板的数据聚合层（纯函数，无 React 依赖）。
@@ -28,13 +28,24 @@ export type BackgroundTaskKind =
   | "scheduled"
   | "attention";
 
+/** Six user-facing lifecycle states for a delegated worker task (P0-6). */
+export type DelegatedTaskState =
+  | "starting"
+  | "running"
+  | "waiting_user"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
 export type BackgroundTaskState = "running" | "queued" | "attention" | "done" | "failed" | "stopped";
 
 export type BackgroundTaskRow = {
-  /** Stable React key：delegate/terminal 用自己的 id，queued/attention 用 sessionId。 */
+  /** Stable React key: delegate/terminal use their own id; queued/attention use sessionId. */
   key: string;
   kind: BackgroundTaskKind;
   state: BackgroundTaskState;
+  /** Six-state delegated-worker lifecycle; only agent-delegate rows carry it (row.state stays attention-priority). */
+  lifecycle?: DelegatedTaskState;
   /** 点击行时打开的目标会话。 */
   sessionId: string;
   /** 主标题：子代理标签 / 命令行 / 会话名。 */
@@ -148,6 +159,101 @@ export type AgentDelegateSnapshot = {
   summary?: string | null;
 };
 
+/** Raw task-ledger status (includes retired proposed / interrupted; normalized at the boundary). */
+export type DelegatedTaskStatus = AgentDelegateSnapshot["status"];
+
+export type DelegatedTaskProjectionInput = {
+  status: DelegatedTaskStatus;
+  waitingReason?: string | null;
+  retryAt?: number | null;
+  lastEventAt?: number | null;
+  now?: number;
+};
+
+export type DelegatedTaskProjection = {
+  /** The only lifecycle field components may render. */
+  state: DelegatedTaskState;
+  /** Boundary-normalized status: proposed -> starting, interrupted -> cancelled. */
+  status: Exclude<DelegatedTaskStatus, "proposed" | "interrupted">;
+  /** Same attention projection as the background panel (approval / input / retry / ...). */
+  attention: Attention;
+  /** completed / failed / cancelled: no further transitions. */
+  terminal: boolean;
+  /** Quota-limited auto-retry (lifecycle stays starting, never running). */
+  waitingRetry: boolean;
+};
+
+/**
+ * The single lifecycle projection for delegated tasks (P0-6).
+ *
+ * Input is the raw task-ledger status plus waitingReason/retryAt; output is always one
+ * of six user-visible states. Retired names fold at the boundary: proposed -> starting,
+ * interrupted -> cancelled.
+ *
+ * Reduction goes through projectAttention (same truth as the background panel), then to
+ * lifecycle: approval/input -> waiting_user (waiting_user is never shown as running),
+ * failure -> failed, interruption -> cancelled, waiting_retry -> starting (waiting for the
+ * next attempt), settled -> completed/cancelled, stalled/running follow the status.
+ * Attention priority decides whether a human is needed; it does not rewrite lifecycle.
+ */
+export function projectDelegatedTask(input: DelegatedTaskProjectionInput): DelegatedTaskProjection {
+  const status: Exclude<DelegatedTaskStatus, "proposed" | "interrupted"> =
+    input.status === "proposed"
+      ? "starting"
+      : input.status === "interrupted"
+        ? "cancelled"
+        : input.status;
+  const attention = projectAttention({
+    status: input.status,
+    waitingReason: input.waitingReason,
+    retryAt: input.retryAt,
+    lastEventAt: input.lastEventAt,
+    now: input.now,
+  });
+  let state: DelegatedTaskState;
+  switch (attention.category) {
+    case "approval":
+    case "input":
+      state = "waiting_user";
+      break;
+    case "failure":
+      state = "failed";
+      break;
+    case "interruption":
+      state = "cancelled";
+      break;
+    case "waiting_retry":
+      // Quota pause: the task is alive but not running this round; wait for the next attempt.
+      state = "starting";
+      break;
+    case "settled":
+      state = status === "completed" ? "completed" : "cancelled";
+      break;
+    case "stalled":
+    case "running":
+    default:
+      state = status === "starting" ? "starting" : "running";
+      break;
+  }
+  return {
+    state,
+    status,
+    attention,
+    terminal: state === "completed" || state === "failed" || state === "cancelled",
+    waitingRetry: attention.category === "waiting_retry",
+  };
+}
+
+/** i18n keys for the six lifecycle states; components must not invent status words. */
+export const DELEGATED_TASK_STATE_LABEL: Record<DelegatedTaskState, DictKey> = {
+  starting: "tasks.stateStarting",
+  running: "tasks.stateRunning",
+  waiting_user: "tasks.stateWaitingUser",
+  completed: "tasks.stateCompleted",
+  failed: "tasks.stateFailed",
+  cancelled: "tasks.stateCancelled",
+};
+
 export type BuildBackgroundTasksInput = {
   delegateMeta: Map<string, DelegateMetaSnapshot>;
   delegateQueue: Map<string, DelegateQueueSnapshot[]>;
@@ -204,16 +310,18 @@ export function buildBackgroundTaskRows(input: BuildBackgroundTasksInput): Backg
   // 最近 10 分钟（「干完了」的行给一眼回看，不让面板变成历史清单）。
   // 状态归约走 fleetAttention 统一投影（第六期）：「要不要人」是同一份
   // 真相，桌面通知 / Telegram 以后接同一个函数，不再各拼各的。
+  // The delegated-worker UI renders projectDelegatedTask's six-state lifecycle.
   for (const task of input.agentDelegates ?? []) {
     const terminal = ["completed", "failed", "cancelled", "interrupted"].includes(task.status);
     if (terminal && Date.now() - task.updatedAtMs > 10 * 60_000) continue;
-    const attention = projectAttention({
+    const projection = projectDelegatedTask({
       status: task.status,
       waitingReason: task.waitingReason,
       retryAt: task.retryAt,
       lastEventAt: task.updatedAtMs,
       now,
     });
+    const attention = projection.attention;
     const state: BackgroundTaskState =
       attention.category === "approval" || attention.category === "input" || attention.category === "stalled"
         ? "attention"
@@ -238,6 +346,7 @@ export function buildBackgroundTaskRows(input: BuildBackgroundTasksInput): Backg
       key: `agent-delegate:${task.taskId}`,
       kind: "agent-delegate",
       state,
+      lifecycle: projection.state,
       // 点击优先开 worker 会话（看它干活）；还没建 worker 时回父会话。
       sessionId: task.workerSessionId || task.parentSessionId,
       title: t("tasks.agentDelegateTitle", { agent: task.agentId, title: clip(task.title, 48) }),

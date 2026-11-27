@@ -268,6 +268,39 @@ fn ms_ts(ms: Option<i64>) -> String {
     ms.map(|t| t.to_string()).unwrap_or_default()
 }
 
+/// Discovery (P1-6): only the `.meta` sidecar (never opens the SQLite file,
+/// which would risk a create/WAL write).
+pub(crate) fn discover_hits() -> Vec<super::discovery::DiscoveryHit> {
+    use super::discovery::DiscoveryHit;
+    let dir = conversations_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("db") {
+            continue;
+        }
+        let Some(cwd) = meta_cwd(&path) else { continue };
+        let last_active = std::fs::metadata(&path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis().to_string());
+        out.push(DiscoveryHit {
+            cwd,
+            agent_id: crate::antigravity_support::AGENT_ID,
+            count: 1,
+            last_active_at: last_active,
+        });
+        if out.len() >= super::discovery::MAX_HITS_PER_SOURCE {
+            return out;
+        }
+    }
+    out
+}
+
 impl AgentParser for AntigravityParser {
     fn source(&self) -> &'static str {
         "antigravity"

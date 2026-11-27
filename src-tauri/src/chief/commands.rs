@@ -72,6 +72,32 @@ pub fn chief_tee_cursor(session_id: String) -> u64 {
     tee::consumed_seq(&session_id)
 }
 
+/// P0-3: content-free tee health for the worker UI (counts only; no bodies,
+/// paths or secrets). Read-only: never registers or wakes a writer.
+#[tauri::command(async)]
+pub fn chief_tee_health(session_id: String) -> Result<Value, String> {
+    let health = tee::health(&session_id)?;
+    serde_json::to_value(health).map_err(|e| e.to_string())
+}
+
+/// P0-3 recovery action: one bounded slice of the immutable ledger. The
+/// frontend feeds it through the same `applyStreamPart` pipeline as live events
+/// and only advances the cursor after its canonical flush succeeds.
+#[tauri::command(async)]
+pub fn chief_tee_replay_segment(
+    session_id: String,
+    after_seq: u64,
+    limit: u64,
+) -> Result<Value, String> {
+    let segment = tee::replay_segment(&session_id, after_seq, limit as usize)?;
+    Ok(json!({
+        "events": segment.events,
+        "badLines": segment.bad_lines,
+        "hasMore": segment.has_more,
+        "nextSeq": segment.next_seq,
+    }))
+}
+
 /// 唤醒心跳线程 + 启动恢复：main.rs setup 调用。
 pub fn bootstrap_chief(app: &AppHandle) {
     let _ = super::staff_commands::chief_staff_list(app.clone());

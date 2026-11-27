@@ -45,6 +45,50 @@ fn millis_to_iso(ms: i64) -> String {
     ms.to_string()
 }
 
+/// Discovery (P1-6): one row per distinct session directory, counted in SQL.
+pub(crate) fn discover_hits() -> Vec<super::discovery::DiscoveryHit> {
+    use super::discovery::DiscoveryHit;
+    let Some(db_path) = opencode_db_path() else {
+        return Vec::new();
+    };
+    let Ok(conn) = open_ro(&db_path) else {
+        return Vec::new();
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT directory, COUNT(*), MAX(time_updated)
+         FROM session
+         WHERE directory IS NOT NULL AND TRIM(directory) <> ''
+         GROUP BY directory
+         ORDER BY MAX(time_updated) DESC
+         LIMIT 500",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+        ))
+    }) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for row in rows.flatten() {
+        let (directory, count, updated) = row;
+        out.push(DiscoveryHit {
+            cwd: directory,
+            agent_id: "opencode",
+            count: count.max(1) as u32,
+            last_active_at: updated.filter(|t| *t > 0).map(millis_to_iso),
+        });
+        if out.len() >= super::discovery::MAX_HITS_PER_SOURCE {
+            break;
+        }
+    }
+    out
+}
+
 impl AgentParser for OpenCodeParser {
     fn source(&self) -> &'static str {
         "opencode"

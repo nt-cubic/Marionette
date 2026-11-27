@@ -84,6 +84,7 @@ import {
 } from "../lib/transcriptScroll";
 import { useVirtualWindow } from "../lib/useVirtualWindow";
 import { useLatestCallback } from "../lib/useLatestCallback";
+import { observeSubagent, type SubagentObservationState } from "../lib/subagentObservation";
 import { isCursorOverWindow, setMergeHighlight } from "../lib/detachedWindow";
 import { useT } from "../lib/i18n";
 import { SplitBesideMenu, type OpenBesideEdge } from "./SplitBesideMenu";
@@ -106,6 +107,33 @@ import { ToolImageThumbs } from "./ToolImageThumbs";
 import { TurnDeliveryCard } from "./TurnDeliveryCard";
 import { UnifiedDiffView } from "./UnifiedDiffView";
 import { UserImageCard } from "./UserImageCard";
+import { SubagentObservationCard } from "./SubagentObservationCard";
+
+function subagentCardLabels(t: ReturnType<typeof useT>) {
+  return {
+    states: {
+      starting: t("session.subagentStateStarting"),
+      running: t("session.subagentStateRunning"),
+      waiting_user: t("session.subagentStateWaitingUser"),
+      completed: t("session.subagentStateCompleted"),
+      failed: t("session.subagentStateFailed"),
+      cancelled: t("session.subagentStateCancelled"),
+    } as Record<SubagentObservationState, string>,
+    steps: (count: number) => t("session.subagentSteps", { count }),
+    tools: (count: number) => t("session.subagentToolCalls", { count }),
+    duration: (ms: number) =>
+      ms < 60_000
+        ? t("session.durationSeconds", { n: Math.round(ms / 1000) })
+        : t("session.durationMinutesSeconds", {
+            n: Math.floor(ms / 60_000),
+            m: Math.round((ms % 60_000) / 1000),
+          }),
+    noActionYet: t("session.subagentNoAction"),
+    emptySummary: t("session.subagentNoSummary"),
+    waitingHint: t("session.subagentWaitingHint"),
+    openWorker: t("session.subtaskOpen"),
+  };
+}
 
 
 export type UserMessageAnchor = {
@@ -3148,6 +3176,16 @@ function CleanPlaceholder({
                 : `@${event.agentId}`;
             const childStream = allEvents.filter((e) => e.sessionId === event.childSessionId);
             const expanded = expandedChildId === event.childSessionId;
+            const observation = observeSubagent({
+              events: childStream,
+              sessionId: event.childSessionId,
+              lifecycle: {
+                status: task?.status ?? "running",
+                startedAtMs: task?.createdAt ?? Date.parse(event.createdAt),
+                waitingReason: task?.waitingReason ?? null,
+              },
+            });
+            const labels = subagentCardLabels(t);
             return (
               <div
                 className={`event-card event-card--subtask is-running${agentInitiated ? " is-agent-initiated" : ""}${expanded ? " is-open" : ""}`}
@@ -3223,6 +3261,10 @@ function CleanPlaceholder({
                     />
                   </button>
                 </div>
+                <SubagentObservationCard
+                  snapshot={observation.card}
+                  labels={labels}
+                />
                 {expanded && (childStream.length === 0 ? (
                   <div className="tool-running-panel tool-running-panel--subtask">
                     <NineDotSpinner label="Subagent working…" />
@@ -3317,12 +3359,39 @@ function CleanPlaceholder({
                     : t("session.subtaskFailed"));
             const expanded = expandedChildId === event.childSessionId;
             const childStream = allEvents.filter((e) => e.sessionId === event.childSessionId);
+            const lifecycleStatus: SubagentObservationState =
+              event.status === "done"
+                ? "completed"
+                : event.status === "cancelled"
+                  ? "cancelled"
+                  : "failed";
+            const observation = observeSubagent({
+              events: childStream,
+              sessionId: event.childSessionId,
+              lifecycle: {
+                status: lifecycleStatus,
+                startedAtMs: startEv ? Date.parse(startEv.createdAt) : null,
+                endedAtMs: Date.parse(event.createdAt),
+              },
+            });
+            const resultSnapshot = {
+              ...observation.card,
+              state: lifecycleStatus,
+              active: false,
+              durationMs: event.durationMs ?? observation.card.durationMs,
+              summaryText: observation.card.summaryText ?? (event.summary || null),
+            };
+            const labels = subagentCardLabels(t);
             return (
               <div
                 className={`event-card event-card--subtask is-${event.status}${expanded ? " is-open" : ""}`}
                 key={`subtask-${event.childSessionId}-done`}
                 style={agentInkStyle(event.agentId)}
               >
+                <SubagentObservationCard
+                  snapshot={resultSnapshot}
+                  labels={labels}
+                />
                 <div className="subtask-card__row">
                   <span className="subtask-card__glyph" aria-hidden>
                     {glyph}

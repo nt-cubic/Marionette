@@ -691,3 +691,158 @@
   z-index: 25;
   background: transparent;
 }
+
+/* -- Inline find strip (browser + diff pages) ---------------------------- */
+.find-bar--inline {
+  position: static;
+  height: 30px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius, 3px);
+  background: transparent;
+  box-shadow: none;
+}
+
+.browser-page__find {
+  flex: 0 0 auto;
+  align-self: stretch;
+  margin-top: 2px;
+}
+
+.browser-page__find .find-bar__input {
+  flex: 1 1 auto;
+  width: auto;
+}
+
+/* -- Responsive viewport preview (emulation) ----------------------------- */
+
+.browser-page__emulated {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-sm, 3px);
+  background: color-mix(in srgb, var(--yellow) 14%, transparent);
+  color: color-mix(in srgb, var(--yellow) 78%, var(--text));
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.browser-page__viewport-btn.is-active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.browser-viewport {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 2px 2px;
+  border-top: 1px solid var(--hairline);
+}
+
+.browser-viewport__head {
+  display: flex;
+  flex: 1 1 100%;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.browser-viewport__title {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.browser-viewport__note {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.browser-viewport__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.browser-viewport__chip {
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 3px);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.browser-viewport__chip.is-active {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+.browser-viewport__icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 3px);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.browser-viewport__icon:hover:not(:disabled) {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.browser-viewport__icon:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.browser-viewport__label {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.browser-viewport__zoom {
+  min-width: 38px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.browser-viewport__reset {
+  height: 22px;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.browser-viewport__reset:hover {
+  color: var(--text);
+}
+
+.browser-viewport__notice {
+  color: var(--red);
+  font-size: 11px;
+}
+
+.browser-page__nav .pill-action.is-active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}

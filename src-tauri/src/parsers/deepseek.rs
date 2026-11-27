@@ -18,6 +18,12 @@ fn sessions_root() -> Option<PathBuf> {
     })
 }
 
+/// Discovery (P1-6): DSH's own session tree.
+pub(crate) fn discover_hits() -> Vec<super::discovery::DiscoveryHit> {
+    let roots = sessions_root().into_iter().collect::<Vec<_>>();
+    jsonl_agents::discover_tree_for("deepseek", &roots)
+}
+
 impl AgentParser for DeepSeekParser {
     fn source(&self) -> &'static str {
         "deepseek"

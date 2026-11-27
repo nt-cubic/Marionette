@@ -38,4 +38,6 @@ export const en = {
   "palette.openProxyHint": "HTTP / SOCKS proxy",
   "palette.exportDiagnostics": "Export diagnostic report…",
   "palette.exportDiagnosticsHint": "Logs and environment, redacted",
+  "palette.diagnoseWithAgent": "Diagnose with agent",
+  "palette.diagnoseWithAgentHint": "Build a redacted bundle and prefill a triage chat",
 } satisfies Record<keyof typeof zh, string>;

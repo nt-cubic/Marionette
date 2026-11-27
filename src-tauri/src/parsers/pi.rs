@@ -199,6 +199,57 @@ pub fn list_pi_like(
     Ok(out)
 }
 
+/// Discovery (P1-6): every jsonl under a bucket (and a flat custom sessionDir).
+pub(crate) fn discover_pi_like(
+    sessions_dir: &Option<PathBuf>,
+    agent_id: &'static str,
+) -> Vec<super::discovery::DiscoveryHit> {
+    use super::discovery::DiscoveryHit;
+    let Some(root) = sessions_dir.clone().filter(|p| p.is_dir()) else {
+        return Vec::new();
+    };
+    let mut dirs = vec![root.clone()];
+    dirs.extend(super::util::read_subdirs(&root));
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for dir in dirs {
+        let Ok(rd) = fs::read_dir(&dir) else { continue };
+        for ent in rd.flatten() {
+            let path = ent.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            let Some(meta) = scan_pi_meta(&path) else {
+                continue;
+            };
+            if meta.cwd.trim().is_empty() {
+                continue;
+            }
+            out.push(DiscoveryHit {
+                cwd: meta.cwd,
+                agent_id,
+                count: 1,
+                last_active_at: meta.last_active_at,
+            });
+            if out.len() >= super::discovery::MAX_HITS_PER_SOURCE {
+                return out;
+            }
+        }
+    }
+    out
+}
+
+pub(crate) fn discover_pi_hits() -> Vec<super::discovery::DiscoveryHit> {
+    discover_pi_like(&pi_sessions_dir(), "pi")
+}
+
+pub(crate) fn discover_omp_hits() -> Vec<super::discovery::DiscoveryHit> {
+    discover_pi_like(&omp_sessions_dir(), "omp")
+}
+
 pub fn load_pi_jsonl(path: &Path, agent_id: &str) -> Result<Vec<Value>, String> {
     if !path.is_file() {
         return Err(format!("session not found: {}", path.display()));

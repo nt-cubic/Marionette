@@ -12,6 +12,10 @@ import {
   type ChiefProjectPolicy,
   type ChiefTask,
 } from "../lib/api";
+import {
+  DELEGATED_TASK_STATE_LABEL,
+  projectDelegatedTask,
+} from "../lib/backgroundTasks";
 import { useT } from "../lib/i18n";
 import type { AgentConfig, Project } from "../lib/types";
 
@@ -35,17 +39,6 @@ const REMOTE_MODES = [
   { value: "write_preauthorized", labelKey: "chief.remotePreauthorized" },
   { value: "blocked", labelKey: "chief.remoteBlocked" },
 ] as const satisfies ReadonlyArray<{ value: ChiefProjectPolicy["remoteMode"]; labelKey: string }>;
-
-const STATUS_LABEL_KEY: Record<ChiefTask["status"], Parameters<ReturnType<typeof useT>>[0]> = {
-  proposed: "chief.statusProposed",
-  starting: "chief.statusStarting",
-  running: "chief.statusRunning",
-  waiting_user: "chief.statusWaitingUser",
-  completed: "chief.statusCompleted",
-  failed: "chief.statusFailed",
-  cancelled: "chief.statusCancelled",
-  interrupted: "chief.statusInterrupted",
-};
 
 export function ChiefSection({ embedded = false }: { embedded?: boolean }) {
   const t = useT();
@@ -152,9 +145,15 @@ export function ChiefSection({ embedded = false }: { embedded?: boolean }) {
     );
   }
 
-  const activeTasks = tasks.filter(
-    (task) => task.status === "starting" || task.status === "running" || task.status === "waiting_user",
-  );
+  const activeTasks = tasks.filter((task) => {
+    const { state } = projectDelegatedTask({
+      status: task.status,
+      waitingReason: task.waitingReason ?? null,
+      retryAt: task.retryAt ?? null,
+      lastEventAt: task.lastEventAt,
+    });
+    return state === "starting" || state === "running" || state === "waiting_user";
+  });
   const recentTasks = tasks.slice(0, 8);
 
   return (
@@ -293,20 +292,28 @@ export function ChiefSection({ embedded = false }: { embedded?: boolean }) {
         {recentTasks.length === 0 ? (
           <p className="panel-note">{t("chief.tasksEmpty")}</p>
         ) : (
-          recentTasks.map((task) => (
-            <div className={`chief-task is-${task.status}`} key={task.taskId}>
-              <div className="chief-task__head">
-                <Zap size={12} aria-hidden />
-                <span className="chief-task__title" title={task.goal}>
-                  {task.title}
-                </span>
-                <span className="chief-task__status">{t(STATUS_LABEL_KEY[task.status])}</span>
+          recentTasks.map((task) => {
+            const { state } = projectDelegatedTask({
+              status: task.status,
+              waitingReason: task.waitingReason ?? null,
+              retryAt: task.retryAt ?? null,
+              lastEventAt: task.lastEventAt,
+            });
+            return (
+              <div className={`chief-task is-${state}`} key={task.taskId}>
+                <div className="chief-task__head">
+                  <Zap size={12} aria-hidden />
+                  <span className="chief-task__title" title={task.goal}>
+                    {task.title}
+                  </span>
+                  <span className="chief-task__status">{t(DELEGATED_TASK_STATE_LABEL[state])}</span>
+                </div>
+                {task.lastSummary ? (
+                  <div className="chief-task__summary">{task.lastSummary}</div>
+                ) : null}
               </div>
-              {task.lastSummary ? (
-                <div className="chief-task__summary">{task.lastSummary}</div>
-              ) : null}
-            </div>
-          ))
+            );
+          })
         )}
       </div>
     </div>

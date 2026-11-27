@@ -118,6 +118,46 @@ fn first_user_text(path: &Path) -> Option<String> {
     None
 }
 
+/// Discovery (P1-6): every rollout file's `session_meta.cwd`, no filter.
+pub(crate) fn discover_hits() -> Vec<super::discovery::DiscoveryHit> {
+    use super::discovery::DiscoveryHit;
+    let Some(codex) = codex_home().filter(|p| p.is_dir()) else {
+        return Vec::new();
+    };
+    let sessions_root = codex.join("sessions");
+    if !sessions_root.is_dir() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for path in walk_files(&sessions_root, 6) {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !name.starts_with("rollout-") || !name.ends_with(".jsonl") {
+            continue;
+        }
+        let Some(meta) = read_session_meta(&path) else {
+            continue;
+        };
+        if meta.cwd.trim().is_empty() {
+            continue;
+        }
+        let last_active = fs::metadata(&path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis().to_string());
+        out.push(DiscoveryHit {
+            cwd: meta.cwd,
+            agent_id: "codex",
+            count: 1,
+            last_active_at: last_active,
+        });
+        if out.len() >= super::discovery::MAX_HITS_PER_SOURCE {
+            return out;
+        }
+    }
+    out
+}
+
 impl AgentParser for CodexParser {
     fn source(&self) -> &'static str {
         "codex"

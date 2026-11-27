@@ -12,4 +12,13 @@ export const zh = {
   "v2pages.diffReveal": "在文件夹中显示",
   "v2pages.diffLoading": "正在读取 diff…",
   "v2pages.diffEmpty": "这个文件没有可显示的差异",
+  "v2pages.diffFindOpen": "\u5728\u6539\u52a8\u4e2d\u67e5\u627e",
+  "v2pages.diffFindPlaceholder": "\u5728\u5df2\u52a0\u8f7d\u7684\u6539\u52a8\u4e2d\u67e5\u627e",
+  "v2pages.diffFindCounter": "{i} / {n}",
+  "v2pages.diffFindNoMatch": "\u65e0\u5339\u914d",
+  "v2pages.diffFindPrev": "\u4e0a\u4e00\u5904\uff08Shift Enter\uff09",
+  "v2pages.diffFindNext": "\u4e0b\u4e00\u5904\uff08Enter\uff09",
+  "v2pages.diffFindClose": "\u5173\u95ed\u67e5\u627e",
+  "v2pages.diffIgnoreWhitespace": "\u5ffd\u7565\u7a7a\u767d\u5dee\u5f02",
+  "v2pages.diffColorblind": "\u8272\u76f2\u53cb\u597d\u914d\u8272",
 } as const;

@@ -37,6 +37,7 @@ import {
   readImageDataUrl,
   removeCustomAgent,
   savePastedImage,
+  savePastedText,
   sendAcpPrompt,
   updateAcpSession,
   type BridgeModel,
@@ -44,6 +45,13 @@ import {
   type PreflightResult,
 } from "../lib/api";
 import { pairPastedFilesWithPaths, snapshotPasteImageFiles } from "../lib/pastedFiles";
+import {
+  findPastedTextReferenceCaret,
+  formatByteSize,
+  insertReferenceAtSelection,
+  isInlinePasteBypass,
+  shouldFoldPastedText,
+} from "../lib/pastedTextFold";
 import {
   bridgePresetFor,
   getBridgeModels,
@@ -76,6 +84,22 @@ import { ensureModelSources, expandHiddenProviders, libraryGroups, refreshModelS
 import { modeTone } from "../lib/modeTone";
 import { DOCK_DROP_PATHS_EVENT, DOCK_DROP_TEXT_EVENT } from "../lib/dockDrop";
 import { isPageDragSource, onDragText } from "../lib/dragText";
+import {
+  clearSessionReferenceCache,
+  hasSessionReferenceDrag,
+  loadSessionReferenceChip,
+  normalizeSessionReferenceTarget,
+  parseSessionReferenceText,
+  readSessionReferenceCache,
+  readSessionReferenceDrag,
+  SESSION_REFERENCE_DRAG_TYPE,
+  SESSION_REFERENCE_EVENT,
+  SESSION_REFERENCE_MAX_CHIPS,
+  withSessionReferenceText,
+  writeSessionReferenceCache,
+  type SessionReferenceChipState,
+  type SessionReferenceTarget,
+} from "../lib/sessionReferenceChip";
 import { foldLocalSingleGroups, splitModelMeta } from "../lib/modelMenu";
 import {
   modelProviderGroup,
@@ -106,6 +130,7 @@ import {
 } from "../lib/delegate";
 import { ProviderConfigDialog } from "./ProviderConfigDialog";
 import { ModelSettingsDialog } from "./ModelSettingsDialog";
+import { SessionReferenceChips } from "./SessionReferenceChips";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { SessionInfoRing } from "./SessionInfoRing";
 import type { SessionInfoData } from "../lib/sessionInfo";
@@ -736,6 +761,15 @@ export function Composer({
   const [scheduleCustom, setScheduleCustom] = useState("");
   const [modelQuery, setModelQuery] = useState("");
   const [draft, setDraft] = useState(() => readDraftCache(sessionId));
+  /**
+   * Explicit session references (P1-4). Same lifecycle as the draft cache:
+   * keyed by this dialog, survives a Composer remount, cleared on send.
+   */
+  const [sessionReferences, setSessionReferences] = useState<SessionReferenceChipState[]>(() =>
+    readSessionReferenceCache(sessionId),
+  );
+  const sessionReferencesRef = useRef(sessionReferences);
+  sessionReferencesRef.current = sessionReferences;
   /** Image attachments as Codex-style pills (not raw paths in the textarea). */
   const [imageAttachments, setImageAttachments] = useState<ImageAttachment[]>(() =>
     initialImageAttachments.map((attachment) => ({
@@ -751,7 +785,8 @@ export function Composer({
    * (2026-10-24).
    */
   const [attachmentsHeight, setAttachmentsHeight] = useState(0);
-  const attachmentsExtra = imageAttachments.length > 0 ? attachmentsHeight + 6 : 0;
+  const attachmentsExtra =
+    imageAttachments.length > 0 || sessionReferences.length > 0 ? attachmentsHeight + 6 : 0;
   const attachmentsExtraRef = useRef(0);
   attachmentsExtraRef.current = attachmentsExtra;
   const [annotatingId, setAnnotatingId] = useState<string | null>(null);
@@ -850,6 +885,8 @@ export function Composer({
   }, [sessionStatus]);
   /** Exact absolute paths from OS drops, kept verbatim for the grant check. */
   const droppedPathsRef = useRef<Set<string>>(new Set());
+  /** Ctrl/Cmd+Shift+V is seen on keydown and consumed by the following paste. */
+  const inlinePasteRef = useRef(false);
   /** After the user picks an option, ignore server echoes still reporting the old one. */
   const pinsRef = useRef<{ pins: OptionPins; until: number } | null>(null);
   const composerHeightRef = useRef(composerHeight);
@@ -885,6 +922,12 @@ export function Composer({
   useEffect(() => {
     writeDraftCache(sessionId, draft);
   }, [sessionId, draft]);
+
+  // Same per-dialog lifecycle for explicit session references. Loading chips are
+  // never cached: their promise belongs to the unmounted tree.
+  useEffect(() => {
+    writeSessionReferenceCache(sessionId, sessionReferences);
+  }, [sessionId, sessionReferences]);
 
   const isEmptySession = !sessionId || sessionId.startsWith("session-empty-");
   const activateEmpty = useCallback(() => {
@@ -993,7 +1036,7 @@ export function Composer({
     const ro = new ResizeObserver(apply);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [imageAttachments.length]);
+  }, [imageAttachments.length, sessionReferences.length]);
 
   // Collapse chips into the dock hub when *this* composer is too narrow
   // (split pane, torn-off window, or a squeezed floating center). Docked
@@ -1927,15 +1970,39 @@ export function Composer({
     setSuggestDroppedPaths([]);
   }, []);
 
+  const readySessionReferences = sessionReferences.filter(
+    (chip) => chip.status === "ready" && chip.snapshot != null,
+  );
+  const hasPendingSessionReference = sessionReferences.some(
+    (chip) => chip.status === "loading",
+  );
+  const hasComposerContent =
+    draft.trim().length > 0 ||
+    imageAttachments.length > 0 ||
+    readySessionReferences.length > 0;
+
   const submitText = useCallback(
     (text: string, scheduleAtMs?: number) => {
       // Busy turns barge in via App (cancel the live prompt, then send).
-      // Empty draft while busy still uses the Stop button / Esc×2 for interrupt.
+      // Empty draft while busy still uses the Stop button / Esc x2 for interrupt.
       if (!sessionId) return;
-      // Allow send with only images / empty text when attachments exist.
-      if (!text.trim() && imageAttachments.length === 0) return;
+      if (hasPendingSessionReference) {
+        flash(t("composer.sessionReferencePending"));
+        return;
+      }
+      const refs = sessionReferences.filter(
+        (chip) => chip.status === "ready" && chip.snapshot != null,
+      );
+      // Allow send with only images / session references / empty text.
+      if (!text.trim() && imageAttachments.length === 0 && refs.length === 0) return;
       if (scheduleAtMs != null && !onScheduleSend) return;
       if (scheduleAtMs == null) onWarmAgent?.();
+      // Chips are quoted in full after the user's own words. A failed chip is
+      // left out (and the user is told) instead of sending a half snapshot.
+      if (refs.length < sessionReferences.length) {
+        flash(t("composer.sessionReferenceSkipped"));
+      }
+      const outgoingText = withSessionReferenceText(text, refs);
       // Images go as ACP image blocks, not as files the agent must open.
       const dropped = [...droppedPathsRef.current].filter(
         (p, i, arr) => arr.indexOf(p) === i,
@@ -2000,13 +2067,16 @@ export function Composer({
       };
       const images = imageAttachments.length > 0 ? imageAttachments : undefined;
       if (scheduleAtMs != null && onScheduleSend) {
-        onScheduleSend(scheduleAtMs, text, droppedInText, images, snap);
+        onScheduleSend(scheduleAtMs, outgoingText, droppedInText, images, snap);
       } else {
-        onSend(text, droppedInText, images, snap);
+        onSend(outgoingText, droppedInText, images, snap);
       }
       droppedPathsRef.current.clear();
       setDraft("");
       setImageAttachments([]);
+      sessionReferencesRef.current = [];
+      setSessionReferences([]);
+      clearSessionReferenceCache(sessionId);
       setAnnotatingId(null);
       clearDropSuggest();
     },
@@ -2022,6 +2092,10 @@ export function Composer({
       onScheduleSend,
       clearDropSuggest,
       imageAttachments,
+      sessionReferences,
+      hasPendingSessionReference,
+      flash,
+      t,
       bridgeActive,
       bridgeSelection,
       bridgeStale,
@@ -2151,6 +2225,72 @@ export function Composer({
     });
   }, []);
 
+  const removeSessionReference = useCallback((target: SessionReferenceTarget) => {
+    sessionReferencesRef.current = sessionReferencesRef.current.filter(
+      (chip) => chip.target.sessionId !== target.sessionId,
+    );
+    setSessionReferences((current) =>
+      current.filter((chip) => chip.target.sessionId !== target.sessionId),
+    );
+  }, []);
+
+  /**
+   * Add one explicit reference. The id is the dedupe key; the transcript is not
+   * touched until this runs, and only this reference's tail window is read.
+   */
+  const addSessionReference = useCallback(
+    (raw: SessionReferenceTarget | null | undefined) => {
+      const target = normalizeSessionReferenceTarget(raw);
+      if (!target) return;
+      const current = sessionReferencesRef.current;
+      if (current.some((chip) => chip.target.sessionId === target.sessionId)) {
+        flash(t("composer.sessionReferenceDuplicate"));
+        return;
+      }
+      if (current.length >= SESSION_REFERENCE_MAX_CHIPS) {
+        flash(t("composer.sessionReferenceLimit", { count: SESSION_REFERENCE_MAX_CHIPS }));
+        return;
+      }
+      const loading: SessionReferenceChipState = {
+        target,
+        status: "loading",
+        snapshot: null,
+        error: null,
+        errorDetail: null,
+      };
+      // Update the ref before the state render so a second paste/drop in the
+      // same tick cannot slip a duplicate chip past the id check.
+      sessionReferencesRef.current = [...current, loading];
+      setSessionReferences((existing) => [...existing, loading]);
+      void loadSessionReferenceChip(target).then((loaded) => {
+        // A chip removed while its read was in flight stays removed.
+        sessionReferencesRef.current = sessionReferencesRef.current.map((chip) =>
+          chip.target.sessionId === target.sessionId ? loaded : chip,
+        );
+        setSessionReferences((existing) =>
+          existing.map((chip) =>
+            chip.target.sessionId === target.sessionId ? loaded : chip,
+          ),
+        );
+      });
+    },
+    [flash, t],
+  );
+
+  /**
+   * DOM path for a future session-row drag/context action. Only the focused
+   * composer answers, so split panes do not all grow the same chip.
+   */
+  useEffect(() => {
+    if (!isFocused || isEmptySession) return;
+    const onAdd = (event: Event) => {
+      const detail = (event as CustomEvent<unknown>).detail;
+      addSessionReference(normalizeSessionReferenceTarget(detail));
+    };
+    window.addEventListener(SESSION_REFERENCE_EVENT, onAdd);
+    return () => window.removeEventListener(SESSION_REFERENCE_EVENT, onAdd);
+  }, [addSessionReference, isEmptySession, isFocused]);
+
   /**
    * Save a COPY of the draft (+ image attachment paths) into the memo box.
    * The composer keeps its text — this is stash-for-later, not send.
@@ -2203,6 +2343,8 @@ export function Composer({
     (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
       const dt = event.clipboardData;
       if (!dt) return;
+      const inlineBypass = inlinePasteRef.current;
+      inlinePasteRef.current = false;
 
       // Prefer image items (Win+Shift+S, browser "Copy Image").
       const imageItems = Array.from(dt.items ?? []).filter(
@@ -2228,7 +2370,90 @@ export function Composer({
       // path pairing needs the desktop clipboard.
       const wantsFileAttach =
         isTauriRuntime() && pastedFiles.length > 0 && imageItems.length === 0;
-      if (!hasImagePayload && !wantsFileAttach) return; // text paste → default
+      if (!hasImagePayload && !wantsFileAttach) {
+        const pastedText = dt.getData("text/plain");
+        // Ctrl+Shift+V is the explicit inline bypass: no staging, no chip.
+        if (!pastedText || inlineBypass) return;
+
+        // A link-only paste is an explicit session reference, not draft text.
+        const sessionTarget = parseSessionReferenceText(pastedText);
+        if (sessionTarget) {
+          event.preventDefault();
+          addSessionReference(sessionTarget);
+          return;
+        }
+
+        const field = event.currentTarget;
+        const start = field.selectionStart ?? field.value.length;
+        const end = field.selectionEnd ?? start;
+        // Selection replacement counts toward the soft draft ceiling; the
+        // pasted payload's own size is measured in UTF-8 bytes (CJK included).
+        if (!shouldFoldPastedText(pastedText, field.value, start, end)) return;
+
+        if (!isTauriRuntime()) {
+          // Cannot stage here. Let the browser paste inline rather than
+          // swallowing the text, and say why folding did not happen.
+          flash(t("composer.pasteTextNeedsDesktop"));
+          return;
+        }
+        event.preventDefault();
+
+        const baseValue = field.value;
+        void (async () => {
+          try {
+            const saved = await savePastedText(pastedText);
+            // Keep the reference in the normal dropped-path bookkeeping so the
+            // path follows the same send / grant path as a dropped text file.
+            droppedPathsRef.current.add(saved.path);
+
+            const existing = findPastedTextReferenceCaret(baseValue, saved.path);
+            if (existing >= 0) {
+              flash(t("composer.pasteTextAlreadyAttached"));
+              requestAnimationFrame(() => {
+                const el = textareaRef.current;
+                if (!el) return;
+                el.focus();
+                el.setSelectionRange(existing, existing);
+              });
+              return;
+            }
+
+            const reference = t("composer.pasteTextReference", {
+              size: formatByteSize(saved.byteLength),
+              path: saved.path,
+            });
+            const applied = insertReferenceAtSelection(baseValue, start, end, reference);
+            let caret = applied.caret;
+            setDraft((current) => {
+              if (current === baseValue) return applied.value;
+              // Another paste event may have landed while staging. Never append
+              // a second chip for the same content-addressed file.
+              const already = findPastedTextReferenceCaret(current, saved.path);
+              if (already >= 0) {
+                caret = already;
+                return current;
+              }
+              const next = insertReferenceAtSelection(current, start, end, reference);
+              caret = next.caret;
+              return next.value;
+            });
+            requestAnimationFrame(() => {
+              const el = textareaRef.current;
+              if (!el) return;
+              const at = Math.min(caret, el.value.length);
+              el.focus();
+              el.setSelectionRange(at, at);
+            });
+          } catch (err) {
+            // Staging failed: the draft is untouched. Show a concrete,
+            // localized reason instead of silently swallowing the paste.
+            const raw = err instanceof Error ? err.message : String(err);
+            const reason = raw.length > 160 ? `${raw.slice(0, 160)}...` : raw;
+            flash(t("composer.pasteTextFailed", { reason }));
+          }
+        })();
+        return;
+      }
 
       event.preventDefault();
 
@@ -2317,7 +2542,7 @@ export function Composer({
         }
       })();
     },
-    [flash, insertDroppedPaths],
+    [addSessionReference, flash, insertDroppedPaths, t],
   );
 
   const pathsFromDataTransfer = (dt: DataTransfer | null): string[] => {
@@ -2367,12 +2592,18 @@ export function Composer({
   // boundary and only exist as HTML5 events (must match lib/memos.ts).
   const isMemoDrag = (dt: DataTransfer) =>
     Array.from(dt.types).includes("application/x-marionette-memo");
+  const isSessionRefDrag = (dt: DataTransfer) => hasSessionReferenceDrag(dt);
 
   const onComposerDragEnter = (event: ReactDragEvent) => {
-    if (isTauriRuntime() && !isMemoDrag(event.dataTransfer)) return;
+    if (isTauriRuntime() && !isMemoDrag(event.dataTransfer) && !isSessionRefDrag(event.dataTransfer)) return;
     if (
       ![...event.dataTransfer.types].some(
-        (t) => t === "Files" || t === "text/uri-list" || t === "text/plain" || t === "application/x-marionette-memo",
+        (t) =>
+          t === "Files" ||
+          t === "text/uri-list" ||
+          t === "text/plain" ||
+          t === "application/x-marionette-memo" ||
+          t === SESSION_REFERENCE_DRAG_TYPE,
       )
     ) {
       return;
@@ -2383,10 +2614,15 @@ export function Composer({
   };
 
   const onComposerDragOver = (event: ReactDragEvent) => {
-    if (isTauriRuntime() && !isMemoDrag(event.dataTransfer)) return;
+    if (isTauriRuntime() && !isMemoDrag(event.dataTransfer) && !isSessionRefDrag(event.dataTransfer)) return;
     if (
       ![...event.dataTransfer.types].some(
-        (t) => t === "Files" || t === "text/uri-list" || t === "text/plain" || t === "application/x-marionette-memo",
+        (t) =>
+          t === "Files" ||
+          t === "text/uri-list" ||
+          t === "text/plain" ||
+          t === "application/x-marionette-memo" ||
+          t === SESSION_REFERENCE_DRAG_TYPE,
       )
     ) {
       return;
@@ -2396,17 +2632,25 @@ export function Composer({
   };
 
   const onComposerDragLeave = (event: ReactDragEvent) => {
-    if (isTauriRuntime() && !isMemoDrag(event.dataTransfer)) return;
+    if (isTauriRuntime() && !isMemoDrag(event.dataTransfer) && !isSessionRefDrag(event.dataTransfer)) return;
     event.preventDefault();
     dropDepth.current = Math.max(0, dropDepth.current - 1);
     if (dropDepth.current === 0) setDropActive(false);
   };
 
   const onComposerDrop = (event: ReactDragEvent) => {
-    if (isTauriRuntime() && !isMemoDrag(event.dataTransfer)) return;
+    if (isTauriRuntime() && !isMemoDrag(event.dataTransfer) && !isSessionRefDrag(event.dataTransfer)) return;
     event.preventDefault();
     dropDepth.current = 0;
     setDropActive(false);
+    // Session references are an in-page HTML5 drag; never let the link fall
+    // through to the path heuristic.
+    if (isSessionRefDrag(event.dataTransfer)) {
+      const target = readSessionReferenceDrag(event.dataTransfer);
+      if (target) addSessionReference(target);
+      else flash(t("composer.sessionReferenceErrorNotFound"));
+      return;
+    }
     // In-page memo drag: route by kind BEFORE any path heuristics — a text
     // memo's body can contain "/" and would be misread as a path below.
     const memo = isMemoDrag(event.dataTransfer)
@@ -2499,7 +2743,10 @@ export function Composer({
     };
     const onDockDropText = (event: Event) => {
       const text = (event as CustomEvent<string>).detail;
-      if (typeof text === "string" && text.trim()) insertDroppedText(text);
+      if (typeof text !== "string" || !text.trim()) return;
+      const target = parseSessionReferenceText(text);
+      if (target) addSessionReference(target);
+      else insertDroppedText(text);
     };
     window.addEventListener(DOCK_DROP_PATHS_EVENT, onDockDropPaths);
     window.addEventListener(DOCK_DROP_TEXT_EVENT, onDockDropText);
@@ -2507,7 +2754,7 @@ export function Composer({
       window.removeEventListener(DOCK_DROP_PATHS_EVENT, onDockDropPaths);
       window.removeEventListener(DOCK_DROP_TEXT_EVENT, onDockDropText);
     };
-  }, [docked, insertDroppedPaths, insertDroppedText]);
+  }, [addSessionReference, docked, insertDroppedPaths, insertDroppedText]);
 
   // Text/link drags over the field (vendor wry patch channel) while floating.
   // Rect-tested like the file effect above; the memo tab page replaces the
@@ -2537,7 +2784,11 @@ export function Composer({
         return;
       }
       setDropActive(false);
-      if (event.kind === "drop" && over && event.text.trim()) insertDroppedText(event.text);
+      if (event.kind === "drop" && over && event.text.trim()) {
+        const target = parseSessionReferenceText(event.text);
+        if (target) addSessionReference(target);
+        else insertDroppedText(event.text);
+      }
     })
       .then((dispose) => {
         if (disposed) dispose();
@@ -2549,7 +2800,7 @@ export function Composer({
       disposed = true;
       unlisten?.();
     };
-  }, [docked, insertDroppedText]);
+  }, [addSessionReference, docked, insertDroppedText]);
 
   /** OpenCode-style: Tab cycles execution mode when ≥2 modes exist. */
   const cycleMode = useCallback(
@@ -3181,7 +3432,7 @@ export function Composer({
         className={
           dropActive
             ? "composer__field is-drop-target"
-            : imageAttachments.length > 0
+            : imageAttachments.length > 0 || sessionReferences.length > 0
               ? "composer__field has-attachments"
               : "composer__field"
         }
@@ -3215,8 +3466,12 @@ export function Composer({
         </button>
         {dropActive && <div className="composer__drop-hint">{t("v2composer.dropHint")}</div>}
         {/* Pills live inside the field (Codex-style), not above it next to suggestions. */}
-        {imageAttachments.length > 0 && (
-          <div ref={attachmentsRef} className="composer__attachments" aria-label="Image attachments">
+        {(imageAttachments.length > 0 || sessionReferences.length > 0) && (
+          <div ref={attachmentsRef} className="composer__attachments" aria-label="Attachments">
+            <SessionReferenceChips
+              chips={sessionReferences}
+              onRemove={removeSessionReference}
+            />
             {imageAttachments.map((att) => (
               <span key={att.id} className="composer__attachment-pill">
                 <ComposerAttachmentThumb path={att.path} name={att.name} />
@@ -3354,6 +3609,18 @@ export function Composer({
           }}
           onPaste={onComposerPaste}
           onKeyDown={(event) => {
+            if (
+              event.key.toLowerCase() === "v" &&
+              isInlinePasteBypass(event)
+            ) {
+              inlinePasteRef.current = true;
+            } else if (
+              event.key !== "Shift" &&
+              event.key !== "Control" &&
+              event.key !== "Meta"
+            ) {
+              inlinePasteRef.current = false;
+            }
             if (showDelegateMenu && !composingRef.current) {
               if (event.key === "ArrowDown") {
                 event.preventDefault();
@@ -4304,15 +4571,15 @@ export function Composer({
             <div className="composer-menu-anchor composer-menu-anchor--send">
               <button
                 className={
-                  isBusy && canCancel && !draft.trim() && imageAttachments.length === 0
+                  isBusy && canCancel && !hasComposerContent
                     ? "send-button is-interrupting"
-                    : draft.trim() || imageAttachments.length > 0
+                    : hasComposerContent
                       ? "send-button is-ready"
                       : "send-button"
                 }
                 type="button"
                 title={
-                  isBusy && (draft.trim() || imageAttachments.length > 0)
+                  isBusy && hasComposerContent
                     ? t("composer.interruptAndSendTitle")
                     : isBusy && canCancel
                       ? t("v2composer.interruptEsc")
@@ -4321,7 +4588,7 @@ export function Composer({
                         : t("composer.sendHint")
                 }
                 aria-label={
-                  isBusy && (draft.trim() || imageAttachments.length > 0)
+                  isBusy && hasComposerContent
                     ? t("v2composer.interruptAndSend")
                     : isBusy && canCancel
                       ? t("v2composer.interrupt")
@@ -4334,12 +4601,11 @@ export function Composer({
                 disabled={
                   isBusy &&
                   !canCancel &&
-                  !draft.trim() &&
-                  imageAttachments.length === 0
+                  !hasComposerContent
                 }
                 onClick={() => {
                   setMenu(null);
-                  if (draft.trim() || imageAttachments.length > 0) {
+                  if (hasComposerContent) {
                     submit();
                     return;
                   }
@@ -4354,10 +4620,7 @@ export function Composer({
                   setMenu(opening ? "send" : null);
                 }}
               >
-                {isBusy &&
-                canCancel &&
-                !draft.trim() &&
-                imageAttachments.length === 0 ? (
+                {isBusy && canCancel && !hasComposerContent ? (
                   <Square size={12} fill="currentColor" />
                 ) : (
                   <SendHorizontal size={12} />
@@ -4408,7 +4671,7 @@ export function Composer({
                           key={minutes}
                           type="button"
                           role="menuitem"
-                          disabled={!draft.trim() && imageAttachments.length === 0}
+                          disabled={!hasComposerContent}
                           onClick={() => {
                             submitText(draft, Date.now() + minutes * 60_000);
                             setMenu(null);
@@ -4430,7 +4693,7 @@ export function Composer({
                           type="button"
                           role="menuitem"
                           disabled={
-                            (!draft.trim() && imageAttachments.length === 0) ||
+                            !hasComposerContent ||
                             !scheduleCustom ||
                             Date.parse(scheduleCustom) <= Date.now()
                           }

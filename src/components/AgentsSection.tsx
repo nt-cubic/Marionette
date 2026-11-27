@@ -1,6 +1,7 @@
 import { Bot, X } from "lucide-react";
 import { memo } from "react";
 import {
+  DELEGATED_TASK_STATE_LABEL,
   summarizeBackgroundTasks,
   type BackgroundTaskRow,
 } from "../lib/backgroundTasks";
@@ -15,20 +16,9 @@ type AgentsSectionProps = {
 const EMPTY_AGENT_TASKS: BackgroundTaskRow[] = [];
 
 function stateLabel(row: BackgroundTaskRow, t: ReturnType<typeof useT>): string {
-  switch (row.state) {
-    case "attention":
-      return t("context.needYou");
-    case "queued":
-      return t("context.stateQueued");
-    case "failed":
-      return t("context.stateFailed");
-    case "stopped":
-      return t("context.stateStopped");
-    case "done":
-      return t("context.stateDone");
-    default:
-      return t("attention.running");
-  }
+  // Only the six-state lifecycle may be rendered here; no local status words.
+  if (!row.lifecycle) return "";
+  return t(DELEGATED_TASK_STATE_LABEL[row.lifecycle]);
 }
 
 /** Parent-thread subagents, kept separate from project tasks and commands. */

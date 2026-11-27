@@ -42,7 +42,7 @@
 
 | 位置 | 性质 |
 |---|---|
-| [`research/t3code-feature-audit.md`](./research/t3code-feature-audit.md) | **Cross-project audit (2026-11-27)** - full T3 Code workflow inventory, inferred milestones, Marionette comparison, adopt/adapt/defer/reject decisions, source map, and a three-wave roadmap |
+| [`research/t3code-feature-audit.md`](./research/t3code-feature-audit.md) | **Cross-project audit (2026-11-27, second pass)** - latest official-source review, T3-only UX inventory, Marionette gap analysis, corrections to stale claims, adopt/adapt/defer/reject decisions, source map, and roadmap |
 | [`research/research-dsh-cross-use.md`](./research/research-dsh-cross-use.md) | **调研（2026-10-20）**：DSH 跨用模型怎么接（已落地 `dsh_bridge.rs`，现行行为见 `CURRENT.md`） |
 | [`research/research-acp-cross-use-matrix.md`](./research/research-acp-cross-use-matrix.md) | **调研（2026-10-20）**：其余 ACP agent 的跨用桥可接性矩阵（只调研不改代码） |
 | [`research/research-agent-memory-locations.md`](./research/research-agent-memory-locations.md) | **调研（2026-10-23）**：各家 coding agent 的记忆存储位置全网调查——`memory.rs` 跨 agent 记忆导入的依据 |
@@ -66,7 +66,8 @@
 | [plans/plan-github-maintenance.md](./plans/plan-github-maintenance.md) | **路线图（草案，2026-11-18）**：GitHub Issue / PR 自动 triage、隔离复现、draft PR 修复和 PR 维护循环；明确只读起步、外部文本数据化、不自动 merge/release。 |
 | [`plans/plan-edge-dock.md`](./plans/plan-edge-dock.md) | 贴边停靠设计稿（阶段 0–3 已落地，现行行为以 `CURRENT.md`「贴边停靠」与 `AGENTS.md` 红线为准；文内记了与实现的偏差）。**悬浮球计划已废弃并入本计划**（原件 [`archive/plan-orb-assistant.md`](./archive/plan-orb-assistant.md)） |
 | [`plans/plan-codeg-borrow.md`](./plans/plan-codeg-borrow.md) | **路线图（2026-10-25）**：从 Codeg 借什么、什么不借——对照现状（代理层/跨 agent handoff/12 parser/registry 安装/Ctrl K 搜索已对齐）分 P0 速赢→P1 对话流骨架→P2 数据与能力分发→P3 协作与远程→P4 按需，含明确不做清单、依赖关系与工程纪律 |
-| [`plans/plan-t3code-adoption.md`](./plans/plan-t3code-adoption.md) | **路线图（草案，2026-11-27）**：将 T3 Code 审计收敛为 Phase 0–5 实施批次，优先 worker 可观测性、Composer/审批、统一回合服务与 ACP 连续性，再推进代码交付、搜索/无障碍和本地系统能力；含每阶段文件落点、验收与回退边界 |
+| [`plans/plan-t3code-adoption.md`](./plans/plan-t3code-adoption.md) | **Roadmap (2026-11-27, second-pass annex)** - Phase 0-5 engineering work plus P1 slices for diagnostic triage, question attachments, large-paste folding, session references, onboarding, browser/diff usability, a T3-style Usage redesign with overrides, prompt links, F6 focus, SnapShots, tool search, text generation, and project actions |
+| [`plans/p0-completion-receipt-2026-11-27.md`](./plans/p0-completion-receipt-2026-11-27.md) | **P0/P1 implementation receipt (2026-11-27)** - verified P0-1 through P0-10 plus the adjacent P1-3/4/6/7/8/13 wave, exact test gates, and remaining real-device/provider gaps |
 | [`plans/plan-browser-computer-use.md`](./plans/plan-browser-computer-use.md) | **实施案（2026-10-31 定稿）**：浏览器共享 + Computer Use 两批全量方案——child webview（wry resize-subclass 坑）、vendor aria 引擎、localhost HTTP MCP（每会话 token，zcode 通吃）、授权与对话权限模式吻合（agent 自开页自动读/Control 走权限卡）、CU 的 cua-driver 按需下载 + helper 单二进制 + 按键白名单。批次 1（文档标签页）已落地，行为见 `CURRENT.md` |
 | [`plans/plan-browser-workspace.md`](./plans/plan-browser-workspace.md) | **历史实施方案（2026-11-17，Phase 1–4）**：Browser/Document/Memo 后来已并入统一分屏树窗格标签，`SurfaceWorkspace` 退役；现行行为见 `CURRENT.md`。文中后台 tab、dev server probe、handoff、child WebView2 bounds 等细节仍有效 |
 | [`plans/plan-browser-scope.md`](./plans/plan-browser-scope.md) | **产品边界（2026-11-17）**：Marionette 只做内置 WebView2 开发工作区；不做 Chrome/Edge 扩展、relay、外部 MCP 或个人浏览器连接器。用户需要这类能力时自行使用 browse |

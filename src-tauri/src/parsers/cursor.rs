@@ -15,6 +15,36 @@ fn cursor_home() -> Option<PathBuf> {
         .or_else(|| home_join(".cursor"))
 }
 
+/// Discovery (P1-6): one hit per `acp-sessions/<id>/meta.json`.
+pub(crate) fn discover_hits() -> Vec<super::discovery::DiscoveryHit> {
+    use super::discovery::DiscoveryHit;
+    let Some(home) = cursor_home() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for dir in read_subdirs(&home.join("acp-sessions")) {
+        let Some(v) = read_json_file(&dir.join("meta.json")) else {
+            continue;
+        };
+        let cwd = json_str(&v, "cwd").unwrap_or("").to_string();
+        if cwd.is_empty() {
+            continue;
+        }
+        out.push(DiscoveryHit {
+            cwd,
+            agent_id: "cursor",
+            count: 1,
+            last_active_at: json_str(&v, "updatedAt")
+                .or_else(|| json_str(&v, "createdAt"))
+                .map(str::to_string),
+        });
+        if out.len() >= super::discovery::MAX_HITS_PER_SOURCE {
+            return out;
+        }
+    }
+    out
+}
+
 impl AgentParser for CursorParser {
     fn source(&self) -> &'static str {
         "cursor"

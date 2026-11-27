@@ -58,6 +58,14 @@ export function parseAskQuestionPrompt(
       // `questions_for_ui`); a missing flag means "infer from options".
       ...(typeof rec.other === "boolean" ? { other: rec.other } : {}),
       ...(typeof rec.note === "boolean" ? { note: rec.note } : {}),
+      // There is no native ACP attachment field. This is a UI hint derived from
+      // "the schema accepts a custom text answer"; `false` must suppress the
+      // attachment affordance on fixed-choice-only questions.
+      ...(typeof rec.attachmentsAllowed === "boolean"
+        ? { attachmentsAllowed: rec.attachmentsAllowed }
+        : typeof rec.attachments_allowed === "boolean"
+          ? { attachmentsAllowed: rec.attachments_allowed }
+          : {}),
     });
   }
   if (questions.length === 0) return null;

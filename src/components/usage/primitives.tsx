@@ -41,7 +41,7 @@ export function fmtDelta(ratio: number | null): string {
 }
 
 /** Provenance chip: 实测 / 估算 / 推算 / 折算. */
-export function SourceTag({ source }: { source: Source | "priced" | "clock" }) {
+export function SourceTag({ source }: { source: Source | "priced" | "clock" | "custom" }) {
   const t = useT();
   return <span className={`uv2-tag uv2-tag--${source}`}>{t(`usageV2.source.${source}`)}</span>;
 }

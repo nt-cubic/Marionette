@@ -2,6 +2,23 @@ import type { zh } from "./fe-composer.zh";
 
 /** English mirror of the fe-composer fragment. */
 export const en = {
+  "composer.pasteTextReference": "[Pasted text attachment - {size}] {path}",
+  "composer.pasteTextFailed": "Could not stage the pasted text; the draft was kept: {reason}",
+  "composer.pasteTextNeedsDesktop": "Folding a large paste needs the desktop app; this one was pasted as plain text",
+  "composer.pasteTextAlreadyAttached": "This pasted text is already attached in the draft",
+  "composer.sessionReferenceChip": "Session ref · {label}",
+  "composer.sessionReferenceLoading": "Reading…",
+  "composer.sessionReferenceCounts": "{turns} turns · {tools} tools · {size}",
+  "composer.sessionReferenceTruncated": "{counts} (truncated)",
+  "composer.sessionReferenceRemove": "Remove session reference: {label}",
+  "composer.sessionReferenceErrorDesktop": "Needs the desktop app",
+  "composer.sessionReferenceErrorNotFound": "Session not found",
+  "composer.sessionReferenceErrorReadFailed": "Read failed",
+  "composer.sessionReferenceReadFailedDetail": "Read failed: {reason}",
+  "composer.sessionReferencePending": "A session reference is still being read",
+  "composer.sessionReferenceDuplicate": "This session is already referenced",
+  "composer.sessionReferenceLimit": "At most {count} session references at a time",
+  "composer.sessionReferenceSkipped": "Some session references failed to load and were left out",
   "composer.justNow": "Just now",
   "composer.bridgeSwitchedBanner": "**Switched to shared model {label}.**\n\nThe agent process has been restarted with the new model, history preserved — it takes effect from the next message.",
   "composer.bridgeSwitchedFlash": "Switched to {label}; effective from the next message",

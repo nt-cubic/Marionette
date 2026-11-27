@@ -8,6 +8,7 @@ import {
   collapseIntermediateAssistantAsThought,
   extractAcpSessionTitle,
   extractAcpUpdateText,
+  extractAcpUserText,
   findLastIndexForSession,
   findLastTurnContentIndexForSession,
   getSessionUpdate,
@@ -22,12 +23,14 @@ import {
   maxSeqOf,
   mergeUserEcho,
   shouldFlushUserEcho,
-  teeEventsAfterCursor,
   transcriptMaxCreatedAtMs,
-  uncoveredTeeEvents,
+  teeRetryStartCursor,
+  TEE_RETRY_SEGMENT,
   type ChiefTeeEvent,
+  type ChiefTeeHealth,
 } from "../lib/chiefTee";
 import { useSessionRails } from "./useSessionRails";
+import { planColdStartReplay } from "../lib/coldStartReplay";
 import {
   REENTRY_IDLE_MS,
   sealAgentSegmentForIdle,
@@ -48,7 +51,7 @@ import { useLatestCallback } from "../lib/useLatestCallback";
 import { getCachedAgentVersions } from "../lib/agentVersionCache";
 import { buildDiagnosticUiState, type DiagnosticUiState } from "../lib/diagnostics";
 import { lastCapturedUiError } from "../lib/diagnosticCapture";
-import { addProject, appendDebugLog, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, engineModelImages, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, killAcpTerminal, listAcpTerminals, listAcpTerminalOutputs, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, loadTranscriptPage, loadTranscriptWindow, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, setUiLocale, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, trimSessionWorkingSet, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, chiefTeeConsume, chiefTeeCursor, chiefTeeReplay, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID, DELEGATE_TASK_EVENT, type DelegateTaskEventPayload, delegationEnabled, setDelegationEnabled, delegationCancelTask, delegationInterruptTask, delegationSendTask } from "../lib/api";
+import { addProject, appendDebugLog, buildDiagnosticBundle, applyAppUpdateAndRelaunch, beginWorkspaceSnapshot, cancelAcpSession, checkAppUpdate, checkOutsideProjectPaths, createChildSession, createSession as createSessionApi, createChatSession, deleteProject as deleteProjectApi, deleteSession as deleteSessionApi, discardWorkspaceSnapshot, downloadAppUpdate, endWorkspaceSnapshot, engineModelImages, getDefaultFolder, generateHandoff, getProxyConfig, getChangedFiles, getCurrentBranch, getFileDiff, getSessionCapabilities, grantWorkspaceRoot, isTauriRuntime, killAcpTerminal, listAcpTerminals, listAcpTerminalOutputs, listAgentCommands, listAgents, listProjects, listSessions, listTodos, loadTranscript, loadTranscriptPage, loadTranscriptWindow, listChatSessions, OPEN_PATH_EVENT, openHere, pickFolder, probeAcpBilling, probeAgentAuth, probeProviderUsage, projectContextPrompt, quitApp, refreshExternalSessions, reorderProjects as reorderProjectsApi, respondAcpPermission, respondAcpPlanApproval, respondAcpQuestion, revealInFileManager, openExternal, saveTodos, scanProjectContext, setUiLocale, sendAcpPrompt, setProjectContextEnabled, setProxyConfig, setSessionPinned, startAcpSession, startAgentLogin, TELEGRAM_INBOUND_EVENT, telegramAck, type TelegramInbound, startGrokUpdate, stopAcpSession, takeLaunchOpenPath, testProxy, trimSessionWorkingSet, updateAcpSession, updateSessionAgent, updateSessionLabel, updateSessionPrefs, updateSessionStatus, writeTranscript, chiefTeeConsume, chiefTeeCursor, chiefTeeReplay, chiefTeeHealth, chiefTeeReplaySegment, requestCheapSessionTitle, type AppUpdateInfo, type OutsidePath, type PlanApprovalDecision, type TurnSnapshotEnd, type TurnSnapshotStart, CHAT_PROJECT_ID, DELEGATE_TASK_EVENT, type DelegateTaskEventPayload, delegationEnabled, setDelegationEnabled, delegationCancelTask, delegationInterruptTask, delegationSendTask } from "../lib/api";
 import {
   bindDetachedWindowReaper,
   DETACHED_HIDDEN_EVENT,
@@ -336,6 +339,7 @@ import { DiagnosticDialog } from "../components/DiagnosticDialog";
 import { withViewTransition } from "../lib/viewTransition";
 import { ToastStack } from "../components/ToastStack";
 import { SessionTabs, SessionView, type ForkAnchor, type UserMessageAnchor } from "../components/SessionView";
+import { TeeLossNotice, type TeeRetryStatus } from "../components/TeeLossNotice";
 // 侧栏/标签栏是流式期间的重渲大户：memo 化 + useLatestCallback 稳定回调，
 // eventsTick（20-50Hz）bump 时不再波及整棵侧栏树（审计 2026-10-24 P1-A）。
 const MemoProjectShelf = memo(ProjectShelf);
@@ -740,7 +744,7 @@ function AppMain() {
   /** Edge dock stage 1: main window is parked at a screen edge. */
   const [dockActive, setDockActive] = useState(false);
   const [dockExpanded, setDockExpanded] = useState(false);
-  /** Edge dock: the page covering the strip below its title bar (all dialogs / usage / memo box). */
+  /** Edge dock: the page covering the strip below its title bar (all dialogs / usage / 收纳盒). */
   const [dockPage, setDockPage] = useState<DockPage | null>(null);
   /** Edge dock stage 3: memo inbox overlay + its count badge. */
   const [memoCount, setMemoCount] = useState(0);
@@ -948,6 +952,18 @@ function AppMain() {
   const chiefBackfillRef = useRef<
     (sessionId: string, baselineLen: number, transcriptMaxMs: number) => Promise<void>
   >(async () => {});
+  /**
+   * P0-2: one replay at a time per session. Two opens racing (main + restored
+   * pane) must not apply the same tee span twice before the cursor advances.
+   */
+  const chiefBackfillInflightRef = useRef<Set<string>>(new Set());
+  /** P0-3: health refresh + segmented recovery, callable from render handlers. */
+  const refreshTeeHealthRef = useRef<(sessionId: string) => Promise<void>>(
+    async () => {},
+  );
+  const retryTeeBackfillRef = useRef<(sessionId: string) => Promise<void>>(
+    async () => {},
+  );
   /** Session ids currently shown in a visible detached OS window (main only). */
   const detachedOwnedIdsRef = useRef<Set<string>>(new Set());
   /** Main is reloading disk transcript after a detached hide — skip live events. */
@@ -1214,6 +1230,20 @@ function AppMain() {
   const [lastActivityById, setLastActivityById] = useState<Record<string, number>>({});
   const lastActivityByIdRef = useRef(lastActivityById);
   lastActivityByIdRef.current = lastActivityById;
+  /**
+   * P0-3: worker tee health + the recovery action's own state. The notice is
+   * session chrome (never a transcript card), so reopening or retrying cannot
+   * insert duplicate rows.
+   */
+  const [teeHealthBySession, setTeeHealthBySession] = useState<
+    Record<string, ChiefTeeHealth>
+  >({});
+  const [teeRetryBySession, setTeeRetryBySession] = useState<
+    Record<string, TeeRetryStatus>
+  >({});
+  const [teeNoticeDismissed, setTeeNoticeDismissed] = useState<
+    Record<string, boolean>
+  >({});
   const sessionsRef = useRef(availableSessions);
   /** X3：每会话上次工作集压制的时间戳（节流 + 会话消失后回收）。 */
   const lastTrimByIdRef = useRef(new Map<string, number>());
@@ -1473,7 +1503,7 @@ function AppMain() {
     };
   }, []);
 
-  // Edge dock: Esc is 返回 (the memo box handles its own Esc: select mode
+  // Edge dock: Esc is 返回 (the 收纳盒 handles its own Esc: select mode
   // first), and picking a dialog from the full list goes back to it.
   useEffect(() => {
     if (!dockPage || dockPage === "memo") return;
@@ -1638,6 +1668,7 @@ function AppMain() {
     publishedEventsForView,
     notePersisted,
     isPersistClean,
+    flushSessionTranscript,
   } = useSessionRails({
     transcriptSaveTimers,
     ownsAcpSession,
@@ -1888,6 +1919,30 @@ function AppMain() {
         .catch(() => undefined);
     }
   }, []);
+
+  // P1-13: cheap semantic title generation is fire-and-forget. Absence of a
+  // configured key/model simply means no event and the existing first-message
+  // label remains; manual names are still protected by applyAgentSessionTitle.
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<{ sessionId?: string; title?: string }>(
+      "marionette-cheap-title",
+      (event) => {
+        const sessionId = event.payload?.sessionId?.trim();
+        const title = event.payload?.title?.trim();
+        if (sessionId && title) applyAgentSessionTitle(sessionId, title);
+      },
+    ).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [applyAgentSessionTitle]);
 
   /** Engine subscription quotas (`magpie quota`) merged into the Usage panel.
    * 懒启动配套（2026-11-06）：初始值从 localStorage 快照恢复；引擎停着
@@ -4399,7 +4454,10 @@ function AppMain() {
       if (!truncated) {
         const marked = persistableEventsForSession(parsed, sessionId);
         notePersisted(sessionId, marked);
-        void writeTranscript(sessionId, marked).catch(() => undefined);
+        // P0-2: this load-time rewrite must land before tee replay starts.
+        // Otherwise the older full rewrite can race the replay append and drop
+        // the very cards the replay just materialized.
+        await writeTranscript(sessionId, marked).catch(() => undefined);
       }
     }
     const existing = shadowBySessionRef.current.get(sessionId);
@@ -4456,6 +4514,13 @@ function AppMain() {
       const baseline = shadowBySessionRef.current.get(sessionId)?.length ?? 0;
       const baselineMaxMs = transcriptMaxCreatedAtMs(parsed);
       void chiefBackfillRef.current?.(sessionId, baseline, baselineMaxMs);
+      // P0-3: surface the durable tee health at session open (the backfill
+      // refresh below replaces this with the post-replay numbers).
+      void refreshTeeHealthRef.current?.(sessionId);
+      // A fresh open shows the notice again even if it was dismissed before.
+      setTeeNoticeDismissed((current) =>
+        current[sessionId] ? { ...current, [sessionId]: false } : current,
+      );
     }
   }, []);
   loadSessionTranscriptRef.current = loadSessionTranscript;
@@ -4472,18 +4537,116 @@ function AppMain() {
    */
   const backfillChiefTee = useCallback(
     async (sessionId: string, baselineLen: number, transcriptMaxMs: number) => {
+      // P0-2: one replay per session at a time; two opens must not apply the
+      // same tee span twice before the cursor is advanced.
+      if (chiefBackfillInflightRef.current.has(sessionId)) return;
+      chiefBackfillInflightRef.current.add(sessionId);
+      // P0-1 stage 5 counters. Measurement only: every branch below keeps the
+      // exact semantics it had; we just record which guard fired and how many
+      // events survived to the rail. Counts and seq numbers only -- no content.
+      const stats = {
+        totalTee: 0,
+        afterCursor: 0,
+        cursorSkips: 0,
+        uncovered: 0,
+        uncoveredFiltered: 0,
+        applied: 0,
+        dedupeSkips: 0,
+        userEchoCards: 0,
+        baselineAborts: 0,
+        consumedTo: 0,
+        persisted: 0,
+        cursorResetForEmptyTranscript: 0,
+        appliedByRole: {} as Record<string, number>,
+      };
+      const report = (outcome: string) => {
+        void appendDebugLog({
+          source: "subagent-observe",
+          level: "info",
+          sessionId,
+          summary: "stage=5 hop=replay",
+          detail: JSON.stringify({
+            stage: 5,
+            hop: "replay",
+            outcome,
+            baselineLen,
+            transcriptMaxMs,
+            railLen: shadowBySessionRef.current.get(sessionId)?.length ?? 0,
+            ...stats,
+          }),
+        });
+      };
       try {
-        const cursor = await chiefTeeCursor(sessionId);
+        // P0-2: an empty canonical transcript can never be trusted as
+        // "already consumed". The old writer advanced the cursor while the
+        // debounced transcript write was still pending; a quit or a failed
+        // write then skipped the whole span forever on the next open.
+        const transcriptEmpty = baselineLen === 0 && transcriptMaxMs <= 0;
+        const storedCursor = await chiefTeeCursor(sessionId);
         const replay = await chiefTeeReplay(sessionId);
         const all = (replay?.events ?? []) as ChiefTeeEvent[];
-        const events = uncoveredTeeEvents(teeEventsAfterCursor(all, cursor), transcriptMaxMs);
-        if (events.length === 0) return;
+        const railBefore = shadowBySessionRef.current.get(sessionId) ?? EMPTY_EVENTS;
+        // P0-9: one pure plan owns cursor/covered-span filtering plus You/tool
+        // duplicate suppression. The apply loop below remains the shared
+        // `applyStreamPart` path; this planner never writes or renders.
+        const plan = planColdStartReplay({
+          sessionId,
+          transcriptEvents: railBefore,
+          teeEvents: all,
+          storedCursor,
+          transcriptMaxMs,
+        });
+        const cursor = plan.startCursor;
+        stats.cursorResetForEmptyTranscript = cursor !== storedCursor ? 1 : 0;
+        stats.totalTee = all.length;
+        stats.afterCursor = plan.counts.afterCursor;
+        stats.cursorSkips = plan.counts.alreadyCovered;
+        const events = plan.replayEvents as ChiefTeeEvent[];
+        stats.uncovered = plan.counts.replayedEvents;
+        stats.uncoveredFiltered =
+          plan.counts.uncoveredSpanSkips +
+          plan.counts.duplicateYouCards +
+          plan.counts.duplicateToolCalls;
+        stats.consumedTo = plan.nextCursor;
+        if (events.length === 0) {
+          if (plan.nextCursor > storedCursor) {
+            await chiefTeeConsume(sessionId, plan.nextCursor);
+            stats.consumedTo = plan.nextCursor;
+          }
+          report(plan.emptyReason ?? "nothing_to_replay");
+          if (transcriptEmpty && all.length > 0) {
+            // Honest signal for the long-lived bad state this task rules out:
+            // the raw tee holds events, yet the canonical transcript is empty
+            // and the cursor claims they were consumed.
+            void appendDebugLog({
+              source: "subagent-observe",
+              level: "warn",
+              sessionId,
+              summary: "tee has events but the canonical transcript is still empty after replay",
+              detail: JSON.stringify({
+                stage: 5,
+                hop: "replay",
+                outcome: "nothing_to_replay",
+                totalTee: all.length,
+                cursor,
+                transcriptEmpty,
+              }),
+            });
+          }
+          return;
+        }
+        // The replay loop below is synchronous (no awaits), so a live event
+        // cannot interleave with it. The only race window is the tee RPC awaits
+        // above; this pre-loop check covers that. The old per-event length guard
+        // fired on our own first new card and aborted almost every replay after
+        // one card -- that was the P0-2 partial-transcript root cause.
+        if ((shadowBySessionRef.current.get(sessionId)?.length ?? 0) > baselineLen) {
+          stats.baselineAborts += 1;
+          report("baseline_grew_before_start");
+          return;
+        }
         let userEcho = "";
-        let maxSeq = cursor;
-        let aborted = false;
-        const railGrewPastBaseline = () =>
-          (shadowBySessionRef.current.get(sessionId)?.length ?? 0) > baselineLen;
-        if (railGrewPastBaseline()) return;
+        let maxSeq = plan.nextCursor;
         for (const event of events) {
           maxSeq = maxSeqOf([event], maxSeq);
           const method = typeof event.method === "string" ? event.method : "";
@@ -4493,7 +4656,7 @@ function AppMain() {
               ? getSessionUpdateKind(updateObj as Parameters<typeof getSessionUpdateKind>[0])
               : "";
           if (method === "session/update" && kind === "user_message_chunk") {
-            const extracted = extractAcpUpdateText(event.data);
+            const extracted = extractAcpUserText(event.data);
             if (extracted && extracted.text) {
               userEcho = mergeUserEcho(userEcho, {
                 text: extracted.text,
@@ -4505,15 +4668,12 @@ function AppMain() {
           if (userEcho && shouldFlushUserEcho(method, kind)) {
             const echo = userEcho;
             userEcho = "";
-            if (railGrewPastBaseline()) {
-              aborted = true;
-              break;
-            }
             updateSessionEvents(
               sessionId,
               (current) => [...current, userMessageEvent(sessionId, echo)],
               { publish: true },
             );
+            stats.userEchoCards += 1;
           }
           const extracted = extractAcpUpdateText(event.data);
           if (
@@ -4523,33 +4683,254 @@ function AppMain() {
               extracted.role === "tool" ||
               extracted.role === "system")
           ) {
-            if (railGrewPastBaseline()) {
-              aborted = true;
-              break;
+            const before = shadowBySessionRef.current.get(sessionId);
+            const after = updateSessionEvents(
+              sessionId,
+              (rail) => applyStreamPart(rail, sessionId, extracted),
+              { publish: true },
+            );
+            if (after !== before) {
+              stats.applied += 1;
+              stats.appliedByRole[extracted.role] =
+                (stats.appliedByRole[extracted.role] ?? 0) + 1;
+            } else {
+              // applyAcpPartToEvents merged into an existing card (or dropped a
+              // duplicate) without changing the rail.
+              stats.dedupeSkips += 1;
             }
-            updateSessionEvents(sessionId, (rail) => applyStreamPart(rail, sessionId, extracted), {
-              publish: true,
-            });
           }
         }
-        if (!aborted) {
+        {
           if (userEcho) {
             updateSessionEvents(
               sessionId,
               (current) => [...current, userMessageEvent(sessionId, userEcho)],
               { publish: true },
             );
+            stats.userEchoCards += 1;
           }
           // 落盘走 rails 的自动持久化管线（与活事件同路）；游标此刻推进。
+          // P0-2: the frontend rails are the sole canonical writer. Flush the
+          // replay batch and advance the cursor only after the write is durable;
+          // otherwise a reopen must replay this span instead of silently losing it.
+          const persisted = await flushSessionTranscript(sessionId);
+          stats.persisted = persisted ? 1 : 0;
+          if (!persisted) {
+            report("persist_failed");
+            if (stats.totalTee > 0 && transcriptEmpty) {
+              void appendDebugLog({
+                source: "subagent-observe",
+                level: "warn",
+                sessionId,
+                summary: "tee has events but the canonical transcript is still empty after replay",
+                detail: JSON.stringify({
+                  stage: 5,
+                  hop: "replay",
+                  outcome: "persist_failed",
+                  totalTee: stats.totalTee,
+                  applied: stats.applied,
+                  baselineLen,
+                  transcriptMaxMs,
+                }),
+              });
+            }
+            return;
+          }
+          if (transcriptEmpty && stats.totalTee > 0 && stats.applied + stats.userEchoCards === 0) {
+            // The flush was "durable" only in the vacuous sense (nothing
+            // persistable). Say so instead of leaving an empty transcript that
+            // looks like the worker did nothing.
+            void appendDebugLog({
+              source: "subagent-observe",
+              level: "warn",
+              sessionId,
+              summary: "tee has events but none normalized into a persistable transcript event",
+              detail: JSON.stringify({
+                stage: 5,
+                hop: "replay",
+                outcome: "no_persistable_events",
+                totalTee: stats.totalTee,
+                applied: stats.applied,
+                userEchoCards: stats.userEchoCards,
+              }),
+            });
+          }
           await chiefTeeConsume(sessionId, maxSeq);
+          stats.consumedTo = maxSeq;
+          report("applied");
         }
       } catch {
+        report("error");
         // 回填失败不阻塞会话打开；游标未推进，下次打开重放同一跨度。
+      } finally {
+        chiefBackfillInflightRef.current.delete(sessionId);
+        // P0-3: the replay above just updated the durable replay metrics.
+        void refreshTeeHealthRef.current?.(sessionId);
       }
     },
-    [updateSessionEvents, applyStreamPart],
+    [updateSessionEvents, applyStreamPart, flushSessionTranscript],
   );
   chiefBackfillRef.current = backfillChiefTee;
+
+  /**
+   * P0-3: read the durable, content-free health counters. Advisory only — a
+   * failed read must never block the conversation.
+   */
+  const refreshTeeHealth = useCallback(async (sessionId: string) => {
+    try {
+      const health = await chiefTeeHealth(sessionId);
+      if (!health) return;
+      setTeeHealthBySession((current) => {
+        const prev = current[sessionId];
+        if (
+          prev &&
+          prev.dropped === health.dropped &&
+          prev.fileLines === health.fileLines &&
+          prev.consumedSeq === health.consumedSeq &&
+          prev.badLines === health.badLines &&
+          prev.replayEvents === health.replayEvents &&
+          prev.replayTruncated === health.replayTruncated &&
+          prev.updatedAt === health.updatedAt
+        ) {
+          return current;
+        }
+        return { ...current, [sessionId]: health };
+      });
+    } catch {
+      // Health is diagnostic; absence shows nothing instead of an error.
+    }
+  }, []);
+  refreshTeeHealthRef.current = refreshTeeHealth;
+
+  /**
+   * P0-3 recovery action: walk the immutable tee in bounded segments and feed
+   * each batch through the same `applyStreamPart` pipeline as live events.
+   *
+   * Duplicate safety: an empty rail rebuilds from seq 0; otherwise only the
+   * records past the flushed cursor are read, and events already represented
+   * by a later rail card are filtered by timestamp. The cursor advances only
+   * after the canonical flush succeeds (P0-2 sole-writer invariant).
+   */
+  const retryTeeBackfill = useCallback(
+    async (sessionId: string) => {
+      if (chiefBackfillInflightRef.current.has(sessionId)) return;
+      chiefBackfillInflightRef.current.add(sessionId);
+      setTeeRetryBySession((current) => ({
+        ...current,
+        [sessionId]: { busy: true, result: null },
+      }));
+      let applied = 0;
+      let failed = false;
+      try {
+        const railLen = shadowBySessionRef.current.get(sessionId)?.length ?? 0;
+        let cursor = teeRetryStartCursor(
+          await chiefTeeCursor(sessionId),
+          railLen,
+        );
+        for (;;) {
+          const page = await chiefTeeReplaySegment(
+            sessionId,
+            cursor,
+            TEE_RETRY_SEGMENT,
+          );
+          const events = (page?.events ?? []) as ChiefTeeEvent[];
+          if (events.length === 0) break;
+          const rail = shadowBySessionRef.current.get(sessionId) ?? EMPTY_EVENTS;
+          const railMaxMs = transcriptMaxCreatedAtMs(rail);
+          const plan = planColdStartReplay({
+            sessionId,
+            transcriptEvents: rail,
+            teeEvents: events,
+            storedCursor: cursor,
+            transcriptMaxMs: railMaxMs,
+          });
+          const batch = plan.replayEvents as ChiefTeeEvent[];
+          let userEcho = "";
+          for (const event of batch) {
+            const method = typeof event.method === "string" ? event.method : "";
+            const updateObj = (event.data as { params?: { update?: unknown } } | null)
+              ?.params?.update;
+            const kind =
+              updateObj && typeof updateObj === "object"
+                ? getSessionUpdateKind(
+                    updateObj as Parameters<typeof getSessionUpdateKind>[0],
+                  )
+                : "";
+            if (method === "session/update" && kind === "user_message_chunk") {
+              const extracted = extractAcpUserText(event.data);
+              if (extracted && extracted.text) {
+                userEcho = mergeUserEcho(userEcho, {
+                  text: extracted.text,
+                  isDelta: extracted.isDelta,
+                });
+              }
+              continue;
+            }
+            if (userEcho && shouldFlushUserEcho(method, kind)) {
+              const echo = userEcho;
+              userEcho = "";
+              updateSessionEvents(
+                sessionId,
+                (current) => [...current, userMessageEvent(sessionId, echo)],
+                { publish: true },
+              );
+              applied += 1;
+            }
+            const extracted = extractAcpUpdateText(event.data);
+            if (
+              extracted &&
+              (extracted.role === "assistant" ||
+                extracted.role === "thought" ||
+                extracted.role === "tool" ||
+                extracted.role === "system")
+            ) {
+              const before = shadowBySessionRef.current.get(sessionId);
+              const after = updateSessionEvents(
+                sessionId,
+                (railEvents) => applyStreamPart(railEvents, sessionId, extracted),
+                { publish: true },
+              );
+              if (after !== before) applied += 1;
+            }
+          }
+          if (userEcho) {
+            updateSessionEvents(
+              sessionId,
+              (current) => [...current, userMessageEvent(sessionId, userEcho)],
+              { publish: true },
+            );
+            applied += 1;
+          }
+          const persisted = await flushSessionTranscript(sessionId);
+          if (!persisted) {
+            failed = true;
+            break;
+          }
+          // Consume the whole segment, including records already represented
+          // by a later rail card (they must not be re-read forever).
+          const segmentMax = maxSeqOf(events, cursor);
+          await chiefTeeConsume(sessionId, segmentMax);
+          cursor = segmentMax;
+          if (page?.hasMore !== true) break;
+        }
+      } catch {
+        failed = true;
+      } finally {
+        chiefBackfillInflightRef.current.delete(sessionId);
+        await refreshTeeHealthRef.current?.(sessionId);
+        setTeeRetryBySession((current) => ({
+          ...current,
+          [sessionId]: {
+            busy: false,
+            result: failed ? "failed" : applied > 0 ? "applied" : "none",
+            applied,
+          },
+        }));
+      }
+    },
+    [updateSessionEvents, applyStreamPart, flushSessionTranscript],
+  );
+  retryTeeBackfillRef.current = retryTeeBackfill;
 
   /** 向上翻页：SessionView 顶部「加载更早」→ 前插一段历史到 rail。 */
   const loadOlderTranscript = useCallback(
@@ -5218,7 +5599,7 @@ function AppMain() {
     [availableSessions]
   );
   const chatSessions = shelfChatSplit.chat;
-  /** 收纳盒-grown dialogs (origin "memo") — their own shelf group. */
+  /** memo box-grown dialogs (origin "memo") — their own shelf group. */
   const memoSessions = shelfChatSplit.memo;
   const projectOnlySessions = useMemo(
     () =>
@@ -5521,7 +5902,9 @@ function AppMain() {
     return eventsBySessionRef.current.get(displaySession.id) ?? EMPTY_EVENTS;
   }, [displaySessionTick, displaySession.id]);
 
-  const openDiagnosticDialog = useLatestCallback(() => {
+  // Same redacted UI snapshot feeds both the export dialog and the triage
+  // chat, so the two paths can never drift into different privacy boundaries.
+  const buildCurrentDiagnosticSnapshot = useLatestCallback((): DiagnosticUiState => {
     let lastVisibleError: DiagnosticUiState["lastVisibleError"] = null;
     for (let index = currentEvents.length - 1; index >= 0; index -= 1) {
       const event = currentEvents[index]!;
@@ -5557,32 +5940,34 @@ function AppMain() {
                 ? "document"
                 : "chat";
 
-    setDiagnosticSnapshot(
-      buildDiagnosticUiState({
-        surfaceKind: IS_DETACHED_WINDOW ? "detached" : "main",
-        page,
-        dockMode: dockActive
-          ? dockExpanded
-            ? "docked-expanded"
-            : "docked-hidden"
-          : "floating",
-        splitPanes: workspaceSplit ? leafCount(splitState) : 1,
-        openTabs: openSessionIds.length,
-        leftCollapsed,
-        rightCollapsed,
-        locale: getLocale(),
-        theme,
-        sessions: availableSessions,
-        activeSession: currentSession ?? null,
-        activeAgentLabel: currentAgent.label,
-        activeModelId,
-        activeModeId: sessionCapabilities?.currentMode ?? null,
-        activeEffortId: sessionCapabilities?.currentEffortId ?? null,
-        agentVersions: getCachedAgentVersions(),
-        lastVisibleError,
-        lastClientError: lastCapturedUiError(),
-      }),
-    );
+    return buildDiagnosticUiState({
+      surfaceKind: IS_DETACHED_WINDOW ? "detached" : "main",
+      page,
+      dockMode: dockActive
+        ? dockExpanded
+          ? "docked-expanded"
+          : "docked-hidden"
+        : "floating",
+      splitPanes: workspaceSplit ? leafCount(splitState) : 1,
+      openTabs: openSessionIds.length,
+      leftCollapsed,
+      rightCollapsed,
+      locale: getLocale(),
+      theme,
+      sessions: availableSessions,
+      activeSession: currentSession ?? null,
+      activeAgentLabel: currentAgent.label,
+      activeModelId,
+      activeModeId: sessionCapabilities?.currentMode ?? null,
+      activeEffortId: sessionCapabilities?.currentEffortId ?? null,
+      agentVersions: getCachedAgentVersions(),
+      lastVisibleError,
+      lastClientError: lastCapturedUiError(),
+    });
+  });
+
+  const openDiagnosticDialog = useLatestCallback(() => {
+    setDiagnosticSnapshot(buildCurrentDiagnosticSnapshot());
     setDiagnosticOpen(true);
   });
 
@@ -6429,8 +6814,10 @@ function AppMain() {
   }, [displaySession.id]);
 
   /** Create a new Chat session in the current/default working folder. `origin:
-   *  "memo"` files it under the shelf's 收纳盒 group. */
-  const handleCreateChatSession = useCallback(async (agentId?: string, opts?: { origin?: "memo" }) => {
+   *  "memo"` files it under the shelf's 收纳盒 group; `"diagnostic"` marks a
+   *  triage chat started from the diagnostic bundle. */
+  const handleCreateChatSession = useCallback(
+    async (agentId?: string, opts?: { origin?: "memo" | "diagnostic"; label?: string }) => {
     if (createChatInFlightRef.current) return createChatInFlightRef.current;
     const work = (async (): Promise<Session | undefined> => {
       try {
@@ -6439,7 +6826,12 @@ function AppMain() {
             ? agentId
             : (availableAgents[0]?.id ?? agents[0]!.id);
         const cwd = defaultFolderPath || (await getDefaultFolder());
-        const session = await createChatSession(resolvedAgentId, t("app.newConversation"), cwd || null, opts?.origin);
+        const session = await createChatSession(
+          resolvedAgentId,
+          opts?.label ?? t("app.newConversation"),
+          cwd || null,
+          opts?.origin,
+        );
         if (!session) return undefined;
         if (!defaultFolderPath && session.cwd) {
           setDefaultFolderPath(session.cwd);
@@ -6491,6 +6883,77 @@ function AppMain() {
       createChatInFlightRef.current = null;
     }
   }, [availableAgents, defaultFolderPath, pushDebug]);
+
+  // Ctrl K "Diagnose with agent": build the same redacted bundle as the export
+  // dialog, write it under Marionette-owned diagnostics storage, then open an
+  // origin:"diagnostic" Chat with the playbook prefilled. Nothing is sent
+  // automatically, and the bundle stays local until the user sends it.
+  const diagnoseWithAgent = useLatestCallback(async () => {
+    if (!isTauriRuntime()) {
+      showToast({ text: t("diagnostics.diagnoseNoRuntime"), tone: "error" });
+      return;
+    }
+    const preparing = showToast({
+      text: t("diagnostics.diagnosePreparing"),
+      tone: "info",
+      duration: 30_000,
+    });
+    try {
+      const bundle = await buildDiagnosticBundle({
+        schemaVersion: 1,
+        summary: "",
+        uiState: buildCurrentDiagnosticSnapshot(),
+      });
+      const created = await handleCreateChatSession(currentAgent.id, {
+        origin: "diagnostic",
+        label: t("diagnostics.diagnoseChatLabel"),
+      });
+      if (!created) {
+        throw new Error(t("diagnostics.diagnoseCreateFailed"));
+      }
+      const source = bundle.sourceVersion || t("diagnostics.sourceUnavailable");
+      const prompt = t("diagnostics.diagnosePlaybook", {
+        installed: bundle.installedVersion,
+        source,
+        report: bundle.reportPath,
+        manifest: bundle.manifestPath,
+        logTail: bundle.logTailPath,
+        logFiles: bundle.logFiles,
+        logTailLines: bundle.logTailLines,
+        redactions: bundle.redactions,
+      });
+      setComposerPrefill({ sessionId: created.id, text: prompt, token: Date.now() });
+      setComposerAutoFocus(true);
+      if (dockActive) setDockPage(null);
+      dismissToast(preparing);
+      showToast({
+        text: t("diagnostics.diagnoseReady"),
+        detail: t("diagnostics.diagnoseReadyDetail", {
+          files: bundle.logFiles,
+          redactions: bundle.redactions,
+        }),
+        tone: "ok",
+        action: {
+          label: t("diagnostics.reveal"),
+          run: () => void revealInFileManager(bundle.directory).catch(() => undefined),
+        },
+      });
+    } catch (error) {
+      dismissToast(preparing);
+      const message = error instanceof Error ? error.message : String(error);
+      pushDebug({
+        level: "error",
+        source: "diagnostics",
+        summary: "diagnose with agent failed",
+        detail: message,
+      });
+      showToast({
+        text: t("diagnostics.diagnoseFailed", { error: message }),
+        tone: "error",
+        duration: 8_000,
+      });
+    }
+  });
 
   // 批注抽屉的「发给对话」：Rust 已落盘的截图转附件药丸 + prompt 预填当前
   // 会话（没有真实会话时先建一个，memo「开新对话」同路）。预填不自动发送，
@@ -9416,6 +9879,15 @@ function AppMain() {
           { events: priorForInject, included: true },
         );
       }
+      const firstRealUser = !priorForInject.some(
+        (event) =>
+          event.sessionId === sid &&
+          event.type === "user_message" &&
+          !isInjectedPromptText(event.text),
+      );
+      if (firstRealUser) {
+        void requestCheapSessionTitle(sid, composed).catch(() => undefined);
+      }
       clearSendSilenceWatchdog(sid);
       touchActivity(sid);
       pushDebug({
@@ -10110,6 +10582,14 @@ function AppMain() {
       setProjectDialogOpen(true);
       setProjectError("");
     }),
+    onProjectAdded: useLatestCallback((project: Project) => {
+      setAvailableProjects((current) => [
+        ...current.filter((item) => item.id !== project.id),
+        project,
+      ]);
+      setCurrentProjectId(project.id);
+      void refreshProjectContext(project.id);
+    }),
     onNewSession: useLatestCallback((projectId: string) => {
       createSessionForProject(projectId);
     }),
@@ -10230,6 +10710,20 @@ function AppMain() {
               {t("staff.backToStaff")}
             </button>
           </div>
+        ) : null}
+        {(session.origin === "chief-worker" || session.origin === "agent-worker") &&
+        !teeNoticeDismissed[session.id] ? (
+          <TeeLossNotice
+            health={teeHealthBySession[session.id]}
+            status={teeRetryBySession[session.id]}
+            onRetry={() => void retryTeeBackfillRef.current(session.id)}
+            onDismiss={() =>
+              setTeeNoticeDismissed((current) => ({
+                ...current,
+                [session.id]: true,
+              }))
+            }
+          />
         ) : null}
         <SessionView
           agent={agent}
@@ -10603,7 +11097,7 @@ function AppMain() {
   };
 
   /**
-   * 收纳盒 page — shared by the docked strip (dockPage === "memo") and the
+   * memo box page — shared by the docked strip (dockPage === "memo") and the
    * floating window's tab form (memoActive). The mount's chrome owns title
    * and close (strip 返回 / titlebar tab). Using a note opens a dialog in the
    * project in view; plain context can go to a chat when no project is open.
@@ -10741,6 +11235,7 @@ function AppMain() {
             onExpand={shelfStable.onExpand}
             onToggleTheme={shelfStable.onToggleTheme}
             onAddProject={shelfStable.onAddProject}
+            onProjectAdded={shelfStable.onProjectAdded}
             onNewSession={shelfStable.onNewSession}
             onProjectSelect={shelfStable.onProjectSelect}
             onSessionSelect={shelfStable.onSessionSelect}
@@ -10925,6 +11420,12 @@ function AppMain() {
                   }
                   openUsageTab();
                 },
+              },
+              {
+                id: "diagnose-with-agent",
+                label: t("palette.diagnoseWithAgent"),
+                hint: t("palette.diagnoseWithAgentHint"),
+                run: () => void diagnoseWithAgent(),
               },
               {
                 id: "export-diagnostics",
@@ -11129,6 +11630,8 @@ function AppMain() {
           open={gettingStartedOpen}
           onClose={() => setGettingStartedOpen(false)}
           onCreateChat={() => void handleCreateChatSession()}
+          projects={shelfProjects}
+          onProjectAdded={shelfStable.onProjectAdded}
         />
 
         {diagnosticOpen && diagnosticSnapshot && (

@@ -13,4 +13,13 @@ export const en = {
   "v2pages.diffReveal": "Show in folder",
   "v2pages.diffLoading": "Loading diff…",
   "v2pages.diffEmpty": "No diff to show for this file",
+  "v2pages.diffFindOpen": "Find in changes",
+  "v2pages.diffFindPlaceholder": "Find in loaded changes",
+  "v2pages.diffFindCounter": "{i} / {n}",
+  "v2pages.diffFindNoMatch": "No matches",
+  "v2pages.diffFindPrev": "Previous match (Shift Enter)",
+  "v2pages.diffFindNext": "Next match (Enter)",
+  "v2pages.diffFindClose": "Close find",
+  "v2pages.diffIgnoreWhitespace": "Ignore whitespace",
+  "v2pages.diffColorblind": "Colourblind-friendly palette",
 } satisfies Record<keyof typeof zh, string>;

@@ -12,11 +12,19 @@
 //! ACP 读线程——转录真相永远在 storage 的 transcript 里，tee 是
 //! 回放视图的原料，丢了要能从日志看出来。
 
+//! P0-2 OWNERSHIP: this module owns the append-only RAW ledger only. It never
+//! normalizes ACP envelopes into SessionEvents and never writes the canonical
+//! transcript (`<sid>.jsonl`). The frontend `useSessionRails` pipeline is the
+//! sole canonical writer: it replays this ledger through `applyStreamPart`
+//! and flushes the result before advancing `consumed_seq`. The cursor below is
+//! therefore a replay filter, not an ownership record; `replay()` always
+//! returns the full file so a lost canonical transcript can be rebuilt.
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Mutex, OnceLock};
@@ -27,17 +35,79 @@ use std::time::Duration;
 const QUEUE_CAP: usize = 2048;
 /// unregister 时等 writer 线程收尾的最长时间；超时就放弃等待并记日志。
 const DRAIN_WAIT: Duration = Duration::from_secs(5);
+/// P0-3: upper bound for one segmented recovery read. Keeps a retry from
+/// materializing a multi-megabyte ledger in one allocation.
+const REPLAY_SEGMENT_MAX: usize = 2000;
 
 static TEES: OnceLock<Mutex<HashMap<String, TeeHandle>>> = OnceLock::new();
 
 /// 测试沙箱根（对齐 council store 的 `set_root_override_for_tests`）。
 static ROOT_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
+/// P0-3: durable, content-free health for one tee. Counters are cumulative
+/// for the session's lifetime (seeded from this file when the process
+/// restarts); `replay_*` describe the most recent read of the ledger. No
+/// prompt, tool-output or path data is ever written here.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeeHealthCounters {
+    #[serde(default)]
+    pub enqueued: u64,
+    #[serde(default)]
+    pub written: u64,
+    #[serde(default)]
+    pub dropped: u64,
+    #[serde(default)]
+    pub bad_lines: u64,
+    #[serde(default)]
+    pub replay_start_seq: u64,
+    #[serde(default)]
+    pub replay_events: u64,
+    #[serde(default)]
+    pub replay_truncated: bool,
+    #[serde(default)]
+    pub updated_at: u64,
+}
+
+/// What the UI reads when a worker session is opened. `file_lines` and
+/// `consumed_seq` are derived now (not stored) so they cannot go stale.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeeHealth {
+    pub session_id: String,
+    pub file_lines: u64,
+    pub enqueued: u64,
+    pub written: u64,
+    pub dropped: u64,
+    pub bad_lines: u64,
+    pub consumed_seq: u64,
+    pub replay_start_seq: u64,
+    pub replay_events: u64,
+    pub replay_truncated: bool,
+    pub registered: bool,
+    pub updated_at: u64,
+}
+
+/// One bounded read of the ledger, used by the recovery action.
+pub struct ReplaySegment {
+    pub events: Vec<Value>,
+    pub bad_lines: usize,
+    pub has_more: bool,
+    pub next_seq: u64,
+}
+
 struct TeeHandle {
     tx: SyncSender<Value>,
     writer: Option<std::thread::JoinHandle<()>>,
-    /// observe 侧因队列满丢掉的事件总数。
+    /// observe-side events lost because the queue was full or the writer was
+    /// already gone (dropped, never blocking the ACP reader).
     dropped: std::sync::Arc<AtomicU64>,
+    /// P0-1: events observe successfully handed to the writer queue.
+    enqueued: std::sync::Arc<AtomicU64>,
+    /// P0-1: events the writer thread flushed to the tee file.
+    written: std::sync::Arc<AtomicU64>,
+    /// Tee file path for this session (line count is scanned at unregister).
+    path: PathBuf,
 }
 
 #[cfg(test)]
@@ -73,6 +143,109 @@ fn events_path(root: &std::path::Path, session_id: &str) -> PathBuf {
     root.join(format!("{session_id}.events.jsonl"))
 }
 
+fn health_path(root: &std::path::Path, session_id: &str) -> PathBuf {
+    root.join(format!("{session_id}.tee-health.json"))
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Read the durable counters. A missing/corrupt file is an empty record, not an
+/// error: health must never take a session down or block its replay.
+fn load_health(root: &Path, session_id: &str) -> TeeHealthCounters {
+    std::fs::read_to_string(health_path(root, session_id))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<TeeHealthCounters>(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn save_health(root: &Path, session_id: &str, counters: &TeeHealthCounters) {
+    let mut next = *counters;
+    next.updated_at = now_ms();
+    let Ok(body) = serde_json::to_string(&next) else {
+        return;
+    };
+    if let Err(err) = crate::storage::write_atomic(&health_path(root, session_id), &body) {
+        // Health is advisory; a failed write must not affect tee/replay.
+        crate::debug_log::append(
+            "chief",
+            "warn",
+            session_id,
+            "tee health write failed",
+            Some(&err.to_string()),
+        );
+    }
+}
+
+/// Live counters for a registered session (None = no writer in this process).
+fn live_counters(session_id: &str) -> Option<(u64, u64, u64)> {
+    let map = TEES.get()?;
+    let guard = map.lock().ok()?;
+    let handle = guard.get(session_id)?;
+    Some((
+        handle.enqueued.load(Ordering::Relaxed),
+        handle.written.load(Ordering::Relaxed),
+        handle.dropped.load(Ordering::Relaxed),
+    ))
+}
+
+/// Persist the outcome of a ledger read. Merges live counters first so a
+/// replay can never roll the durable numbers backwards.
+fn record_replay(
+    session_id: &str,
+    start_seq: u64,
+    events: u64,
+    bad_lines: u64,
+    truncated: bool,
+) {
+    let Ok(root) = sessions_root() else { return };
+    let mut counters = load_health(&root, session_id);
+    if let Some((enqueued, written, dropped)) = live_counters(session_id) {
+        counters.enqueued = counters.enqueued.max(enqueued);
+        counters.written = counters.written.max(written);
+        counters.dropped = counters.dropped.max(dropped);
+    }
+    counters.replay_start_seq = start_seq;
+    counters.replay_events = events;
+    counters.bad_lines = bad_lines;
+    counters.replay_truncated = truncated;
+    save_health(&root, session_id, &counters);
+}
+
+/// P0-3 read entry: content-free tee health for the worker UI.
+pub fn health(session_id: &str) -> Result<TeeHealth, String> {
+    validate_session_id(session_id)?;
+    let root = sessions_root()?;
+    let counters = load_health(&root, session_id);
+    let path = events_path(&root, session_id);
+    let file_lines = count_lines(&path);
+    let live = live_counters(session_id);
+    Ok(TeeHealth {
+        session_id: session_id.to_string(),
+        file_lines,
+        enqueued: counters
+            .enqueued
+            .max(live.map(|v| v.0).unwrap_or(0))
+            .max(file_lines),
+        written: counters
+            .written
+            .max(live.map(|v| v.1).unwrap_or(0))
+            .max(file_lines),
+        dropped: counters.dropped.max(live.map(|v| v.2).unwrap_or(0)),
+        bad_lines: counters.bad_lines,
+        consumed_seq: consumed_seq(session_id),
+        replay_start_seq: counters.replay_start_seq,
+        replay_events: counters.replay_events,
+        replay_truncated: counters.replay_truncated,
+        registered: live.is_some(),
+        updated_at: counters.updated_at,
+    })
+}
+
 /// 开始 tee 一个会话。幂等：已注册的会话返回现有路径，不再开第二条
 /// writer（重复开会把同一个文件写花）。
 ///
@@ -94,9 +267,22 @@ pub fn register(session_id: &str) -> Result<PathBuf, String> {
 
     // 断点续记：重新注册（重启恢复）时 seq 从现有行数接着数。
     let seed_seq = count_lines(&path);
+    // P0-3: counters survive a process restart. The file line count is the
+    // authoritative "written" floor (a crash can leave the health file behind).
+    let persisted = load_health(&root, session_id);
+    let base_written = persisted.written.max(seed_seq);
+    let base_enqueued = persisted.enqueued.max(base_written);
     let (tx, rx) = std::sync::mpsc::sync_channel::<Value>(QUEUE_CAP);
-    let dropped = std::sync::Arc::new(AtomicU64::new(0));
-    let writer = spawn_writer(session_id.to_string(), path.clone(), rx, seed_seq);
+    let dropped = std::sync::Arc::new(AtomicU64::new(persisted.dropped));
+    let enqueued = std::sync::Arc::new(AtomicU64::new(base_enqueued));
+    let written = std::sync::Arc::new(AtomicU64::new(base_written));
+    let writer = spawn_writer(
+        session_id.to_string(),
+        path.clone(),
+        rx,
+        seed_seq,
+        std::sync::Arc::clone(&written),
+    );
 
     let mut guard = map.lock().map_err(|_| "chief tee registry poisoned")?;
     if guard.contains_key(session_id) {
@@ -110,8 +296,13 @@ pub fn register(session_id: &str) -> Result<PathBuf, String> {
             tx,
             writer: Some(writer),
             dropped,
+            enqueued,
+            written,
+            path: path.clone(),
         },
     );
+    // P0-1 stage 3 marker: resumed sessions start from the existing line count.
+    crate::subagent_observe::log_tee_registered(session_id, seed_seq);
     Ok(path)
 }
 
@@ -154,6 +345,21 @@ pub fn unregister(session_id: &str) {
             Some(&dropped.to_string()),
         );
     }
+    // P0-1 stage 3 summary: enqueued vs written vs dropped, plus the actual tee
+    // file line count. Scanned once at close (never on the hot path).
+    let enqueued = handle.enqueued.load(Ordering::Relaxed);
+    let written = handle.written.load(Ordering::Relaxed);
+    let file_lines = count_lines(&handle.path);
+    crate::subagent_observe::log_tee_summary(session_id, enqueued, written, dropped, file_lines);
+    // P0-3: durable health. This is the only place the close-time counters
+    // currently land; without it a dropped count vanished with runtime state.
+    if let Ok(root) = sessions_root() {
+        let mut counters = load_health(&root, session_id);
+        counters.enqueued = counters.enqueued.max(enqueued);
+        counters.written = counters.written.max(written).max(file_lines);
+        counters.dropped = counters.dropped.max(dropped);
+        save_health(&root, session_id, &counters);
+    }
 }
 
 /// 事件收口（emit_now 调用）。未注册的会话一次 map miss 就返回。
@@ -166,19 +372,32 @@ pub fn observe(session_id: &str, kind: &str, method: Option<&str>, data: &Value)
             Ok(guard) => guard,
             Err(_) => return,
         };
-        guard
-            .get(session_id)
-            .map(|handle| (handle.tx.clone(), handle.dropped.clone()))
+        guard.get(session_id).map(|handle| {
+            (
+                handle.tx.clone(),
+                handle.dropped.clone(),
+                handle.enqueued.clone(),
+            )
+        })
     };
-    let Some((tx, dropped)) = sender else { return };
+    let Some((tx, dropped, enqueued)) = sender else {
+        return;
+    };
     let event = json!({
         "sessionId": session_id,
         "kind": kind,
         "method": method,
         "data": data,
     });
-    if let Err(TrySendError::Full(_)) = tx.try_send(event) {
-        dropped.fetch_add(1, Ordering::Relaxed);
+    match tx.try_send(event) {
+        Ok(()) => {
+            enqueued.fetch_add(1, Ordering::Relaxed);
+        }
+        // Full = disk/writer fell behind; Disconnected = unregistered between
+        // the map lookup and the send. Both are real losses for this tee.
+        Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+            dropped.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -209,7 +428,76 @@ pub fn replay(session_id: &str) -> Result<(Vec<Value>, usize), String> {
             Some(&bad.to_string()),
         );
     }
+    // P0-3: remember that a full replay happened (start seq, size, bad lines).
+    // A full read is never truncated.
+    record_replay(
+        session_id,
+        consumed_seq(session_id),
+        events.len() as u64,
+        bad as u64,
+        false,
+    );
     Ok((events, bad))
+}
+
+/// P0-3 recovery read: at most `limit` events with `seq > after_seq`.
+///
+/// The ledger is append-only, so a caller can walk it in bounded segments and
+/// feed each batch through the same `applyStreamPart` path. `has_more` is
+/// observed (not guessed): after the limit is reached we keep scanning for one
+/// more non-empty line.
+pub fn replay_segment(
+    session_id: &str,
+    after_seq: u64,
+    limit: usize,
+) -> Result<ReplaySegment, String> {
+    validate_session_id(session_id)?;
+    let limit = limit.clamp(1, REPLAY_SEGMENT_MAX);
+    let path = events_path(&sessions_root()?, session_id);
+    let file = File::open(&path).map_err(|e| format!("chief tee: open replay failed: {e}"))?;
+    let mut events = Vec::with_capacity(limit.min(256));
+    let mut bad = 0usize;
+    let mut has_more = false;
+    let mut next_seq = after_seq;
+    let mut lines = std::io::BufReader::new(file).lines();
+    while let Some(line) = lines.next() {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<Value>(&line) {
+            Ok(value) => {
+                let seq = value.get("seq").and_then(Value::as_u64).unwrap_or(0);
+                if seq <= after_seq {
+                    continue;
+                }
+                if events.len() >= limit {
+                    // One more real record exists beyond this segment.
+                    has_more = true;
+                    break;
+                }
+                next_seq = next_seq.max(seq);
+                events.push(value);
+            }
+            Err(_) => bad += 1,
+        }
+    }
+    if bad > 0 {
+        crate::debug_log::append(
+            "chief",
+            "warn",
+            session_id,
+            "replay skipped malformed tee lines",
+            Some(&bad.to_string()),
+        );
+    }
+    record_replay(session_id, after_seq, events.len() as u64, bad as u64, has_more);
+    Ok(ReplaySegment {
+        events,
+        bad_lines: bad,
+        has_more,
+        next_seq,
+    })
 }
 
 fn count_lines(path: &std::path::Path) -> u64 {
@@ -293,6 +581,7 @@ fn spawn_writer(
     path: PathBuf,
     rx: Receiver<Value>,
     seed_seq: u64,
+    written: std::sync::Arc<AtomicU64>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name(format!("chief-tee-{session_id}"))
@@ -327,6 +616,7 @@ fn spawn_writer(
                 match serde_json::to_string(&event) {
                     Ok(line) => {
                         if writeln!(writer, "{line}").is_ok() && writer.flush().is_ok() {
+                            written.fetch_add(1, Ordering::Relaxed);
                             continue;
                         }
                         // 写失败（盘满/句柄失效）：记一次后继续收干队列，
@@ -483,6 +773,177 @@ mod tests {
         let (events, _) = replay(sid).unwrap();
         assert!(!events.is_empty());
         assert!(events.len() <= sent);
+        set_root_override_for_tests(None);
+        drop(guard);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// P0-2: the consume cursor is a one-way replay filter. `replay()` must
+    /// keep returning the whole raw ledger, and re-registering a session must
+    /// continue seq from the file, never from the cursor. The frontend relies
+    /// on this to rebuild an empty canonical transcript from seq 0.
+    #[test]
+    fn cursor_is_monotonic_and_replay_stays_append_only() {
+        let guard = SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let root = sandbox("cursor");
+        set_root_override_for_tests(Some(root.clone()));
+        let sid = "session_tee_cursor";
+        register(sid).unwrap();
+        observe_simple(sid, "status");
+        observe_simple(sid, "acp");
+        observe_simple(sid, "acp");
+        unregister(sid);
+
+        set_consumed_seq(sid, 2).unwrap();
+        set_consumed_seq(sid, 1).unwrap(); // backwards is ignored
+        assert_eq!(consumed_seq(sid), 2);
+
+        // Cursor never deletes evidence: a rebuild from an empty transcript
+        // starts at 0 and gets every raw event back.
+        let (events, _) = replay(sid).unwrap();
+        assert_eq!(events.len(), 3);
+        let after_zero = events
+            .iter()
+            .filter(|e| e.get("seq").and_then(Value::as_u64).unwrap_or(0) > 0)
+            .count();
+        let after_two = events
+            .iter()
+            .filter(|e| e.get("seq").and_then(Value::as_u64).unwrap_or(0) > 2)
+            .count();
+        assert_eq!((after_zero, after_two), (3, 1));
+
+        // Re-register continues seq from the file line count, not the cursor.
+        register(sid).unwrap();
+        observe_simple(sid, "acp");
+        unregister(sid);
+        let (events, _) = replay(sid).unwrap();
+        assert_eq!(seqs_of(&events), vec![1, 2, 3, 4]);
+
+        set_root_override_for_tests(None);
+        drop(guard);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// P0-3: health is durable across a process restart and reports the same
+    /// facts the close-time log used to hold only in memory.
+    #[test]
+    fn health_persists_counters_and_survives_reregister() {
+        let guard = SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let root = sandbox("health");
+        set_root_override_for_tests(Some(root.clone()));
+        let sid = "session_tee_health";
+
+        register(sid).unwrap();
+        observe_simple(sid, "status");
+        observe_simple(sid, "acp");
+        observe_simple(sid, "acp");
+        unregister(sid);
+
+        let first = health(sid).unwrap();
+        assert_eq!(first.file_lines, 3);
+        assert!(first.enqueued >= 3);
+        assert!(first.written >= 3);
+        assert_eq!(first.dropped, 0);
+        assert!(!first.registered);
+        assert!(first.updated_at > 0);
+
+        // A later run must continue the lifetime counters, not restart at 0.
+        register(sid).unwrap();
+        let live = health(sid).unwrap();
+        assert!(live.registered);
+        assert!(live.enqueued >= 3);
+        observe_simple(sid, "acp");
+        unregister(sid);
+
+        let second = health(sid).unwrap();
+        assert_eq!(second.file_lines, 4);
+        assert!(second.enqueued >= 4);
+        assert!(second.written >= 4);
+
+        // The dropped count is a persisted fact even when no writer is alive.
+        let persisted = TeeHealthCounters {
+            dropped: 7,
+            ..Default::default()
+        };
+        save_health(&root, sid, &persisted);
+        assert_eq!(health(sid).unwrap().dropped, 7);
+
+        set_root_override_for_tests(None);
+        drop(guard);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// P0-3: replay records start seq / size / bad lines, and the segment
+    /// reader reports truncation honestly.
+    #[test]
+    fn replay_metrics_and_segments_are_honest() {
+        let guard = SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let root = sandbox("health-replay");
+        set_root_override_for_tests(Some(root.clone()));
+        let sid = "session_tee_health_replay";
+
+        register(sid).unwrap();
+        for _ in 0..4 {
+            observe_simple(sid, "acp");
+        }
+        unregister(sid);
+        set_consumed_seq(sid, 2).unwrap();
+
+        let (events, bad) = replay(sid).unwrap();
+        assert_eq!((events.len(), bad), (4, 0));
+        let after_full = health(sid).unwrap();
+        assert_eq!(after_full.replay_start_seq, 2);
+        assert_eq!(after_full.replay_events, 4);
+        assert!(!after_full.replay_truncated);
+        assert_eq!(after_full.consumed_seq, 2);
+
+        let first = replay_segment(sid, 2, 1).unwrap();
+        assert_eq!(first.events.len(), 1);
+        assert_eq!(first.next_seq, 3);
+        assert!(first.has_more, "more records exist after the first segment");
+        let after_segment = health(sid).unwrap();
+        assert!(!after_segment.replay_truncated || after_segment.replay_events == 1);
+        assert_eq!(after_segment.replay_start_seq, 2);
+
+        let rest = replay_segment(sid, 3, 10).unwrap();
+        assert_eq!(rest.events.len(), 1);
+        assert!(!rest.has_more);
+        assert_eq!(rest.next_seq, 4);
+        assert!(!health(sid).unwrap().replay_truncated);
+
+        // A malformed line is counted (and skipped), never fabricated away.
+        let path = events_path(&root, sid);
+        let mut body = std::fs::read_to_string(&path).unwrap();
+        body.push_str("{not json}\n");
+        std::fs::write(&path, body).unwrap();
+        let (events, bad) = replay(sid).unwrap();
+        assert_eq!(events.len(), 4);
+        assert_eq!(bad, 1);
+        assert_eq!(health(sid).unwrap().bad_lines, 1);
+
+        set_root_override_for_tests(None);
+        drop(guard);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// P0-3: an unflushed run (health file missing/stale) still reports the
+    /// file's lines as written; health never claims less than the disk holds.
+    #[test]
+    fn health_written_floor_matches_the_ledger() {
+        let guard = SANDBOX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let root = sandbox("health-floor");
+        set_root_override_for_tests(Some(root.clone()));
+        let sid = "session_tee_health_floor";
+        register(sid).unwrap();
+        observe_simple(sid, "status");
+        observe_simple(sid, "acp");
+        unregister(sid);
+        // Simulate a crash that lost the health file but kept the ledger.
+        std::fs::remove_file(health_path(&root, sid)).ok();
+        let after = health(sid).unwrap();
+        assert_eq!(after.file_lines, 2);
+        assert!(after.enqueued >= 2);
+        assert!(after.written >= 2);
         set_root_override_for_tests(None);
         drop(guard);
         std::fs::remove_dir_all(&root).ok();

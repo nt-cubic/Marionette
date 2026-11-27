@@ -12,6 +12,7 @@ mod antigravity_support;
 mod app_paths;
 mod app_update;
 mod browser;
+mod cheap_text;
 mod chief;
 mod commands;
 mod computer;
@@ -53,10 +54,12 @@ mod plugin_host;
 mod plugins;
 mod preflight;
 mod process_util;
+mod project_actions;
 mod provider_usage;
 mod proxy;
 mod shell_integration;
 mod storage;
+mod subagent_observe;
 mod telegram_remote;
 mod terminal_runtime;
 mod tools_mcp;
@@ -687,6 +690,10 @@ fn main() {
             commands::pick_files,
             commands::delete_project,
             commands::reorder_projects,
+            project_actions::project_actions_list,
+            project_actions::project_actions_save,
+            project_actions::project_actions_run,
+            project_actions::project_actions_run_worktree_setup,
             commands::list_agents,
             commands::list_custom_agents,
             commands::add_custom_agent,
@@ -700,6 +707,7 @@ fn main() {
             commands::agent_versions,
             commands::list_sessions,
             commands::refresh_external_sessions,
+            commands::discover_recent_projects,
             commands::create_session,
             commands::create_child_session,
             commands::list_child_sessions,
@@ -732,6 +740,7 @@ fn main() {
             commands::set_stream_interests,
             commands::read_image_data_url,
             commands::save_pasted_image,
+            commands::save_pasted_text,
             commands::clipboard_files,
             commands::cancel_acp_session,
             commands::stop_acp_session,
@@ -744,6 +753,7 @@ fn main() {
             commands::append_debug_log,
             commands::debug_log_path,
             diagnostics::save_diagnostic_report,
+            diagnostics::build_diagnostic_bundle,
             commands::probe_provider_usage,
             commands::probe_acp_billing,
             commands::generate_handoff,
@@ -819,6 +829,8 @@ fn main() {
             chief::commands::chief_tee_replay,
             chief::commands::chief_tee_consume,
             chief::commands::chief_tee_cursor,
+            chief::commands::chief_tee_health,
+            chief::commands::chief_tee_replay_segment,
             chief::staff_commands::chief_staff_list,
             chief::staff_commands::chief_staff_save,
             chief::staff_commands::chief_staff_delete,
@@ -856,6 +868,9 @@ fn main() {
             browser::browser_pick_clear,
             browser::browser_pick_finalize,
             browser::browser_pick_resolve,
+            browser::browser_find,
+            browser::browser_viewport_set,
+            browser::browser_viewport_reset,
             browser::browser_permission_respond,
             browser::browser_handoff_respond,
             browser::set_browser_tools_enabled,
@@ -905,7 +920,12 @@ fn main() {
             commands::council_delete_run,
             commands::council_list_models,
             commands::council_probe_models,
-            commands::council_auto_formation
+            commands::council_auto_formation,
+            cheap_text::cheap_text_settings_get,
+            cheap_text::cheap_text_settings_set,
+            cheap_text::cheap_text_catalog,
+            cheap_text::cheap_text_generate,
+            cheap_text::cheap_text_generate_title
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|error| {

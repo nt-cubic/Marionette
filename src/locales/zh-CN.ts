@@ -51,6 +51,8 @@ import { zh as zhFeUv2F } from "./parts/fe-uv2f.zh";
 import { zh as zhFeChief } from "./parts/fe-chief.zh";
 import { zh as zhFePicker } from "./parts/fe-picker.zh";
 import { zh as zhFeDelegate } from "./parts/fe-delegate.zh";
+import { zh as zhFeProjectActions } from "./parts/fe-projectactions.zh";
+import { zh as zhFeCheapText } from "./parts/fe-cheaptext.zh";
 
 export const zh = {
   ...zhCommon,
@@ -100,4 +102,6 @@ export const zh = {
   ...zhFeUv2F,
   ...zhFeChief,
   ...zhFeDelegate,
+  ...zhFeCheapText,
+  ...zhFeProjectActions,
 } as const;

@@ -9,7 +9,7 @@ import { ChevronRight } from "lucide-react";
 import { useT } from "../../lib/i18n";
 import { agentDisplayName, agentInkStyle } from "../../lib/agentInk";
 import type { UsageInsights } from "../../lib/usageInsights";
-import { SectionHead, Sparkline, fmtMs, fmtPct, fmtTokens, fmtUsd } from "./primitives";
+import { SectionHead, SourceTag, Sparkline, fmtMs, fmtPct, fmtTokens, fmtUsd } from "./primitives";
 
 /** Token-bar width in % of the busiest agent's total (0 when there is nothing). */
 function barPct(total: number, max: number): number {
@@ -95,6 +95,7 @@ export function UsageAgents({ ins }: { ins: UsageInsights }) {
                     )}
                     <b>{name}</b>
                     {single && <em>{single.modelId}</em>}
+                    {single?.pricedBy === "custom" && <SourceTag source="custom" />}
                   </span>
                   <TokenBar total={row.total} max={maxTotal} />
                   <span
@@ -115,6 +116,7 @@ export function UsageAgents({ ins }: { ins: UsageInsights }) {
                     <div key={m.modelId} className="uv2-agents__sub" style={agentInkStyle(row.agentId)}>
                       <span className="uv2-agents__who uv2-agents__who--sub">
                         <em>{m.modelId}</em>
+                        {m.pricedBy === "custom" && <SourceTag source="custom" />}
                       </span>
                       <TokenBar total={m.total} max={maxTotal} />
                       <span className="uv2-agents__spark" />

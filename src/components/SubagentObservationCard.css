@@ -1,0 +1,172 @@
+/* Subagent parent card (P0-5 / P0-7). Marionette language: 3px radius, 1px
+   border, no shadow, 22px chips. Additive metadata - never a collapsing card. */
+
+.subagent-observation-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 3px);
+  background: var(--panel-muted);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.subagent-observation-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.subagent-observation-card__dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.subagent-observation-card[data-state="running"] .subagent-observation-card__dot,
+.subagent-observation-card[data-state="starting"] .subagent-observation-card__dot {
+  background: var(--accent);
+}
+
+.subagent-observation-card[data-state="running"] .subagent-observation-card__dot {
+  animation: subagent-observation-pulse 1.6s ease-in-out infinite;
+}
+
+.subagent-observation-card[data-state="waiting_user"] .subagent-observation-card__dot {
+  background: var(--tone-warn);
+}
+
+.subagent-observation-card[data-state="completed"] .subagent-observation-card__dot {
+  background: var(--green);
+}
+
+.subagent-observation-card[data-state="failed"] .subagent-observation-card__dot {
+  background: var(--tone-hot);
+}
+
+.subagent-observation-card__state {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-strong);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-observation-card__chips {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.subagent-observation-card__chip {
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 2px);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.subagent-observation-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.subagent-observation-card__action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+.subagent-observation-card__action-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-strong);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-observation-card__action-status {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.subagent-observation-card__path {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-observation-card__muted {
+  color: var(--text-faint);
+}
+
+.subagent-observation-card__note {
+  color: var(--tone-warn);
+}
+
+.subagent-observation-card__thought {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-muted);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.subagent-observation-card__summary {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+}
+
+.subagent-observation-card__actions {
+  display: flex;
+  gap: 6px;
+}
+
+.subagent-observation-card__open {
+  flex: 0 0 auto;
+}
+
+@keyframes subagent-observation-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .subagent-observation-card[data-state="running"] .subagent-observation-card__dot {
+    animation: none;
+  }
+}

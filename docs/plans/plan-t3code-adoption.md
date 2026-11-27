@@ -18,7 +18,7 @@
 | 最先做哪件 | **Phase 0：子代理可观测性**（四个 worker 真跑了，界面只看到约 1 条 thought） | 审计 §0.1 |
 | 最容易白费劲的 | 追 T3 的远程/多端/PR 平台/Workflows——形态不同，做了就错 | 审计 §5.4 |
 | 护城河 | 跨用引擎、贴边常驻、Computer Use（+ 圆桌、插件层、派活账本） | 审计 §0、§4 第 24/31/40 行 |
-| 第一批 | S0–S4（Phase 0 + Phase 1 全部） | 本文件 §11 |
+| First user-visible wave | S0, then P1-3/P1-1, then S1-S4, then P1-2/P1-8; see section 14 | Sections 11 and 14 |
 
 **一句话**：先把「多 agent 干活时我看得见」修好，再把每天要按的四个键（发送、排队、审批、撤销）修顺，
 然后才动回合服务与 ACP 连续性这种结构性大改。
@@ -42,6 +42,9 @@ T3 是**控制平面**：执行发生在持有工作区的 environment，Web/桌
 3. **回合生命周期只有一份实现**——UI、Telegram、员工模式、AI 派活不再各自拼 ACP 调用（Phase 2）。
 4. **代码交付从「让 agent 尽量做对」升级成确定性工具链**——终端、定位、批注、提交、按轮回退（Phase 3）。
 5. **保留并强化三个核心差异**：跨用模型、贴边常驻、Computer Use。
+6. **Daily workflow friction is a product defect.** Once observability is trustworthy, prioritize the
+   T3-only UX gaps catalogued in section 14: triage, attachments, paste folding, references, startup,
+   onboarding, browser/diff controls, focus, and usage-aware delivery.
 
 ### 1.3 明确不做（做了就是错，不是「暂时不做」）
 
@@ -108,6 +111,7 @@ Marionette 自己的员工模式（`docs/plans/plan-employee-mode.md`）继续�
 | Phase 3 | 代码交付工作流 | M–L | Phase 1 | 终端、Diff、提交、回退可用 | 是（S7–S9） |
 | Phase 4 | 搜索、无障碍与快捷键 | M | Phase 1 | 找得快、操作一致、可访问 | 是（S10） |
 | Phase 5 | 本地工作区与系统能力 | L | Phase 2/3 | worktree、唤醒、备份与诊断 | 需单独 beta（S11） |
+| P1 annex | T3-only user-experience gaps | M | S0 for refs; otherwise independent | faster daily use without changing product shape | yes (P1 slices, see section 14) |
 
 **顺序不可倒**：Phase 2 的 DOM/协议改动风险最高，必须建立在 Phase 0 的可观测基础上，且不得与 Phase 1
 共用同一个实现代理。Phase 5 全部是「可选增强」，任何一项失败都不该拖住前面。
@@ -541,17 +545,30 @@ worker 的事件要经过五段才到眼睛，**先给每段装计数器**，别
 | S9 | 按轮检查点（3E） | 是，需数据迁移测试 | S8 |
 | S10 | 正文搜索 + 无障碍 + 快捷键（Phase 4） | 是 | S1 |
 | S11 | 单仓 worktree（5A） | 需单独 beta | S9 |
+| **P1-3** | Large-paste folding | Yes | independent after S0 write freeze |
+| P1-1 | Diagnostic triage chat | Yes | diagnostics schema |
+| P1-2 | Question-answer attachments | Yes | P1-3 attachment intake |
+| P1-4 | Explicit bounded session references | Yes | S0 |
+| P1-6 | Recent-project discovery only (no clone/default overrides) | Yes | P1-1/P1-3 not required |
+| P1-7 | Browser find/viewport + Diff find/whitespace/colorblind | Yes | Phase 3 browser/diff surfaces |
+| P1-8 | T3-style Usage redesign + overrides/reset-aware scheduled send | Yes | existing ledger + scheduled sends |
+| P1-9 | Prompt links + F6 area focus | Yes | versioned launch handoff |
+| P1-10 | Window capture into the current draft | Yes | P1-3 attachment intake + Computer Use |
+| P1-11 | Working/settled/snoozed/archived session presentation states | Yes | S0 + scheduled/background projections |
+| P1-12 | On-demand tool schema search | Yes | S0 tool catalog |
+| P1-13 | Cheap text generation for titles/commit messages | Yes | A2 + credentials/source reuse |
+| P1-14 | Local project actions | Yes | P1-11 + worktree setup hooks |
 
 ### 第一批（回家就做）
 
-**S0–S4**。理由：
+**Revised first wave: S0, then P1-3/P1-1, then S1-S4, then P1-2/P1-4.** Section 14 supersedes the older S0-S4-only wording.
 
 1. 它们不依赖 ACP 协议层重写，风险可控。
 2. 直接改善每天的使用体验（看得见 worker、草稿不丢、审批不抢输入、删错能退）。
 3. 完成后，Phase 2 的大改可以在「可观测、可回退」的地基上进行。
 4. 完成后，多代理并行才真的安全（现在看不见 worker，等于并行等于赌博）。
 
-S0–S4 完成后再决定是否进 S5（`session/load`）与统一回合服务。
+After the revised wave in section 14 is green, decide whether to enter S5 (`session/load`) and the unified turn service.
 
 ---
 
@@ -605,7 +622,272 @@ S0–S4 完成后再决定是否进 S5（`session/load`）与统一回合服务�
 6. **第二周：S1–S4。**
    S1（队列双动作）→ S2（草稿/历史）→ S3（审批不抢焦点）→ S4（Undo）。
    每片单独可发；任何一片卡住就发前面的，别攒大版本。
-7. **第二周末：决定是否进 S5。**
-   判据：S0–S4 全绿、真机一周无回归、你愿意在看不见 worker 的情况下都没底气——现在有底气了，才动 `acp.rs`。
+7. **Decision gate for S5.**
+   Proceed only after the revised wave in section 14 is green and has one week without regressions;
+   only then should `acp.rs` be touched.
 
-> 一句话提醒：**先让过程可见，再让过程更快。** 反过来做的代价，审计已经用四个 worker 和一条 thought 付过了。
+> Core sequence: make process visible, remove daily workflow friction, then make the runtime faster.
+
+## 14. Second-pass UX implementation queue (2026-11-27)
+
+> Source: [T3 second-pass audit, section 9](../research/t3code-feature-audit.md#9-second-pass-review-t3-ux-gaps-worth-adopting-2026-11-27).
+> This annex is authoritative where it conflicts with earlier wording in this plan. It does not replace
+> Phase 0 or the existing S0-S11 structural work; it inserts user-visible P1 slices where they can ship
+> independently and changes the release order so useful improvements do not wait behind ACP rewrites.
+
+### 14.1 UX ordering principles
+
+1. Finish S0 observability before expanding parallel-agent work. A visible process is still the first
+   trust requirement.
+2. Pull independent UX wins forward. Large-paste folding and diagnostic triage
+   do not depend on `acp.rs` and should not wait for the unified turn service.
+3. Preserve the current inheritance model unless the user explicitly changes it: a new chat follows
+   the current or most recent same-project dialog, with per-agent last-used values as fallback.
+4. Every state has a reverse state and every unsupported action explains why it is disabled.
+5. No new cloud capability is needed for any UX item below.
+
+### 14.2 Revised first user-visible wave
+
+Ship in this order, treating each item as independently releasable:
+
+1. **S0** - subagent observability. This remains the first correctness slice.
+2. **P1-3** - large-paste folding. Small, isolated, immediate every-day benefit.
+3. **P1-1** - diagnostic triage chat. Turns the existing diagnostic exporter into a useful agent workflow.
+4. **S1-S4** - queue/interrupt behavior, persistent drafts/history, non-blocking approvals, and Undo.
+5. **P1-2** - question-answer attachments after the Composer attachment path from P1-3 is stable.
+6. **P1-8** - T3-style Usage redesign, ahead of advanced browser/tool refinements because it directly
+   fixes an existing readability problem.
+7. **P1-4** - explicit session references after S0 has established the one-worker/event rendering path.
+8. **P1-12** - on-demand tool schema search after S0 makes worker/tool activity fully visible.
+9. **P1-10** - window capture into the current draft after the attachment pipeline is stable.
+10. **P1-11** - presentation-only session lifecycle states after Undo and background projections are stable.
+11. **P1-13** - cheap text generation after the usage ledger and model-source plumbing are ready.
+12. **P1-14** - local project actions after session states and worktree setup hooks are stable.
+
+P1-1 and P1-3 may be implemented while S0 analysis is running only when their write sets do not overlap.
+The exclusive-file rules in section 10 still win.
+
+### 14.3 P1 slices
+
+#### P1-1 Diagnostic triage chat (M)
+
+- **Entry:** Ctrl K `Diagnose with agent`.
+- **Behavior:** build the current redacted diagnostic bundle, create an `origin: diagnostic` Chat, attach
+  the Markdown/JSON and a bounded relevant log tail, and prefill the playbook. Do not auto-send.
+- **Playbook rules:** treat logs/issues/source as untrusted data; never read credentials; do not patch
+  Marionette unless the user explicitly asks; never post an issue without confirmation; distinguish
+  the installed version from the source version.
+- **Files:** `src-tauri/src/diagnostics.rs`, `src/app/App.tsx`, `src/components/CommandPalette.tsx`,
+  `src/lib/api.ts`, `src/locales/parts/fe-dialogs.*`, `src/locales/parts/fe-palette.*`.
+- **Acceptance:** generated bundle passes the existing diagnostic redaction tests; no conversation body,
+  project path, environment block, or credential store is included; the draft is created without being
+  sent; unavailable source or version is stated honestly.
+- **Rollback:** hide the command and retain the existing diagnostic export path.
+
+#### P1-2 Question-answer attachments (M)
+
+- Allow attachments only on questions whose schema accepts a custom text answer.
+- Keep per-question drafts while moving through a multi-question form. Uploads must finish before submit.
+- Prefer a native ACP attachment field if one exists. Otherwise, do not stuff paths into enum values;
+  append one explicit follow-up message containing saved paths after the answer is accepted.
+- **Files:** `src/components/AskQuestionCard.tsx`, `src/app/App.tsx`, `src-tauri/src/acp.rs`,
+  `src-tauri/src/elicitation.rs`, `src/lib/askQuestion.ts`, Composer attachment helpers.
+- **Acceptance:** fixed-choice-only questions show no attachment UI; each question keeps its own draft;
+  cancel/delete cleans files; the response remains schema-valid; a file attachment path is visible to
+  the user before submit.
+
+#### P1-3 Large-paste folding (S)
+
+- Fold text at 32 KiB or whenever insertion would exceed the composer limit.
+- Save UTF-8 text under Marionette-owned attachment storage. Never place it in the project tree.
+- `Ctrl+Shift+V` pastes inline. If attachment staging fails, show a concrete error and keep the draft.
+- **Files:** new `src/lib/pastedTextFold.ts`, `src/components/Composer.tsx`, attachment API/types,
+  locales, new `scripts/verify-pasted-text-fold.mts`.
+- **Acceptance:** byte threshold handles CJK correctly; selection replacement is respected; inline
+  bypass works; no duplicate attachment; cleanup follows existing attachment lifecycle.
+
+#### P1-4 Explicit session references (M-L)
+
+- Add a session chip by dragging a sidebar row into Composer or pasting a Marionette session link.
+- First version attaches a bounded snapshot: metadata, first user request, last N user/assistant turns,
+  and selected tool outcomes. No thoughts, credentials, raw output bodies, or unrelated events.
+- Second version adds a read-only MCP tool with hard event and byte limits. Only explicitly referenced
+  sessions are readable.
+- **Files:** new `src/lib/sessionReference.ts`, snapshot builder, Composer chip support, `src-tauri`
+  storage read API, later `src-tauri/src/tools_mcp.rs`.
+- **Acceptance:** 24 MB source transcript produces a bounded reference without blocking UI; no reference
+  can widen filesystem or credential access; deleting/redacting the source is reflected honestly.
+
+
+#### P1-6 Recent-project discovery only (M)
+
+- Scan existing agent session stores for recent project roots. Present candidate roots with activity
+  counts; add only user-selected projects and then reuse per-project session import.
+- Do not add Git URL cloning. Existing local projects remain the normal entry path.
+- Do not add project-level agent/model/mode/effort/permission defaults. The current behavior already
+  inherits the current or most recent same-project dialog, with per-agent last-used values as fallback.
+- **Files:** `src-tauri/src/parsers/`, `src/components/GettingStartedGuide.tsx`, project shelf/onboarding UI.
+- **Acceptance:** no project is added without explicit selection; discovery failure does not block normal
+  Add Project; no existing project or session preference is overwritten.
+
+#### P1-7 Browser and diff usability (M)
+
+- Browser find-on-page first; then responsive viewport presets, rotate, and zoom.
+- Diff find over loaded files, hide-whitespace mode, and a colorblind-friendly palette.
+- **Files:** `BrowserPage.tsx`, browser surface/CDP APIs, `UnifiedDiffView.tsx`, `DiffPage.tsx`, styles,
+  locales, pure helper scripts.
+- **Acceptance:** Ctrl F routes to the focused surface instead of hijacking the transcript; viewport
+  changes are labeled as emulation; whitespace mode never changes the underlying patch or commit data.
+
+#### P1-8 T3-style Usage page redesign + overrides/reset-aware send (L)
+
+- **Design transplant:** replace the current long-dashboard default with T3's hierarchy: Usage header
+  with environment/provider filters, period and Cost/Tokens/Limits tabs; one large total and session
+  count; provider shares; one trend chart; then an expandable secondary detail layer.
+- Keep Marionette's exact ledger data, time/tool/file/context breakdowns, session rows, per-turn detail,
+  backfill and CSV export, but do not show all of them simultaneously on first paint.
+- Apply Marionette's existing 3px/1px/no-shadow visual language. Preserve responsive controls and
+  skeleton/loading behavior; no horizontal overflow in dock or narrow panes.
+- Add custom price-per-million, alias/model mapping, and include/exclude filters. Provider-reported cost
+  remains authoritative; API estimate and coverage stay explicitly labeled.
+- When a usage-limit failure has a trustworthy reset time, offer `Schedule after reset` through the
+  existing scheduled-send queue. Do not add a second scheduler or auto-retry.
+- **Files:** `UsageAnalysisDialog.tsx`, `UsagePage.tsx`, `UsageV2Body.tsx`, `usage/*`, usage styles,
+  locales, `usageLedger.ts`/`usageInsights.ts`, existing CSV and scheduler paths.
+- **Acceptance:** first screen answers total, largest provider/model, period and limit state in under five
+  seconds; Cost/Tokens/Limits tabs persist; all advanced analytics and CSV remain reachable; custom
+  price never masquerades as billed cost; scheduled reset delivery is explicit and cancellable.
+
+#### P1-9 Prompt links and F6 area focus (M)
+
+- Add a versioned launch payload for prompt links. Replace the raw pending-open-path file only after
+  backward-compatible parsing is in place.
+- Parameters: prompt, project/session, agent, model. Do not include permissions or auto-send.
+- Strip control/hidden characters, cap prompt length, warn on removed characters, and confirm before
+  replacing a non-empty draft.
+- Add F6/Shift+F6 focus cycling across visible workspace areas and restore the prior focus after closing
+  palettes/menus.
+- **Acceptance:** links cannot inject hidden instructions or change permission state; second-instance
+  routing works from edge dock and normal windows; F6 skips hidden areas and never traps focus.
+
+#### P1-10 Window capture into the current draft (M)
+
+- Add a configurable user shortcut for capture-window-into-draft.
+- Reuse Computer Use window/screenshot primitives and accessibility-tree summarization; do not widen
+  agent-side Computer Use permissions.
+- Attach the PNG and a bounded text summary to the current or new draft. Exclude Marionette itself and
+  existing blacklisted windows; never auto-send.
+- **Acceptance:** works without sharing the window to an agent first; capture failure is visible; the
+  resulting attachment follows normal cleanup; keyboard shortcut is configurable or conflicts clearly
+  with an existing chord.
+
+#### P1-11 Session working/settled/snoozed/archived states (M)
+
+- Keep process state and presentation state separate. Do not make `settled`, `snoozed`, or `archived`
+  kill an agent process by implication.
+- Working groups running, delegated, and attention-waiting sessions. Settled auto-collapses after the
+  configured quiet period only when there is no unread attention, active background work, approval,
+  question, or scheduled send.
+- Snooze hides until a chosen time or an attention event. Archive removes the row from the normal shelf
+  and search while preserving restore.
+- **Files:** `sessionGroups.ts`, `ProjectShelf.tsx`, session metadata/storage, scheduled/background task
+  projections, locales, `scripts/verify-session-states.mts`.
+- **Acceptance:** no auto-settle while attention is pending; status filters/counts agree; Undo or Restore
+  works; process-park behavior and tests remain unchanged.
+
+#### P1-12 On-demand tool schema search (M)
+
+- Keep core tools resident. Put browser, computer, and optional plugin schemas behind one bounded
+  tool-search entry instead of injecting every schema into every session.
+- Preserve explicit direct calls for user-enabled tools; discovery is for reducing baseline context tax,
+  not for hiding capabilities.
+- **Files:** `src-tauri/src/tools_mcp.rs`, tool-help/catalog registration, model-facing help tests.
+- **Acceptance:** schema bytes at session start decrease with recorded before/after numbers; browser and
+  computer tools are discoverable in at most two calls; existing permission and ref-lease tests remain green.
+
+
+- `turn_service` accepts a durable/client request id and deduplicates UI, Telegram, scheduled, and
+  delegated sends. A retry returns the existing command result rather than starting another turn.
+- One connection owner probes before replacing a live transport or engine session. Foregrounding, proxy
+  changes, and network recovery must not create parallel retry loops.
+- Health and data freshness are separate UI states.
+- Starting/running/waiting phases come from actual protocol/process signals, never timers.
+- Recovery retires effects tied to a lost process; it does not replay prompts or checkpoints automatically.
+
+#### P1-13 Cheap text-generation service (M)
+
+- Configure one low-cost text model for semantic title regeneration, branch names, and editable commit
+  messages. Keep it independent from coding-agent turns and never block sending.
+- No key/network means the existing first-message title remains. Label these calls as a separate usage
+  source and do not mix them into agent quota totals.
+- Reuse existing encrypted credential/source storage. A failed generation is silent but logged without
+  prompt or response bodies.
+
+#### P1-14 Local project actions (M)
+
+- Add user-owned setup/dev/test/cleanup actions under Marionette project metadata. Do not execute
+  checked-in scripts from the repository.
+- Show the exact command before first run. Actions use an ACP terminal, expose output/stop, and never
+  inherit a higher permission mode.
+- Setup may run after worktree creation; other actions are manual. Failure does not block opening the
+  session unless the user explicitly chose wait-for-setup.
+
+### 14.4 Structural requirements added to S5
+
+
+### 14.5 Quality gates added
+
+- Long renderer tasks and backend main-loop stalls above two seconds write a bounded local trace with
+  the same redaction boundary as diagnostics; provide a small offline summary script.
+- UI changes attach before/after captures. Motion/timing changes also record a short capture when
+  practical.
+- Every new state is reviewed with its reverse transition and recovery path.
+- Large-component handler review: only callbacks crossing props/effect/dependency boundaries need stable
+  wrappers; ordinary render-local logic stays uncached.
+
+### 14.6 Corrections that override earlier plan text
+
+- Scheduled send is already implemented. Extend it; do not add the old proposed `scheduler.rs`.
+- First-prompt auto-title is already implemented. A2 now means semantic model generation, regeneration,
+  and optional title-style instructions.
+- `--open-path`, bare-path launch, and single-instance handoff already exist. P1-9 extends that contract.
+- Dev-server discovery, quote/annotation capture, MemoBox draft saving, browser handoff, and explicit
+  browser sharing are existing features and must not be re-planned.
+
+### 14.7 Explicit defer / reject
+
+- **Defer:** provider instances, MCP OAuth UI, private secret-request cards, rich Markdown composer,
+  Activity Zen modes, side chat, custom keybinding `when` engine, browser recording/cookie import.
+- **Defer until the named dependency:** model-predicted next prompt after a cheap text generator exists;
+  same-prompt multi-model runs after worktree and observability are stable.
+- **Keep rejected:** cloud identity/relay, mobile clients, guest/peer links, PR/Issue platform,
+  workflows/webhooks, enterprise managed policy, product telemetry, custom CSS themes, automatic
+  crash-continuation that may spend money.
+- **User declined:** Windows startup registration, Git URL clone in Add Project, and project-level
+  default agent/model/permission overrides. Do not schedule those.
+
+### 14.8 Release hardening
+
+- Authenticode signing needs a publisher/certificate decision and should be tracked separately from UI
+  slicing.
+- Add a generated third-party notice inventory and an in-app viewer.
+- Keep the Phase 5 backup/trial-migration rule: a failed migration must leave the old data recoverable.
+### 14.9 Remaining audit quality backlog
+
+These were present in the first audit but had no dedicated execution slice in this plan:
+
+- **Q1 Performance budgets.** Add startup, transcript, and dock A/A scripts with machine-readable JSON.
+  Start by recording the A/A noise floor; do not enforce a threshold until two identical builds are
+  reproducibly comparable.
+- **Q2 Model-facing evals.** Add fixed scenarios for delegation goals, tool descriptions, and generated
+  titles. Run them with the cheapest usable model and store pass rates and cost, not natural-language
+  assertions.
+- **Q3 Real-flow proof.** Add deterministic replay fixtures for the most failure-prone UX paths: worker
+  cards, queue/steer, question attachments, session references, and triage bundles. A visual change also
+  gets before/after captures.
+- **Q4 Documentation governance.** Rewrite current behavior in CURRENT.md or guides when a decision
+  changes. Keep historical implementation narration in docs/archive; do not append a second account
+  of current behavior.
+- **Q5 Remaining optional items.** D3 bounded windows is already directionally implemented; D5 honest
+  capabilities stays in S5; D10 backup/migration and D12 sandboxed visual replies remain explicitly
+  deferred or optional.

@@ -1358,3 +1358,41 @@
 .getting-started__footer { display: flex; align-items: center; gap: 10px; flex: none; padding: 10px 20px; border-top: 1px solid var(--hairline); color: var(--text-faint); font-size: 11px; }
 .getting-started__skip { margin-left: auto; padding: 0 8px; height: 26px; border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); font: inherit; font-size: 11.5px; cursor: pointer; }
 .getting-started__skip:hover { background: var(--panel-soft); color: var(--text-strong); }
+
+/* ---- Recent-project discovery (T3 P1-6) ---- */
+.getting-started__discover { padding: 0 20px 12px; }
+.recent-projects { border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: transparent; }
+.recent-projects__toggle { display: flex; align-items: center; gap: 6px; width: 100%; height: 32px; padding: 0 10px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); font: inherit; font-size: 12px; cursor: pointer; }
+.recent-projects__toggle:hover { background: var(--panel-soft); color: var(--text-strong); }
+.recent-projects__toggle span { flex: 1; text-align: left; }
+.recent-projects__body { padding: 0 10px 10px; border-top: 1px solid var(--hairline); }
+.recent-projects__hint { margin: 8px 0; color: var(--text-faint); font-size: 11.5px; line-height: 1.55; }
+.recent-projects__bar { display: flex; justify-content: flex-end; }
+.recent-projects__scan { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 6px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--accent); font: inherit; font-size: 11.5px; cursor: pointer; }
+.recent-projects__scan:hover { background: var(--panel-soft); }
+.recent-projects__scan:disabled { opacity: 0.5; cursor: default; background: transparent; }
+.recent-projects__scan .is-spinning { animation: context-lend-spin 900ms linear infinite; }
+.recent-projects__list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.recent-projects__row { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border: 1px solid var(--hairline); border-radius: var(--radius-sm); }
+.recent-projects__main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.recent-projects__main b { color: var(--text-strong); font-size: 12.5px; font-weight: 500; }
+.recent-projects__path { color: var(--text-faint); font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-projects__meta { color: var(--text-muted); font-size: 11px; line-height: 1.5; }
+.recent-projects__row-error { color: var(--red); font-size: 11px; line-height: 1.5; }
+.recent-projects__add { flex: none; display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--panel-muted); color: var(--text-strong); font: inherit; font-size: 11.5px; cursor: pointer; }
+.recent-projects__add:hover { background: var(--panel-soft); }
+.recent-projects__add:disabled { opacity: 0.5; cursor: default; }
+.recent-projects__done { flex: none; display: inline-flex; align-items: center; gap: 4px; color: var(--text-faint); font-size: 11.5px; }
+.recent-projects__done svg { color: var(--accent); }
+.recent-projects__empty,
+.recent-projects__truncated { margin: 8px 0 0; color: var(--text-faint); font-size: 11.5px; line-height: 1.5; }
+.recent-projects__error { margin: 6px 0 0; color: var(--red); font-size: 11.5px; line-height: 1.5; }
+.recent-projects.is-compact { margin: 0 0 4px; border: 0; border-radius: 0; }
+.recent-projects.is-compact .recent-projects__toggle { height: 26px; padding: 0 8px; color: var(--text-faint); font-size: 11.5px; }
+.recent-projects.is-compact .recent-projects__body { padding: 0 6px 6px; }
+.recent-projects.is-compact .recent-projects__list { max-height: 220px; overflow-y: auto; }
+.recent-projects.is-compact .recent-projects__row { flex-direction: column; gap: 6px; padding: 6px 8px; }
+.recent-projects.is-compact .recent-projects__add { align-self: flex-start; }
+@media (prefers-reduced-motion: reduce) {
+  .recent-projects__scan .is-spinning { animation: none; }
+}

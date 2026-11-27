@@ -61,6 +61,9 @@ function humanizeSlug(slug: string): string {
   if (!s) return s;
   // Already spaced / title-ish
   if (/\s/.test(s) && s.length <= 40) return s;
+  // A human-authored label with capitals is already display text; do not turn
+  // its version hyphen into a space ("GLM-5.3" must stay hyphenated).
+  if (/[A-Z]/.test(s)) return s;
 
   // grok-4.5 → Grok 4.5
   const grok = s.match(/^grok[-_]?([\d.]+(?:[-_][\w.]+)?)$/i);
@@ -127,6 +130,7 @@ export function prettyModelLabel(
   let candidate = rawLabel || rawId;
   candidate = stripLeadingBracket(candidate);
   const fromLabel = providerPrefix(candidate);
+  const hadProviderPrefix = Boolean(fromLabel);
   if (fromLabel) candidate = fromLabel.rest;
 
   candidate = stripNoise(candidate);
@@ -149,7 +153,9 @@ export function prettyModelLabel(
     }
   }
 
-  candidate = humanizeSlug(candidate);
+  // An explicit ACP label is already display text. Preserve its spelling
+  // (GLM-5.3, deepseek-v4-pro); only synthesize a human label from a raw id.
+  if (!rawLabel || !hadProviderPrefix) candidate = humanizeSlug(candidate);
   candidate = candidate.replace(/\s{2,}/g, " ").trim();
   return ellipsize(candidate || rawId || "model", maxLen);
 }
@@ -493,10 +499,12 @@ export function prettyEffortLabel(
   label: string | null | undefined,
   id?: string | null,
 ): string {
-  const raw = (label ?? "").trim() || (id ?? "").trim();
+  const explicitLabel = (label ?? "").trim();
+  const raw = explicitLabel || (id ?? "").trim();
   if (!raw) return "";
   // "Max Effort" → "Max"; a label that is only "Effort" is kept as-is.
   const cleaned = raw.replace(/\s+effort$/i, "").trim() || raw;
+  if (!explicitLabel) return cleaned;
   return /^[a-z][a-z0-9_-]*$/i.test(cleaned)
     ? cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
     : cleaned;

@@ -1283,6 +1283,11 @@ fn compact_tee_event(event: &Value) -> Value {
     })
 }
 
+/// Live inspection reads the RAW tee (append-only envelopes), not the
+/// canonical transcript JSONL. Those are different layers (P0-2): the tee is
+/// for steering a running worker even before the frontend has opened it; the
+/// canonical transcript is materialized only by `useSessionRails` replay and
+/// is what the worker session view shows. Never write either from here.
 fn task_transcript(task_id: &str, limit: usize) -> Result<Value, String> {
     let task =
         crate::chief::store::find_task(task_id).ok_or_else(|| format!("任务不存在：{task_id}"))?;

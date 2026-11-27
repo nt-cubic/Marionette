@@ -110,7 +110,8 @@ fn folder_name(path: &str) -> String {
 }
 
 /// Create a Chat session in the global Chat store. `origin` only accepts
-/// `"memo"` (收纳盒-derived dialogs, listed in the shelf's own group);
+/// `"memo"` (收纳盒-derived dialogs, listed in the shelf's own group) or
+/// `"diagnostic"` (a triage chat started from the diagnostic bundle);
 /// anything else falls back to `"user"`.
 #[tauri::command(async)]
 pub fn create_chat_session(
@@ -132,6 +133,7 @@ pub fn create_chat_session(
         .map_err(|_| "Storage lock poisoned".to_string())?;
     let origin = match origin.as_deref() {
         Some("memo") => Some("memo"),
+        Some("diagnostic") => Some("diagnostic"),
         _ => None,
     };
     storage.create_chat_session(agent_id, label, &default_folder, origin)
@@ -1011,6 +1013,32 @@ pub async fn refresh_external_sessions(
         redirected,
         sessions,
     })
+}
+
+/// Recent-project discovery (T3 P1-6): read-only scan of the local agent
+/// session stores. It never writes a project, session or preference, never
+/// clones a Git URL, and a failure here must not block the normal Add Project
+/// path (the frontend treats an error as "no candidates").
+#[tauri::command(async)]
+pub fn discover_recent_projects() -> crate::parsers::discovery::DiscoveryReport {
+    let _trace = crate::debug_log::CmdTrace::new("discover_recent_projects");
+    let started = std::time::Instant::now();
+    let report = crate::parsers::discovery::scan();
+    crate::debug_log::append(
+        "discovery",
+        "info",
+        "",
+        &format!(
+            "candidates={} sources={} failed={} truncated={} in {}ms",
+            report.projects.len(),
+            report.scanned_sources.len(),
+            report.failed_sources.len(),
+            report.truncated,
+            started.elapsed().as_millis()
+        ),
+        None,
+    );
+    report
 }
 
 #[tauri::command(async)]
@@ -2583,6 +2611,73 @@ pub fn save_pasted_image(
         "mimeType": mime_out,
         "byteLength": bytes.len(),
         "name": name,
+    }))
+}
+
+/// Materialize a folded large paste under `~/.marionette/attachments/pasted-text/`.
+/// Content-addressed (SHA-256), so repeated paste events reuse one owned file
+/// instead of accumulating copies or duplicate attachment chips.
+#[tauri::command(async)]
+pub fn save_pasted_text(text: String) -> Result<serde_json::Value, String> {
+    use sha2::{Digest, Sha256};
+    use std::fs;
+    use std::io::Write;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    if text.is_empty() {
+        return Err("empty pasted text".into());
+    }
+    let bytes = text.as_bytes();
+    const MAX_BYTES: usize = 8 * 1024 * 1024;
+    if bytes.len() > MAX_BYTES {
+        return Err(format!(
+            "pasted text too large ({} KiB > {} KiB)",
+            bytes.len() / 1024,
+            MAX_BYTES / 1024
+        ));
+    }
+
+    let digest = Sha256::digest(bytes);
+    let hash = digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let name = format!("paste-{}.txt", &hash[..16]);
+    let dir = crate::app_paths::global_dir()?
+        .join("attachments")
+        .join("pasted-text");
+    fs::create_dir_all(&dir).map_err(|e| format!("create pasted-text dir failed: {e}"))?;
+
+    let path = dir.join(&name);
+    if !path.is_file() {
+        // Unique temp name: two windows staging identical bytes must not share
+        // one rename target.
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let tmp = dir.join(format!(".{name}.{}.{nanos}.tmp", std::process::id()));
+        let mut file =
+            fs::File::create(&tmp).map_err(|e| format!("create pasted text failed: {e}"))?;
+        file.write_all(bytes)
+            .map_err(|e| format!("write pasted text failed: {e}"))?;
+        file.flush()
+            .map_err(|e| format!("flush pasted text failed: {e}"))?;
+        drop(file);
+        if let Err(err) = fs::rename(&tmp, &path) {
+            let _ = fs::remove_file(&tmp);
+            // Another window may have won the content-addressed rename.
+            if !path.is_file() {
+                return Err(format!("write pasted text failed: {err}"));
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "path": path.to_string_lossy().to_string(),
+        "name": name,
+        "byteLength": bytes.len(),
+        "sha256": hash,
     }))
 }
 

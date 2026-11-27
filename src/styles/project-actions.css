@@ -1,0 +1,337 @@
+/* User-owned project actions (P1-14). Standalone dialog: the shared
+   .project-dialog shell supplies the panel, header and footer; this file only
+   lays out the action list / editor split. */
+
+.project-actions-dialog {
+  width: min(860px, calc(100vw - 40px));
+  max-height: min(780px, calc(100vh - 48px));
+}
+
+.project-actions-dialog__lead {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.project-actions-dialog__layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.85fr) minmax(0, 1.5fr);
+  gap: 16px;
+  min-height: 0;
+}
+
+.project-actions-dialog__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 14px;
+  border-right: 1px solid var(--hairline);
+}
+
+.project-actions-dialog__add,
+.project-actions-dialog__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.project-actions-dialog__add {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.project-actions-dialog__add:hover,
+.project-actions-dialog__item:hover {
+  background: var(--panel-muted);
+}
+
+.project-actions-dialog__item.is-active {
+  background: var(--panel-raised);
+  border-color: var(--hairline);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.project-actions-dialog__item-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-actions-dialog__kind {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.project-actions-dialog__kind--setup {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--hairline));
+}
+
+.project-actions-dialog__kind--dev {
+  color: var(--text-strong);
+}
+
+.project-actions-dialog__kind--test {
+  color: var(--yellow);
+  border-color: color-mix(in srgb, var(--yellow) 35%, var(--hairline));
+}
+
+.project-actions-dialog__kind--cleanup {
+  color: var(--text-faint);
+}
+
+.project-actions-dialog__needs {
+  flex: none;
+  color: var(--yellow);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.project-actions-dialog__needs--inline {
+  margin: 0;
+}
+
+.project-actions-dialog__editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.project-actions-dialog__editor .project-dialog__field {
+  grid-template-columns: 92px minmax(0, 1fr);
+}
+
+.project-actions-dialog__field--stack {
+  grid-template-columns: 1fr !important;
+  align-items: start;
+  gap: 6px;
+}
+
+.project-actions-dialog__command {
+  width: 100%;
+  min-height: 84px;
+  max-height: 180px;
+  padding: 8px 10px;
+  resize: vertical;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--panel-muted);
+  color: var(--text-strong);
+  font: inherit;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.project-actions-dialog__command:focus {
+  outline: 0;
+  border-color: var(--accent);
+}
+
+.project-actions-dialog__check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.project-actions-dialog__check input {
+  margin-top: 2px;
+}
+
+.project-actions-dialog__check small {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.project-actions-dialog__preview {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--panel-muted);
+}
+
+.project-actions-dialog__preview strong {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.project-actions-dialog__preview code {
+  color: var(--text-strong);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.project-actions-dialog__runbar,
+.project-actions-dialog__confirm-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.project-actions-dialog__delete {
+  color: var(--red);
+}
+
+.project-actions-dialog__confirm {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--yellow) 45%, var(--hairline));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--yellow) 7%, var(--panel-raised));
+}
+
+.project-actions-dialog__confirm strong {
+  color: var(--text-strong);
+  font-size: 12.5px;
+}
+
+.project-actions-dialog__confirm p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.project-actions-dialog__confirm code {
+  padding: 8px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--text-strong);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.project-actions-dialog__output {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--panel-muted);
+}
+
+.project-actions-dialog__output header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-actions-dialog__output header strong {
+  color: var(--text-strong);
+  font-size: 12.5px;
+}
+
+.project-actions-dialog__output header button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.project-actions-dialog__status {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.project-actions-dialog__status.is-running,
+.project-actions-dialog__status.is-started,
+.project-actions-dialog__status.is-starting {
+  color: var(--accent);
+}
+
+.project-actions-dialog__status.is-failed {
+  color: var(--red);
+}
+
+.project-actions-dialog__status.is-completed {
+  color: var(--text-muted);
+}
+
+.project-actions-dialog__output pre {
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  color: var(--text-strong);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.project-actions-dialog__muted {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.project-actions-dialog__saved {
+  margin: 0;
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.project-actions-dialog__security {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+@media (max-width: 720px) {
+  .project-actions-dialog__layout {
+    grid-template-columns: 1fr;
+  }
+
+  .project-actions-dialog__list {
+    max-height: 180px;
+    padding: 0 0 10px;
+    border-right: 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+}

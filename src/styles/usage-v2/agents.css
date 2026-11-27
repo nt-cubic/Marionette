@@ -1,4 +1,4 @@
-/* Token usage v2 · per agent / model table (UsageAgents). CSS grid rows, not a <table>;
+/* Token usage v2 路 per agent / model table (UsageAgents). CSS grid rows, not a <table>;
    the agent's ink (--agent-ink, set inline per row) colours the identity bar, token bar,
    hover tint and sparkline. Flush rows separated by 1px hairlines, as elsewhere on the page. */
 
@@ -164,6 +164,22 @@
   .uv2-agents__sub > :nth-child(3),
   .uv2-agents__sub > :nth-child(7),
   .uv2-agents__sub > :nth-child(8) {
+    display: none;
+  }
+}
+
+/* Very narrow dock pane: keep only the name and the token bar. */
+@container uv2 (max-width: 620px) {
+  .uv2-agents__th,
+  .uv2-agents__row,
+  .uv2-agents__sub {
+    grid-template-columns: minmax(0, 1fr) 60px;
+    gap: 8px;
+  }
+
+  .uv2-agents__th > :nth-child(n + 3),
+  .uv2-agents__row > :nth-child(n + 3),
+  .uv2-agents__sub > :nth-child(n + 3) {
     display: none;
   }
 }

@@ -1,6 +1,7 @@
 import { HelpCircle, ListTodo } from "lucide-react";
 import type { PlanApprovalDecision } from "../lib/api";
 import { planDecisionLabel } from "../lib/interactionEvents";
+import type { QuestionAttachmentFollowUp } from "../lib/questionAttachments";
 import type { SessionEvent } from "../lib/types";
 import { AskQuestionCard, type AskQuestionAnswer, type AskQuestionPrompt } from "./AskQuestionCard";
 import { ClippedBody } from "./ClippedBody";
@@ -14,7 +15,10 @@ export type StreamPromptHandlers = {
   livePlan?: PlanApprovalPrompt | null;
   askBusy?: boolean;
   planBusy?: boolean;
-  onAskSubmit?: (answers: AskQuestionAnswer[]) => void;
+  onAskSubmit?: (
+    answers: AskQuestionAnswer[],
+    followUp?: QuestionAttachmentFollowUp,
+  ) => void;
   onAskDecline?: () => void;
   onPlanAnswer?: (decision: PlanApprovalDecision, feedback?: string) => void | Promise<void>;
   onPlanPermissionChoose?: (optionId: string) => void;
@@ -86,7 +90,7 @@ export function StreamPromptCard({
           prompt={live}
           variant="stream"
           busy={handlers?.askBusy}
-          onSubmit={(answers) => handlers?.onAskSubmit?.(answers)}
+          onSubmit={(answers, followUp) => handlers?.onAskSubmit?.(answers, followUp)}
           onDecline={() => handlers?.onAskDecline?.()}
         />
       ) : (

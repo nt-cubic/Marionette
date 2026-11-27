@@ -100,3 +100,104 @@ export function shouldFlushUserEcho(method: string | null | undefined, kind?: st
   // agent 开始说话/动手 = 前一段 user 输入已完整。
   return kind !== undefined && kind !== "" && kind !== "user_message_chunk";
 }
+
+/**
+ * P0-3: durable tee health, as returned by `chief_tee_health`.
+ *
+ * Counts only. `dropped` = events the bounded queue refused before they ever
+ * reached disk (unrecoverable); `fileLines` = records that did reach disk;
+ * `consumedSeq` = how far replay has been applied and flushed.
+ */
+export interface ChiefTeeHealth {
+  sessionId: string;
+  fileLines: number;
+  enqueued: number;
+  written: number;
+  dropped: number;
+  badLines: number;
+  consumedSeq: number;
+  replayStartSeq: number;
+  replayEvents: number;
+  replayTruncated: boolean;
+  registered: boolean;
+  updatedAt: number;
+}
+
+/** One recovery read. Keep small so a retry cannot balloon memory. */
+export const TEE_RETRY_SEGMENT = 400;
+
+export type TeeNoticeState = {
+  visible: boolean;
+  lost: number;
+  kept: number;
+  remaining: number;
+  badLines: number;
+  /** There is durable ledger content that a retry can re-read. */
+  canRetry: boolean;
+};
+
+function finiteCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : 0;
+}
+
+/** Pure state fold for the worker notice (no copy, no React). */
+export function teeNoticeState(
+  health: ChiefTeeHealth | null | undefined,
+): TeeNoticeState {
+  const lost = finiteCount(health?.dropped);
+  const kept = finiteCount(health?.fileLines);
+  const consumed = finiteCount(health?.consumedSeq);
+  return {
+    visible: lost > 0,
+    lost,
+    kept,
+    remaining: Math.max(0, kept - consumed),
+    badLines: finiteCount(health?.badLines),
+    canRetry: kept > 0,
+  };
+}
+
+/**
+ * P0-3 recovery start. A torn/empty canonical transcript is rebuilt from the
+ * ledger's first record; otherwise only records past the flushed cursor are
+ * re-read, so repeated retries cannot re-insert cards already on disk.
+ */
+export function teeRetryStartCursor(consumedSeq: number, railLen: number): number {
+  if (railLen <= 0) return 0;
+  return finiteCount(consumedSeq);
+}
+
+export type TeeNoticeCopy = {
+  titleKey: string;
+  titleParams: Record<string, string | number>;
+  bodyKey: string;
+  bodyParams: Record<string, string | number>;
+  remainingKey: string;
+  remainingParams: Record<string, string | number>;
+  badLinesKey: string | null;
+  badLinesParams: Record<string, string | number>;
+  retryKey: string;
+  dismissKey: string;
+};
+
+/**
+ * Pure copy descriptor (keys + params). The component resolves it through `t`,
+ * so locale/plural rules stay in the existing i18n layer.
+ */
+export function teeNoticeCopy(state: TeeNoticeState): TeeNoticeCopy {
+  return {
+    titleKey: "session.teeLossTitle",
+    titleParams: { lost: state.lost },
+    bodyKey: "session.teeLossBody",
+    bodyParams: { lost: state.lost, kept: state.kept },
+    remainingKey:
+      state.remaining > 0 ? "session.teeLossRemaining" : "session.teeLossConsumed",
+    remainingParams: { remaining: state.remaining, kept: state.kept },
+    badLinesKey: state.badLines > 0 ? "session.teeLossBadLines" : null,
+    badLinesParams: { bad: state.badLines },
+    retryKey: state.canRetry ? "session.teeLossRetry" : "session.teeLossNoRetry",
+    dismissKey: "session.teeLossDismiss",
+  };
+}

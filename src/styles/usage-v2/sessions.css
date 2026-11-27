@@ -477,3 +477,44 @@
   margin-left: 10px;
   color: var(--text-faint);
 }
+
+/* -- Narrow pane (dock / split): drop the context ring and two numeric columns
+   so the session list never overflows; the detail opener stays reachable. -- */
+@container uv2 (max-width: 560px) {
+  .uv2-sessions__row {
+    grid-template-columns: minmax(0, 1fr) 58px 66px;
+    gap: 8px;
+    height: auto;
+    min-height: 44px;
+    padding: 6px 24px 6px 0;
+  }
+
+  .uv2-sessions__ring,
+  .uv2-sessions__row > .num:nth-child(3),
+  .uv2-sessions__row > .num:nth-child(6) {
+    display: none;
+  }
+
+  .uv2-sessions__detail {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+
+  .uv2-sdet__rows {
+    overflow-x: auto;
+  }
+
+  .uv2-sdet__stats {
+    flex-wrap: wrap;
+  }
+
+  .uv2-backfill__row {
+    grid-template-columns: minmax(0, 1fr) 48px 64px;
+  }
+
+  .uv2-backfill__row > :last-child {
+    display: none;
+  }
+}

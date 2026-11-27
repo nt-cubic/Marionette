@@ -248,6 +248,54 @@ fn export_events(conn: &Connection, session_id: &str) -> Result<Vec<Value>, Stri
     Ok(out)
 }
 
+/// Discovery (P1-6): real top-level sessions only, grouped by directory.
+pub(crate) fn discover_hits() -> Vec<super::discovery::DiscoveryHit> {
+    use super::discovery::DiscoveryHit;
+    let Some(db) = zcode_db() else {
+        return Vec::new();
+    };
+    let Ok(conn) = open_ro(&db) else {
+        return Vec::new();
+    };
+    // Schema drift -> no candidates, never a hard failure.
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT directory, COUNT(*), MAX(time_updated)
+         FROM session
+         WHERE directory IS NOT NULL AND TRIM(directory) <> ''
+           AND id NOT LIKE 'sess_subagent%'
+           AND (parent_id IS NULL OR parent_id = '')
+           AND (time_archived IS NULL OR time_archived <= 0)
+         GROUP BY directory
+         ORDER BY MAX(time_updated) DESC
+         LIMIT 500",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+        ))
+    }) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for row in rows.flatten() {
+        let (directory, count, updated) = row;
+        out.push(DiscoveryHit {
+            cwd: directory,
+            agent_id: "zcode",
+            count: count.max(1) as u32,
+            last_active_at: updated.filter(|t| *t > 0).map(|t| t.to_string()),
+        });
+        if out.len() >= super::discovery::MAX_HITS_PER_SOURCE {
+            break;
+        }
+    }
+    out
+}
+
 impl AgentParser for ZcodeParser {
     fn source(&self) -> &'static str {
         "zcode"

@@ -1010,6 +1010,76 @@
   background: var(--panel-soft);
 }
 
+/* P0-3: tee-loss notice. Session chrome, not a transcript card: 1px hairline,
+   2px warning bar, status lives in the text (no dot, no filled badge). */
+.tee-loss-notice {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px 8px 14px;
+  border-bottom: 1px solid var(--hairline);
+  border-left: 2px solid var(--tone-warn, var(--yellow));
+  background: var(--panel-raised);
+}
+
+.tee-loss-notice__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.tee-loss-notice__copy strong {
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.tee-loss-notice__result {
+  color: var(--text);
+}
+
+.tee-loss-notice__result.is-failed {
+  color: var(--red);
+}
+
+.tee-loss-notice__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.tee-loss-notice__actions button {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  background: var(--panel-raised);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.tee-loss-notice__actions button:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+.tee-loss-notice__actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.tee-loss-notice__retry:not(:disabled) {
+  border-color: color-mix(in srgb, var(--tone-warn, var(--yellow)) 45%, var(--border));
+  color: var(--text);
+}
+
 @media (max-width: 640px) {
   .staff-dialog__grid,
   .staff-dialog__projects {

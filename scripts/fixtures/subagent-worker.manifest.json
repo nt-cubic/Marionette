@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "fixture": "subagent-worker.events.jsonl",
+  "fixtureSha256": "a079537740dcff4de5e6269bcbc3059dc72597fb6e1bb721f2c845c87aaca6d6",
+  "capturedAt": "2026-11-27",
+  "capturedFrom": {
+    "kind": "chief worker tee (ACP session/update JSONL)",
+    "sourceRef": "local worker session tee; absolute path and session id withheld",
+    "sourceBytes": 3126977,
+    "sourceLines": 2152,
+    "sourceKinds": {
+      "event:rpc/response": 4,
+      "available_commands_update": 1,
+      "config_option_update": 2,
+      "agent_thought_chunk": 1300,
+      "agent_message_chunk": 24,
+      "tool_call": 145,
+      "tool_call_update": 673,
+      "usage_update": 1,
+      "event:turn/complete": 1,
+      "event:process/stopped": 1
+    },
+    "sourceToolCallStarts": 145,
+    "sourceDistinctToolCallIds": 145
+  },
+  "fixtureCounts": {
+    "lines": 2144,
+    "kinds": {
+      "user_message_chunk": 1,
+      "agent_thought_chunk": 1300,
+      "agent_message_chunk": 24,
+      "tool_call": 145,
+      "tool_call_update": 673,
+      "event:turn/complete": 1
+    },
+    "toolCallStarts": 145,
+    "toolCallUpdates": 673,
+    "distinctToolCallIds": 145,
+    "userChunks": 1,
+    "thoughtChunks": 1300,
+    "assistantChunks": 24,
+    "turnCompletions": 1,
+    "firstSeq": 1,
+    "lastSeq": 2144
+  },
+  "transforms": {
+    "keptKinds": [
+      "user_message_chunk",
+      "agent_thought_chunk",
+      "agent_message_chunk",
+      "tool_call",
+      "tool_call_update"
+    ],
+    "keptMethods": [
+      "turn/complete"
+    ],
+    "droppedKinds": {
+      "event:rpc/response": 4,
+      "available_commands_update": 1,
+      "config_option_update": 2,
+      "usage_update": 1,
+      "event:process/stopped": 1
+    },
+    "keptOriginalKinds": {
+      "agent_thought_chunk": 1300,
+      "agent_message_chunk": 24,
+      "tool_call": 145,
+      "tool_call_update": 673,
+      "event:turn/complete": 1
+    },
+    "seq": "reassigned densely 1..N in kept order; synthetic user seed is seq 1",
+    "ts": "anchor 1704067200000 + (original ts - first source ts); user seed = anchor - 1",
+    "sessionId": "session-fixture-worker / ses_fixture_worker",
+    "ids": "145 tool ids and 107 message ids remapped in first-seen order; equality relationships preserved",
+    "strings": "1801 distinct non-whitespace strings replaced with [redacted #n]; whitespace-only -> single space",
+    "paths": "19 distinct path-like values replaced with /redacted/path-N",
+    "urls": "0 distinct URL-like values replaced with redacted-url-N",
+    "titles": "tool titles replaced with kind label (Execute/Read/Edit/Search/Tool)",
+    "contents": "content block shape preserved; text/delta/output bodies replaced"
+  },
+  "synthetic": {
+    "frames": 1,
+    "kinds": [
+      "user_message_chunk"
+    ],
+    "content": "[redacted user prompt]",
+    "reason": "tee files carry agent session/update notifications but not the user prompt; this single seed exercises the replay user-echo branch before agent activity"
+  },
+  "sanitizer": {
+    "script": "scripts/capture-subagent-fixture.ts",
+    "version": 1,
+    "removed": [
+      "prompts and assistant/thought bodies",
+      "file paths, repo names and usernames",
+      "URLs",
+      "tokens/keys/authorization values",
+      "command input and output"
+    ],
+    "limitations": [
+      "structural JSON keys are preserved; a secret embedded in an unusual key name would not be scrubbed",
+      "whitespace-only chunks are canonicalized to one space, so exact spacing is not preserved",
+      "absolute run time is replaced by a fixed anchor; timestamps preserve relative gaps only",
+      "only ACP session/update kinds and turn/complete are kept; rpc/config/usage/process noise is dropped",
+      "text equality is preserved as equality classes (identical originals share a marker); individual characters are not",
+      "the user seed is synthetic because tee files do not record user prompts"
+    ]
+  }
+}

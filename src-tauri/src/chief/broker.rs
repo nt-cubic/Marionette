@@ -1393,7 +1393,7 @@ fn prepare_worker_bridge(
             }
             if std::time::Instant::now() >= deadline {
                 return Err(crate::ts!(
-                    "ç¿»è¯å¼æç®å½å°æªæ´é²è¯·æ±çæ¨¡åï¼æ æ³ä¸º worker å»ºç«è·¨ç¨æ¨¡åç»å®",
+                    "翻译引擎目录尚未暴露请求的模型，无法为 worker 建立跨用模型绑定",
                     "The translation engine catalog did not expose the requested model; cannot bind the worker"
                 ));
             }
@@ -1704,6 +1704,11 @@ pub(crate) fn spawn_and_watch_worker(
             return;
         }
     };
+    // P0-2 ownership: the broker owns the worker lifecycle and the RAW tee
+    // registration only. It never normalizes events and never writes the
+    // canonical transcript JSONL -- that is the frontend `useSessionRails`
+    // writer, driven by live events or by this tee replay. Do not add a
+    // transcript append here: broker + tee + rails must not compete.
     let _ = tee::register(&worker.id);
     // Link the task before ACP starts: tools/list can arrive during agent
     // initialization, and staff policy (notably Computer Use) must already be

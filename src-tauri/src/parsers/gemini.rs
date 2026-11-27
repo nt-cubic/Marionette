@@ -43,6 +43,52 @@ fn alias_cwd(base: &Path, alias: &str) -> Option<String> {
     None
 }
 
+/// Discovery (P1-6): one row per project alias (tmp and history share a name).
+pub(crate) fn discover_hits() -> Vec<super::discovery::DiscoveryHit> {
+    use super::discovery::DiscoveryHit;
+    let Some(base) = gemini_base().filter(|p| p.is_dir()) else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for bucket in ["tmp", "history"] {
+        for alias_dir in read_subdirs(&base.join(bucket)) {
+            let alias = alias_dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            if alias.is_empty() || !seen.insert(alias.clone()) {
+                continue;
+            }
+            let Some(cwd) = alias_cwd(&base, &alias) else {
+                continue;
+            };
+            let count = walk_files(&alias_dir, 2)
+                .into_iter()
+                .filter(|path| {
+                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    (ext == "json" || ext == "jsonl")
+                        && path.file_name().and_then(|n| n.to_str()) != Some(".project_root")
+                })
+                .count() as u32;
+            if count == 0 {
+                continue;
+            }
+            out.push(DiscoveryHit {
+                cwd,
+                agent_id: "gemini",
+                count,
+                last_active_at: None,
+            });
+            if out.len() >= super::discovery::MAX_HITS_PER_SOURCE {
+                return out;
+            }
+        }
+    }
+    out
+}
+
 impl AgentParser for GeminiParser {
     fn source(&self) -> &'static str {
         "gemini"

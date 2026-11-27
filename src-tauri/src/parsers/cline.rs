@@ -17,6 +17,45 @@ fn cline_data_dir() -> Option<PathBuf> {
         .map(|h| h.join("data"))
 }
 
+/// Discovery (P1-6): one hit per session manifest.
+pub(crate) fn discover_hits() -> Vec<super::discovery::DiscoveryHit> {
+    use super::discovery::DiscoveryHit;
+    let Some(data) = cline_data_dir() else {
+        return Vec::new();
+    };
+    let sessions = data.join("sessions");
+    let mut out = Vec::new();
+    for dir in read_subdirs(&sessions) {
+        let id = dir.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        if id.is_empty() {
+            continue;
+        }
+        let Some(v) = read_json_file(&dir.join(format!("{id}.json"))) else {
+            continue;
+        };
+        let cwd = json_str(&v, "cwd")
+            .or_else(|| json_str(&v, "workspacePath"))
+            .or_else(|| json_str(&v, "directory"))
+            .unwrap_or("")
+            .to_string();
+        if cwd.is_empty() {
+            continue;
+        }
+        out.push(DiscoveryHit {
+            cwd,
+            agent_id: "cline",
+            count: 1,
+            last_active_at: json_str(&v, "ended_at")
+                .or_else(|| json_str(&v, "updated_at"))
+                .map(str::to_string),
+        });
+        if out.len() >= super::discovery::MAX_HITS_PER_SOURCE {
+            return out;
+        }
+    }
+    out
+}
+
 impl AgentParser for ClineParser {
     fn source(&self) -> &'static str {
         "cline"

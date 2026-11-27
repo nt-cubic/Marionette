@@ -91,6 +91,97 @@ pub(crate) fn load_tree_locator(locator: &str, agent_id: &str) -> Result<Vec<Val
     load_locator(locator, agent_id)
 }
 
+/// Discovery (P1-6): summary.json trees + raw jsonl files, no project filter.
+pub(crate) fn discover_tree_for(
+    agent_id: &'static str,
+    roots: &[PathBuf],
+) -> Vec<super::discovery::DiscoveryHit> {
+    use super::discovery::DiscoveryHit;
+    let mut out = Vec::new();
+    for root in roots {
+        if !root.exists() {
+            continue;
+        }
+        for group in read_subdirs(root) {
+            for session_dir in read_subdirs(&group) {
+                let summary = session_dir.join("summary.json");
+                let Some(v) = read_json_file(&summary) else {
+                    continue;
+                };
+                let cwd = pointer_str(&v, "/info/cwd")
+                    .or_else(|| json_str(&v, "cwd"))
+                    .unwrap_or("")
+                    .to_string();
+                if cwd.is_empty() {
+                    continue;
+                }
+                out.push(DiscoveryHit {
+                    cwd,
+                    agent_id,
+                    count: 1,
+                    last_active_at: json_str(&v, "last_active_at")
+                        .or_else(|| json_str(&v, "updated_at"))
+                        .map(str::to_string),
+                });
+                if out.len() >= super::discovery::MAX_HITS_PER_SOURCE {
+                    return out;
+                }
+            }
+        }
+        for path in walk_files(root, 5) {
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            // summary.json sessions already counted above; their jsonl files
+            // are the same conversation, not a second one.
+            if path
+                .parent()
+                .map(|dir| dir.join("summary.json").is_file())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let (_id, cwd, started, _title) = scan_jsonl_cwd_title(&path);
+            if cwd.is_empty() {
+                continue;
+            }
+            out.push(DiscoveryHit {
+                cwd,
+                agent_id,
+                count: 1,
+                last_active_at: started,
+            });
+            if out.len() >= super::discovery::MAX_HITS_PER_SOURCE {
+                return out;
+            }
+        }
+    }
+    out
+}
+
+pub(crate) fn discover_kimi_hits() -> Vec<super::discovery::DiscoveryHit> {
+    let roots = env_dir("KIMI_CODE_HOME")
+        .or_else(|| home_join(".kimi-code"))
+        .map(|h| vec![h.join("sessions"), h])
+        .unwrap_or_default();
+    discover_tree_for("kimi-code", &roots)
+}
+
+pub(crate) fn discover_codebuddy_hits() -> Vec<super::discovery::DiscoveryHit> {
+    let roots = env_dir("CODEBUDDY_CONFIG_DIR")
+        .or_else(|| home_join(".codebuddy"))
+        .map(|h| vec![h.join("sessions"), h])
+        .unwrap_or_default();
+    discover_tree_for("codebuddy", &roots)
+}
+
+pub(crate) fn discover_openclaw_hits() -> Vec<super::discovery::DiscoveryHit> {
+    let roots = home_join(".openclaw")
+        .map(|h| vec![h.join("agents"), h.join("sessions"), h])
+        .unwrap_or_default();
+    discover_tree_for("openclaw", &roots)
+}
+
 fn list_jsonl_tree(
     source: &str,
     agent_id: &str,

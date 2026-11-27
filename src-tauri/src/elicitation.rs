@@ -833,6 +833,11 @@ pub fn questions_for_ui(q: &ElicitationQuestions) -> Value {
                 "options": options,
                 "other": f.other_allowed,
                 "note": f.note_allowed,
+                // There is no native ACP attachment field. Attachments ride in a
+                // separate follow-up message, and a question may only offer them
+                // when it accepts a custom text answer (`other` includes the
+                // option-less text question).
+                "attachmentsAllowed": f.other_allowed,
             })
         })
         .collect();

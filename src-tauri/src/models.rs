@@ -67,6 +67,25 @@ pub struct Session {
     /// the recency list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_at: Option<String>,
+    /// Shelf presentation only (settled / snoozed / archived). Never derived
+    /// from or written into `status`; presentation must not park a process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<SessionPresentation>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionPresentation {
+    /// `settled` | `snoozed` | `archived`; `working` is runtime-derived and
+    /// is never persisted.
+    #[serde(default)]
+    pub state: String,
+    /// When this shelf state was last written.
+    #[serde(default)]
+    pub updated_at: String,
+    /// Wake time for a snoozed dialog; ignored for other states.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snoozed_until: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
