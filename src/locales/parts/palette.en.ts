@@ -40,4 +40,13 @@ export const en = {
   "palette.exportDiagnosticsHint": "Logs and environment, redacted",
   "palette.diagnoseWithAgent": "Diagnose with agent",
   "palette.diagnoseWithAgentHint": "Build a redacted bundle and prefill a triage chat",
+  "palette.groupQuick": "Quick actions",
+  "palette.groupCreate": "Create",
+  "palette.groupWorkspace": "Tools and pages",
+  "palette.groupSettings": "Settings",
+  "palette.groupStaff": "Staff",
+  "palette.groupSystem": "System",
+  "palette.showMore": "Show all commands",
+  "palette.hideMore": "Hide secondary commands",
+  "palette.moreHint": "{count} more settings and tools",
 } satisfies Record<keyof typeof zh, string>;

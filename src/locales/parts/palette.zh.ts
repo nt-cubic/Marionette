@@ -38,4 +38,13 @@ export const zh = {
   "palette.exportDiagnosticsHint": "日志与环境，自动脱敏",
   "palette.diagnoseWithAgent": "\u8ba9 Agent \u8bca\u65ad\u2026",
   "palette.diagnoseWithAgentHint": "\u751f\u6210\u8131\u654f\u8bca\u65ad\u5305\u5e76\u9884\u586b\u6392\u67e5\u4f1a\u8bdd",
+  "palette.groupQuick": "\u5feb\u6377\u64cd\u4f5c",
+  "palette.groupCreate": "\u65b0\u5efa",
+  "palette.groupWorkspace": "\u5de5\u5177\u4e0e\u9875\u9762",
+  "palette.groupSettings": "\u8bbe\u7f6e",
+  "palette.groupStaff": "\u5458\u5de5",
+  "palette.groupSystem": "\u7cfb\u7edf",
+  "palette.showMore": "\u663e\u793a\u5168\u90e8\u547d\u4ee4",
+  "palette.hideMore": "\u6536\u8d77\u4f4e\u9891\u547d\u4ee4",
+  "palette.moreHint": "\u8fd8\u6709 {count} \u9879\u8bbe\u7f6e\u4e0e\u5de5\u5177",
 } as const;

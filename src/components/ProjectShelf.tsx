@@ -44,7 +44,6 @@ import { ModelSettingsDialog } from "./ModelSettingsDialog";
 import { MODEL_SETTINGS_EVENT } from "../lib/modelSettings";
 import { SplitBesideMenu, type OpenBesideEdge } from "./SplitBesideMenu";
 import { StaffRoster, type StaffRosterItem } from "./StaffRoster";
-import { RecentProjectDiscovery } from "./RecentProjectDiscovery";
 import type { DropEdge } from "../lib/splitWorkspace";
 import { dockFooterHost, useDocked } from "../lib/dockFooter";
 import { OPEN_ENGINE_EVENT, OPEN_PROXY_EVENT, OPEN_TELEGRAM_EVENT } from "../lib/shellActions";
@@ -314,8 +313,6 @@ type ProjectShelfProps = {
   desktopNotifyEnabled?: boolean;
   onToggleDesktopNotify?: () => void;
   onAddProject: () => void;
-  /** Called after a project is added from the read-only recent-project scan. */
-  onProjectAdded?: (project: Project) => void;
   onNewSession: (projectId: string) => void;
   onProjectSelect: (projectId: string) => void;
   onSessionSelect: (session: Session) => void;
@@ -500,7 +497,6 @@ export function ProjectShelf({
   onSessionSelect,
   onOpenBeside,
   onAddProject,
-  onProjectAdded,
   onNewSession,
   theme,
   onToggleTheme,
@@ -1824,13 +1820,6 @@ export function ProjectShelf({
           <Plus size={12} />
         </button>
       </div>
-
-      <RecentProjectDiscovery
-        compact
-        existingProjects={projects}
-        agents={agents}
-        onProjectAdded={onProjectAdded}
-      />
 
       <div className="project-list custom-scrollbar scrollbar-autohide" aria-label={t("v2shelf.projectsAria")}>
         {allVisibleProjects.length === 0 && !searching && (

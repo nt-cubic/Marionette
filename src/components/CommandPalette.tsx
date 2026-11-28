@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, CornerDownRight, Search } from "lucide-react";
+import { ChevronDown, ChevronRight, CornerDownRight, Search } from "lucide-react";
 import { t as baseT, useLocale, useT } from "../lib/i18n";
 import type { Project, Session } from "../lib/types";
 
@@ -8,13 +8,17 @@ export type PaletteAction = {
   label: string;
   /** Shortcut or short context, shown quiet on the right. */
   hint?: string;
+  /** Empty-query shortcut. Everything else stays searchable and folds away. */
+  primary?: boolean;
+  group?: "create" | "workspace" | "settings" | "staff" | "system";
   run: () => void;
 };
 
 type PaletteRow =
   | { kind: "session"; key: string; session: Session; chat: boolean }
   | { kind: "project"; key: string; project: Project }
-  | { kind: "action"; key: string; action: PaletteAction };
+  | { kind: "action"; key: string; action: PaletteAction }
+  | { kind: "more"; key: string; expand: boolean; count: number };
 
 type CommandPaletteProps = {
   sessions: Session[];
@@ -30,9 +34,21 @@ type CommandPaletteProps = {
   onClose: () => void;
 };
 
-const RECENT_SHOWN = 8;
+const RECENT_SHOWN = 6;
 const SESSIONS_SHOWN = 12;
 const PROJECTS_SHOWN = 5;
+const ACTION_GROUP_ORDER = ["create", "workspace", "settings", "staff", "system"] as const;
+
+function actionGroupTitle(
+  group: NonNullable<PaletteAction["group"]>,
+  translate: ReturnType<typeof useT>,
+): string {
+  if (group === "create") return translate("palette.groupCreate");
+  if (group === "workspace") return translate("palette.groupWorkspace");
+  if (group === "settings") return translate("palette.groupSettings");
+  if (group === "staff") return translate("palette.groupStaff");
+  return translate("palette.groupSystem");
+}
 
 /** 3 = starts with the query, 2 = a word starts with it, 1 = contains it / every word does. */
 function matchScore(text: string, query: string): number {
@@ -83,6 +99,7 @@ export function CommandPalette({
 }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
+  const [showAllActions, setShowAllActions] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const now = useMemo(() => Date.now(), []);
@@ -129,16 +146,51 @@ export function CommandPalette({
           .slice(0, PROJECTS_SHOWN)
           .map(({ project }) => ({ kind: "project", key: `p:${project.id}`, project }))
       : [];
-    const actionRows: PaletteRow[] = actions
-      .filter((action) => matchScore(action.label, q) > 0)
-      .map((action) => ({ kind: "action", key: `a:${action.id}`, action }));
+    const actionRows = (list: PaletteAction[]): PaletteRow[] =>
+      list.map((action) => ({ kind: "action", key: `a:${action.id}`, action }));
+    const groupedActions = (list: PaletteAction[]) =>
+      ACTION_GROUP_ORDER.map((group) => ({
+        title: actionGroupTitle(group, translate),
+        rows: actionRows(list.filter((action) => (action.group ?? "workspace") === group)),
+      })).filter((group) => group.rows.length > 0);
+    const matchingActions = actions.filter((action) =>
+      matchScore(`${action.label} ${action.hint ?? ""}`, q) > 0,
+    );
+    const hiddenActionCount = actions.filter((action) => !action.primary).length;
+    let actionGroups: { title: string; rows: PaletteRow[] }[] = [];
+    let quickGroup: { title: string; rows: PaletteRow[] } | null = null;
+    if (q) {
+      actionGroups = groupedActions(matchingActions);
+    } else if (showAllActions) {
+      actionGroups = groupedActions(actions);
+    } else {
+      const quickRows = actionRows(actions.filter((action) => action.primary));
+      if (hiddenActionCount > 0) {
+        quickRows.push({
+          kind: "more",
+          key: "more",
+          expand: true,
+          count: hiddenActionCount,
+        });
+      }
+      quickGroup = { title: translate("palette.groupQuick"), rows: quickRows };
+    }
+    if (!q && showAllActions && hiddenActionCount > 0 && actionGroups.length > 0) {
+      actionGroups[actionGroups.length - 1]!.rows.push({
+        kind: "more",
+        key: "more",
+        expand: false,
+        count: hiddenActionCount,
+      });
+    }
     return [
+      ...(quickGroup ? [quickGroup] : []),
       { title: q ? translate("palette.groupConversations") : translate("palette.groupRecent"), rows: sessionRows },
       { title: translate("palette.groupProjects"), rows: projectRows },
-      { title: translate("palette.groupActions"), rows: actionRows },
+      ...actionGroups,
     ].filter((group) => group.rows.length > 0);
     // `locale` is a dep because translated group titles live in this memo.
-  }, [query, sessions, chatSessions, projects, actions, currentSessionId, projectName, translate, locale]);
+  }, [query, showAllActions, sessions, chatSessions, projects, actions, currentSessionId, projectName, translate, locale]);
 
   const flat = useMemo(() => groups.flatMap((group) => group.rows), [groups]);
   const activeIndex = flat.length === 0 ? -1 : Math.min(active, flat.length - 1);
@@ -148,12 +200,21 @@ export function CommandPalette({
   }, [query]);
 
   useEffect(() => {
+    setShowAllActions(false);
+  }, [query]);
+
+  useEffect(() => {
     if (activeIndex < 0) return;
     const el = listRef.current?.querySelector<HTMLElement>(`[data-index="${activeIndex}"]`);
     el?.scrollIntoView({ block: "nearest" });
   }, [activeIndex]);
 
   const run = (row: PaletteRow) => {
+    if (row.kind === "more") {
+      setShowAllActions(row.expand);
+      setActive(0);
+      return;
+    }
     onClose();
     if (row.kind === "session") {
       if (row.chat) onOpenChat(row.session);
@@ -255,6 +316,22 @@ export function CommandPalette({
                         </span>
                         <span className="command-palette__title">{row.project.name}</span>
                         <span className="command-palette__meta">{row.project.rootPath}</span>
+                      </>
+                    ) : row.kind === "more" ? (
+                      <>
+                        <span className="command-palette__glyph" aria-hidden>
+                          {row.expand ? (
+                            <ChevronRight size={12} strokeWidth={1.5} />
+                          ) : (
+                            <ChevronDown size={12} strokeWidth={1.5} />
+                          )}
+                        </span>
+                        <span className="command-palette__title">
+                          {row.expand ? translate("palette.showMore") : translate("palette.hideMore")}
+                        </span>
+                        <span className="command-palette__hint">
+                          {translate("palette.moreHint", { count: row.count })}
+                        </span>
                       </>
                     ) : (
                       <>

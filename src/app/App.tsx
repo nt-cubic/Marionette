@@ -10569,14 +10569,6 @@ function AppMain() {
       setProjectDialogOpen(true);
       setProjectError("");
     }),
-    onProjectAdded: useLatestCallback((project: Project) => {
-      setAvailableProjects((current) => [
-        ...current.filter((item) => item.id !== project.id),
-        project,
-      ]);
-      setCurrentProjectId(project.id);
-      void refreshProjectContext(project.id);
-    }),
     onNewSession: useLatestCallback((projectId: string) => {
       createSessionForProject(projectId);
     }),
@@ -11222,7 +11214,6 @@ function AppMain() {
             onExpand={shelfStable.onExpand}
             onToggleTheme={shelfStable.onToggleTheme}
             onAddProject={shelfStable.onAddProject}
-            onProjectAdded={shelfStable.onProjectAdded}
             onNewSession={shelfStable.onNewSession}
             onProjectSelect={shelfStable.onProjectSelect}
             onSessionSelect={shelfStable.onSessionSelect}
@@ -11298,18 +11289,22 @@ function AppMain() {
                 id: "getting-started",
                 label: t("guide.paletteLabel"),
                 hint: t("guide.paletteHint"),
+                group: "settings",
                 run: () => setGettingStartedOpen(true),
               },
               {
                 id: "model-settings",
                 label: t("models.settingsTitle"),
                 hint: t("shelf.modelsAndSourcesHint"),
+                primary: true,
+                group: "settings",
                 run: () => openModelSettings(),
               },
               ...staffController.roster.map((member) => ({
                 id: "staff-" + member.staffId,
                 label: member.name + " · " + member.title,
                 hint: t("staff.group"),
+                group: "staff" as const,
                 run: () => void staffController.select(member),
               })),
               ...(currentProjectId && currentProjectId !== CHAT_PROJECT_ID
@@ -11318,11 +11313,13 @@ function AppMain() {
                       id: "new-session",
                       label: t("palette.newSessionInProject"),
                       hint: availableProjects.find((p) => p.id === currentProjectId)?.name,
+                      primary: true,
+                      group: "create" as const,
                       run: () => void createSessionForProject(currentProjectId),
                     },
                   ]
                 : []),
-              { id: "new-chat", label: t("palette.newChat"), run: () => void handleCreateChatSession() },
+              { id: "new-chat", label: t("palette.newChat"), primary: true, group: "create", run: () => void handleCreateChatSession() },
               {
                 // 插件：装一次全 agent 生效（docs/plans/plan-plugin-layer.md）。
                 // 派发事件让 ContextPanel 切到「共享」标签并滚到插件卡；
@@ -11330,6 +11327,7 @@ function AppMain() {
                 id: "open-universal-plugins",
                 label: t("allPlugins.paletteOpen"),
                 hint: t("allPlugins.paletteOpenHint"),
+                group: "workspace",
                 run: () => {
                   if (dockActive) {
                     setDockPage("context");
@@ -11345,6 +11343,7 @@ function AppMain() {
                 id: "open-council",
                 label: t("council.paletteOpen"),
                 hint: t("council.paletteOpenHint"),
+                group: "workspace",
                 run: () => {
                   leaveWorkspaceSurface();
                   setCouncilOpen(true);
@@ -11355,6 +11354,8 @@ function AppMain() {
                 id: "open-memo",
                 label: t("palette.openMemo"),
                 hint: t("palette.openMemoHint"),
+                primary: true,
+                group: "workspace",
                 run: () => {
                   if (dockActive) {
                     setDockPage("memo");
@@ -11367,6 +11368,7 @@ function AppMain() {
                 id: "open-telegram",
                 label: t("palette.openTelegram"),
                 hint: t("palette.openTelegramHint"),
+                group: "settings",
                 run: () => {
                   if (leftCollapsed) setLeftCollapsed(false);
                   window.setTimeout(() => requestOpenTelegram(), leftCollapsed ? 80 : 0);
@@ -11376,6 +11378,7 @@ function AppMain() {
                 id: "open-model-share",
                 label: t("palette.openModelShare"),
                 hint: t("palette.openModelShareHint"),
+                group: "workspace",
                 run: () => {
                   if (leftCollapsed) setLeftCollapsed(false);
                   window.setTimeout(() => requestOpenEngine(), leftCollapsed ? 80 : 0);
@@ -11385,6 +11388,7 @@ function AppMain() {
                 id: "open-proxy",
                 label: t("palette.openProxy"),
                 hint: t("palette.openProxyHint"),
+                group: "settings",
                 run: () => {
                   if (leftCollapsed) setLeftCollapsed(false);
                   window.setTimeout(() => requestOpenProxy(), leftCollapsed ? 80 : 0);
@@ -11396,6 +11400,8 @@ function AppMain() {
                 id: "open-usage-analysis",
                 label: t("usageLedger.paletteOpen"),
                 hint: t("usageLedger.paletteOpenHint"),
+                primary: true,
+                group: "workspace",
                 run: () => {
                   if (dockActive) {
                     setDockPage("usage");
@@ -11412,12 +11418,14 @@ function AppMain() {
                 id: "diagnose-with-agent",
                 label: t("palette.diagnoseWithAgent"),
                 hint: t("palette.diagnoseWithAgentHint"),
+                group: "settings",
                 run: () => void diagnoseWithAgent(),
               },
               {
                 id: "export-diagnostics",
                 label: t("palette.exportDiagnostics"),
                 hint: t("palette.exportDiagnosticsHint"),
+                group: "settings",
                 run: openDiagnosticDialog,
               },
               ...(!memoActive && !councilActive && displaySession.id && !displaySession.id.startsWith("session-empty-")
@@ -11426,12 +11434,14 @@ function AppMain() {
                       id: "export-transcript",
                       label: t("export.paletteAction"),
                       hint: "Markdown",
+                      group: "workspace" as const,
                       run: () => void handleExportTranscript(),
                     },
                     {
                       id: "find-in-conversation",
                       label: t("find.paletteOpen"),
                       hint: "Ctrl F",
+                      group: "workspace" as const,
                       run: () => {
                         window.dispatchEvent(
                           new CustomEvent("marionette:open-find", { detail: { sessionId: displaySession.id } }),
@@ -11443,6 +11453,7 @@ function AppMain() {
               {
                 id: "new-browser-tab",
                 label: t("palette.newBrowserTab"),
+                group: "workspace",
                 run: () => {
                   activateBrowserSurface();
                   void browserOpenTab("https://www.bing.com").then((result) => {
@@ -11456,6 +11467,7 @@ function AppMain() {
                   mode: t(`browser.devServerMode.${readDevServerPreference()}` as never),
                 }),
                 hint: t("browser.devServerPreferenceHint"),
+                group: "settings",
                 run: () => {
                   const current = readDevServerPreference();
                   const next = current === "open" ? "off" : current === "off" ? "notify" : "open";
@@ -11478,6 +11490,7 @@ function AppMain() {
                         }),
                 }),
                 hint: t("browser.idleTabsPreferenceHint"),
+                group: "settings",
                 run: () => {
                   const next = nextBrowserIdleMinutes(readBrowserIdleMinutes());
                   saveBrowserIdleMinutes(next);
@@ -11495,6 +11508,7 @@ function AppMain() {
                 id: "cleanup-agent-tabs",
                 label: t("browser.cleanupIdleNow"),
                 hint: t("browser.cleanupIdleNowHint"),
+                group: "workspace",
                 run: () => {
                   const configured = readBrowserIdleMinutes();
                   const minutes = configured === 0 ? 10 : configured;
@@ -11521,11 +11535,13 @@ function AppMain() {
               {
                 id: "computer-share",
                 label: t("palette.computerShare"),
+                group: "workspace",
                 run: () => setComputerShareOpen(true),
               },
               {
                 id: "add-project",
                 label: t("palette.addProject"),
+                group: "create",
                 run: () => {
                   setProjectDialogOpen(true);
                   setProjectError("");
@@ -11537,6 +11553,7 @@ function AppMain() {
                       id: "reopen-tab",
                       label: t("palette.reopenTab"),
                       hint: "Ctrl Shift T",
+                      group: "workspace" as const,
                       run: () => {
                         const id = lastClosedTabsRef.current[0];
                         const session = availableSessions.find((s) => s.id === id);
@@ -11551,16 +11568,19 @@ function AppMain() {
               {
                 id: "toggle-left",
                 label: leftCollapsed ? t("palette.expandLeft") : t("palette.collapseLeft"),
+                group: "workspace",
                 run: () => setLeftCollapsed((value) => !value),
               },
               {
                 id: "toggle-right",
                 label: rightCollapsed ? t("v2dialogs.expandRight") : t("v2dialogs.collapseRight"),
+                group: "workspace",
                 run: () => setRightCollapsed((value) => !value),
               },
               {
                 id: "theme",
                 label: t("palette.toggleTheme"),
+                group: "settings",
                 run: () =>
                   withViewTransition(() => {
                     const next = nextTheme(theme);
@@ -11572,12 +11592,14 @@ function AppMain() {
                 id: "language",
                 // Bilingual label so the entry stays searchable in both locales.
                 label: "切换语言 / Switch language",
+                group: "settings",
                 run: () => void applyLocale(nextLocale(getLocale())),
               },
               {
                 id: "dock-edge",
                 label: dockActive ? t("palette.undock") : t("palette.dockToEdge"),
                 hint: dockActive ? t("palette.undockHint") : t("palette.dockToEdgeHint"),
+                group: "settings",
                 run: shelfStable.onDockToEdge,
               },
               {
@@ -11585,6 +11607,7 @@ function AppMain() {
                 label: autoHideOnClose
                   ? t("palette.closeBehaviorHide")
                   : t("palette.closeBehaviorExit"),
+                group: "system",
                 run: shelfStable.onToggleAutoHideClose,
               },
               {
@@ -11595,6 +11618,7 @@ function AppMain() {
                 hint: delegationKitOn
                   ? t("palette.delegationOnHint")
                   : t("palette.delegationOffHint"),
+                group: "settings",
                 run: () => {
                   const next = !delegationKitOn;
                   setDelegationKitOn(next);
@@ -11605,6 +11629,7 @@ function AppMain() {
                 id: "quit-app",
                 label: t("palette.quitApp"),
                 hint: t("palette.quitAppHint"),
+                group: "system",
                 run: shelfStable.onQuitApp,
               },
             ]}
@@ -11617,8 +11642,6 @@ function AppMain() {
           open={gettingStartedOpen}
           onClose={() => setGettingStartedOpen(false)}
           onCreateChat={() => void handleCreateChatSession()}
-          projects={shelfProjects}
-          onProjectAdded={shelfStable.onProjectAdded}
         />
 
         {diagnosticOpen && diagnosticSnapshot && (

@@ -2,9 +2,8 @@ import { useMemo, useState } from "react";
 import { ChevronRight, X } from "lucide-react";
 import { SUBSCRIPTION_FAMILIES, useModelLibrary, type SubscriptionFamily } from "../lib/modelLibrary";
 import { t as translate, useT } from "../lib/i18n";
-import type { AgentConfig, Project } from "../lib/types";
+import type { AgentConfig } from "../lib/types";
 import { ModelSettingsDialog } from "./ModelSettingsDialog";
-import { RecentProjectDiscovery } from "./RecentProjectDiscovery";
 
 /**
  * 首次启动引导（2026-11-27）：一页式「开始使用」，不做多步向导。
@@ -32,7 +31,7 @@ function readDone(): boolean {
   try { return localStorage.getItem(DONE_KEY) === "1"; } catch { return false; }
 }
 
-export function GettingStartedGuide({ agents, hasSessions, open, onClose, onCreateChat, projects, onProjectAdded }: {
+export function GettingStartedGuide({ agents, hasSessions, open, onClose, onCreateChat }: {
   agents: AgentConfig[];
   /** 已经有会话（本机不是「什么都没有」）→ 不自动弹。 */
   hasSessions: boolean;
@@ -40,10 +39,6 @@ export function GettingStartedGuide({ agents, hasSessions, open, onClose, onCrea
   open: boolean;
   onClose: () => void;
   onCreateChat: () => void;
-  /** Projects already in the shelf (used to mark candidates as added). */
-  projects?: Project[];
-  /** Called after a project is added from the discovery list. */
-  onProjectAdded?: (project: Project) => void;
 }) {
   const i18n = useT();
   const { sources, signedIn } = useModelLibrary(false);
@@ -73,13 +68,6 @@ export function GettingStartedGuide({ agents, hasSessions, open, onClose, onCrea
         <div><span>{i18n("guide.detectSubs")}</span><b>{signedIn.length > 0 ? i18n("guide.detectedSubs", { count: signedIn.length }) : i18n("guide.noneSubs")}</b></div>
         <div><span>{i18n("guide.detectSources")}</span><b>{sourceCount > 0 ? i18n("guide.detectedSources", { count: sourceCount }) : i18n("guide.noneSources")}</b></div>
         <div><span>{i18n("guide.detectAgents")}</span><b>{i18n("guide.detectedAgents", { count: enabledAgents })}</b></div>
-      </div>
-      <div className="getting-started__discover">
-        <RecentProjectDiscovery
-          existingProjects={projects}
-          agents={agents}
-          onProjectAdded={onProjectAdded}
-        />
       </div>
       {available ? <div className="getting-started__ready">
         <p>{i18n("guide.ready")}</p>

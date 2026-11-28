@@ -15,6 +15,8 @@ Windows 本地 **多 Agent CLI 图形壳**（Tauri + React）。不替代 OpenCo
 ## 已具备（相对用户可感知）
 
 | 能力 | 说明 |
+> 2026-11-28: Ctrl K keeps five primary actions and six recent conversations visible. Secondary commands fold behind "Show all commands" and stay globally searchable; expanded results are grouped. The read-only recent-project discovery strip was removed from both the project shelf and the getting-started guide.
+
 |------|------|
 | 项目 / 会话 | 项目 CRUD、搜索 threads（按标题过滤，不读正文）、项目拖拽排序、会话按发送 recency 排序；空闲 2 小时的会话自动「挂起」（结束 agent 进程，下次发消息自动接上历史；子代理/后台命令/定时发送仍算在运作，不挂起）；悬停会话行三个按钮：⏸ 挂起（只在进程还活着时画：starting / running / waiting / error，按下去就是停——正在跑的直接中断并结束进程，说出口的半截回复留着并标「已挂起」；已挂起的会话不画按钮）、删除、⋯（置顶 / 重命名 / 导出为 Markdown）；冷启动恢复上次焦点和分屏（无存档则不打开对话，点底部输入框会在 Chat 新建）；Ctrl+K 命令面板（侧栏底栏齿轮打开同一面板）：跳任意对话/项目、新建对话/聊天、打开收纳盒/圆桌/Telegram 远程/模型共享、导出当前对话为 Markdown、重开刚关的标签、切主题。导出走系统「另存为」，准备中有 toast，失败不写空文件；成功 toast 可复制全文。**Ctrl+F 在当前对话中查找**（面板同入口「在当前对话中查找」）：右上角浮条（Esc 关、Enter/Shift+Enter 上下处、`i/n` 计数），大小写不敏感子串匹配，搜的是**已加载范围**内始终可见的主干卡（你 / 回复 / 计划 / 提问 / 交接 / 子代理 / 改动交付卡；thought/tool 在折叠簇内不参与），命中跳到所在卡并描边高亮（虚拟列表走 `offsetOf` 定位、短对话走 DOM 定位，流式期间不劫持滚动位置）。侧栏原有入口（收纳盒、圆桌、Telegram、模型共享）都还在 |
 | Chat 对话 | 侧栏项目列表下的独立对话列表；使用进程默认工作目录，不创建项目或工作区 `.marionette`；资源管理器「在此处打开」遇到已有 `.marionette` 才按项目打开 |
