@@ -323,7 +323,11 @@ import { listLiveSubagents, sessionHasLiveSubagents, sessionProcessAlive } from 
 import { forkCopyEvents, forkCutIndex } from "../lib/sessionFork";
 import { type AskQuestionPrompt } from "../components/AskQuestionCard";
 import { buildBackgroundTaskRows } from "../lib/backgroundTasks";
-import { delegateCardFor } from "../lib/delegateCards";
+import {
+  delegateCardFor,
+  delegateGoalEventForStartedTask,
+  ensureDelegateGoalEvent,
+} from "../lib/delegateCards";
 import type { AcpTerminalRow } from "../lib/api";
 import { Composer, transferEmptyDraft } from "../components/Composer";
 import { isAcpTranscriptMethod } from "../lib/acpMeta";
@@ -10052,6 +10056,14 @@ function AppMain() {
   // 会自然进转录）。
   const delegateCardAppendRef = useRef<(payload: DelegateTaskEventPayload) => void>(() => undefined);
   delegateCardAppendRef.current = (payload) => {
+    const goal = delegateGoalEventForStartedTask(payload);
+    if (goal) {
+      updateSessionEvents(
+        goal.sessionId,
+        (current) => ensureDelegateGoalEvent(current, goal),
+        { publish: true },
+      );
+    }
     const card = delegateCardFor(payload, shadowBySessionRef.current.get(payload.sessionId));
     if (!card) return;
     updateSessionEvents(card.sessionId, (current) => [...current, card], { publish: true });
@@ -10638,6 +10650,16 @@ function AppMain() {
     const ownerTask = staffController.tasks.find(
       (task) => task.workerSessionId === session.id,
     );
+    const ownerGoal = ownerTask
+      ? delegateGoalEventForStartedTask({
+          sessionId: session.id,
+          kind: "task.started",
+          task: ownerTask,
+        })
+      : null;
+    const conversationEvents = ownerGoal
+      ? ensureDelegateGoalEvent(events, ownerGoal)
+      : events;
     const ownerStaff = ownerTask?.staffId
       ? staffController.profiles.find((profile) => profile.staffId === ownerTask.staffId)
       : null;
@@ -10706,7 +10728,7 @@ function AppMain() {
         ) : null}
         <SessionView
           agent={agent}
-          events={events}
+          events={conversationEvents}
           delegateTasks={delegateTasksById}
           session={session}
           staffIdentity={staffIdentity}

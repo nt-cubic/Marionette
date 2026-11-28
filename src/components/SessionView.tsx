@@ -3176,6 +3176,7 @@ function CleanPlaceholder({
                 : `@${event.agentId}`;
             const childStream = allEvents.filter((e) => e.sessionId === event.childSessionId);
             const expanded = expandedChildId === event.childSessionId;
+            const promptLabel = event.taskTitle?.trim() || event.prompt;
             const observation = observeSubagent({
               events: childStream,
               sessionId: event.childSessionId,
@@ -3195,7 +3196,7 @@ function CleanPlaceholder({
                 <div className="subtask-card__row">
                   <NineDotSpinner compact />
                   <span className="subtask-card__title" title={event.prompt}>
-                    {event.prompt.slice(0, 72)}
+                    {promptLabel.slice(0, 72)}
                     {event.prompt.length > 72 ? "…" : ""}
                   </span>
                   <span className="subtask-card__meta">
@@ -3314,6 +3315,9 @@ function CleanPlaceholder({
             );
             const prompt =
               startEv && startEv.type === "subtask_started" ? startEv.prompt : "";
+            const taskTitle =
+              startEv && startEv.type === "subtask_started" ? startEv.taskTitle : undefined;
+            const promptLabel = taskTitle?.trim() || prompt;
             const modelId =
               startEv && startEv.type === "subtask_started" ? startEv.modelId : undefined;
             const task = event.taskId ? delegateTasks?.get(event.taskId) : undefined;
@@ -3398,9 +3402,9 @@ function CleanPlaceholder({
                   </span>
                   <span className="subtask-card__title" title={prompt}>
                     {agentInitiated
-                      ? (prompt || agentLabel).slice(0, 72)
-                      : `${target} \u00b7 ${(prompt || agentLabel).slice(0, 48)}`}
-                    {(prompt || agentLabel).length > (agentInitiated ? 72 : 48) ? "\u2026" : ""}
+                      ? (promptLabel || agentLabel).slice(0, 72)
+                      : `${target} \u00b7 ${(promptLabel || agentLabel).slice(0, 48)}`}
+                    {(promptLabel || agentLabel).length > (agentInitiated ? 72 : 48) ? "\u2026" : ""}
                   </span>
                   <span className="subtask-card__meta">
                     {agentInitiated ? [target, outcomeLabel].filter(Boolean).join(" \u00b7 ") : outcomeLabel}
@@ -3587,7 +3591,7 @@ function CleanPlaceholder({
             ) : event.type === "tool_call" ? (
               toolKindVerb(toolKind ?? "other")
             ) : event.type === "user_message" ? (
-              "You"
+              event.synthetic === "delegate_goal" ? t("session.delegateGoal") : "You"
             ) : event.type === "assistant_message" ? (
               isAssistantNotice(event.text) ? "Notification" : "Reply"
             ) : event.type === "notice" ? (
@@ -3915,6 +3919,7 @@ function CleanPlaceholder({
           }
 
           const isUser = event.type === "user_message";
+          const editableUser = isUser && event.synthetic !== "delegate_goal";
           // Reply footer numbers: this turn's generation time and output tokens
           // (only when the agent reported them; never invented).
           const replyDurationMs =
@@ -4003,7 +4008,7 @@ function CleanPlaceholder({
                   <span className="event-card__type-row__right">
                     <span className="event-card__time-edit">
                       <MessageTimestamp createdAt={event.createdAt} />
-                      {isUser && onEditResend && !isEditing && (
+                      {editableUser && onEditResend && !isEditing && (
                         <button
                           type="button"
                           className="pill-action pill-action--icon event-card__edit"

@@ -785,6 +785,7 @@ pub(crate) fn task_card(task: &Task) -> Value {
         "taskId": task.task_id,
         "staffId": task.staff_id,
         "title": task.title,
+        "goal": task.goal,
         "projectId": task.project_id,
         "workerSessionId": task.worker_session_id,
         "agentId": task.agent_id,

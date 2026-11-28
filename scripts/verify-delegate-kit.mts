@@ -14,7 +14,11 @@ import {
 } from "../src/lib/backgroundTasks.ts";
 import { isChiefOrigin } from "../src/lib/chiefTee.ts";
 import { projectAttention, STALL_MS } from "../src/lib/fleetAttention.ts";
-import { delegateCardFor } from "../src/lib/delegateCards.ts";
+import {
+  delegateCardFor,
+  delegateGoalEventForStartedTask,
+  ensureDelegateGoalEvent,
+} from "../src/lib/delegateCards.ts";
 import { parseTranscriptEvents } from "../src/lib/transcript.ts";
 import {
   isDelegatedWorkerSession,
@@ -323,10 +327,44 @@ function rowsFor(tasks: AgentDelegateSnapshot[]) {
   const baseRail = [{ type: "user_message", sessionId: "parent-card", text: "去调研", createdAt: "2026-01-01T00:00:00.000Z" }] as never[];
 
   const startCard = delegateCardFor(started, baseRail, "2026-01-01T00:00:01.000Z");
+  check(
+    "task.started keeps the full goal and the short task title",
+    startCard?.type === "subtask_started" &&
+      startCard.prompt === "goal" &&
+      startCard.taskTitle === "\u8c03\u7814 orca \u7684\u7f16\u6392\u6a21\u578b",
+  );
   check("task.started → 运行卡（带 agent 标识与 taskId）",
     startCard?.type === "subtask_started" && startCard.initiatedBy === "agent" && startCard.taskId === "task-card");
   check("运行卡只落一次（事件重放/多窗不重复）",
     delegateCardFor(started, [...baseRail, startCard] as never[]) === null);
+
+  const goalEvent = delegateGoalEventForStartedTask(started, "2026-01-01T00:00:01.000Z");
+  const workerRail = [
+    {
+      type: "thought",
+      sessionId: "worker-card",
+      text: "working",
+      createdAt: "2026-01-01T00:00:02.000Z",
+    },
+  ] as never[];
+  const withGoal = ensureDelegateGoalEvent(workerRail, goalEvent!);
+  check(
+    "worker rail starts with the exact delegation goal",
+    goalEvent?.type === "user_message" &&
+      goalEvent.sessionId === "worker-card" &&
+      goalEvent.text === "goal" &&
+      goalEvent.synthetic === "delegate_goal" &&
+      withGoal[0] === goalEvent,
+  );
+  check(
+    "delegation goal injection is idempotent",
+    ensureDelegateGoalEvent(withGoal, goalEvent!) === withGoal,
+  );
+  check(
+    "delegation goal survives transcript reload",
+    parseTranscriptEvents([goalEvent!])[0]?.type === "user_message" &&
+      parseTranscriptEvents([goalEvent!])[0]?.synthetic === "delegate_goal",
+  );
 
   check(
     "delegate card keeps explicit provider/model/effort metadata",

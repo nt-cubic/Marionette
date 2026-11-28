@@ -25,6 +25,49 @@ export type DelegateCardEvent = Extract<
   { type: "subtask_started" | "subtask_result" }
 >;
 
+export type DelegateGoalEvent = Extract<SessionEvent, { type: "user_message" }>;
+
+/** The exact goal sent to a worker, rendered as that worker's first You card. */
+export function delegateGoalEventForStartedTask(
+  payload: DelegateTaskEventPayload,
+  now: string = new Date().toISOString(),
+): DelegateGoalEvent | null {
+  if (payload.kind !== "task.started") return null;
+  const task = payload.task;
+  const goal = task?.goal?.trim();
+  if (!task?.taskId || !task.workerSessionId || !goal) return null;
+  return {
+    type: "user_message",
+    sessionId: task.workerSessionId,
+    text: goal,
+    messageId: `delegate-goal-${task.taskId}`,
+    createdAt:
+      Number.isFinite(task.createdAt) && task.createdAt > 0
+        ? new Date(task.createdAt).toISOString()
+        : now,
+    agentId: task.agentId,
+    agentLabel: task.agentId,
+    modelId: task.model ?? undefined,
+    modelLabel: task.displayModelName ?? task.displayModel ?? task.model ?? undefined,
+    providerLabel: task.displayProvider ?? undefined,
+    effortLabel: task.displayEffort ?? task.preferredEffort ?? undefined,
+    synthetic: "delegate_goal",
+  };
+}
+
+/** Idempotently put the delegation goal before every event the worker emitted. */
+export function ensureDelegateGoalEvent(
+  rail: readonly SessionEvent[],
+  goal: DelegateGoalEvent,
+): SessionEvent[] {
+  const duplicate = rail.some(
+    (event) =>
+      event.type === "user_message" &&
+      (event.messageId === goal.messageId || event.text.trim() === goal.text.trim()),
+  );
+  return duplicate ? (rail as SessionEvent[]) : [goal, ...rail];
+}
+
 function cardsFor(rail: readonly SessionEvent[], taskId: string): DelegateCardEvent[] {
   return rail.filter(
     (event): event is DelegateCardEvent =>
@@ -64,7 +107,8 @@ export function delegateCardFor(
       providerLabel: task.displayProvider ?? undefined,
       modelLabel: task.displayModelName ?? undefined,
       effortLabel: task.displayEffort ?? task.preferredEffort ?? undefined,
-      prompt: task.title,
+      prompt: task.goal?.trim() || task.title,
+      taskTitle: task.title,
       createdAt: now,
       initiatedBy: "agent",
       taskId: task.taskId,

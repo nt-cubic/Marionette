@@ -5,6 +5,7 @@
 export const en = {
   "session.subtaskDefaultEffort": "Default",
   "session.subtaskOpen": "Open subagent",
+  "session.delegateGoal": "Delegation prompt",
   "agents.title": "Subagents",
   "agents.fromParent": "From {name}",
   "agents.backToParent": "Back to parent",

@@ -133,6 +133,9 @@ export function parseTranscriptEvents(raw: unknown[]): SessionEvent[] {
         ...(type === "user_message" && e.forceWebSearch === true
           ? { forceWebSearch: true }
           : {}),
+        ...(type === "user_message" && e.synthetic === "delegate_goal"
+          ? { synthetic: "delegate_goal" }
+          : {}),
       } as SessionEvent);
       continue;
     }

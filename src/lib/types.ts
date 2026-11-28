@@ -224,6 +224,8 @@ export type SessionEvent =
       /** Stable anchor for outline / edit&resend. */
       messageId?: string;
       createdAt: string;
+      /** Synthetic context card; it was not typed in this session's composer. */
+      synthetic?: "delegate_goal";
       /**
        * When this prompt actually went over the wire. A queued follow-up waits
        * for the live turn's slot, so this is later than `createdAt` — it is the
@@ -373,6 +375,8 @@ export type SessionEvent =
       initiatedBy?: "agent";
       /** agent 派活对应的任务账本 taskId（Rust 后端驱动；@ 委托没有）。 */
       taskId?: string;
+      /** Task title; `prompt` carries the full goal sent to the worker. */
+      taskTitle?: string;
     }
   | {
       type: "subtask_result";

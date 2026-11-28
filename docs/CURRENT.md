@@ -463,6 +463,7 @@ Chief 已从「Telegram 远程助理配置」升级为 people-first 员工模式
 某个模型」，她自己调 `marionette_delegate_task`；六期路线图（可信→过夜→可验收→可反悔→
 安静）与设计红线见 [`plan-agent-delegation.md`](./plans/plan-agent-delegation.md)。
 
+- **Worker prompt visibility (2026-11-28):** the exact `goal` sent to an AI-delegated worker is persisted and rendered as the first non-editable You card in that worker session; the parent AI-delegation card keeps the short task title while its expanded stream carries the same sent text.
 - **体验形态**：父对话里亮「AI 派活」卡片（复用 @ 委托卡渲染，带芯片标识，内嵌子会话
   实时流）；子任务是顶层普通会话（`origin="agent-worker"`，侧栏带「AI 派活」角标，
   可点开/接管/追问）；父 AI 派完即睡（守则明写禁轮询），子任务完成时系统以

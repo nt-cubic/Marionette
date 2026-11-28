@@ -5,6 +5,7 @@
 export const zh = {
   "session.subtaskDefaultEffort": "\u9ed8\u8ba4",
   "session.subtaskOpen": "\u6253\u5f00\u5b50\u4ee3\u7406",
+  "session.delegateGoal": "\u6d3e\u6d3b\u5185\u5bb9",
   "agents.title": "\u5b50\u4ee3\u7406",
   "agents.fromParent": "\u6765\u81ea {name}",
   "agents.backToParent": "\u8fd4\u56de\u7236\u5bf9\u8bdd",
